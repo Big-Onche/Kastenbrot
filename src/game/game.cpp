@@ -1078,8 +1078,11 @@ namespace game
     {
         DROP_PICKUP_DISTANCE = 24,
         DROP_PICKUP_MILLIS = 250,
-        DROP_PICKUP_DELAY = 500
+        DROP_PICKUP_DELAY = 500,
+        DROP_MAX_PHYSICS_MILLIS = 100
     };
+
+    static const float DROP_GRAVITY = 210.0f, DROP_GROUND_CLEARANCE = 3.0f;
 
     static bool survivalhasroom(int item, int quantity)
     {
@@ -1156,6 +1159,42 @@ namespace game
         drop.pickupfrom = drop.o;
     }
 
+    static void updateworlddropfall(worlddrop &drop)
+    {
+        if(drop.settled || drop.picking) return;
+        if(!drop.landingknown)
+        {
+            vec landing = drop.o;
+            if(waitforserveredit()) worldpositiontolocal(landing);
+            if(!droptofloor(landing, 1.0f, DROP_GROUND_CLEARANCE)) return;
+            if(waitforserveredit()) worldpositiontoabsolute(landing);
+            drop.landing = landing;
+            drop.landingknown = true;
+        }
+        if(!drop.physicsmillis)
+        {
+            drop.physicsmillis = lastmillis;
+            return;
+        }
+
+        const int elapsedmillis = min(max(lastmillis - drop.physicsmillis, 0), int(DROP_MAX_PHYSICS_MILLIS));
+        drop.physicsmillis = lastmillis;
+        if(!elapsedmillis) return;
+
+        const float seconds = elapsedmillis / 1000.0f,
+                    previousvelocity = drop.fallvelocity;
+        drop.fallvelocity += DROP_GRAVITY * seconds;
+        const float distance = (previousvelocity + drop.fallvelocity) * 0.5f * seconds;
+        if(drop.o.z - distance <= drop.landing.z)
+        {
+            drop.o = drop.landing;
+            drop.fallvelocity = 0;
+            drop.settled = true;
+            drop.settledmillis = lastmillis;
+        }
+        else drop.o.z -= distance;
+    }
+
     static void updateworlddrops()
     {
         if(!player1) return;
@@ -1177,6 +1216,8 @@ namespace game
                 delete worlddrops.remove(i);
                 continue;
             }
+            updateworlddropfall(drop);
+            if(!drop.settled) continue;
             const float distance = drop.o.dist(feet);
             if(distance > DROP_PICKUP_DISTANCE)
             {
@@ -1218,6 +1259,7 @@ namespace game
             drop->count = quantity;
             drop->owner = source;
             drop->created = lastmillis;
+            drop->physicsmillis = lastmillis;
             drop->confirmed = !waitforserveredit();
             drop->o = worlddroporigin(target, action, orient);
             worlddrops.add(drop);
@@ -1248,7 +1290,8 @@ namespace game
                 break;
             }
         }
-        if(!drop)
+        const bool predicted = drop != NULL;
+        if(!predicted)
         {
             drop = new worlddrop;
             worlddrops.add(drop);
@@ -1261,7 +1304,11 @@ namespace game
         drop->owner = owner;
         drop->created = lastmillis;
         drop->confirmed = true;
-        drop->o = o;
+        if(!predicted)
+        {
+            drop->physicsmillis = lastmillis;
+            drop->o = o;
+        }
         if(drop->picking) requestdroppickup(*drop);
     }
 

@@ -1916,7 +1916,10 @@ namespace server
         if(totalmillis - drop.created < DROP_PICKUP_DELAY) return rejectaction(ci, requestid, "drop is not ready for pickup");
         if(personaldrops && drop.ownerid[0] && strcmp(drop.ownerid, ci.playerid))
             return rejectaction(ci, requestid, "drop belongs to another player");
-        if(drop.o.dist(position) > 24.0f) return rejectaction(ci, requestid, "drop is beyond the 24-unit pickup distance");
+        // Dedicated servers do not load terrain collision. Clients keep a falling drop's X/Y fixed and only lower its Z.
+        const float dx = drop.o.x - position.x, dy = drop.o.y - position.y;
+        if(dx * dx + dy * dy > 24.0f * 24.0f || position.z > drop.o.z + 24.0f)
+            return rejectaction(ci, requestid, "drop is beyond the 24-unit pickup distance");
         if(!inventoryhasroom(ci, drop.item, drop.count)) return rejectaction(ci, requestid, "inventory is full");
         if(!addinventoryitems(ci, drop.item, drop.count)) return rejectaction(ci, requestid, "server could not add the drop to inventory");
         removeserverdrop(index, ci.clientnum);

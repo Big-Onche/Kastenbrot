@@ -264,7 +264,12 @@ namespace game
         else
         {
             const uint phaseid = drop.id ? drop.id : drop.sourcerequestid;
-            position.z += 1.5f + sinf((lastmillis + int(phaseid % 1000U) * 37) / 350.0f) * 0.75f;
+            position.z += 1.5f;
+            if(drop.settled)
+            {
+                const float hoveramount = clamp((lastmillis - drop.settledmillis) / 250.0f, 0.0f, 1.0f);
+                position.z += sinf((lastmillis + int(phaseid % 1000U) * 37) / 350.0f) * 0.75f * hoveramount;
+            }
         }
 
         const float maxdistance = getdynamicentsmaxdistance() * 16.0f;

@@ -235,12 +235,14 @@ static inline bool worlddroproll(int source, uint requestid, int objectitem, int
 struct worlddrop
 {
     uint id, sourcerequestid, pickuprequestid;
-    int source, item, count, owner, created, pickupmillis, picker;
-    bool confirmed, picking, removed, pickupblocked;
-    vec o, pickupfrom;
+    int source, item, count, owner, created, pickupmillis, picker, physicsmillis, settledmillis;
+    float fallvelocity;
+    bool confirmed, picking, removed, pickupblocked, settled, landingknown;
+    vec o, pickupfrom, landing;
 
     worlddrop() : id(0), sourcerequestid(0), pickuprequestid(0), source(-1), item(-1), count(0), owner(-1), created(0), pickupmillis(0),
-                  picker(-1), confirmed(false), picking(false), removed(false), pickupblocked(false), o(0, 0, 0), pickupfrom(0, 0, 0)
+                  picker(-1), physicsmillis(0), settledmillis(0), fallvelocity(0), confirmed(false), picking(false), removed(false),
+                  pickupblocked(false), settled(false), landingknown(false), o(0, 0, 0), pickupfrom(0, 0, 0), landing(0, 0, 0)
     {
     }
 };
