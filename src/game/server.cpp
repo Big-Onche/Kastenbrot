@@ -106,13 +106,15 @@ namespace server
             identitychallengemillis,
             identityfailures, identityfailurewindow, selectedslot, inventorycursoritem, inventorycursorcount, lastinventorysave,
             violations, violationwindow, actionwindow, placements, destructions,
-            breakaction, breakorient, breakitem, breakstart, breakupdate, breakstage, breakrelease;
+            breakaction, breakorient, breakitem, breakstart, breakupdate, breakstage, breakrelease,
+            breakduration, breaktoolitem, breaktoolslot, breaktooldurability;
         uint ip;
         uint lastrequestid, breakrequestid;
-        bool connected, local, worldready, hasposition, inventoryloaded, inventorydirty, breakactive;
+        bool connected, local, worldready, hasposition, inventoryloaded, inventorydirty, breakactive, breakdropeligible;
         string name, playerid, pendingpublickey, pendingname;
-        int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS];
-        int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftinggridsize, craftingstationitem;
+        int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
+        int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
+            craftinggridsize, craftingstationitem, inventorycursordurability;
         ivec breaktarget, craftingstationtarget;
         vector<uchar> position;
         vec o;
@@ -128,12 +130,14 @@ namespace server
                        violations(0), violationwindow(0),
                        actionwindow(0), placements(0), destructions(0), breakaction(-1),
                        breakorient(0), breakitem(-1), breakstart(0), breakupdate(0), breakstage(0), breakrelease(0),
+                       breakduration(0), breaktoolitem(-1), breaktoolslot(-1), breaktooldurability(0),
                        ip(0),
                        lastrequestid(0), breakrequestid(0),
                        connected(false), local(false),
-                       worldready(false), hasposition(false), inventoryloaded(false), inventorydirty(false), breakactive(false),
-                       craftinggridsize(2), craftingstationitem(-1), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0),
-                       o(0, 0, 0), getmap(NULL),
+                       worldready(false), hasposition(false), inventoryloaded(false), inventorydirty(false),
+                       breakactive(false), breakdropeligible(true),
+                       craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
+                       breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), o(0, 0, 0), getmap(NULL),
                        identitychallenge(NULL), identity(NULL)
         {
             name[0] = playerid[0] = pendingpublickey[0] = pendingname[0] = '\0';
@@ -141,11 +145,13 @@ namespace server
             {
                 inventoryitems[i] = -1;
                 inventorycounts[i] = 0;
+                inventorydurabilities[i] = 0;
             }
             loopi(CRAFT_GRID_MAX)
             {
                 craftingitems[i] = -1;
                 craftingcounts[i] = 0;
+                craftingdurabilities[i] = 0;
             }
         }
 
@@ -633,14 +639,17 @@ namespace server
         {
             ci.inventoryitems[i] = -1;
             ci.inventorycounts[i] = 0;
+            ci.inventorydurabilities[i] = 0;
         }
         ci.selectedslot = 0;
         ci.inventorycursoritem = -1;
         ci.inventorycursorcount = 0;
+        ci.inventorycursordurability = 0;
         loopi(CRAFT_GRID_MAX)
         {
             ci.craftingitems[i] = -1;
             ci.craftingcounts[i] = 0;
+            ci.craftingdurabilities[i] = 0;
         }
         ci.craftinggridsize = 2;
         ci.craftingstationitem = -1;
@@ -657,13 +666,13 @@ namespace server
         copystring(temppath, findfile(temporary, "wb"));
         stream *file = openrawfile(temporary, "wb");
         if(!file) return false;
-        bool ok = file->printf("survival_inventory 3\nselected %d\ncursor %d %d\ncrafting %d %d %d %d %d\n", ci.selectedslot,
-                               ci.inventorycursoritem, ci.inventorycursorcount, ci.craftinggridsize,
+        bool ok = file->printf("survival_inventory 4\nselected %d\ncursor %d %d %d\ncrafting %d %d %d %d %d\n", ci.selectedslot,
+                               ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability, ci.craftinggridsize,
                                ci.craftingstationitem, ci.craftingstationtarget.x, ci.craftingstationtarget.y, ci.craftingstationtarget.z) > 0;
         loopi(SURVIVAL_USABLE_SLOTS) if(ok)
-            ok = file->printf("slot %d %d %d\n", i, ci.inventoryitems[i], ci.inventorycounts[i]) > 0;
+            ok = file->printf("slot %d %d %d %d\n", i, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i]) > 0;
         loopi(CRAFT_GRID_MAX) if(ok)
-            ok = file->printf("craftslot %d %d %d\n", i, ci.craftingitems[i], ci.craftingcounts[i]) > 0;
+            ok = file->printf("craftslot %d %d %d %d\n", i, ci.craftingitems[i], ci.craftingcounts[i], ci.craftingdurabilities[i]) > 0;
         delete file;
         if(!ok || !replaceserveridentityfile(temppath, finalpath))
         {
@@ -690,10 +699,10 @@ namespace server
         string line;
         while(file->getline(line, sizeof(line)))
         {
-            int version, selected, slot, item, count;
+            int version, selected, slot, item, count, durability = INT_MAX;
             if(sscanf(line, "survival_inventory %d", &version) == 1)
             {
-                if(versionseen || version < 1 || version > 3) valid = false;
+                if(versionseen || version < 1 || version > 4) valid = false;
                 versionseen = true;
             }
             else if(sscanf(line, "selected %d", &selected) == 1)
@@ -701,7 +710,7 @@ namespace server
                 if(selected < 0 || selected >= SURVIVAL_HOTBAR_SLOTS) valid = false;
                 else ci.selectedslot = selected;
             }
-            else if(sscanf(line, "cursor %d %d", &item, &count) == 2)
+            else if(sscanf(line, "cursor %d %d %d", &item, &count, &durability) >= 2)
             {
                 if(count < 0 || (item >= 0 && count > getinventoryitemmaxstack(item)) || (count == 0 && item != -1) ||
                    (count > 0 && (item < 0 || item >= numinventoryitems()))) valid = false;
@@ -709,9 +718,11 @@ namespace server
                 {
                     ci.inventorycursoritem = item;
                     ci.inventorycursorcount = count;
+                    ci.inventorycursordurability = count > 0 && isinventorytool(item)
+                                                   ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
                 }
             }
-            else if(sscanf(line, "slot %d %d %d", &slot, &item, &count) == 3)
+            else if(sscanf(line, "slot %d %d %d %d", &slot, &item, &count, &durability) >= 3)
             {
                 if(slot < 0 || slot >= SURVIVAL_USABLE_SLOTS || slotsseen[slot] ||
                    count < 0 || (item >= 0 && count > getinventoryitemmaxstack(item)) || (count == 0 && item != -1) ||
@@ -722,6 +733,8 @@ namespace server
                     slotsseen[slot] = true;
                     ci.inventoryitems[slot] = item;
                     ci.inventorycounts[slot] = count;
+                    ci.inventorydurabilities[slot] = count > 0 && isinventorytool(item)
+                                                     ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
                 }
             }
             else
@@ -737,7 +750,7 @@ namespace server
                         ci.craftingstationtarget = ivec(x, y, z);
                     }
                 }
-                else if(sscanf(line, "craftslot %d %d %d", &slot, &item, &count) == 3)
+                else if(sscanf(line, "craftslot %d %d %d %d", &slot, &item, &count, &durability) >= 3)
                 {
                     if(slot < 0 || slot >= CRAFT_GRID_MAX || craftslotsseen[slot] || count < 0 ||
                        (item >= 0 && count > getinventoryitemmaxstack(item)) || (count == 0 && item != -1) ||
@@ -747,6 +760,8 @@ namespace server
                         craftslotsseen[slot] = true;
                         ci.craftingitems[slot] = item;
                         ci.craftingcounts[slot] = count;
+                        ci.craftingdurabilities[slot] = count > 0 && isinventorytool(item)
+                                                      ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
                     }
                 }
                 else if(line[0] && line[0] != '/' && line[0] != '#') valid = false;
@@ -772,10 +787,12 @@ namespace server
         putint(p, ci.selectedslot);
         putint(p, ci.inventorycursoritem);
         putint(p, ci.inventorycursorcount);
+        putint(p, ci.inventorycursordurability);
         loopi(SURVIVAL_USABLE_SLOTS)
         {
             putint(p, ci.inventoryitems[i]);
             putint(p, ci.inventorycounts[i]);
+            putint(p, ci.inventorydurabilities[i]);
         }
         sendpacket(ci.clientnum, 1, p.finalize());
     }
@@ -813,6 +830,7 @@ namespace server
         {
             putint(p, ci.craftingitems[i]);
             putint(p, ci.craftingcounts[i]);
+            putint(p, ci.craftingdurabilities[i]);
         }
         sendpacket(ci.clientnum, 1, p.finalize());
     }
@@ -889,6 +907,7 @@ namespace server
         {
             ci.inventoryitems[i] = item;
             ci.inventorycounts[i] = 1;
+            ci.inventorydurabilities[i] = getinventorytoolmaxdurability(item);
             markinventorydirty(ci);
             return true;
         }
@@ -1598,6 +1617,11 @@ namespace server
         ci.breakaction = -1;
         ci.breakitem = -1;
         ci.breakrelease = 0;
+        ci.breakduration = 0;
+        ci.breaktoolitem = -1;
+        ci.breaktoolslot = -1;
+        ci.breaktooldurability = 0;
+        ci.breakdropeligible = true;
     }
 
     static bool acceptworldaction(clientinfo &ci, uint requestid, int action, const ivec &target, int orient, int item)
@@ -1673,6 +1697,7 @@ namespace server
             {
                 ci.inventoryitems[slot] = -1;
                 ci.inventorycounts[slot] = 0;
+                ci.inventorydurabilities[slot] = 0;
             }
             markinventorydirty(ci);
         }
@@ -1712,6 +1737,20 @@ namespace server
         ci.breaktarget = target;
         ci.breakorient = orient;
         ci.breakitem = state ? state->item : item;
+        ci.breaktoolslot = ci.selectedslot;
+        ci.breaktoolitem = ci.breaktoolslot >= 0 && ci.breaktoolslot < SURVIVAL_HOTBAR_SLOTS && ci.inventorycounts[ci.breaktoolslot] > 0 &&
+                           isinventorytool(ci.inventoryitems[ci.breaktoolslot]) && ci.inventorydurabilities[ci.breaktoolslot] > 0
+                         ? ci.inventoryitems[ci.breaktoolslot] : -1;
+        ci.breaktooldurability = ci.breaktoolitem >= 0 ? ci.inventorydurabilities[ci.breaktoolslot] : 0;
+        const int type = getworlditemtype(ci.breakitem), index = getworlditemindex(ci.breakitem);
+        if(ci.breaktoolitem < 0 && !isworldobjecthandbreakable(type, index))
+        {
+            cancelbreak(ci, false);
+            return rejectaction(ci, requestid, "target cannot be broken by hand");
+        }
+        ci.breakduration = action == WORLD_ACTION_BREAK_SCATTER_START && index < 0
+                         ? survivalscatterbreakmillis : getworldbreakmillis(type, index, ci.breaktoolitem);
+        ci.breakdropeligible = getworlddropeligible(type, index, ci.breaktoolitem);
         ci.breakstage = 0;
         ci.breakrelease = 0;
         ci.breakstart = ci.breakupdate = max(totalmillis, 1);
@@ -1732,7 +1771,7 @@ namespace server
             cancelbreak(ci);
             return rejectaction(ci, requestid, "invalid break progress stage", true, true);
         }
-        const int duration = ci.breakaction == WORLD_ACTION_BREAK_SCATTER_START ? survivalscatterbreakmillis : survivalbreakmillis,
+        const int duration = max(ci.breakduration, 1),
                   elapsed = max(totalmillis - ci.breakstart, 0),
                   allowedstage = min(7, elapsed * 8 / max(duration, 1) + 1),
                   tolerance = min(breaktimetolerance, max(duration / 4, 25));
@@ -1762,6 +1801,21 @@ namespace server
             cancelbreak(ci);
             return rejectaction(ci, requestid, "break completion item does not match its start", true, true);
         }
+        const char *targeterror = NULL;
+        if(!validactiontarget(ci, target, orient, targeterror))
+        {
+            cancelbreak(ci);
+            return rejectaction(ci, requestid, targeterror ? targeterror : "break target is out of range");
+        }
+        const bool toolvalid = ci.breaktoolitem < 0 ||
+                               (ci.breaktoolslot == ci.selectedslot && ci.breaktoolslot >= 0 && ci.breaktoolslot < SURVIVAL_HOTBAR_SLOTS &&
+                                ci.inventoryitems[ci.breaktoolslot] == ci.breaktoolitem && ci.inventorycounts[ci.breaktoolslot] == 1 &&
+                                ci.inventorydurabilities[ci.breaktoolslot] == ci.breaktooldurability);
+        if(!toolvalid)
+        {
+            cancelbreak(ci);
+            return rejectaction(ci, requestid, "held tool changed while breaking");
+        }
         serverworldaction *state = findworldaction(target, ci.breakaction);
         if(state && (state->action == WORLD_ACTION_BREAK_CUBE_START || state->action == WORLD_ACTION_BREAK_SCATTER_START))
         {
@@ -1775,7 +1829,7 @@ namespace server
             sendworldcorrection(ci, *state);
             return false;
         }
-        const int duration = ci.breakaction == WORLD_ACTION_BREAK_SCATTER_START ? survivalscatterbreakmillis : survivalbreakmillis;
+        const int duration = max(ci.breakduration, 1);
         const int tolerance = min(breaktimetolerance, max(duration / 4, 25));
         if(!servercreative() && totalmillis - ci.breakstart + tolerance < duration)
         {
@@ -1794,7 +1848,19 @@ namespace server
             return rejectaction(ci, requestid, "server could not persist the destruction");
         }
         setworldactionstate(target, action, ci.breakorient, item);
-        if(!servercreative()) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
+        if(!servercreative() && ci.breakdropeligible) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
+        if(!servercreative() && ci.breaktoolitem >= 0)
+        {
+            const int type = getworlditemtype(item), index = getworlditemindex(item), wear = getworldbreaktoolwear(type, index, ci.breaktoolitem);
+            ci.inventorydurabilities[ci.breaktoolslot] = max(ci.inventorydurabilities[ci.breaktoolslot] - wear, 0);
+            if(ci.inventorydurabilities[ci.breaktoolslot] <= 0)
+            {
+                ci.inventoryitems[ci.breaktoolslot] = -1;
+                ci.inventorycounts[ci.breaktoolslot] = ci.inventorydurabilities[ci.breaktoolslot] = 0;
+            }
+            markinventorydirty(ci);
+            sendinventory(ci);
+        }
         sendbreakstate(ci, BREAK_STATE_COMPLETE, 7);
         ci.breakactive = false;
         ci.breakrequestid = 0;
@@ -1865,6 +1931,7 @@ namespace server
         if(!validnewrequest(ci, requestid, error))
             return rejectaction(ci, requestid, error, requestid == ci.lastrequestid);
         if(servercreative()) return rejectaction(ci, requestid, "survival inventory is disabled in creative mode");
+        if(ci.breakactive) cancelbreak(ci);
         switch(action)
         {
             case INVENTORY_ACTION_SWAP:
@@ -1872,6 +1939,7 @@ namespace server
                     return rejectaction(ci, requestid, "invalid inventory slot", true, true);
                 swap(ci.inventoryitems[first], ci.inventoryitems[second]);
                 swap(ci.inventorycounts[first], ci.inventorycounts[second]);
+                swap(ci.inventorydurabilities[first], ci.inventorydurabilities[second]);
                 markinventorydirty(ci);
                 break;
             case INVENTORY_ACTION_SELECT:
@@ -1884,8 +1952,8 @@ namespace server
                 if(first < 0 || first >= SURVIVAL_USABLE_SLOTS ||
                    (second != INVENTORY_CLICK_LEFT && second != INVENTORY_CLICK_RIGHT))
                     return rejectaction(ci, requestid, "invalid inventory click", true, true);
-                if(inventoryslotclick(ci.inventorycursoritem, ci.inventorycursorcount,
-                                      ci.inventoryitems[first], ci.inventorycounts[first], second))
+                if(inventoryinstanceclick(ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability,
+                                          ci.inventoryitems[first], ci.inventorycounts[first], ci.inventorydurabilities[first], second))
                     markinventorydirty(ci);
                 break;
             default:
@@ -1910,6 +1978,7 @@ namespace server
         const char *error = NULL;
         if(!validnewrequest(ci, requestid, error)) return rejectcraftaction(ci, requestid, error, requestid == ci.lastrequestid);
         if(servercreative()) return rejectcraftaction(ci, requestid, "crafting is disabled in creative mode");
+        if(ci.breakactive) cancelbreak(ci);
         switch(action)
         {
             case CRAFT_ACTION_OPEN_PLAYER:
@@ -1936,6 +2005,7 @@ namespace server
                     return rejectcraftaction(ci, requestid, "invalid crafting slot", true, true);
                 swap(ci.inventoryitems[first], ci.craftingitems[second]);
                 swap(ci.inventorycounts[first], ci.craftingcounts[second]);
+                swap(ci.inventorydurabilities[first], ci.craftingdurabilities[second]);
                 markinventorydirty(ci);
                 break;
             case CRAFT_ACTION_GRID_TO_INVENTORY:
@@ -1944,6 +2014,7 @@ namespace server
                     return rejectcraftaction(ci, requestid, "invalid crafting slot", true, true);
                 swap(ci.craftingitems[first], ci.inventoryitems[second]);
                 swap(ci.craftingcounts[first], ci.inventorycounts[second]);
+                swap(ci.craftingdurabilities[first], ci.inventorydurabilities[second]);
                 markinventorydirty(ci);
                 break;
             case CRAFT_ACTION_GRID_SWAP:
@@ -1952,6 +2023,7 @@ namespace server
                     return rejectcraftaction(ci, requestid, "invalid crafting slot", true, true);
                 swap(ci.craftingitems[first], ci.craftingitems[second]);
                 swap(ci.craftingcounts[first], ci.craftingcounts[second]);
+                swap(ci.craftingdurabilities[first], ci.craftingdurabilities[second]);
                 markinventorydirty(ci);
                 break;
             case CRAFT_ACTION_CLICK_GRID:
@@ -1959,8 +2031,8 @@ namespace server
                 if(first < 0 || first >= ci.craftinggridsize * ci.craftinggridsize ||
                    (second != INVENTORY_CLICK_LEFT && second != INVENTORY_CLICK_RIGHT))
                     return rejectcraftaction(ci, requestid, "invalid crafting grid click", true, true);
-                if(inventoryslotclick(ci.inventorycursoritem, ci.inventorycursorcount,
-                                      ci.craftingitems[first], ci.craftingcounts[first], second))
+                if(inventoryinstanceclick(ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability,
+                                          ci.craftingitems[first], ci.craftingcounts[first], ci.craftingdurabilities[first], second))
                     markinventorydirty(ci);
                 break;
             case CRAFT_ACTION_TAKE_OUTPUT:
@@ -1976,10 +2048,15 @@ namespace server
                 loopi(CRAFT_GRID_MAX) if(match.consume[i] > 0)
                 {
                     ci.craftingcounts[i] -= match.consume[i];
-                    if(ci.craftingcounts[i] <= 0) { ci.craftingitems[i] = -1; ci.craftingcounts[i] = 0; }
+                    if(ci.craftingcounts[i] <= 0)
+                    {
+                        ci.craftingitems[i] = -1;
+                        ci.craftingcounts[i] = ci.craftingdurabilities[i] = 0;
+                    }
                 }
                 ci.inventoryitems[second] = match.outputitem;
                 ci.inventorycounts[second] += match.outputcount;
+                ci.inventorydurabilities[second] = getinventorytoolmaxdurability(match.outputitem);
                 markinventorydirty(ci);
                 break;
             }
@@ -1997,10 +2074,15 @@ namespace server
                 loopi(CRAFT_GRID_MAX) if(match.consume[i] > 0)
                 {
                     ci.craftingcounts[i] -= match.consume[i];
-                    if(ci.craftingcounts[i] <= 0) { ci.craftingitems[i] = -1; ci.craftingcounts[i] = 0; }
+                    if(ci.craftingcounts[i] <= 0)
+                    {
+                        ci.craftingitems[i] = -1;
+                        ci.craftingcounts[i] = ci.craftingdurabilities[i] = 0;
+                    }
                 }
                 ci.inventorycursoritem = match.outputitem;
                 ci.inventorycursorcount += match.outputcount;
+                ci.inventorycursordurability = getinventorytoolmaxdurability(match.outputitem);
                 markinventorydirty(ci);
                 break;
             }

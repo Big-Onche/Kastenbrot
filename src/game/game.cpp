@@ -789,10 +789,13 @@ namespace game
         -1, -1, -1, -1, -1, -1, -1, -1, -1
     };
     static int survivalcounts[SURVIVAL_USABLE_SLOTS] = { 0 };
+    static int survivaldurabilities[SURVIVAL_USABLE_SLOTS] = { 0 };
     static int craftingitems[CRAFT_GRID_MAX] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     static int craftingcounts[CRAFT_GRID_MAX] = { 0 };
+    static int craftingdurabilities[CRAFT_GRID_MAX] = { 0 };
     static int craftinggridsize = 2, craftingstationitem = -1, craftingrecipe = -1,
-               craftingoutputitem = -1, craftingoutputcount = 0, inventorycursoritem = -1, inventorycursorcount = 0;
+               craftingoutputitem = -1, craftingoutputcount = 0, inventorycursoritem = -1, inventorycursorcount = 0,
+               inventorycursordurability = 0;
 
     enum
     {
@@ -856,21 +859,24 @@ namespace game
         {
             survivalitems[i] = -1;
             survivalcounts[i] = 0;
+            survivaldurabilities[i] = 0;
         }
         creativehotbarslot = 0;
         loopi(CRAFT_GRID_MAX)
         {
             craftingitems[i] = -1;
             craftingcounts[i] = 0;
+            craftingdurabilities[i] = 0;
         }
         craftinggridsize = 2;
         craftingstationitem = craftingrecipe = craftingoutputitem = -1;
         craftingoutputcount = 0;
         inventorycursoritem = -1;
         inventorycursorcount = 0;
+        inventorycursordurability = 0;
     }
 
-    void loadsurvivalinventory(const int *items, const int *counts, int slots, int cursoritem, int cursorcount)
+    void loadsurvivalinventory(const int *items, const int *counts, const int *durabilities, int slots, int cursoritem, int cursorcount, int cursordurability)
     {
         resetsurvivalinventory();
         loopi(min(slots, int(SURVIVAL_USABLE_SLOTS)))
@@ -878,35 +884,39 @@ namespace game
             if(items[i] < 0 || counts[i] <= 0) continue;
             survivalitems[i] = items[i];
             survivalcounts[i] = clamp(counts[i], 1, max(getinventoryitemmaxstack(items[i]), 1));
+            survivaldurabilities[i] = isinventorytool(items[i])
+                                    ? clamp(durabilities && durabilities[i] > 0 ? durabilities[i] : getinventorytoolmaxdurability(items[i]),
+                                            1, getinventorytoolmaxdurability(items[i])) : 0;
         }
         if(cursoritem >= 0 && cursoritem < numinventoryitems() && cursorcount > 0)
         {
             inventorycursoritem = cursoritem;
             inventorycursorcount = clamp(cursorcount, 1, max(getinventoryitemmaxstack(cursoritem), 1));
+            inventorycursordurability = isinventorytool(cursoritem) ? clamp(cursordurability > 0 ? cursordurability : getinventorytoolmaxdurability(cursoritem), 1, getinventorytoolmaxdurability(cursoritem)) : 0;
         }
     }
 
-    void receiveinventory(const int *items, const int *counts, int slots, int selected, int cursoritem, int cursorcount)
+    void receiveinventory(const int *items, const int *counts, const int *durabilities, int slots, int selected, int cursoritem, int cursorcount, int cursordurability)
     {
         loopi(SURVIVAL_USABLE_SLOTS)
         {
             survivalitems[i] = i < slots && items[i] >= 0 && counts[i] > 0 ? items[i] : -1;
-            survivalcounts[i] = i < slots && items[i] >= 0 && counts[i] > 0
-                              ? clamp(counts[i], 1, max(getinventoryitemmaxstack(items[i]), 1)) : 0;
+            survivalcounts[i] = i < slots && items[i] >= 0 && counts[i] > 0 ? clamp(counts[i], 1, max(getinventoryitemmaxstack(items[i]), 1)) : 0;
+            survivaldurabilities[i] = survivalitems[i] >= 0 && isinventorytool(survivalitems[i]) ? clamp(durabilities[i], 1, getinventorytoolmaxdurability(survivalitems[i])) : 0;
         }
         inventorycursoritem = cursoritem >= 0 && cursoritem < numinventoryitems() && cursorcount > 0 ? cursoritem : -1;
-        inventorycursorcount = inventorycursoritem >= 0
-                             ? clamp(cursorcount, 1, max(getinventoryitemmaxstack(inventorycursoritem), 1)) : 0;
+        inventorycursorcount = inventorycursoritem >= 0 ? clamp(cursorcount, 1, max(getinventoryitemmaxstack(inventorycursoritem), 1)) : 0;
+        inventorycursordurability = inventorycursoritem >= 0 && isinventorytool(inventorycursoritem) ? clamp(cursordurability, 1, getinventorytoolmaxdurability(inventorycursoritem)) : 0;
         creativehotbarslot = clamp(selected, 0, CREATIVE_HOTBAR_SLOTS - 1);
     }
 
-    void receivecraftstate(const int *items, const int *counts, int slots, int gridsize, int stationitem,
-                           int recipe, int outputitem, int outputcount)
+    void receivecraftstate(const int *items, const int *counts, const int *durabilities, int slots, int gridsize, int stationitem, int recipe, int outputitem, int outputcount)
     {
         loopi(CRAFT_GRID_MAX)
         {
             craftingitems[i] = i < slots && items[i] >= 0 && counts[i] > 0 ? items[i] : -1;
             craftingcounts[i] = i < slots && items[i] >= 0 && counts[i] > 0 ? counts[i] : 0;
+            craftingdurabilities[i] = craftingitems[i] >= 0 && isinventorytool(craftingitems[i]) ? clamp(durabilities[i], 1, getinventorytoolmaxdurability(craftingitems[i])) : 0;
         }
         craftinggridsize = gridsize == 3 ? 3 : 2;
         craftingstationitem = stationitem;
@@ -1039,9 +1049,9 @@ namespace game
         if(!f) return;
         f->printf("game_mode %d\n", gamemode);
         loopi(SURVIVAL_USABLE_SLOTS) if(survivalitems[i] >= 0 && survivalcounts[i] > 0)
-            f->printf("inventory %d %d %d\n", i, survivalitems[i], survivalcounts[i]);
+            f->printf("inventory %d %d %d %d\n", i, survivalitems[i], survivalcounts[i], survivaldurabilities[i]);
         if(inventorycursoritem >= 0 && inventorycursorcount > 0)
-            f->printf("inventory_cursor %d %d\n", inventorycursoritem, inventorycursorcount);
+            f->printf("inventory_cursor %d %d %d\n", inventorycursoritem, inventorycursorcount, inventorycursordurability);
     }
 
     static bool addsurvivalitem(int item)
@@ -1057,6 +1067,7 @@ namespace game
         {
             survivalitems[i] = item;
             survivalcounts[i] = 1;
+            survivaldurabilities[i] = getinventorytoolmaxdurability(item);
             return true;
         }
         return false;
@@ -1304,7 +1315,7 @@ namespace game
         if(--survivalcounts[slot] <= 0)
         {
             survivalitems[slot] = -1;
-            survivalcounts[slot] = 0;
+            survivalcounts[slot] = survivaldurabilities[slot] = 0;
         }
     }
 
@@ -1567,7 +1578,9 @@ namespace game
 #ifndef STANDALONE
     static bool survivalbreakactive = false;
     static creativetarget survivalbreaktarget;
-    static int survivalbreakstart = 0, survivalbreakparticlemillis = -1, survivalbreaklaststage = -1;
+    static int survivalbreakstart = 0, survivalbreakparticlemillis = -1, survivalbreaklaststage = -1,
+               survivalbreaktoolslot = -1, survivalbreaktoolitem = -1, survivalbreaktooldurability = 0, survivalbreakduration = 1,
+               survivalbreakminingtype = WORLD_ITEM_NONE, survivalbreakminingindex = -1;
     static uint survivalbreakrequestid = 0;
     static int survivalblockitem(const creativetarget &target);
 
@@ -1617,6 +1630,31 @@ namespace game
         return getworldcubeitem(cube);
     }
 
+    static bool survivaltargetmining(const creativetarget &target, int &type, int &index)
+    {
+        if(target.type == CREATIVE_TARGET_CUBE)
+        {
+            type = WORLD_ITEM_CUBE;
+            index = getworldcubeindexat(ivec(target.cube.o).add(target.cube.grid / 2), target.cube.orient);
+            return index >= 0;
+        }
+        if(target.type == CREATIVE_TARGET_SCATTER)
+        {
+            int orient;
+            ivec support;
+            if(!getworldscatterentityedit(target.entity, index, support, orient)) return false;
+            type = isworldplaceable(index) ? WORLD_ITEM_PLACEABLE : WORLD_ITEM_SCATTER;
+            return true;
+        }
+        return false;
+    }
+
+    static int selectedsurvivaltool()
+    {
+        const int slot = clampcreativehotbarslot();
+        return survivalcounts[slot] > 0 && survivaldurabilities[slot] > 0 && isinventorytool(survivalitems[slot]) ? survivalitems[slot] : -1;
+    }
+
     static void emitsurvivalblockchips(const creativetarget &target, int num)
     {
         if(target.type != CREATIVE_TARGET_CUBE) return;
@@ -1653,6 +1691,20 @@ namespace game
             survivalbreakstart = lastmillis;
             survivalbreakactive = true;
             survivalbreaklaststage = 0;
+            survivalbreaktoolslot = clampcreativehotbarslot();
+            survivalbreaktoolitem = selectedsurvivaltool();
+            survivalbreaktooldurability = survivalbreaktoolitem >= 0 ? survivaldurabilities[survivalbreaktoolslot] : 0;
+            const bool miningdefined = survivaltargetmining(target, survivalbreakminingtype, survivalbreakminingindex);
+            survivalbreakduration = miningdefined
+                                  ? getworldbreakmillis(survivalbreakminingtype, survivalbreakminingindex, survivalbreaktoolitem)
+                                  : (target.type == CREATIVE_TARGET_SCATTER ? authoritativescatterbreakmillis : authoritativebreakmillis);
+            if(miningdefined && survivalbreaktoolitem < 0 &&
+               !isworldobjecthandbreakable(survivalbreakminingtype, survivalbreakminingindex))
+            {
+                survivalbreakactive = false;
+                clearbreakstain(player1 ? player1->clientnum : -1, survivalbreakrequestid);
+                return;
+            }
             if(waitforserveredit())
             {
                 survivalbreakrequestid = newworldrequestid();
@@ -1680,13 +1732,19 @@ namespace game
             }
             return;
         }
-        const int breakmillis = target.type == CREATIVE_TARGET_SCATTER
-                              ? authoritativescatterbreakmillis
-                              : authoritativebreakmillis;
+        const int selectedtool = selectedsurvivaltool();
+        if(survivalbreaktoolslot != clampcreativehotbarslot() || survivalbreaktoolitem != selectedtool ||
+           (selectedtool >= 0 && survivalbreaktooldurability != survivaldurabilities[survivalbreaktoolslot]))
+        {
+            cancelsurvivalbreak();
+            survivalbreakactive = false;
+            return;
+        }
+        const int breakmillis = max(survivalbreakduration, 1);
         const int elapsed = max(lastmillis - survivalbreakstart, 0);
         if(target.type == CREATIVE_TARGET_CUBE)
         {
-            const int stage = clamp(elapsed, 0, authoritativebreakmillis - 1) * SURVIVAL_BREAK_STAGES / authoritativebreakmillis;
+            const int stage = clamp(elapsed, 0, breakmillis - 1) * SURVIVAL_BREAK_STAGES / breakmillis;
             setbreakstain(player1 ? player1->clientnum : -1, survivalbreakrequestid, target.cube.o, target.cube.grid, stage);
             if(waitforserveredit() && survivalbreakrequestid && stage != survivalbreaklaststage)
             {
@@ -1731,7 +1789,8 @@ namespace game
                 selinfo dropselection;
                 worldactionselection(dropselection, support, mountorient);
                 if(waitforserveredit()) worldselectiontoabsolute(dropselection);
-                predictsurvivaldrops(item, survivalbreakrequestid, dropselection.o, WORLD_ACTION_BREAK_SCATTER_START, mountorient);
+                if(survivalbreakminingindex >= 0 && getworlddropeligible(survivalbreakminingtype, survivalbreakminingindex, survivalbreaktoolitem))
+                    predictsurvivaldrops(item, survivalbreakrequestid, dropselection.o, WORLD_ACTION_BREAK_SCATTER_START, mountorient);
                 broken = true;
             }
         }
@@ -1753,10 +1812,24 @@ namespace game
             }
             selinfo dropselection = survivalbreaktarget.cube;
             if(waitforserveredit()) worldselectiontoabsolute(dropselection);
-            predictsurvivaldrops(item, survivalbreakrequestid, dropselection.o, WORLD_ACTION_BREAK_CUBE_START, survivalbreaktarget.cube.orient);
+            if(survivalbreakminingindex >= 0 && getworlddropeligible(survivalbreakminingtype, survivalbreakminingindex, survivalbreaktoolitem))
+                predictsurvivaldrops(item, survivalbreakrequestid, dropselection.o, WORLD_ACTION_BREAK_CUBE_START, survivalbreaktarget.cube.orient);
             broken = true;
         }
-        (void)broken;
+        if(broken && !waitforserveredit() && survivalbreaktoolitem >= 0)
+        {
+            if(survivalbreakminingindex >= 0)
+            {
+                survivaldurabilities[survivalbreaktoolslot] = max(survivaldurabilities[survivalbreaktoolslot] -
+                                                                  getworldbreaktoolwear(survivalbreakminingtype, survivalbreakminingindex,
+                                                                                        survivalbreaktoolitem), 0);
+                if(survivaldurabilities[survivalbreaktoolslot] <= 0)
+                {
+                    survivalitems[survivalbreaktoolslot] = -1;
+                    survivalcounts[survivalbreaktoolslot] = survivaldurabilities[survivalbreaktoolslot] = 0;
+                }
+            }
+        }
         survivalbreakactive = false;
         survivalbreakparticlemillis = -1;
         survivalbreakrequestid = 0;
@@ -1858,12 +1931,42 @@ namespace game
     {
         intret(*slot >= 0 && *slot < SURVIVAL_USABLE_SLOTS ? survivalcounts[*slot] : 0);
     });
+    ICOMMAND(getsurvivalinventorydurability, "i", (int *slot),
+    {
+        intret(*slot >= 0 && *slot < SURVIVAL_USABLE_SLOTS ? survivaldurabilities[*slot] : 0);
+    });
+    ICOMMAND(getinventoryitemmaxdurability, "i", (int *item), intret(getinventorytoolmaxdurability(*item)));
+    ICOMMAND(getsurvivalinventorydurabilityratio, "i", (int *slot),
+    {
+        if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || survivalcounts[*slot] <= 0 || !isinventorytool(survivalitems[*slot]))
+        {
+            floatret(-1.0f);
+            return;
+        }
+        floatret(clamp(survivaldurabilities[*slot] / float(max(getinventorytoolmaxdurability(survivalitems[*slot]), 1)), 0.0f, 1.0f));
+    });
+    ICOMMAND(getsurvivalinventorydurabilitycolor, "i", (int *slot),
+    {
+        if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || survivalcounts[*slot] <= 0 || !isinventorytool(survivalitems[*slot]))
+        {
+            intret(0xFF54C65A);
+            return;
+        }
+        const float ratio = clamp(survivaldurabilities[*slot] / float(max(getinventorytoolmaxdurability(survivalitems[*slot]), 1)), 0.0f, 1.0f);
+        const bool low = ratio < 0.5f;
+        const float blend = low ? ratio * 2.0f : (ratio - 0.5f) * 2.0f;
+        const int red = int((low ? 217 + (229 - 217) * blend : 229 + (84 - 229) * blend) + 0.5f);
+        const int green = int((low ? 74 + (200 - 74) * blend : 200 + (198 - 200) * blend) + 0.5f);
+        const int blue = int((low ? 58 + (74 - 58) * blend : 74 + (90 - 74) * blend) + 0.5f);
+        intret(int(0xFF000000u | uint(red << 16) | uint(green << 8) | uint(blue)));
+    });
     ICOMMAND(getinventorycursoritem, "", (), intret(inventorycursorcount > 0 ? inventorycursoritem : -1));
     ICOMMAND(getinventorycursorcount, "", (), intret(inventorycursorcount));
     ICOMMAND(survivalinventoryclick, "ii", (int *slot, int *button),
     {
         if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
-        inventoryslotclick(inventorycursoritem, inventorycursorcount, survivalitems[*slot], survivalcounts[*slot], *button);
+        inventoryinstanceclick(inventorycursoritem, inventorycursorcount, inventorycursordurability,
+                               survivalitems[*slot], survivalcounts[*slot], survivaldurabilities[*slot], *button);
         if(waitforserveredit())
             addmsg(N_INVENTORYACTION, "ri4", int(newworldrequestid()), INVENTORY_ACTION_CLICK, *slot, *button);
     });
@@ -1874,6 +1977,7 @@ namespace game
         {
             swap(survivalitems[*from], survivalitems[*to]);
             swap(survivalcounts[*from], survivalcounts[*to]);
+            swap(survivaldurabilities[*from], survivaldurabilities[*to]);
             if(waitforserveredit())
                 addmsg(N_INVENTORYACTION, "ri4", int(newworldrequestid()), INVENTORY_ACTION_SWAP, *from, *to);
         }
@@ -1900,7 +2004,8 @@ namespace game
     {
         if(*slot < 0 || *slot >= craftinggridsize * craftinggridsize ||
            (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
-        inventoryslotclick(inventorycursoritem, inventorycursorcount, craftingitems[*slot], craftingcounts[*slot], *button);
+        inventoryinstanceclick(inventorycursoritem, inventorycursorcount, inventorycursordurability,
+                               craftingitems[*slot], craftingcounts[*slot], craftingdurabilities[*slot], *button);
         updateclientcraftpreview();
         if(waitforserveredit()) requestcraftaction(CRAFT_ACTION_CLICK_GRID, *slot, *button);
     });
@@ -1912,6 +2017,7 @@ namespace game
         {
             swap(survivalitems[*inventoryslot], craftingitems[*gridslot]);
             swap(survivalcounts[*inventoryslot], craftingcounts[*gridslot]);
+            swap(survivaldurabilities[*inventoryslot], craftingdurabilities[*gridslot]);
             updateclientcraftpreview();
         }
     });
@@ -1923,6 +2029,7 @@ namespace game
         {
             swap(survivalitems[*inventoryslot], craftingitems[*gridslot]);
             swap(survivalcounts[*inventoryslot], craftingcounts[*gridslot]);
+            swap(survivaldurabilities[*inventoryslot], craftingdurabilities[*gridslot]);
             updateclientcraftpreview();
         }
     });
@@ -1934,6 +2041,7 @@ namespace game
         {
             swap(craftingitems[*from], craftingitems[*to]);
             swap(craftingcounts[*from], craftingcounts[*to]);
+            swap(craftingdurabilities[*from], craftingdurabilities[*to]);
             updateclientcraftpreview();
         }
     });
@@ -1952,10 +2060,15 @@ namespace game
             loopi(CRAFT_GRID_MAX) if(match.consume[i] > 0)
             {
                 craftingcounts[i] -= match.consume[i];
-                if(craftingcounts[i] <= 0) { craftingitems[i] = -1; craftingcounts[i] = 0; }
+                if(craftingcounts[i] <= 0)
+                {
+                    craftingitems[i] = -1;
+                    craftingcounts[i] = craftingdurabilities[i] = 0;
+                }
             }
             survivalitems[*inventoryslot] = match.outputitem;
             survivalcounts[*inventoryslot] += match.outputcount;
+            survivaldurabilities[*inventoryslot] = getinventorytoolmaxdurability(match.outputitem);
             updateclientcraftpreview();
         }
     });
@@ -1972,10 +2085,15 @@ namespace game
         loopi(CRAFT_GRID_MAX) if(match.consume[i] > 0)
         {
             craftingcounts[i] -= match.consume[i];
-            if(craftingcounts[i] <= 0) { craftingitems[i] = -1; craftingcounts[i] = 0; }
+            if(craftingcounts[i] <= 0)
+            {
+                craftingitems[i] = -1;
+                craftingcounts[i] = craftingdurabilities[i] = 0;
+            }
         }
         inventorycursoritem = match.outputitem;
         inventorycursorcount += match.outputcount;
+        inventorycursordurability = getinventorytoolmaxdurability(match.outputitem);
         updateclientcraftpreview();
         if(waitforserveredit()) requestcraftaction(CRAFT_ACTION_TAKE_OUTPUT_CURSOR, recipe, *button);
     });

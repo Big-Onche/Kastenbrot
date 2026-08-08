@@ -778,29 +778,32 @@ namespace game
             }
             case N_INVENTORYSTATE:
             {
-                const int slots = getint(p), selected = getint(p), cursoritem = getint(p), cursorcount = getint(p);
+                const int slots = getint(p), selected = getint(p), cursoritem = getint(p), cursorcount = getint(p), cursordurability = getint(p);
                 if(slots != SURVIVAL_USABLE_SLOTS)
                 {
                     conoutf(CON_ERROR, "server sent an invalid survival inventory");
                     disconnect();
                     return;
                 }
-                int items[SURVIVAL_USABLE_SLOTS], counts[SURVIVAL_USABLE_SLOTS];
+                int items[SURVIVAL_USABLE_SLOTS], counts[SURVIVAL_USABLE_SLOTS], durabilities[SURVIVAL_USABLE_SLOTS];
                 loopi(SURVIVAL_USABLE_SLOTS)
                 {
                     items[i] = -1;
                     counts[i] = 0;
+                    durabilities[i] = 0;
                 }
                 loopi(max(slots, 0))
                 {
-                    const int item = getint(p), count = getint(p);
+                    const int item = getint(p), count = getint(p), durability = getint(p);
                     if(i < SURVIVAL_USABLE_SLOTS)
                     {
                         items[i] = item;
                         counts[i] = count;
+                        durabilities[i] = durability;
                     }
                 }
-                if(!p.overread()) receiveinventory(items, counts, SURVIVAL_USABLE_SLOTS, selected, cursoritem, cursorcount);
+                if(!p.overread())
+                    receiveinventory(items, counts, durabilities, SURVIVAL_USABLE_SLOTS, selected, cursoritem, cursorcount, cursordurability);
                 break;
             }
             case N_CRAFTSTATE:
@@ -813,14 +816,16 @@ namespace game
                     disconnect();
                     return;
                 }
-                int items[CRAFT_GRID_MAX], counts[CRAFT_GRID_MAX];
+                int items[CRAFT_GRID_MAX], counts[CRAFT_GRID_MAX], durabilities[CRAFT_GRID_MAX];
                 loopi(CRAFT_GRID_MAX)
                 {
                     items[i] = getint(p);
                     counts[i] = getint(p);
-                    if(counts[i] <= 0) { items[i] = -1; counts[i] = 0; }
+                    durabilities[i] = getint(p);
+                    if(counts[i] <= 0) { items[i] = -1; counts[i] = durabilities[i] = 0; }
                 }
-                if(!p.overread()) receivecraftstate(items, counts, CRAFT_GRID_MAX, gridsize, stationitem, recipe, outputitem, outputcount);
+                if(!p.overread())
+                    receivecraftstate(items, counts, durabilities, CRAFT_GRID_MAX, gridsize, stationitem, recipe, outputitem, outputcount);
                 break;
             }
             case N_ACTIONRESULT:

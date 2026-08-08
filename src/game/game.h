@@ -142,7 +142,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 16
+#define PROTOCOL_VERSION 17
 
 static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &slotitem, int &slotcount, int button)
 {
@@ -192,6 +192,25 @@ static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &sl
     }
     if(cursorcount <= 0) { cursoritem = -1; cursorcount = 0; }
     if(slotcount <= 0) { slotitem = -1; slotcount = 0; }
+    return true;
+}
+
+static inline bool inventoryinstanceclick(int &cursoritem, int &cursorcount, int &cursordurability,
+                                          int &slotitem, int &slotcount, int &slotdurability, int button)
+{
+    const int oldcursoritem = cursoritem, oldcursorcount = cursorcount, oldcursordurability = cursordurability,
+              oldslotitem = slotitem, oldslotcount = slotcount, oldslotdurability = slotdurability;
+    if(!inventoryslotclick(cursoritem, cursorcount, slotitem, slotcount, button)) return false;
+
+    if(cursoritem < 0 || cursorcount <= 0) cursordurability = 0;
+    else if(cursoritem == oldslotitem && (oldcursoritem != cursoritem || oldcursorcount <= 0)) cursordurability = oldslotdurability;
+    else if(cursoritem != oldcursoritem) cursordurability = oldslotdurability;
+    else cursordurability = oldcursordurability;
+
+    if(slotitem < 0 || slotcount <= 0) slotdurability = 0;
+    else if(slotitem == oldcursoritem && (oldslotitem != slotitem || oldslotcount <= 0)) slotdurability = oldcursordurability;
+    else if(slotitem != oldslotitem) slotdurability = oldcursordurability;
+    else slotdurability = oldslotdurability;
     return true;
 }
 
@@ -305,8 +324,9 @@ namespace game
     extern void resetworlddrops();
     extern const vector<worlddrop *> &getworlddrops();
     extern int getdynamicentsmaxdistance();
-    extern void receiveinventory(const int *items, const int *counts, int slots, int selected, int cursoritem, int cursorcount);
-    extern void receivecraftstate(const int *items, const int *counts, int slots, int gridsize, int stationitem,
+    extern void receiveinventory(const int *items, const int *counts, const int *durabilities, int slots, int selected,
+                                 int cursoritem, int cursorcount, int cursordurability);
+    extern void receivecraftstate(const int *items, const int *counts, const int *durabilities, int slots, int gridsize, int stationitem,
                                   int recipe, int outputitem, int outputcount);
     extern void receiveactionresult(uint requestid, int result, const char *reason);
     extern void receivebreakstate(int actor, uint requestid, int phase, int action, const ivec &target, int orient, int stage);

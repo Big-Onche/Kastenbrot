@@ -193,20 +193,21 @@ struct worldchunkdiffstate
 
 struct worlddiffmetadata
 {
-    int seed, worldgenversion, saveformatversion, gamemode, inventorycursoritem, inventorycursorcount;
+    int seed, worldgenversion, saveformatversion, gamemode, inventorycursoritem, inventorycursorcount, inventorycursordurability;
     int inventoryitems[game::SURVIVAL_USABLE_SLOTS],
-        inventorycounts[game::SURVIVAL_USABLE_SLOTS];
+        inventorycounts[game::SURVIVAL_USABLE_SLOTS], inventorydurabilities[game::SURVIVAL_USABLE_SLOTS];
     ullong parameterhash;
     bool valid;
 
     worlddiffmetadata()
         : seed(0), worldgenversion(0), saveformatversion(0), gamemode(0),
-          inventorycursoritem(-1), inventorycursorcount(0), parameterhash(0), valid(false)
+          inventorycursoritem(-1), inventorycursorcount(0), inventorycursordurability(0), parameterhash(0), valid(false)
     {
         loopi(game::SURVIVAL_USABLE_SLOTS)
         {
             inventoryitems[i] = -1;
             inventorycounts[i] = 0;
+            inventorydurabilities[i] = 0;
         }
     }
 };
@@ -236,16 +237,17 @@ struct worlddropdefinition
 
 struct worldcubedefinition
 {
-    string id, itemid, texture, sidetexture, bottom, bottomtexture;
-    float texsize;
-    int item, slot, sideslot, bottomslot;
+    string id, itemid, texture, sidetexture, bottom, bottomtexture, preferredtool;
+    float texsize, hardness;
+    int item, slot, sideslot, bottomslot, requiredtier, toolwear;
     vector<worlddropdefinition> drops;
-    bool explicitdrops, errorfallback;
+    bool explicitdrops, errorfallback, miningdefined, handbreakable;
 
     worldcubedefinition()
-        : texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), explicitdrops(false), errorfallback(false)
+        : texsize(1), hardness(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), requiredtier(0), toolwear(1),
+          explicitdrops(false), errorfallback(false), miningdefined(false), handbreakable(true)
     {
-        id[0] = itemid[0] = texture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = '\0';
+        id[0] = itemid[0] = texture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = preferredtool[0] = '\0';
     }
 };
 
@@ -263,28 +265,31 @@ struct worldgencubetextures
 
 struct worldscatterdefinition
 {
-    string id, itemid, model, icon, lightcolor;
-    int item;
-    int mapmodel;
-    float lightradius;
+    string id, itemid, model, icon, lightcolor, preferredtool;
+    int item, mapmodel, requiredtier, toolwear;
+    float lightradius, hardness;
     bool scatter, placeable;
     vector<worlddropdefinition> drops;
-    bool explicitdrops;
+    bool explicitdrops, miningdefined, handbreakable;
 
-    worldscatterdefinition() : item(-1), mapmodel(-1), lightradius(0), scatter(false), placeable(false), explicitdrops(false)
+    worldscatterdefinition()
+        : item(-1), mapmodel(-1), requiredtier(0), toolwear(1), lightradius(0), hardness(1), scatter(false), placeable(false), explicitdrops(false),
+          miningdefined(false), handbreakable(true)
     {
-        id[0] = itemid[0] = model[0] = icon[0] = lightcolor[0] = '\0';
+        id[0] = itemid[0] = model[0] = icon[0] = lightcolor[0] = preferredtool[0] = '\0';
     }
 };
 
 struct inventoryitemdefinition
 {
-    string id, name, model, icon;
-    int maxstack;
+    string id, name, model, icon, tooltype;
+    int maxstack, tooltier, maxdurability;
+    float toolspeed;
+    bool tooldefined;
 
-    inventoryitemdefinition() : maxstack(64)
+    inventoryitemdefinition() : maxstack(64), tooltier(0), maxdurability(0), toolspeed(1), tooldefined(false)
     {
-        id[0] = name[0] = model[0] = icon[0] = '\0';
+        id[0] = name[0] = model[0] = icon[0] = tooltype[0] = '\0';
     }
 };
 
@@ -476,6 +481,35 @@ int getinventoryitemmaxstack(int index)
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->maxstack : 0;
 }
 
+bool isinventorytool(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->tooldefined;
+}
+
+const char *getinventorytooltype(int index)
+{
+    if(!inventoryitemdefinitions.inrange(index) || !inventoryitemdefinitions[index]->tooldefined) return "";
+    return inventoryitemdefinitions[index]->tooltype;
+}
+
+int getinventorytooltier(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->tooldefined
+         ? inventoryitemdefinitions[index]->tooltier : 0;
+}
+
+float getinventorytoolspeed(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->tooldefined
+         ? inventoryitemdefinitions[index]->toolspeed : 1.0f;
+}
+
+int getinventorytoolmaxdurability(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->tooldefined
+         ? inventoryitemdefinitions[index]->maxdurability : 0;
+}
+
 const char *getinventoryitemmodel(int index)
 {
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->model : "";
@@ -560,6 +594,81 @@ bool getworldobjectdrop(int type, int index, int drop, int &item, int &mincount,
     mincount = maxcount = 1;
     chance = 1.0f;
     return item >= 0;
+}
+
+static worldcubedefinition *getworldminingcube(int type, int index)
+{
+    return type == WORLD_ITEM_CUBE && worldcubedefinitions.inrange(index) ? worldcubedefinitions[index] : NULL;
+}
+
+static worldscatterdefinition *getworldminingobject(int type, int index)
+{
+    return (type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE) && worldscatterdefinitions.inrange(index)
+         ? worldscatterdefinitions[index] : NULL;
+}
+
+float getworldobjecthardness(int type, int index)
+{
+    worldcubedefinition *cube = getworldminingcube(type, index);
+    if(cube) return max(cube->hardness, 0.01f);
+    worldscatterdefinition *object = getworldminingobject(type, index);
+    return object ? max(object->hardness, 0.01f) : 1.0f;
+}
+
+const char *getworldobjectpreferredtool(int type, int index)
+{
+    worldcubedefinition *cube = getworldminingcube(type, index);
+    if(cube) return cube->preferredtool;
+    worldscatterdefinition *object = getworldminingobject(type, index);
+    return object ? object->preferredtool : "";
+}
+
+int getworldobjectrequiredtier(int type, int index)
+{
+    worldcubedefinition *cube = getworldminingcube(type, index);
+    if(cube) return max(cube->requiredtier, 0);
+    worldscatterdefinition *object = getworldminingobject(type, index);
+    return object ? max(object->requiredtier, 0) : 0;
+}
+
+int getworldobjecttoolwear(int type, int index)
+{
+    worldcubedefinition *cube = getworldminingcube(type, index);
+    if(cube) return max(cube->toolwear, 0);
+    worldscatterdefinition *object = getworldminingobject(type, index);
+    return object ? max(object->toolwear, 0) : 1;
+}
+
+bool isworldobjecthandbreakable(int type, int index)
+{
+    worldcubedefinition *cube = getworldminingcube(type, index);
+    if(cube) return cube->handbreakable;
+    worldscatterdefinition *object = getworldminingobject(type, index);
+    return !object || object->handbreakable;
+}
+
+int getworldbreakmillis(int type, int index, int toolitem, float quality)
+{
+    const bool tool = isinventorytool(toolitem);
+    const char *preferred = getworldobjectpreferredtool(type, index);
+    const bool correct = tool && preferred[0] && !cubecasecmp(getinventorytooltype(toolitem), preferred);
+    float speed = tool ? getinventorytoolspeed(toolitem) * (correct ? 1.0f : 0.2f) : 1.0f;
+    if(getinventorytooltier(toolitem) < getworldobjectrequiredtier(type, index)) speed *= 0.2f;
+    speed *= max(quality, 0.05f);
+    return clamp(int(ceilf(getworldobjecthardness(type, index) * 1000.0f / max(speed, 0.01f))), 1, 600000);
+}
+
+bool getworlddropeligible(int type, int index, int toolitem)
+{
+    return getinventorytooltier(toolitem) >= getworldobjectrequiredtier(type, index);
+}
+
+int getworldbreaktoolwear(int type, int index, int toolitem)
+{
+    if(!isinventorytool(toolitem)) return 0;
+    const char *preferred = getworldobjectpreferredtool(type, index);
+    const bool correct = preferred[0] && !cubecasecmp(getinventorytooltype(toolitem), preferred);
+    return getworldobjecttoolwear(type, index) * (correct ? 1 : 3);
 }
 
 bool worldcellacceptswater(const ivec &position)
@@ -669,6 +778,26 @@ ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *mo
     defineinventoryitem(id, name, *maxstack, *numargs >= 4 ? model : "", *numargs >= 5 ? icon : "");
 });
 
+ICOMMAND(inventorytool, "ssifi", (char *id, char *tooltype, int *tier, float *speed, int *maxdurability),
+{
+    inventoryitemdefinition *item = findinventoryitem(id);
+    if(!item)
+    {
+        conoutf(CON_ERROR, "inventorytool references unknown inventory item %s", id);
+        return;
+    }
+    if(!tooltype[0] || *tier < 0 || *speed <= 0 || *maxdurability <= 0)
+    {
+        conoutf(CON_ERROR, "inventorytool for %s requires a type, non-negative tier, positive speed, and positive durability", id);
+        return;
+    }
+    copystring(item->tooltype, tooltype);
+    item->tooltier = *tier;
+    item->toolspeed = *speed;
+    item->maxdurability = *maxdurability;
+    item->tooldefined = true;
+});
+
 static void defineworldcube(const char *id, const char *itemid, const char *texture, float texsize, const char *side, const char *bottom, const char *bottomalternate, int numargs)
 {
     if(!id[0])
@@ -760,6 +889,41 @@ static bool addworlddrop(const char *worldid, const char *itemid, int mincount, 
 ICOMMAND(worlddrop, "ssiifN", (char *worldid, char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
 {
     addworlddrop(worldid, itemid, *mincount, *maxcount, *numargs >= 5 ? *chance : 1.0f);
+});
+
+ICOMMAND(worldmining, "sfsiiiN",
+         (char *worldid, float *hardness, char *preferredtool, int *requiredtier, int *toolwear, int *handbreakable, int *numargs),
+{
+    worldcubedefinition *cube = findworldcube(worldid);
+    worldscatterdefinition *object = findworldscatter(worldid);
+    if(!cube && !object)
+    {
+        conoutf(CON_ERROR, "worldmining references unknown world object %s", worldid);
+        return;
+    }
+    if(*hardness <= 0 || *requiredtier < 0 || (*numargs >= 5 && *toolwear < 0))
+    {
+        conoutf(CON_ERROR, "worldmining for %s requires positive hardness and non-negative tier/wear", worldid);
+        return;
+    }
+    if(cube)
+    {
+        cube->hardness = *hardness;
+        copystring(cube->preferredtool, preferredtool ? preferredtool : "");
+        cube->requiredtier = *requiredtier;
+        cube->toolwear = *numargs >= 5 ? *toolwear : 1;
+        cube->handbreakable = *numargs < 6 || *handbreakable != 0;
+        cube->miningdefined = true;
+    }
+    if(object)
+    {
+        object->hardness = *hardness;
+        copystring(object->preferredtool, preferredtool ? preferredtool : "");
+        object->requiredtier = *requiredtier;
+        object->toolwear = *numargs >= 5 ? *toolwear : 1;
+        object->handbreakable = *numargs < 6 || *handbreakable != 0;
+        object->miningdefined = true;
+    }
 });
 
 static int loadworldtextureslot(const char *path, float texsize, bool alpha)
@@ -918,6 +1082,13 @@ static bool loadworlddefinitions(bool assets = true)
             }
         }
     }
+
+    loopv(worldcubedefinitions) if(!worldcubedefinitions[i]->miningdefined)
+        conoutf(CON_WARN, "development warning: world cube %s has no worldmining data; using hardness 1, hand tier, and wear 1",
+                worldcubedefinitions[i]->id);
+    loopv(worldscatterdefinitions) if(!worldscatterdefinitions[i]->miningdefined)
+        conoutf(CON_WARN, "development warning: world object %s has no worldmining data; using hardness 1, hand tier, and wear 1",
+                worldscatterdefinitions[i]->id);
 
     reloadrecipes(true);
 
@@ -8007,16 +8178,18 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
         if(sscanf(line, "world_seed %d", &metadata.seed) == 1) continue;
         if(sscanf(line, "worldgen_version %d", &metadata.worldgenversion) == 1) continue;
         if(sscanf(line, "game_mode %d", &metadata.gamemode) == 1) continue;
-        if(sscanf(line, "inventory_cursor %d %d", &metadata.inventorycursoritem, &metadata.inventorycursorcount) == 2) continue;
-        int inventoryslot, inventoryitem, inventorycount;
-        if(sscanf(line, "inventory %d %d %d",
-                  &inventoryslot, &inventoryitem, &inventorycount) == 3)
+        if(sscanf(line, "inventory_cursor %d %d %d", &metadata.inventorycursoritem, &metadata.inventorycursorcount,
+                  &metadata.inventorycursordurability) >= 2) continue;
+        int inventoryslot, inventoryitem, inventorycount, inventorydurability = 0;
+        if(sscanf(line, "inventory %d %d %d %d",
+                  &inventoryslot, &inventoryitem, &inventorycount, &inventorydurability) >= 3)
         {
             if(inventoryslot >= 0 && inventoryslot < game::SURVIVAL_USABLE_SLOTS &&
                inventoryitem >= 0 && inventorycount > 0)
             {
                 metadata.inventoryitems[inventoryslot] = inventoryitem;
                 metadata.inventorycounts[inventoryslot] = inventorycount;
+                metadata.inventorydurabilities[inventoryslot] = inventorydurability;
             }
             continue;
         }
@@ -8385,8 +8558,7 @@ static void loadworldcommand(const char *requested)
 
     game::beginlocalworld();
     game::loadworldseed(metadata.seed);
-    game::loadsurvivalinventory(metadata.inventoryitems, metadata.inventorycounts,
-                                game::SURVIVAL_USABLE_SLOTS, metadata.inventorycursoritem, metadata.inventorycursorcount);
+    game::loadsurvivalinventory(metadata.inventoryitems, metadata.inventorycounts, metadata.inventorydurabilities, game::SURVIVAL_USABLE_SLOTS, metadata.inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability);
     activeworldmetadata = metadata;
     conoutf("loading saved world %s with pinned seed %d", folder, metadata.seed);
     defformatstring(entry, "%s/%d_%d", folder, chunkx, chunky);
@@ -8410,11 +8582,9 @@ void startnetworkworld(int seed)
     worldroot = NULL;
     activeworldchunk = worldchunks.length();
     {
-        worldchunk &chunk =
-            worldchunks.add(worldchunk(0, 0, generateworldchunk(0, 0)));
-            indexworldchunk(worldchunks.length() - 1);
-        generateworldscatter(chunk.root, 0, 0, game::worldsettings(),
-                             chunk.scatter);
+        worldchunk &chunk = worldchunks.add(worldchunk(0, 0, generateworldchunk(0, 0)));
+        indexworldchunk(worldchunks.length() - 1);
+        generateworldscatter(chunk.root, 0, 0, game::worldsettings(), chunk.scatter);
     }
     loadinitialworldchunks(0, 0);
 
@@ -8449,10 +8619,8 @@ void saveworld()
     flushworlddiffjournals(true);
     loopv(worldchunkdiffstates) if(!worldchunkdiffstates[i]->journal.empty())
     {
-        int chunkindex = findworldchunk(worldchunkdiffstates[i]->x,
-                                        worldchunkdiffstates[i]->y);
-        if(worldchunks.inrange(chunkindex))
-            compactworldchunkdiff(worldchunks[chunkindex]);
+        int chunkindex = findworldchunk(worldchunkdiffstates[i]->x, worldchunkdiffstates[i]->y);
+        if(worldchunks.inrange(chunkindex)) compactworldchunkdiff(worldchunks[chunkindex]);
     }
     int written = 0, unchanged = 0, ready = 0;
     loopv(worldchunks)
@@ -8491,8 +8659,7 @@ void saveworld()
     for(int i = worldchunks.length() - 1; i >= 0; --i)
     {
         worldchunk &chunk = worldchunks[i];
-        if(worldchunkmounted(chunk) || chunk.loading || !chunk.root ||
-           worldchunkinview(chunk, lastplayerchunkx, lastplayerchunky))
+        if(worldchunkmounted(chunk) || chunk.loading || !chunk.root || worldchunkinview(chunk, lastplayerchunkx, lastplayerchunky))
             continue;
         freeocta(chunk.root);
         worldchunks.removeunordered(i);
@@ -8505,8 +8672,7 @@ void saveworld()
         worldchunkname(name, sizeof(name), worldchunks[activeworldchunk]);
         setmapfilenames(name);
     }
-    conoutf("saved world %s: %d chunk journals queued, %d unchanged, %d ready; released %d cached chunks",
-            worldfolder, written, unchanged, ready, released);
+    conoutf("saved world %s: %d chunk journals queued, %d unchanged, %d ready; released %d cached chunks", worldfolder, written, unchanged, ready, released);
 }
 
 void closeproceduralworld(bool save)
@@ -9425,10 +9591,15 @@ COMMAND(writecollideobj, "s");
 
 struct serverinventoryitemdefinition
 {
-    string id;
-    int maxstack;
+    string id, tooltype;
+    int maxstack, tooltier, maxdurability;
+    float toolspeed;
+    bool tooldefined;
 
-    serverinventoryitemdefinition() : maxstack(64) { id[0] = '\0'; }
+    serverinventoryitemdefinition() : maxstack(64), tooltier(0), maxdurability(0), toolspeed(1), tooldefined(false)
+    {
+        id[0] = tooltype[0] = '\0';
+    }
 };
 
 struct serverworlddropdefinition
@@ -9442,15 +9613,17 @@ struct serverworlddropdefinition
 
 struct serverworldobjectdefinition
 {
-    string id, itemid;
-    int item, type;
+    string id, itemid, preferredtool;
+    int item, type, requiredtier, toolwear;
+    float hardness;
     vector<serverworlddropdefinition> drops;
-    bool explicitdrops, scatter, placeable;
+    bool explicitdrops, scatter, placeable, miningdefined, handbreakable;
 
     serverworldobjectdefinition()
-        : item(-1), type(WORLD_ITEM_NONE), explicitdrops(false), scatter(false), placeable(false)
+        : item(-1), type(WORLD_ITEM_NONE), requiredtier(0), toolwear(1), hardness(1), explicitdrops(false), scatter(false), placeable(false),
+          miningdefined(false), handbreakable(true)
     {
-        id[0] = itemid[0] = '\0';
+        id[0] = itemid[0] = preferredtool[0] = '\0';
     }
 };
 
@@ -9494,6 +9667,26 @@ ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *mo
     if(!item) item = serverinventoryitems.add(new serverinventoryitemdefinition);
     copystring(item->id, id);
     item->maxstack = *maxstack;
+});
+
+ICOMMAND(inventorytool, "ssifi", (char *id, char *tooltype, int *tier, float *speed, int *maxdurability),
+{
+    serverinventoryitemdefinition *item = findserverinventoryitem(id);
+    if(!item)
+    {
+        conoutf(CON_ERROR, "inventorytool references unknown inventory item %s", id);
+        return;
+    }
+    if(!tooltype[0] || *tier < 0 || *speed <= 0 || *maxdurability <= 0)
+    {
+        conoutf(CON_ERROR, "inventorytool for %s requires a type, non-negative tier, positive speed, and positive durability", id);
+        return;
+    }
+    copystring(item->tooltype, tooltype);
+    item->tooltier = *tier;
+    item->toolspeed = *speed;
+    item->maxdurability = *maxdurability;
+    item->tooldefined = true;
 });
 
 ICOMMAND(worldcube, "sssfsssN",
@@ -9560,6 +9753,41 @@ ICOMMAND(worlddrop, "ssiifN", (char *worldid, char *itemid, int *mincount, int *
     addserverworlddrop(worldid, itemid, *mincount, *maxcount, *numargs >= 5 ? *chance : 1.0f);
 });
 
+ICOMMAND(worldmining, "sfsiiiN",
+         (char *worldid, float *hardness, char *preferredtool, int *requiredtier, int *toolwear, int *handbreakable, int *numargs),
+{
+    serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, worldid);
+    serverworldobjectdefinition *object = findserverworldobject(serverworldobjects, worldid);
+    if(!cube && !object)
+    {
+        conoutf(CON_ERROR, "worldmining references unknown world object %s", worldid);
+        return;
+    }
+    if(*hardness <= 0 || *requiredtier < 0 || (*numargs >= 5 && *toolwear < 0))
+    {
+        conoutf(CON_ERROR, "worldmining for %s requires positive hardness and non-negative tier/wear", worldid);
+        return;
+    }
+    if(cube)
+    {
+        cube->hardness = *hardness;
+        copystring(cube->preferredtool, preferredtool ? preferredtool : "");
+        cube->requiredtier = *requiredtier;
+        cube->toolwear = *numargs >= 5 ? *toolwear : 1;
+        cube->handbreakable = *numargs < 6 || *handbreakable != 0;
+        cube->miningdefined = true;
+    }
+    if(object)
+    {
+        object->hardness = *hardness;
+        copystring(object->preferredtool, preferredtool ? preferredtool : "");
+        object->requiredtier = *requiredtier;
+        object->toolwear = *numargs >= 5 ? *toolwear : 1;
+        object->handbreakable = *numargs < 6 || *handbreakable != 0;
+        object->miningdefined = true;
+    }
+});
+
 static void resolveserverworlddefinitions()
 {
     serverinventoryitemdefinition *erroritem = findserverinventoryitem("error");
@@ -9601,6 +9829,12 @@ static void resolveserverworlddefinitions()
             }
         }
     }
+    loopv(serverworldcubes) if(!serverworldcubes[i]->miningdefined)
+        conoutf(CON_WARN, "development warning: world cube %s has no worldmining data; using hardness 1, hand tier, and wear 1",
+                serverworldcubes[i]->id);
+    loopv(serverworldobjects) if(!serverworldobjects[i]->miningdefined)
+        conoutf(CON_WARN, "development warning: world object %s has no worldmining data; using hardness 1, hand tier, and wear 1",
+                serverworldobjects[i]->id);
 }
 
 void initserverworlddefinitions()
@@ -9637,6 +9871,28 @@ int getinventoryitemindex(const char *id)
 int getinventoryitemmaxstack(int index)
 {
     return serverinventoryitems.inrange(index) ? serverinventoryitems[index]->maxstack : 0;
+}
+
+bool isinventorytool(int index) { return serverinventoryitems.inrange(index) && serverinventoryitems[index]->tooldefined; }
+
+const char *getinventorytooltype(int index)
+{
+    return serverinventoryitems.inrange(index) && serverinventoryitems[index]->tooldefined ? serverinventoryitems[index]->tooltype : "";
+}
+
+int getinventorytooltier(int index)
+{
+    return serverinventoryitems.inrange(index) && serverinventoryitems[index]->tooldefined ? serverinventoryitems[index]->tooltier : 0;
+}
+
+float getinventorytoolspeed(int index)
+{
+    return serverinventoryitems.inrange(index) && serverinventoryitems[index]->tooldefined ? serverinventoryitems[index]->toolspeed : 1.0f;
+}
+
+int getinventorytoolmaxdurability(int index)
+{
+    return serverinventoryitems.inrange(index) && serverinventoryitems[index]->tooldefined ? serverinventoryitems[index]->maxdurability : 0;
 }
 
 const char *getinventoryitemmodel(int index) { return ""; }
@@ -9695,6 +9951,67 @@ bool getworldobjectdrop(int type, int index, int dropindex, int &item, int &minc
     mincount = maxcount = 1;
     chance = 1.0f;
     return item >= 0;
+}
+
+static serverworldobjectdefinition *getserverminingobject(int type, int index)
+{
+    if(type == WORLD_ITEM_CUBE && serverworldcubes.inrange(index)) return serverworldcubes[index];
+    if((type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE) && serverworldobjects.inrange(index)) return serverworldobjects[index];
+    return NULL;
+}
+
+float getworldobjecthardness(int type, int index)
+{
+    serverworldobjectdefinition *object = getserverminingobject(type, index);
+    return object ? max(object->hardness, 0.01f) : 1.0f;
+}
+
+const char *getworldobjectpreferredtool(int type, int index)
+{
+    serverworldobjectdefinition *object = getserverminingobject(type, index);
+    return object ? object->preferredtool : "";
+}
+
+int getworldobjectrequiredtier(int type, int index)
+{
+    serverworldobjectdefinition *object = getserverminingobject(type, index);
+    return object ? max(object->requiredtier, 0) : 0;
+}
+
+int getworldobjecttoolwear(int type, int index)
+{
+    serverworldobjectdefinition *object = getserverminingobject(type, index);
+    return object ? max(object->toolwear, 0) : 1;
+}
+
+bool isworldobjecthandbreakable(int type, int index)
+{
+    serverworldobjectdefinition *object = getserverminingobject(type, index);
+    return !object || object->handbreakable;
+}
+
+int getworldbreakmillis(int type, int index, int toolitem, float quality)
+{
+    const bool tool = isinventorytool(toolitem);
+    const char *preferred = getworldobjectpreferredtool(type, index);
+    const bool correct = tool && preferred[0] && !cubecasecmp(getinventorytooltype(toolitem), preferred);
+    float speed = tool ? getinventorytoolspeed(toolitem) * (correct ? 1.0f : 0.2f) : 1.0f;
+    if(getinventorytooltier(toolitem) < getworldobjectrequiredtier(type, index)) speed *= 0.2f;
+    speed *= max(quality, 0.05f);
+    return clamp(int(ceilf(getworldobjecthardness(type, index) * 1000.0f / max(speed, 0.01f))), 1, 600000);
+}
+
+bool getworlddropeligible(int type, int index, int toolitem)
+{
+    return getinventorytooltier(toolitem) >= getworldobjectrequiredtier(type, index);
+}
+
+int getworldbreaktoolwear(int type, int index, int toolitem)
+{
+    if(!isinventorytool(toolitem)) return 0;
+    const char *preferred = getworldobjectpreferredtool(type, index);
+    const bool correct = preferred[0] && !cubecasecmp(getinventorytooltype(toolitem), preferred);
+    return getworldobjecttoolwear(type, index) * (correct ? 1 : 3);
 }
 
 int getworldcubefaceslot(int index, int orient)
