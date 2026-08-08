@@ -1068,15 +1068,6 @@ static bool loadworlddefinitions(bool assets = true)
         }
         resolveworldscattericon(type);
     }
-    loopv(worldscatterdefinitions)
-    {
-        worldscatterdefinition &type = *worldscatterdefinitions[i];
-        if(type.placeable)
-        {
-            defformatstring(icon, "media/model/%s/diffuse.png", type.model);
-            copystring(type.icon, icon);
-        }
-    }
     worldgrassscatter = getworldscatteridindex("grass");
     worldrosescatter = getworldscatteridindex("rose");
     worldtulipscatter = getworldscatteridindex("tulip");
