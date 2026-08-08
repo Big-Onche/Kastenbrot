@@ -767,6 +767,7 @@ static bool refreshfurnacematch(furnaceinstance &furnace, furnacematch &match, b
     {
         furnace.activerecipe = recipe;
         furnace.progress = 0;
+        furnace.baking = false;
         syncchanged = true;
     }
     return matched;
@@ -779,6 +780,17 @@ static bool furnaceoutputfits(const furnaceinstance &furnace, const furnacematch
     return furnace.outputcount + match.outputcount <= max(getinventoryitemmaxstack(match.outputitem), 1);
 }
 
+bool startfurnaceinstance(furnaceinstance &furnace)
+{
+    if(furnace.baking) return false;
+    furnacematch match;
+    bool syncchanged = false;
+    if(!refreshfurnacematch(furnace, match, syncchanged) || !furnaceoutputfits(furnace, match)) return false;
+    if(furnace.heat <= 0 && (furnace.fuelcount <= 0 || getfurnacefuelmillis(furnace.fuelitem) <= 0)) return false;
+    furnace.baking = true;
+    return true;
+}
+
 bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchanged)
 {
     syncchanged = false;
@@ -786,6 +798,12 @@ bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchan
     furnacematch match;
     bool matched = refreshfurnacematch(furnace, match, syncchanged), changed = syncchanged;
     int remaining = elapsed;
+    if(!furnace.baking)
+    {
+        const int burned = min(furnace.heat, remaining);
+        furnace.heat -= burned;
+        return changed || burned > 0;
+    }
     while(remaining > 0)
     {
         if(!matched || !furnaceoutputfits(furnace, match))

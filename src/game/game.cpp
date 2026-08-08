@@ -1285,7 +1285,7 @@ namespace game
         defformatstring(name, "media/map/%s/world.furnaces", world);
         stream *file = openrawfile(path(name), "wb");
         if(!file) return false;
-        bool ok = file->write("CCFU", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(localfurnaces.length()));
+        bool ok = file->write("CCFU", 4) == 4 && file->putlil<uint>(2) && file->putlil<uint>(uint(localfurnaces.length()));
         loopv(localfurnaces) if(ok)
         {
             furnaceinstance &furnace = *localfurnaces[i];
@@ -1297,7 +1297,7 @@ namespace game
                         writefurnacestack(*file, furnace.outputitem, furnace.outputcount, furnace.outputdurability) &&
                         writefurnacestring(*file, getfurnacerecipeid(furnace.activerecipe)) &&
                         file->putlil<int>(max(furnace.progress, 0)) && file->putlil<int>(max(furnace.heat, 0)) &&
-                        file->putlil<int>(max(furnace.heatcapacity, 0));
+                        file->putlil<int>(max(furnace.heatcapacity, 0)) && file->putlil<int>(furnace.baking ? 1 : 0);
         }
         delete file;
         return ok;
@@ -1312,8 +1312,8 @@ namespace game
         if(!file) return true;
         char magic[4] = { 0, 0, 0, 0 };
         const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
-                   count = version == 1 ? file->getlil<uint>() : 0;
-        bool ok = !memcmp(magic, "CCFU", 4) && version == 1 && count <= 100000;
+                   count = version >= 1 && version <= 2 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCFU", 4) && version >= 1 && version <= 2 && count <= 100000;
         loopi(ok ? int(count) : 0)
         {
             ivec target;
@@ -1335,6 +1335,7 @@ namespace game
                 furnace->progress = clamp(file->getlil<int>(), 0, max(getfurnacerecipeduration(furnace->activerecipe) - 1, 0));
                 furnace->heat = max(file->getlil<int>(), 0);
                 furnace->heatcapacity = max(file->getlil<int>(), furnace->heat);
+                furnace->baking = version >= 2 && file->getlil<int>() != 0;
                 if(furnace->fuelcount > 0 && getfurnacefuelmillis(furnace->fuelitem) <= 0)
                     furnace->fuelitem = -1, furnace->fuelcount = furnace->fueldurability = 0;
                 bool syncchanged = false;
@@ -2351,17 +2352,19 @@ namespace game
     {
         furnaceinstance *furnace = currentfurnace();
         if(!furnace || furnace->activerecipe < 0) { floatret(0); return; }
-        int progress = furnace->progress;
+        const int duration = max(getfurnacerecipeduration(furnace->activerecipe), 1);
+        int progress = clamp(furnace->progress, 0, duration);
         if(waitforserveredit() && synchronizedfurnacecooking)
-            progress += min(max(lastmillis - furnacesyncmillis, 0), furnace->heat);
-        floatret(clamp(progress / float(max(getfurnacerecipeduration(furnace->activerecipe), 1)), 0.0f, 1.0f));
+            progress += min(max(lastmillis - furnacesyncmillis, 0), min(furnace->heat, duration - progress));
+        floatret(clamp(progress / float(duration), 0.0f, 1.0f));
     });
     ICOMMAND(getfurnaceheat, "", (),
     {
         furnaceinstance *furnace = currentfurnace();
         if(!furnace) { floatret(0); return; }
         const int heat = max(furnace->heat - (waitforserveredit() ? max(lastmillis - furnacesyncmillis, 0) : 0), 0);
-        floatret(clamp(heat / 1000.0f, 0.0f, float(INT_MAX) / 1000.0f));
+        const int tenths = heat / 100 + (heat % 100 >= 50 ? 1 : 0);
+        floatret(clamp(tenths / 10.0f, 0.0f, float(INT_MAX) / 1000.0f));
     });
     ICOMMAND(getfurnaceheatratio, "", (),
     {
@@ -2369,6 +2372,18 @@ namespace game
         if(!furnace || furnace->heatcapacity <= 0) { floatret(0); return; }
         const int heat = max(furnace->heat - (waitforserveredit() ? max(lastmillis - furnacesyncmillis, 0) : 0), 0);
         floatret(clamp(heat / float(furnace->heatcapacity), 0.0f, 1.0f));
+    });
+    ICOMMAND(getfurnacebaking, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace && furnace->baking ? 1 : 0);
+    });
+    ICOMMAND(bakefurnace, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace || furnace->baking) return;
+        if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_BAKE);
+        else startfurnaceinstance(*furnace);
     });
     ICOMMAND(furnaceinputclick, "ii", (int *slot, int *button),
     {

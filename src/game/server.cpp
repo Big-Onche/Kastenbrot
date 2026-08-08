@@ -845,7 +845,7 @@ namespace server
         copystring(temppath, findfile(temporary, "wb"));
         stream *file = openrawfile(temporary, "wb");
         if(!file) return false;
-        bool ok = file->write("CCSF", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(serverworldseed)) &&
+        bool ok = file->write("CCSF", 4) == 4 && file->putlil<uint>(2) && file->putlil<uint>(uint(serverworldseed)) &&
                   file->putlil<uint>(uint(serverfurnaces.length()));
         loopv(serverfurnaces) if(ok)
         {
@@ -858,7 +858,7 @@ namespace server
                         writeserverfurnacestack(*file, furnace.outputitem, furnace.outputcount, furnace.outputdurability) &&
                         writeserverfurnacestring(*file, getfurnacerecipeid(furnace.activerecipe)) &&
                         file->putlil<int>(max(furnace.progress, 0)) && file->putlil<int>(max(furnace.heat, 0)) &&
-                        file->putlil<int>(max(furnace.heatcapacity, 0));
+                        file->putlil<int>(max(furnace.heatcapacity, 0)) && file->putlil<int>(furnace.baking ? 1 : 0);
         }
         delete file;
         if(!ok || !replaceserveridentityfile(temppath, finalpath))
@@ -882,9 +882,9 @@ namespace server
         if(!file) return true;
         char magic[4] = { 0, 0, 0, 0 };
         const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
-                   seed = version == 1 ? file->getlil<uint>() : 0,
-                   count = version == 1 ? file->getlil<uint>() : 0;
-        bool ok = !memcmp(magic, "CCSF", 4) && version == 1 && seed == uint(serverworldseed) && count <= 100000;
+                   seed = version >= 1 && version <= 2 ? file->getlil<uint>() : 0,
+                   count = version >= 1 && version <= 2 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCSF", 4) && version >= 1 && version <= 2 && seed == uint(serverworldseed) && count <= 100000;
         loopi(ok ? int(count) : 0)
         {
             ivec target;
@@ -908,6 +908,7 @@ namespace server
                 furnace->progress = clamp(file->getlil<int>(), 0, max(getfurnacerecipeduration(furnace->activerecipe) - 1, 0));
                 furnace->heat = max(file->getlil<int>(), 0);
                 furnace->heatcapacity = max(file->getlil<int>(), furnace->heat);
+                furnace->baking = version >= 2 && file->getlil<int>() != 0;
                 if(furnace->fuelcount > 0 && getfurnacefuelmillis(furnace->fuelitem) <= 0)
                     furnace->fuelitem = -1, furnace->fuelcount = furnace->fueldurability = 0;
                 serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_CUBE);
@@ -1011,7 +1012,7 @@ namespace server
     static bool furnaceiscooking(const furnaceinstance &furnace)
     {
         furnacematch match;
-        if(furnace.heat <= 0 || furnace.activerecipe < 0 ||
+        if(!furnace.baking || furnace.heat <= 0 || furnace.activerecipe < 0 ||
            !matchfurnacerecipe(furnace.inputitems, furnace.inputcounts, furnace.inputslots, furnace.activerecipe, match)) return false;
         if(furnace.outputcount > 0 && furnace.outputitem != match.outputitem) return false;
         return furnace.outputcount + match.outputcount <= max(getinventoryitemmaxstack(match.outputitem), 1);
@@ -1025,6 +1026,7 @@ namespace server
         putint(p, furnace.target.x); putint(p, furnace.target.y); putint(p, furnace.target.z);
         putint(p, furnace.worlditem); putint(p, furnace.inputslots); putint(p, furnace.inputlimit);
         putint(p, furnace.activerecipe); putint(p, furnace.progress); putint(p, furnace.heat); putint(p, furnace.heatcapacity);
+        putint(p, furnace.baking ? 1 : 0);
         putint(p, furnaceiscooking(furnace) ? 1 : 0);
         loopi(FURNACE_INPUT_MAX)
         {
@@ -2503,16 +2505,25 @@ namespace server
             case FURNACE_ACTION_CLICK_OUTPUT:
                 changed = servertakefurnaceoutput(ci, *furnace, first);
                 break;
+            case FURNACE_ACTION_BAKE:
+                changed = startfurnaceinstance(*furnace);
+                break;
             default:
                 return rejectfurnaceaction(ci, requestid, "invalid furnace action", true, true);
         }
-        if(!changed) return rejectfurnaceaction(ci, requestid, "the requested furnace transfer could not be completed");
+        if(!changed)
+            return rejectfurnaceaction(ci, requestid, action == FURNACE_ACTION_BAKE
+                                                          ? "baking requires a valid recipe, output room, and available heat or fuel"
+                                                          : "the requested furnace transfer could not be completed");
         bool syncchanged = false;
         updatefurnaceinstance(*furnace, 0, syncchanged);
         furnacesdirty = true;
-        markinventorydirty(ci);
         sendactionresult(ci, requestid, true);
-        sendinventory(ci);
+        if(action != FURNACE_ACTION_BAKE)
+        {
+            markinventorydirty(ci);
+            sendinventory(ci);
+        }
         syncfurnaceviewers(*furnace);
         return true;
     }

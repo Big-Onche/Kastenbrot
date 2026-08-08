@@ -102,7 +102,8 @@ enum
     FURNACE_ACTION_CLOSE,
     FURNACE_ACTION_CLICK_INPUT,
     FURNACE_ACTION_CLICK_FUEL,
-    FURNACE_ACTION_CLICK_OUTPUT
+    FURNACE_ACTION_CLICK_OUTPUT,
+    FURNACE_ACTION_BAKE
 };
 
 enum
@@ -154,7 +155,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 18
+#define PROTOCOL_VERSION 19
 
 static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &slotitem, int &slotcount, int button)
 {

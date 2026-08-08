@@ -173,10 +173,11 @@ struct furnaceinstance
     int inputitems[FURNACE_INPUT_MAX], inputcounts[FURNACE_INPUT_MAX], inputdurabilities[FURNACE_INPUT_MAX];
     int fuelitem, fuelcount, fueldurability, outputitem, outputcount, outputdurability;
     int activerecipe, progress, heat, heatcapacity;
+    bool baking;
 
     furnaceinstance(const ivec &target = ivec(0, 0, 0), int worlditem = -1, int inputslots = FURNACE_INPUT_MAX, int inputlimit = 16)
         : target(target), worlditem(worlditem), inputslots(inputslots), inputlimit(inputlimit), fuelitem(-1), fuelcount(0), fueldurability(0),
-          outputitem(-1), outputcount(0), outputdurability(0), activerecipe(-1), progress(0), heat(0), heatcapacity(0)
+          outputitem(-1), outputcount(0), outputdurability(0), activerecipe(-1), progress(0), heat(0), heatcapacity(0), baking(false)
     {
         loopi(FURNACE_INPUT_MAX)
         {
@@ -194,6 +195,7 @@ extern int getfurnacerecipeoutputcount(int recipe);
 extern int getfurnacerecipeduration(int recipe);
 extern int getfurnacefuelmillis(int item);
 extern bool matchfurnacerecipe(const int *items, const int *counts, int slots, int requestedrecipe, furnacematch &match);
+extern bool startfurnaceinstance(furnaceinstance &furnace);
 extern bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchanged);
 
 enum { CRAFT_GRID_MAX = 9 };

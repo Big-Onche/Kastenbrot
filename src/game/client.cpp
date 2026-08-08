@@ -835,6 +835,7 @@ namespace game
                 target.x = getint(p); target.y = getint(p); target.z = getint(p);
                 const int worlditem = getint(p), inputslots = getint(p), inputlimit = getint(p), activerecipe = getint(p),
                           progress = getint(p), heat = getint(p), heatcapacity = getint(p);
+                const bool baking = getint(p) != 0;
                 const bool cooking = getint(p) != 0;
                 if(inputslots < 1 || inputslots > FURNACE_INPUT_MAX || inputlimit < 1)
                 {
@@ -847,6 +848,7 @@ namespace game
                 furnace.progress = max(progress, 0);
                 furnace.heat = max(heat, 0);
                 furnace.heatcapacity = max(heatcapacity, 0);
+                furnace.baking = baking;
                 loopi(FURNACE_INPUT_MAX)
                 {
                     furnace.inputitems[i] = getint(p);
