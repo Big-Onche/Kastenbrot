@@ -42,6 +42,19 @@ namespace UI
         gle::end();
     }
 
+    static void quad(const vec2 pos[4], const vec2 tc[4])
+    {
+        gle::defvertex(2);
+        gle::deftexcoord0();
+        gle::begin(GL_TRIANGLE_FAN);
+        loopk(4)
+        {
+            gle::attrib(pos[k]);
+            gle::attrib(tc[k]);
+        }
+        gle::end();
+    }
+
     struct ClipArea
     {
         float x1, y1, x2, y2;
@@ -3123,6 +3136,92 @@ namespace UI
         }
     };
 
+    struct CubeViewer : Target
+    {
+        int topindex, sideindex;
+
+        void setup(int topindex_, int sideindex_, float minw_ = 0, float minh_ = 0)
+        {
+            Target::setup(minw_, minh_);
+            topindex = topindex_;
+            sideindex = sideindex_;
+        }
+
+        static const char *typestr() { return "#CubeViewer"; }
+        const char *gettype() const { return typestr(); }
+
+        Texture *previewtexture(Slot &slot)
+        {
+            if(slot.sts.empty()) return NULL;
+            if(slot.loaded) return slot.sts[0].t != notexture ? slot.sts[0].t : NULL;
+            if(!slot.thumbnail)
+            {
+                if(totalmillis - lastthumbnail < uislotviewtime) return NULL;
+                slot.loadthumbnail();
+                lastthumbnail = totalmillis;
+            }
+            return slot.thumbnail != notexture ? slot.thumbnail : NULL;
+        }
+
+        void texcoords(Texture &texture, const VSlot &vslot, vec2 tc[4])
+        {
+            tc[0] = vec2(0, 0);
+            tc[1] = vec2(1, 0);
+            tc[2] = vec2(1, 1);
+            tc[3] = vec2(0, 1);
+            int xoff = vslot.offset.x, yoff = vslot.offset.y;
+            if(vslot.rotation)
+            {
+                const texrotation &rotation = texrotations[vslot.rotation];
+                if(rotation.swapxy) { swap(xoff, yoff); loopk(4) swap(tc[k].x, tc[k].y); }
+                if(rotation.flipx) { xoff *= -1; loopk(4) tc[k].x *= -1; }
+                if(rotation.flipy) { yoff *= -1; loopk(4) tc[k].y *= -1; }
+            }
+            const float xt = min(1.0f, texture.xs/float(texture.ys)), yt = min(1.0f, texture.ys/float(texture.xs));
+            loopk(4)
+            {
+                tc[k].x = tc[k].x/xt - float(xoff)/texture.xs;
+                tc[k].y = tc[k].y/yt - float(yoff)/texture.ys;
+            }
+        }
+
+        void previewface(VSlot &vslot, const vec2 pos[4], float shade)
+        {
+            Slot &slot = *vslot.slot;
+            Texture *texture = previewtexture(slot);
+            if(!texture) return;
+
+            vec2 tc[4];
+            texcoords(*texture, vslot, tc);
+            glBindTexture(GL_TEXTURE_2D, texture->id);
+            gle::color(slot.loaded ? vec(vslot.colorscale).mul(shade) : vec(shade, shade, shade));
+            quad(pos, tc);
+        }
+
+        void draw(float sx, float sy)
+        {
+            VSlot &top = lookupvslot(topindex, false), &side = lookupvslot(sideindex, false);
+            // An affine isometric projection keeps all three faces orthographic while fitting the complete cube inside the target.
+            const float topdepthratio = 0.28f, sideheightratio = 0.5f, cubeheightratio = topdepthratio*2 + sideheightratio;
+            const float cubew = min(w, h/cubeheightratio) * 0.9f, halfw = cubew/2, topdepth = cubew*topdepthratio,
+                        sideheight = cubew*sideheightratio,
+                        x = sx + w/2, y = sy + (h - topdepth*2 - sideheight)/2;
+            const vec2 peak(x, y), left(x - halfw, y + topdepth), center(x, y + topdepth*2), right(x + halfw, y + topdepth),
+                       bottomleft(x - halfw, y + topdepth + sideheight), bottom(x, y + topdepth*2 + sideheight),
+                       bottomright(x + halfw, y + topdepth + sideheight);
+            const vec2 leftface[4] = { left, center, bottom, bottomleft }, rightface[4] = { center, right, bottomright, bottom },
+                       topface[4] = { peak, right, center, left };
+
+            changedraw(CHANGE_SHADER | CHANGE_COLOR);
+            SETSHADER(hudrgb);
+            previewface(side, leftface, 0.78f);
+            previewface(side, rightface, 0.62f);
+            previewface(top, topface, 1.0f);
+
+            Object::draw(sx, sy);
+        }
+    };
+
     ICOMMAND(newui, "ssss", (char *name, char *contents, char *onshow, char *onhide),
     {
         Window *window = windows.find(name, NULL);
@@ -3504,6 +3603,9 @@ namespace UI
 
     ICOMMAND(uivslotview, "iffe", (int *index, float *minw, float *minh, uint *children),
         BUILD(VSlotViewer, o, o->setup(*index, *minw, *minh), children));
+
+    ICOMMAND(uicubeview, "iiffe", (int *topindex, int *sideindex, float *minw, float *minh, uint *children),
+        BUILD(CubeViewer, o, o->setup(*topindex, *sideindex, *minw, *minh), children));
 
     FVARP(uisensitivity, 1e-4f, 1, 1e4f);
 

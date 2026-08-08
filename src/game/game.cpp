@@ -2120,8 +2120,14 @@ namespace game
     ICOMMAND(creativeblockcount, "", (), intret(numinventoryitems()));
     ICOMMAND(creativecubecount, "", (), intret(numworldcubes()));
     ICOMMAND(creativeblockiscube, "i", (int *index), intret(getworlditemtype(*index) == WORLD_ITEM_CUBE ? 1 : 0));
-    ICOMMAND(creativeblockslot, "i", (int *index),
-             intret(getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworldcubeslot(getworlditemindex(*index)) : getworldcubeslot(0)));
+    ICOMMAND(creativeblockslot, "iiN", (int *index, int *face, int *numargs),
+    {
+        const int worldindex = getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworlditemindex(*index) : 0;
+        const int orient = *numargs >= 2 && *face == WORLD_CUBE_SIDE ? WORLD_ORIENT_FRONT
+                         : *numargs >= 2 && *face == WORLD_CUBE_BOTTOM ? WORLD_ORIENT_BOTTOM
+                         : WORLD_ORIENT_TOP;
+        intret(getworldcubefaceslot(worldindex, orient));
+    });
     ICOMMAND(creativeblockname, "i", (int *index),
     {
         result(getinventoryitemname(*index));
