@@ -110,12 +110,12 @@ namespace server
             breakduration, breaktoolitem, breaktoolslot, breaktooldurability;
         uint ip;
         uint lastrequestid, breakrequestid;
-        bool connected, local, worldready, hasposition, inventoryloaded, inventorydirty, breakactive, breakdropeligible;
+        bool connected, local, worldready, hasposition, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
         int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
             craftinggridsize, craftingstationitem, inventorycursordurability;
-        ivec breaktarget, craftingstationtarget;
+        ivec breaktarget, craftingstationtarget, furnacetarget;
         vector<uchar> position;
         vec o;
         ENetPacket *getmap;
@@ -135,9 +135,9 @@ namespace server
                        lastrequestid(0), breakrequestid(0),
                        connected(false), local(false),
                        worldready(false), hasposition(false), inventoryloaded(false), inventorydirty(false),
-                       breakactive(false), breakdropeligible(true),
+                       breakactive(false), breakdropeligible(true), furnaceopen(false),
                        craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
-                       breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), o(0, 0, 0), getmap(NULL),
+                       breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0), o(0, 0, 0), getmap(NULL),
                        identitychallenge(NULL), identity(NULL)
         {
             name[0] = playerid[0] = pendingpublickey[0] = pendingname[0] = '\0';
@@ -201,9 +201,14 @@ namespace server
 
     static vector<serverworldaction *> serverworldactions;
     static vector<serverdrop *> serverdrops;
+    static vector<furnaceinstance *> serverfurnaces;
     static uint nextdropid = 1;
+    static bool furnacesdirty = false;
+    static int lastfurnacesave = 0;
     static serverworldaction *findworldaction(const ivec &target, int action);
     static void setworldactionstate(const ivec &target, int action, int orient, int item);
+    static bool loadserverfurnaces();
+    static bool saveserverfurnaces(bool force = false);
 
     vector<clientinfo *> clients;
     vector<serveredit *> worldhistory, worldredostack;
@@ -515,6 +520,7 @@ namespace server
         worldredostack.deletecontents();
         serverworldactions.deletecontents();
         serverdrops.deletecontents();
+        serverfurnaces.deletecontents();
         nextdropid = 1;
         worldeditrevision = 0;
         serverworldready = true;
@@ -610,6 +616,7 @@ namespace server
             if(!rewriteserverjournal()) serverworldready = false;
         }
         conoutf("loaded %d authoritative world revisions for seed %d", worldhistory.length(), serverworldseed);
+        if(!loadserverfurnaces()) serverworldready = false;
     }
 
     static bool ensureserverworld()
@@ -779,6 +786,153 @@ namespace server
         return true;
     }
 
+    static void serverfurnacename(char *name, size_t len, const char *suffix = "")
+    {
+        string safe;
+        int n = 0;
+        for(const char *s = serverworld; *s && n < int(sizeof(safe)) - 1; ++s)
+            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
+        safe[n] = '\0';
+        if(!safe[0]) copystring(safe, "multiplayer");
+        snprintf(name, len, "media/map/%s/server.furnaces%s", safe, suffix ? suffix : "");
+        path(name);
+    }
+
+    static bool writeserverfurnacestring(stream &file, const char *value)
+    {
+        const int length = value ? int(strlen(value)) : 0;
+        return length < MAXSTRLEN && file.putlil<ushort>(ushort(length)) &&
+               (!length || file.write(value, length) == size_t(length));
+    }
+
+    static bool readserverfurnacestring(stream &file, char *value, int size)
+    {
+        const uint length = file.getlil<ushort>();
+        if(length >= uint(size) || (length && file.read(value, length) != length)) return false;
+        value[length] = '\0';
+        return true;
+    }
+
+    static bool writeserverfurnacestack(stream &file, int item, int count, int durability)
+    {
+        return writeserverfurnacestring(file, count > 0 ? getinventoryitemid(item) : "") &&
+               file.putlil<int>(max(count, 0)) && file.putlil<int>(max(durability, 0));
+    }
+
+    static bool readserverfurnacestack(stream &file, int &item, int &count, int &durability, int limit)
+    {
+        string id;
+        if(!readserverfurnacestring(file, id, sizeof(id))) return false;
+        count = file.getlil<int>();
+        durability = file.getlil<int>();
+        item = id[0] ? getinventoryitemindex(id) : -1;
+        if(item < 0 || count <= 0)
+        {
+            item = -1;
+            count = durability = 0;
+        }
+        else count = clamp(count, 1, min(max(getinventoryitemmaxstack(item), 1), max(limit, 1)));
+        return true;
+    }
+
+    static bool saveserverfurnaces(bool force)
+    {
+        if(!force && !furnacesdirty) return true;
+        string relative, temporary, finalpath, temppath;
+        serverfurnacename(relative, sizeof(relative));
+        serverfurnacename(temporary, sizeof(temporary), ".tmp");
+        copystring(finalpath, findfile(relative, "wb"));
+        copystring(temppath, findfile(temporary, "wb"));
+        stream *file = openrawfile(temporary, "wb");
+        if(!file) return false;
+        bool ok = file->write("CCSF", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(serverworldseed)) &&
+                  file->putlil<uint>(uint(serverfurnaces.length()));
+        loopv(serverfurnaces) if(ok)
+        {
+            furnaceinstance &furnace = *serverfurnaces[i];
+            ok = file->putlil<int>(furnace.target.x) && file->putlil<int>(furnace.target.y) && file->putlil<int>(furnace.target.z) &&
+                 writeserverfurnacestring(*file, getinventoryitemid(furnace.worlditem));
+            loopj(FURNACE_INPUT_MAX) if(ok)
+                ok = writeserverfurnacestack(*file, furnace.inputitems[j], furnace.inputcounts[j], furnace.inputdurabilities[j]);
+            if(ok) ok = writeserverfurnacestack(*file, furnace.fuelitem, furnace.fuelcount, furnace.fueldurability) &&
+                        writeserverfurnacestack(*file, furnace.outputitem, furnace.outputcount, furnace.outputdurability) &&
+                        writeserverfurnacestring(*file, getfurnacerecipeid(furnace.activerecipe)) &&
+                        file->putlil<int>(max(furnace.progress, 0)) && file->putlil<int>(max(furnace.heat, 0)) &&
+                        file->putlil<int>(max(furnace.heatcapacity, 0));
+        }
+        delete file;
+        if(!ok || !replaceserveridentityfile(temppath, finalpath))
+        {
+            remove(temppath);
+            return false;
+        }
+        furnacesdirty = false;
+        lastfurnacesave = max(totalmillis, 1);
+        return true;
+    }
+
+    static bool loadserverfurnaces()
+    {
+        serverfurnaces.deletecontents();
+        furnacesdirty = false;
+        lastfurnacesave = max(totalmillis, 1);
+        string relative;
+        serverfurnacename(relative, sizeof(relative));
+        stream *file = openrawfile(relative, "rb");
+        if(!file) return true;
+        char magic[4] = { 0, 0, 0, 0 };
+        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
+                   seed = version == 1 ? file->getlil<uint>() : 0,
+                   count = version == 1 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCSF", 4) && version == 1 && seed == uint(serverworldseed) && count <= 100000;
+        loopi(ok ? int(count) : 0)
+        {
+            ivec target;
+            target.x = file->getlil<int>(); target.y = file->getlil<int>(); target.z = file->getlil<int>();
+            string worlditemid, recipeid;
+            ok = readserverfurnacestring(*file, worlditemid, sizeof(worlditemid));
+            const int worlditem = ok ? getinventoryitemindex(worlditemid) : -1;
+            int inputslots = 0, inputlimit = 0;
+            const bool configured = ok && getworldfurnaceconfig(worlditem, inputslots, inputlimit);
+            furnaceinstance *furnace = ok ? new furnaceinstance(target, worlditem, configured ? inputslots : FURNACE_INPUT_MAX,
+                                                                 configured ? inputlimit : 16) : NULL;
+            loopj(FURNACE_INPUT_MAX) if(ok)
+                ok = readserverfurnacestack(*file, furnace->inputitems[j], furnace->inputcounts[j], furnace->inputdurabilities[j],
+                                            configured ? inputlimit : 16);
+            if(ok) ok = readserverfurnacestack(*file, furnace->fuelitem, furnace->fuelcount, furnace->fueldurability, INT_MAX) &&
+                        readserverfurnacestack(*file, furnace->outputitem, furnace->outputcount, furnace->outputdurability, INT_MAX) &&
+                        readserverfurnacestring(*file, recipeid, sizeof(recipeid));
+            if(ok)
+            {
+                furnace->activerecipe = recipeid[0] ? getfurnacerecipeindex(recipeid) : -1;
+                furnace->progress = clamp(file->getlil<int>(), 0, max(getfurnacerecipeduration(furnace->activerecipe) - 1, 0));
+                furnace->heat = max(file->getlil<int>(), 0);
+                furnace->heatcapacity = max(file->getlil<int>(), furnace->heat);
+                if(furnace->fuelcount > 0 && getfurnacefuelmillis(furnace->fuelitem) <= 0)
+                    furnace->fuelitem = -1, furnace->fuelcount = furnace->fueldurability = 0;
+                serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_CUBE);
+                if(configured && state && state->action == WORLD_ACTION_PLACE_CUBE && state->item == worlditem)
+                {
+                    bool syncchanged = false;
+                    updatefurnaceinstance(*furnace, 0, syncchanged);
+                    serverfurnaces.add(furnace);
+                }
+                else delete furnace;
+            }
+            else delete furnace;
+            if(!ok) break;
+        }
+        if(ok) ok = file->tell() == file->size();
+        delete file;
+        if(!ok)
+        {
+            serverfurnaces.deletecontents();
+            conoutf(CON_ERROR, "authoritative furnace state is corrupt or incompatible");
+        }
+        else conoutf("loaded %d authoritative furnace instances", serverfurnaces.length());
+        return ok;
+    }
+
     static void sendinventory(clientinfo &ci)
     {
         packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
@@ -833,6 +987,143 @@ namespace server
             putint(p, ci.craftingdurabilities[i]);
         }
         sendpacket(ci.clientnum, 1, p.finalize());
+    }
+
+    static furnaceinstance *findserverfurnace(const ivec &target)
+    {
+        loopv(serverfurnaces) if(serverfurnaces[i]->target == target) return serverfurnaces[i];
+        return NULL;
+    }
+
+    static bool furnaceblockvalid(const furnaceinstance &furnace)
+    {
+        serverworldaction *state = findworldaction(furnace.target, WORLD_ACTION_PLACE_CUBE);
+        int inputslots = 0, inputlimit = 0;
+        return state && state->action == WORLD_ACTION_PLACE_CUBE && state->item == furnace.worlditem &&
+               getworldfurnaceconfig(state->item, inputslots, inputlimit) && inputslots == furnace.inputslots && inputlimit == furnace.inputlimit;
+    }
+
+    static bool furnaceaccessible(const clientinfo &ci, const furnaceinstance &furnace)
+    {
+        return ci.hasposition && furnaceblockvalid(furnace) && vec(furnace.target).add(8).dist(ci.o) <= 144.0f;
+    }
+
+    static bool furnaceiscooking(const furnaceinstance &furnace)
+    {
+        furnacematch match;
+        if(furnace.heat <= 0 || furnace.activerecipe < 0 ||
+           !matchfurnacerecipe(furnace.inputitems, furnace.inputcounts, furnace.inputslots, furnace.activerecipe, match)) return false;
+        if(furnace.outputcount > 0 && furnace.outputitem != match.outputitem) return false;
+        return furnace.outputcount + match.outputcount <= max(getinventoryitemmaxstack(match.outputitem), 1);
+    }
+
+    static void sendfurnacestate(clientinfo &ci, const furnaceinstance &furnace, bool open)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_FURNACESTATE);
+        putint(p, open ? 1 : 0);
+        putint(p, furnace.target.x); putint(p, furnace.target.y); putint(p, furnace.target.z);
+        putint(p, furnace.worlditem); putint(p, furnace.inputslots); putint(p, furnace.inputlimit);
+        putint(p, furnace.activerecipe); putint(p, furnace.progress); putint(p, furnace.heat); putint(p, furnace.heatcapacity);
+        putint(p, furnaceiscooking(furnace) ? 1 : 0);
+        loopi(FURNACE_INPUT_MAX)
+        {
+            putint(p, furnace.inputitems[i]);
+            putint(p, furnace.inputcounts[i]);
+            putint(p, furnace.inputdurabilities[i]);
+        }
+        putint(p, furnace.fuelitem); putint(p, furnace.fuelcount); putint(p, furnace.fueldurability);
+        putint(p, furnace.outputitem); putint(p, furnace.outputcount); putint(p, furnace.outputdurability);
+        sendpacket(ci.clientnum, 1, p.finalize());
+    }
+
+    static void closefurnace(clientinfo &ci)
+    {
+        ci.furnaceopen = false;
+        sendfurnacestate(ci, furnaceinstance(), false);
+    }
+
+    static void syncfurnaceviewers(const furnaceinstance &furnace)
+    {
+        loopv(clients)
+        {
+            clientinfo *viewer = clients[i];
+            if(viewer && viewer->connected && viewer->furnaceopen && viewer->furnacetarget == furnace.target)
+                sendfurnacestate(*viewer, furnace, true);
+        }
+    }
+
+    static bool serverlimitedinventoryclick(int &cursoritem, int &cursorcount, int &cursordurability, int &slotitem, int &slotcount,
+                                            int &slotdurability, int button, int slotlimit)
+    {
+        if(button != INVENTORY_CLICK_LEFT && button != INVENTORY_CLICK_RIGHT) return false;
+        const int oldcursoritem = cursoritem, oldcursordurability = cursordurability,
+                  oldslotitem = slotitem, oldslotdurability = slotdurability;
+        slotlimit = max(slotlimit, 1);
+        if(button == INVENTORY_CLICK_LEFT)
+        {
+            if(cursorcount <= 0)
+            {
+                if(slotcount <= 0) return false;
+                swap(cursoritem, slotitem); swap(cursorcount, slotcount);
+            }
+            else if(slotcount <= 0)
+            {
+                const int moved = min(cursorcount, slotlimit);
+                slotitem = cursoritem; slotcount = moved; cursorcount -= moved;
+            }
+            else if(cursoritem != slotitem)
+            {
+                if(cursorcount > slotlimit) return false;
+                swap(cursoritem, slotitem); swap(cursorcount, slotcount);
+            }
+            else
+            {
+                const int moved = min(cursorcount, slotlimit - slotcount);
+                if(moved <= 0) return false;
+                slotcount += moved; cursorcount -= moved;
+            }
+        }
+        else if(cursorcount <= 0)
+        {
+            if(slotcount <= 0) return false;
+            const int moved = (slotcount + 1) / 2;
+            cursoritem = slotitem; cursorcount = moved; slotcount -= moved;
+        }
+        else
+        {
+            if(slotcount > 0 && (slotitem != cursoritem || slotcount >= slotlimit)) return false;
+            if(slotcount <= 0) slotitem = cursoritem;
+            ++slotcount; --cursorcount;
+        }
+        if(cursorcount <= 0) { cursoritem = -1; cursorcount = 0; }
+        if(slotcount <= 0) { slotitem = -1; slotcount = 0; }
+        if(cursoritem < 0) cursordurability = 0;
+        else if(cursoritem == oldslotitem && oldcursoritem != cursoritem) cursordurability = oldslotdurability;
+        else if(cursoritem != oldcursoritem) cursordurability = oldslotdurability;
+        if(slotitem < 0) slotdurability = 0;
+        else if(slotitem == oldcursoritem && oldslotitem != slotitem) slotdurability = oldcursordurability;
+        else if(slotitem != oldslotitem) slotdurability = oldcursordurability;
+        return true;
+    }
+
+    static bool servertakefurnaceoutput(clientinfo &ci, furnaceinstance &furnace, int button)
+    {
+        if(furnace.outputcount <= 0 || (button != INVENTORY_CLICK_LEFT && button != INVENTORY_CLICK_RIGHT)) return false;
+        if(ci.inventorycursorcount > 0 && ci.inventorycursoritem != furnace.outputitem) return false;
+        const int capacity = max(getinventoryitemmaxstack(furnace.outputitem), 1) - ci.inventorycursorcount,
+                  moved = min(capacity, button == INVENTORY_CLICK_RIGHT ? 1 : furnace.outputcount);
+        if(moved <= 0) return false;
+        ci.inventorycursoritem = furnace.outputitem;
+        ci.inventorycursorcount += moved;
+        ci.inventorycursordurability = furnace.outputdurability;
+        furnace.outputcount -= moved;
+        if(furnace.outputcount <= 0)
+        {
+            furnace.outputitem = -1;
+            furnace.outputcount = furnace.outputdurability = 0;
+        }
+        return true;
     }
 
     static void sendactionresult(clientinfo &ci, uint requestid, int result, const char *reason = "")
@@ -1017,6 +1308,40 @@ namespace server
             if(owner) copystring(drop->ownerid, owner->playerid);
             serverdrops.add(drop);
             broadcastdropspawn(*drop);
+        }
+    }
+
+    static void addfurnacecontentsdrop(clientinfo *owner, const ivec &target, int item, int count)
+    {
+        if(item < 0 || count <= 0) return;
+        while(serverdrops.length() >= maxdrop) removeserverdrop(0);
+        serverdrop *drop = new serverdrop;
+        if(!nextdropid || nextdropid > uint(INT_MAX)) nextdropid = 1;
+        drop->id = nextdropid++;
+        drop->source = owner ? owner->clientnum : -1;
+        drop->item = item;
+        drop->count = count;
+        drop->created = max(totalmillis, 1);
+        drop->o = vec(target).add(8);
+        if(owner) copystring(drop->ownerid, owner->playerid);
+        serverdrops.add(drop);
+        broadcastdropspawn(*drop);
+    }
+
+    static void removeserverfurnace(const ivec &target, clientinfo *owner = NULL)
+    {
+        loopv(serverfurnaces) if(serverfurnaces[i]->target == target)
+        {
+            furnaceinstance *furnace = serverfurnaces[i];
+            loopj(FURNACE_INPUT_MAX)
+                addfurnacecontentsdrop(owner, target, furnace->inputitems[j], furnace->inputcounts[j]);
+            addfurnacecontentsdrop(owner, target, furnace->fuelitem, furnace->fuelcount);
+            addfurnacecontentsdrop(owner, target, furnace->outputitem, furnace->outputcount);
+            loopvj(clients) if(clients[j] && clients[j]->furnaceopen && clients[j]->furnacetarget == target)
+                closefurnace(*clients[j]);
+            delete serverfurnaces.remove(i);
+            furnacesdirty = true;
+            return;
         }
     }
 
@@ -1239,6 +1564,8 @@ namespace server
 
     void serverinit()
     {
+        if(journalinitialized && furnacesdirty && !saveserverfurnaces(true))
+            conoutf(CON_ERROR, "could not save authoritative furnace state before server reinitialization");
 #ifndef STANDALONE
         personaldrops = serverpersonaldrops;
         droptimeout = serverdroptimeout;
@@ -1262,6 +1589,7 @@ namespace server
         if(clientinfo *ci = getinfo(n))
         {
             cancelbreak(*ci);
+            ci->furnaceopen = false;
             if(ci->connected && !saveinventory(*ci, true))
                 conoutf(CON_ERROR, "could not save survival inventory for player ID %s on disconnect", ci->playerid);
             if(!ci->connected &&
@@ -1848,6 +2176,7 @@ namespace server
             return rejectaction(ci, requestid, "server could not persist the destruction");
         }
         setworldactionstate(target, action, ci.breakorient, item);
+        removeserverfurnace(target, &ci);
         if(!servercreative() && ci.breakdropeligible) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
         if(!servercreative() && ci.breaktoolitem >= 0)
         {
@@ -2095,6 +2424,96 @@ namespace server
         sendactionresult(ci, requestid, true);
         sendinventory(ci);
         sendcraftstate(ci);
+        return true;
+    }
+
+    static bool rejectfurnaceaction(clientinfo &ci, uint requestid, const char *reason, bool violation = false, bool malicious = false)
+    {
+        const bool result = rejectaction(ci, requestid, reason, violation, malicious);
+        if(ci.furnaceopen)
+        {
+            furnaceinstance *furnace = findserverfurnace(ci.furnacetarget);
+            if(furnace && furnaceaccessible(ci, *furnace)) sendfurnacestate(ci, *furnace, true);
+            else closefurnace(ci);
+        }
+        return result;
+    }
+
+    static bool handlefurnaceaction(clientinfo &ci, uint requestid, int action, int first, int second, int third, int fourth)
+    {
+        (void)fourth;
+        const char *error = NULL;
+        if(!validnewrequest(ci, requestid, error)) return rejectfurnaceaction(ci, requestid, error, requestid == ci.lastrequestid);
+        if(servercreative()) return rejectfurnaceaction(ci, requestid, "furnaces are disabled in creative mode");
+        if(ci.breakactive) cancelbreak(ci);
+        if(action == FURNACE_ACTION_CLOSE)
+        {
+            closefurnace(ci);
+            sendactionresult(ci, requestid, true);
+            return true;
+        }
+        if(action == FURNACE_ACTION_OPEN)
+        {
+            const ivec target(first, second, third);
+            serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_CUBE);
+            int inputslots = 0, inputlimit = 0;
+            if(!state || state->action != WORLD_ACTION_PLACE_CUBE || !getworldfurnaceconfig(state->item, inputslots, inputlimit))
+                return rejectfurnaceaction(ci, requestid, "the requested furnace does not exist");
+            if(!ci.hasposition || vec(target).add(8).dist(ci.o) > 144.0f)
+                return rejectfurnaceaction(ci, requestid, "the furnace is out of reach");
+            furnaceinstance *furnace = findserverfurnace(target);
+            if(!furnace)
+            {
+                furnace = new furnaceinstance(target, state->item, inputslots, inputlimit);
+                serverfurnaces.add(furnace);
+                furnacesdirty = true;
+            }
+            ci.furnaceopen = true;
+            ci.furnacetarget = target;
+            sendactionresult(ci, requestid, true);
+            sendinventory(ci);
+            sendfurnacestate(ci, *furnace, true);
+            return true;
+        }
+
+        if(!ci.furnaceopen) return rejectfurnaceaction(ci, requestid, "no furnace is open");
+        furnaceinstance *furnace = findserverfurnace(ci.furnacetarget);
+        if(!furnace || !furnaceaccessible(ci, *furnace)) return rejectfurnaceaction(ci, requestid, "the furnace is no longer accessible");
+        bool changed = false;
+        switch(action)
+        {
+            case FURNACE_ACTION_CLICK_INPUT:
+                if(first < 0 || first >= furnace->inputslots ||
+                   (second != INVENTORY_CLICK_LEFT && second != INVENTORY_CLICK_RIGHT))
+                    return rejectfurnaceaction(ci, requestid, "invalid furnace input slot", true, true);
+                changed = serverlimitedinventoryclick(ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability,
+                                                      furnace->inputitems[first], furnace->inputcounts[first],
+                                                      furnace->inputdurabilities[first], second,
+                                                      min(furnace->inputlimit, max(getinventoryitemmaxstack(ci.inventorycursoritem), 1)));
+                break;
+            case FURNACE_ACTION_CLICK_FUEL:
+                if(first != INVENTORY_CLICK_LEFT && first != INVENTORY_CLICK_RIGHT)
+                    return rejectfurnaceaction(ci, requestid, "invalid furnace fuel click", true, true);
+                if(ci.inventorycursorcount > 0 && getfurnacefuelmillis(ci.inventorycursoritem) <= 0)
+                    return rejectfurnaceaction(ci, requestid, "only configured fuels can enter the fuel slot");
+                changed = serverlimitedinventoryclick(ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability,
+                                                      furnace->fuelitem, furnace->fuelcount, furnace->fueldurability, first,
+                                                      max(getinventoryitemmaxstack(ci.inventorycursoritem), 1));
+                break;
+            case FURNACE_ACTION_CLICK_OUTPUT:
+                changed = servertakefurnaceoutput(ci, *furnace, first);
+                break;
+            default:
+                return rejectfurnaceaction(ci, requestid, "invalid furnace action", true, true);
+        }
+        if(!changed) return rejectfurnaceaction(ci, requestid, "the requested furnace transfer could not be completed");
+        bool syncchanged = false;
+        updatefurnaceinstance(*furnace, 0, syncchanged);
+        furnacesdirty = true;
+        markinventorydirty(ci);
+        sendactionresult(ci, requestid, true);
+        sendinventory(ci);
+        syncfurnaceviewers(*furnace);
         return true;
     }
 
@@ -2842,6 +3261,14 @@ namespace server
                     if(ci && ci->connected && !p.overread()) handlecraftaction(*ci, requestid, action, first, second, third, fourth);
                     break;
                 }
+                case N_FURNACEACTION:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    const uint requestid = uint(getint(p));
+                    const int action = getint(p), first = getint(p), second = getint(p), third = getint(p), fourth = getint(p);
+                    if(ci && ci->connected && !p.overread()) handlefurnaceaction(*ci, requestid, action, first, second, third, fourth);
+                    break;
+                }
                 case N_WORLDACTION:
                 {
                     clientinfo *ci = getinfo(sender);
@@ -2945,6 +3372,7 @@ namespace server
                     break;
                 }
                 case N_INVENTORYSTATE:
+                case N_FURNACESTATE:
                 case N_WORLDAUTH:
                 case N_ACTIONRESULT:
                 case N_BREAKSTATE:
@@ -3023,9 +3451,36 @@ namespace server
         sendstring(serverdesc, p);
         sendserverinforeply(p);
     }
+
+    static void updateserverfurnaces()
+    {
+        for(int i = serverfurnaces.length() - 1; i >= 0; --i)
+        {
+            furnaceinstance &furnace = *serverfurnaces[i];
+            if(!furnaceblockvalid(furnace))
+            {
+                removeserverfurnace(furnace.target);
+                continue;
+            }
+            bool syncchanged = false;
+            if(updatefurnaceinstance(furnace, curtime, syncchanged)) furnacesdirty = true;
+            if(syncchanged) syncfurnaceviewers(furnace);
+        }
+        loopv(clients)
+        {
+            clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->furnaceopen) continue;
+            furnaceinstance *furnace = findserverfurnace(ci->furnacetarget);
+            if(!furnace || !furnaceaccessible(*ci, *furnace)) closefurnace(*ci);
+        }
+        if(furnacesdirty && totalmillis - lastfurnacesave >= 5000 && !saveserverfurnaces())
+            conoutf(CON_ERROR, "could not periodically save authoritative furnace state");
+    }
+
     void serverupdate()
     {
         if(!journalinitialized) return;
+        updateserverfurnaces();
         loopv(clients)
         {
             clientinfo *ci = clients[i];

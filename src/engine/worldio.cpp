@@ -239,12 +239,13 @@ struct worldcubedefinition
 {
     string id, itemid, texture, sidetexture, bottom, bottomtexture;
     float texsize;
-    int item, slot, sideslot, bottomslot;
+    int item, slot, sideslot, bottomslot, furnaceinputslots, furnaceinputlimit;
     vector<worlddropdefinition> drops;
     bool explicitdrops, errorfallback;
 
     worldcubedefinition()
-        : texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), explicitdrops(false), errorfallback(false)
+        : texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), furnaceinputslots(0),
+          furnaceinputlimit(0), explicitdrops(false), errorfallback(false)
     {
         id[0] = itemid[0] = texture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = '\0';
     }
@@ -694,6 +695,30 @@ ICOMMAND(worldcube, "sssfsssN", (char *id, char *itemid, char *texture, float *t
 {
     defineworldcube(id, itemid, texture, *texsize, side, bottom, bottomalternate, *numargs);
 });
+
+ICOMMAND(worldfurnace, "sii", (char *id, int *inputslots, int *inputlimit),
+{
+    worldcubedefinition *cube = findworldcube(id);
+    if(!cube || *inputslots < 1 || *inputslots > FURNACE_INPUT_MAX || *inputlimit < 1)
+    {
+        conoutf(CON_ERROR, "worldfurnace requires a known world cube, 1-%d input slots, and a positive stack limit", FURNACE_INPUT_MAX);
+        return;
+    }
+    cube->furnaceinputslots = *inputslots;
+    cube->furnaceinputlimit = *inputlimit;
+});
+
+bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
+{
+    loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == item && worldcubedefinitions[i]->furnaceinputslots > 0)
+    {
+        inputslots = worldcubedefinitions[i]->furnaceinputslots;
+        inputlimit = worldcubedefinitions[i]->furnaceinputlimit;
+        return true;
+    }
+    inputslots = inputlimit = 0;
+    return false;
+}
 
 static void defineworldscatter(const char *id, const char *itemid, const char *model, bool placeable, float lightradius = 0, const char *lightcolor = "")
 {
@@ -8307,6 +8332,7 @@ static void createworld(const char *requestedname)
     // reused implicitly when creating a differently named world.
     const int chosenworldseed = game::getconfiguredworldseed();
     game::resetsurvivalinventory();
+    game::resetfurnaces();
     game::beginlocalworld();
     if(!emptymap(WORLD_RUNTIME_SCALE, true, activechunkname)) return;
     copystring(worldfolder, chosenfolder);
@@ -8388,6 +8414,7 @@ static void loadworldcommand(const char *requested)
         return;
     }
 
+    game::resetfurnaces();
     game::beginlocalworld();
     game::loadworldseed(metadata.seed);
     game::loadsurvivalinventory(metadata.inventoryitems, metadata.inventorycounts, metadata.inventorydurabilities, game::SURVIVAL_USABLE_SLOTS, metadata.inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability);
@@ -8398,12 +8425,14 @@ static void loadworldcommand(const char *requested)
     hasrequestedworldspawn = true;
     applyloadworlddefaults = true;
     game::changemap(entry, metadata.gamemode);
+    if(!game::loadlocalfurnaces(folder)) conoutf(CON_ERROR, "saved furnace data for world %s is corrupt", folder);
     applyloadworlddefaults = false;
     hasrequestedworldspawn = false;
 }
 
 void startnetworkworld(int seed)
 {
+    game::resetfurnaces();
     game::loadworldseed(seed);
     if(!emptymap(WORLD_RUNTIME_SCALE, true, "network/0_0", true, false)) return;
     worldfolder[0] = '\0';
@@ -8486,6 +8515,11 @@ void saveworld()
         entryy = worldchunks[entry].y;
     }
     if(!saveworldmetadata(entryx, entryy)) return;
+    if(!game::savelocalfurnaces(worldfolder))
+    {
+        conoutf(CON_ERROR, "could not save furnace state for world %s", worldfolder);
+        return;
+    }
 
     int released = 0;
     for(int i = worldchunks.length() - 1; i >= 0; --i)
@@ -8513,6 +8547,7 @@ void closeproceduralworld(bool save)
     // identify the world. clearworldchunks() then flushes and joins both the
     // diff writer and generation workers before releasing their state.
     if(save && !worldchunks.empty() && activeworldchunk >= 0) saveworld();
+    game::resetfurnaces();
     clearworldchunks();
     resetmap();
     freeocta(worldroot);
@@ -9444,12 +9479,12 @@ struct serverworlddropdefinition
 struct serverworldobjectdefinition
 {
     string id, itemid;
-    int item, type;
+    int item, type, furnaceinputslots, furnaceinputlimit;
     vector<serverworlddropdefinition> drops;
     bool explicitdrops, scatter, placeable;
 
     serverworldobjectdefinition()
-        : item(-1), type(WORLD_ITEM_NONE), explicitdrops(false), scatter(false), placeable(false)
+        : item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), explicitdrops(false), scatter(false), placeable(false)
     {
         id[0] = itemid[0] = '\0';
     }
@@ -9513,6 +9548,18 @@ ICOMMAND(worldcube, "sssfsssN",
     copystring(cube->id, id);
     copystring(cube->itemid, itemid ? itemid : "");
     cube->type = WORLD_ITEM_CUBE;
+});
+
+ICOMMAND(worldfurnace, "sii", (char *id, int *inputslots, int *inputlimit),
+{
+    serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, id);
+    if(!cube || *inputslots < 1 || *inputslots > FURNACE_INPUT_MAX || *inputlimit < 1)
+    {
+        conoutf(CON_ERROR, "worldfurnace requires a known world cube, 1-%d input slots, and a positive stack limit", FURNACE_INPUT_MAX);
+        return;
+    }
+    cube->furnaceinputslots = *inputslots;
+    cube->furnaceinputlimit = *inputlimit;
 });
 
 static void defineserverworldmodel(const char *id, const char *itemid, bool placeable)
@@ -9640,6 +9687,18 @@ int getinventoryitemindex(const char *id)
 int getinventoryitemmaxstack(int index)
 {
     return serverinventoryitems.inrange(index) ? serverinventoryitems[index]->maxstack : 0;
+}
+
+bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
+{
+    loopv(serverworldcubes) if(serverworldcubes[i]->item == item && serverworldcubes[i]->furnaceinputslots > 0)
+    {
+        inputslots = serverworldcubes[i]->furnaceinputslots;
+        inputlimit = serverworldcubes[i]->furnaceinputlimit;
+        return true;
+    }
+    inputslots = inputlimit = 0;
+    return false;
 }
 
 const char *getinventoryitemmodel(int index) { return ""; }

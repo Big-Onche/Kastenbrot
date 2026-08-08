@@ -828,6 +828,43 @@ namespace game
                     receivecraftstate(items, counts, durabilities, CRAFT_GRID_MAX, gridsize, stationitem, recipe, outputitem, outputcount);
                 break;
             }
+            case N_FURNACESTATE:
+            {
+                const bool open = getint(p) != 0;
+                ivec target;
+                target.x = getint(p); target.y = getint(p); target.z = getint(p);
+                const int worlditem = getint(p), inputslots = getint(p), inputlimit = getint(p), activerecipe = getint(p),
+                          progress = getint(p), heat = getint(p), heatcapacity = getint(p);
+                const bool cooking = getint(p) != 0;
+                if(inputslots < 1 || inputslots > FURNACE_INPUT_MAX || inputlimit < 1)
+                {
+                    conoutf(CON_ERROR, "server sent an invalid furnace state");
+                    disconnect();
+                    return;
+                }
+                furnaceinstance furnace(target, worlditem, inputslots, inputlimit);
+                furnace.activerecipe = activerecipe;
+                furnace.progress = max(progress, 0);
+                furnace.heat = max(heat, 0);
+                furnace.heatcapacity = max(heatcapacity, 0);
+                loopi(FURNACE_INPUT_MAX)
+                {
+                    furnace.inputitems[i] = getint(p);
+                    furnace.inputcounts[i] = getint(p);
+                    furnace.inputdurabilities[i] = getint(p);
+                    if(furnace.inputcounts[i] <= 0)
+                    {
+                        furnace.inputitems[i] = -1;
+                        furnace.inputcounts[i] = furnace.inputdurabilities[i] = 0;
+                    }
+                }
+                furnace.fuelitem = getint(p); furnace.fuelcount = getint(p); furnace.fueldurability = getint(p);
+                furnace.outputitem = getint(p); furnace.outputcount = getint(p); furnace.outputdurability = getint(p);
+                if(furnace.fuelcount <= 0) { furnace.fuelitem = -1; furnace.fuelcount = furnace.fueldurability = 0; }
+                if(furnace.outputcount <= 0) { furnace.outputitem = -1; furnace.outputcount = furnace.outputdurability = 0; }
+                if(!p.overread()) receivefurnacestate(furnace, open, cooking);
+                break;
+            }
             case N_ACTIONRESULT:
             {
                 const uint requestid = uint(getint(p));

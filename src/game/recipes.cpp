@@ -52,6 +52,34 @@ namespace
         ~rawtag() { items.deletecontents(); }
     };
 
+    struct rawfurnacefuel
+    {
+        string key, source;
+        float seconds;
+
+        rawfurnacefuel(const char *key = "", float seconds = 0, const char *source = "") : seconds(seconds)
+        {
+            copystring(this->key, key);
+            copystring(this->source, source);
+        }
+    };
+
+    struct rawfurnacerecipe
+    {
+        string id, source, output;
+        int outputcount;
+        float seconds;
+        bool invalid;
+        vector<rawingredient> ingredients;
+
+        rawfurnacerecipe(const char *id = "", const char *source = "") : outputcount(0), seconds(0), invalid(false)
+        {
+            copystring(this->id, id);
+            copystring(this->source, source);
+            output[0] = '\0';
+        }
+    };
+
     struct itemtagdefinition
     {
         string id;
@@ -81,11 +109,28 @@ namespace
         }
     };
 
+    struct furnacerecipedefinition
+    {
+        string id, source;
+        int outputitem, outputcount, duration;
+        vector<recipeingredientdefinition> ingredients;
+
+        furnacerecipedefinition() : outputitem(-1), outputcount(0), duration(0)
+        {
+            id[0] = source[0] = '\0';
+        }
+    };
+
     static vector<rawrecipe *> rawrecipes;
     static vector<rawtag *> rawtags;
+    static vector<rawfurnacefuel *> rawfurnacefuels;
+    static vector<rawfurnacerecipe *> rawfurnacerecipes;
     static vector<recipedefinition *> recipes;
     static vector<itemtagdefinition *> itemtags;
+    static vector<furnacerecipedefinition *> furnacerecipes;
+    static vector<int> furnacefuelmillis;
     static rawrecipe *currentrecipe = NULL;
+    static rawfurnacerecipe *currentfurnacerecipe = NULL;
     static string currentsource = "(console)";
     static int recipeerrors = 0;
 
@@ -302,6 +347,114 @@ namespace
         }
     }
 
+    static int compilefurnaceingredient(furnacerecipedefinition &recipe, const char *name, int count)
+    {
+        recipeingredientdefinition ingredient;
+        ingredient.count = count;
+        if(name && name[0] == '#') ingredient.tag = finditemtag(name + 1);
+        else ingredient.item = ingredientitem(name);
+        if(ingredient.item < 0 && ingredient.tag < 0) return -1;
+        loopv(recipe.ingredients) if(sameingredient(recipe.ingredients[i], ingredient))
+        {
+            recipe.ingredients[i].count += count;
+            return i;
+        }
+        recipe.ingredients.add(ingredient);
+        return recipe.ingredients.length() - 1;
+    }
+
+    static void compilefurnacefuels()
+    {
+        furnacefuelmillis.shrink(0);
+        vector<uchar> exact;
+        loopi(numinventoryitems())
+        {
+            furnacefuelmillis.add(0);
+            exact.add(0);
+        }
+        loopk(2) loopv(rawfurnacefuels)
+        {
+            rawfurnacefuel &raw = *rawfurnacefuels[i];
+            const bool istag = raw.key[0] == '#';
+            if(istag != (k == 0)) continue;
+            if(raw.seconds <= 0)
+            {
+                recipewarning(raw.key, raw.source, "furnace fuel duration must be positive");
+                continue;
+            }
+            const double millis = double(raw.seconds) * 1000.0;
+            const int duration = int(min(millis + 0.5, double(INT_MAX)));
+            if(istag)
+            {
+                const int tag = finditemtag(raw.key + 1);
+                if(tag < 0)
+                {
+                    recipewarning(raw.key, raw.source, "furnace fuel references an unknown item tag");
+                    continue;
+                }
+                loopj(numinventoryitems()) if(!exact[j] && itemhastag(j, tag)) furnacefuelmillis[j] = duration;
+            }
+            else
+            {
+                const int item = ingredientitem(raw.key);
+                if(item < 0)
+                {
+                    recipewarning(raw.key, raw.source, "furnace fuel references an unknown item");
+                    continue;
+                }
+                furnacefuelmillis[item] = duration;
+                exact[item] = 1;
+            }
+        }
+    }
+
+    static bool compilefurnacerecipe(rawfurnacerecipe &raw)
+    {
+        loopv(furnacerecipes) if(!cubecasecmp(furnacerecipes[i]->id, raw.id))
+        {
+            recipewarning(raw.id, raw.source, "duplicate furnace recipe id");
+            return false;
+        }
+        if(raw.invalid) return false;
+        const int output = ingredientitem(raw.output);
+        if(!raw.id[0] || output < 0 || raw.outputcount <= 0 || raw.seconds <= 0)
+        {
+            recipewarning(raw.id, raw.source, "furnace recipe requires an id, known positive output, and positive duration");
+            return false;
+        }
+        furnacerecipedefinition *recipe = new furnacerecipedefinition;
+        copystring(recipe->id, raw.id);
+        copystring(recipe->source, raw.source);
+        recipe->outputitem = output;
+        recipe->outputcount = raw.outputcount;
+        recipe->duration = int(min(double(raw.seconds) * 1000.0 + 0.5, double(INT_MAX)));
+        int total = 0;
+        loopv(raw.ingredients)
+        {
+            if(raw.ingredients[i].count <= 0 || compilefurnaceingredient(*recipe, raw.ingredients[i].key, raw.ingredients[i].count) < 0)
+            {
+                recipewarning(raw.id, raw.source, "furnace recipe references an unknown item/tag or non-positive quantity");
+                delete recipe;
+                return false;
+            }
+            total += raw.ingredients[i].count;
+        }
+        if(total <= 0)
+        {
+            recipewarning(raw.id, raw.source, "furnace recipe requires at least one ingredient");
+            delete recipe;
+            return false;
+        }
+        if(recipe->ingredients.length() > FURNACE_INPUT_MAX)
+        {
+            recipewarning(raw.id, raw.source, "furnace recipe has more distinct ingredients than furnace input slots");
+            delete recipe;
+            return false;
+        }
+        furnacerecipes.add(recipe);
+        return true;
+    }
+
     static bool loadrecipefiles(const char *directory)
     {
         vector<char *> files;
@@ -440,6 +593,79 @@ namespace
             matched = matchshapeless(recipe, items, counts, gridsize, crafts, match);
         return matched;
     }
+
+    static bool distributefurnacetag(const furnacerecipedefinition &recipe, const recipeingredientdefinition &ingredient, int group,
+                                     int remaining, int groups, const int *groupitems, int *available, int *assigned,
+                                     int ingredientindex);
+
+    static bool assignfurnacetags(const furnacerecipedefinition &recipe, int ingredientindex, int groups, const int *groupitems,
+                                  int *available, int *assigned)
+    {
+        while(ingredientindex < recipe.ingredients.length() && recipe.ingredients[ingredientindex].item >= 0) ++ingredientindex;
+        if(ingredientindex >= recipe.ingredients.length()) return true;
+        return distributefurnacetag(recipe, recipe.ingredients[ingredientindex], 0, recipe.ingredients[ingredientindex].count, groups,
+                                    groupitems, available, assigned, ingredientindex);
+    }
+
+    static bool distributefurnacetag(const furnacerecipedefinition &recipe, const recipeingredientdefinition &ingredient, int group,
+                                     int remaining, int groups, const int *groupitems, int *available, int *assigned,
+                                     int ingredientindex)
+    {
+        if(group >= groups) return remaining == 0 && assignfurnacetags(recipe, ingredientindex + 1, groups, groupitems, available, assigned);
+        const int maximum = ingredientmatches(ingredient, groupitems[group]) ? min(remaining, available[group]) : 0;
+        for(int take = maximum; take >= 0; --take)
+        {
+            available[group] -= take;
+            assigned[ingredientindex * FURNACE_INPUT_MAX + group] = take;
+            if(distributefurnacetag(recipe, ingredient, group + 1, remaining - take, groups, groupitems, available, assigned,
+                                    ingredientindex)) return true;
+            assigned[ingredientindex * FURNACE_INPUT_MAX + group] = 0;
+            available[group] += take;
+        }
+        return false;
+    }
+
+    static bool matchcompiledfurnacerecipe(const furnacerecipedefinition &recipe, const int *items, const int *counts, int slots,
+                                           furnacematch &match)
+    {
+        int groupitems[FURNACE_INPUT_MAX], available[FURNACE_INPUT_MAX],
+            assigned[FURNACE_INPUT_MAX * FURNACE_INPUT_MAX] = { 0 }, groups = 0;
+        loopi(slots) if(items[i] >= 0 && counts[i] > 0)
+        {
+            int group = -1;
+            loopj(groups) if(groupitems[j] == items[i]) { group = j; break; }
+            if(group < 0) { group = groups++; groupitems[group] = items[i]; available[group] = 0; }
+            available[group] += counts[i];
+        }
+        loopi(groups)
+        {
+            bool compatible = false;
+            loopvj(recipe.ingredients) if(ingredientmatches(recipe.ingredients[j], groupitems[i])) { compatible = true; break; }
+            if(!compatible) return false;
+        }
+        loopv(recipe.ingredients) if(recipe.ingredients[i].item >= 0)
+        {
+            int group = -1;
+            loopj(groups) if(groupitems[j] == recipe.ingredients[i].item) { group = j; break; }
+            if(group < 0 || available[group] < recipe.ingredients[i].count) return false;
+            available[group] -= recipe.ingredients[i].count;
+            assigned[i * FURNACE_INPUT_MAX + group] = recipe.ingredients[i].count;
+        }
+        if(!assignfurnacetags(recipe, 0, groups, groupitems, available, assigned)) return false;
+        int groupconsumed[FURNACE_INPUT_MAX] = { 0 };
+        loopv(recipe.ingredients) loopj(groups) groupconsumed[j] += assigned[i * FURNACE_INPUT_MAX + j];
+        loopi(slots) if(items[i] >= 0 && counts[i] > 0)
+        {
+            int group = -1;
+            loopj(groups) if(groupitems[j] == items[i]) { group = j; break; }
+            if(group >= 0)
+            {
+                match.consume[i] = min(counts[i], groupconsumed[group]);
+                groupconsumed[group] -= match.consume[i];
+            }
+        }
+        return true;
+    }
 }
 
 int numcraftrecipes() { return recipes.length(); }
@@ -498,23 +724,148 @@ bool matchcraftrecipe(const int *items, const int *counts, int gridsize, int sta
     return false;
 }
 
+int numfurnacerecipes() { return furnacerecipes.length(); }
+const char *getfurnacerecipeid(int recipe) { return furnacerecipes.inrange(recipe) ? furnacerecipes[recipe]->id : ""; }
+int getfurnacerecipeoutputitem(int recipe) { return furnacerecipes.inrange(recipe) ? furnacerecipes[recipe]->outputitem : -1; }
+int getfurnacerecipeoutputcount(int recipe) { return furnacerecipes.inrange(recipe) ? furnacerecipes[recipe]->outputcount : 0; }
+int getfurnacerecipeduration(int recipe) { return furnacerecipes.inrange(recipe) ? furnacerecipes[recipe]->duration : 0; }
+int getfurnacefuelmillis(int item) { return furnacefuelmillis.inrange(item) ? furnacefuelmillis[item] : 0; }
+
+int getfurnacerecipeindex(const char *id)
+{
+    loopv(furnacerecipes) if(!cubecasecmp(furnacerecipes[i]->id, id)) return i;
+    return -1;
+}
+
+bool matchfurnacerecipe(const int *items, const int *counts, int slots, int requestedrecipe, furnacematch &match)
+{
+    match = furnacematch();
+    if(!items || !counts || slots < 1 || slots > FURNACE_INPUT_MAX) return false;
+    const int first = requestedrecipe >= 0 ? requestedrecipe : 0,
+              end = requestedrecipe >= 0 ? requestedrecipe + 1 : furnacerecipes.length();
+    for(int i = first; i < end; ++i)
+    {
+        if(!furnacerecipes.inrange(i)) return false;
+        furnacematch candidate;
+        if(!matchcompiledfurnacerecipe(*furnacerecipes[i], items, counts, slots, candidate)) continue;
+        candidate.recipe = i;
+        candidate.outputitem = furnacerecipes[i]->outputitem;
+        candidate.outputcount = furnacerecipes[i]->outputcount;
+        match = candidate;
+        return true;
+    }
+    return false;
+}
+
+static bool refreshfurnacematch(furnaceinstance &furnace, furnacematch &match, bool &syncchanged)
+{
+    bool matched = furnace.activerecipe >= 0 &&
+                   matchfurnacerecipe(furnace.inputitems, furnace.inputcounts, furnace.inputslots, furnace.activerecipe, match);
+    if(!matched) matched = matchfurnacerecipe(furnace.inputitems, furnace.inputcounts, furnace.inputslots, -1, match);
+    const int recipe = matched ? match.recipe : -1;
+    if(recipe != furnace.activerecipe)
+    {
+        furnace.activerecipe = recipe;
+        furnace.progress = 0;
+        syncchanged = true;
+    }
+    return matched;
+}
+
+static bool furnaceoutputfits(const furnaceinstance &furnace, const furnacematch &match)
+{
+    if(match.outputitem < 0 || match.outputcount <= 0) return false;
+    if(furnace.outputcount > 0 && furnace.outputitem != match.outputitem) return false;
+    return furnace.outputcount + match.outputcount <= max(getinventoryitemmaxstack(match.outputitem), 1);
+}
+
+bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchanged)
+{
+    syncchanged = false;
+    elapsed = max(elapsed, 0);
+    furnacematch match;
+    bool matched = refreshfurnacematch(furnace, match, syncchanged), changed = syncchanged;
+    int remaining = elapsed;
+    while(remaining > 0)
+    {
+        if(!matched || !furnaceoutputfits(furnace, match))
+        {
+            const int burned = min(furnace.heat, remaining);
+            furnace.heat -= burned;
+            changed |= burned > 0;
+            break;
+        }
+        if(furnace.heat <= 0)
+        {
+            const int duration = furnace.fuelcount > 0 ? getfurnacefuelmillis(furnace.fuelitem) : 0;
+            if(duration <= 0) break;
+            if(--furnace.fuelcount <= 0)
+            {
+                furnace.fuelitem = -1;
+                furnace.fuelcount = furnace.fueldurability = 0;
+            }
+            furnace.heat = furnace.heatcapacity = duration;
+            changed = syncchanged = true;
+        }
+        const int duration = getfurnacerecipeduration(furnace.activerecipe);
+        if(duration <= 0) break;
+        const int step = min(remaining, min(furnace.heat, duration - furnace.progress));
+        if(step <= 0) break;
+        furnace.heat -= step;
+        furnace.progress += step;
+        remaining -= step;
+        changed = true;
+        if(furnace.progress < duration) continue;
+
+        furnacematch completed;
+        if(!matchfurnacerecipe(furnace.inputitems, furnace.inputcounts, furnace.inputslots, furnace.activerecipe, completed) ||
+           !furnaceoutputfits(furnace, completed))
+            break;
+        loopi(FURNACE_INPUT_MAX) if(completed.consume[i] > 0)
+        {
+            furnace.inputcounts[i] -= completed.consume[i];
+            if(furnace.inputcounts[i] <= 0)
+            {
+                furnace.inputitems[i] = -1;
+                furnace.inputcounts[i] = furnace.inputdurabilities[i] = 0;
+            }
+        }
+        furnace.outputitem = completed.outputitem;
+        furnace.outputcount += completed.outputcount;
+        furnace.outputdurability = getinventorytoolmaxdurability(completed.outputitem);
+        furnace.progress = 0;
+        syncchanged = true;
+        matched = refreshfurnacematch(furnace, match, syncchanged);
+    }
+    return changed;
+}
+
 bool reloadrecipes(bool report)
 {
     recipes.deletecontents();
     itemtags.deletecontents();
+    furnacerecipes.deletecontents();
+    furnacefuelmillis.shrink(0);
     rawrecipes.deletecontents();
     rawtags.deletecontents();
+    rawfurnacefuels.deletecontents();
+    rawfurnacerecipes.deletecontents();
     currentrecipe = NULL;
+    currentfurnacerecipe = NULL;
     recipeerrors = 0;
     copystring(currentsource, "(console)");
     bool success = loadrecipefiles("config/game/itemtags");
     success = loadrecipefiles("config/game/recipes") && success;
+    success = loadrecipefiles("config/game/furnaces") && success;
     compiletags();
     loopv(rawrecipes) compilerecipe(*rawrecipes[i]);
+    compilefurnacefuels();
+    loopv(rawfurnacerecipes) compilefurnacerecipe(*rawfurnacerecipes[i]);
     if(report)
     {
         conoutf("Loaded %d recipes", recipes.length());
         conoutf("Loaded %d item tags", itemtags.length());
+        conoutf("Loaded %d furnace recipes and %d fuels", furnacerecipes.length(), furnacefuelmillis.length());
         conoutf("%d recipe errors", recipeerrors);
     }
     return success && recipeerrors == 0;
@@ -539,6 +890,40 @@ ICOMMAND(craftrecipe, "se", (char *id, uint *body),
     currentrecipe = rawrecipes.add(new rawrecipe(id, currentsource));
     execute(body);
     currentrecipe = NULL;
+});
+
+ICOMMAND(furnacefuel, "sf", (char *itemortag, float *seconds),
+{
+    rawfurnacefuels.add(new rawfurnacefuel(itemortag, *seconds, currentsource));
+});
+
+ICOMMAND(furnacerecipe, "se", (char *id, uint *body),
+{
+    if(currentfurnacerecipe)
+    {
+        recipewarning(id, currentsource, "nested furnacerecipe blocks are not allowed");
+        return;
+    }
+    currentfurnacerecipe = rawfurnacerecipes.add(new rawfurnacerecipe(id, currentsource));
+    execute(body);
+    currentfurnacerecipe = NULL;
+});
+
+ICOMMAND(furnaceoutput, "si", (char *item, int *count),
+{
+    if(!currentfurnacerecipe) return;
+    copystring(currentfurnacerecipe->output, item);
+    currentfurnacerecipe->outputcount = *count;
+});
+
+ICOMMAND(furnacetime, "f", (float *seconds),
+{
+    if(currentfurnacerecipe) currentfurnacerecipe->seconds = *seconds;
+});
+
+ICOMMAND(furnaceingredient, "si", (char *itemortag, int *count),
+{
+    if(currentfurnacerecipe) currentfurnacerecipe->ingredients.add(rawingredient(itemortag, "", *count));
 });
 
 ICOMMAND(recipetype, "s", (char *type),

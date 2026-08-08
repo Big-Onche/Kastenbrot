@@ -67,6 +67,7 @@ enum
     N_IDENTITYRESPONSE, N_IDENTITYSUCCESS, N_IDENTITYFAILURE, N_IDENTITYREVOKED,
     N_INVENTORYSTATE, N_INVENTORYACTION, N_CRAFTSTATE, N_CRAFTACTION, N_WORLDACTION, N_WORLDAUTH, N_ACTIONRESULT,
     N_BREAKSTATE, N_DROPSETTINGS, N_DROPSPAWN, N_DROPDELETE, N_DROPPICKUP,
+    N_FURNACESTATE, N_FURNACEACTION,
     NUMMSG
 };
 
@@ -93,6 +94,15 @@ enum
     CRAFT_ACTION_TAKE_OUTPUT,
     CRAFT_ACTION_CLICK_GRID,
     CRAFT_ACTION_TAKE_OUTPUT_CURSOR
+};
+
+enum
+{
+    FURNACE_ACTION_OPEN = 0,
+    FURNACE_ACTION_CLOSE,
+    FURNACE_ACTION_CLICK_INPUT,
+    FURNACE_ACTION_CLICK_FUEL,
+    FURNACE_ACTION_CLICK_OUTPUT
 };
 
 enum
@@ -137,13 +147,14 @@ static const int msgsizes[] =
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
     N_INVENTORYSTATE, 0, N_INVENTORYACTION, 5, N_CRAFTSTATE, 0, N_CRAFTACTION, 7, N_WORLDACTION, 9, N_WORLDAUTH, 7,
     N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 10, N_DROPDELETE, 3, N_DROPPICKUP, 6,
+    N_FURNACESTATE, 0, N_FURNACEACTION, 7,
     -1
 };
 
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 17
+#define PROTOCOL_VERSION 18
 
 static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &slotitem, int &slotcount, int button)
 {
@@ -331,6 +342,10 @@ namespace game
                                  int cursoritem, int cursorcount, int cursordurability);
     extern void receivecraftstate(const int *items, const int *counts, const int *durabilities, int slots, int gridsize, int stationitem,
                                   int recipe, int outputitem, int outputcount);
+    extern void receivefurnacestate(const furnaceinstance &furnace, bool open, bool cooking);
+    extern void resetfurnaces();
+    extern bool savelocalfurnaces(const char *world);
+    extern bool loadlocalfurnaces(const char *world);
     extern void receiveactionresult(uint requestid, int result, const char *reason);
     extern void receivebreakstate(int actor, uint requestid, int phase, int action, const ivec &target, int orient, int stage);
     extern int smoothmove, smoothdist;

@@ -159,6 +159,43 @@ extern const char *getinventoryitemmodel(int index);
 extern const char *getinventoryitemicon(int index);
 extern int getinventoryitemindex(const char *id);
 
+enum { FURNACE_INPUT_MAX = 4 };
+struct furnacematch
+{
+    int recipe, outputitem, outputcount, consume[FURNACE_INPUT_MAX];
+
+    furnacematch() : recipe(-1), outputitem(-1), outputcount(0) { loopi(FURNACE_INPUT_MAX) consume[i] = 0; }
+};
+struct furnaceinstance
+{
+    ivec target;
+    int worlditem, inputslots, inputlimit;
+    int inputitems[FURNACE_INPUT_MAX], inputcounts[FURNACE_INPUT_MAX], inputdurabilities[FURNACE_INPUT_MAX];
+    int fuelitem, fuelcount, fueldurability, outputitem, outputcount, outputdurability;
+    int activerecipe, progress, heat, heatcapacity;
+
+    furnaceinstance(const ivec &target = ivec(0, 0, 0), int worlditem = -1, int inputslots = FURNACE_INPUT_MAX, int inputlimit = 16)
+        : target(target), worlditem(worlditem), inputslots(inputslots), inputlimit(inputlimit), fuelitem(-1), fuelcount(0), fueldurability(0),
+          outputitem(-1), outputcount(0), outputdurability(0), activerecipe(-1), progress(0), heat(0), heatcapacity(0)
+    {
+        loopi(FURNACE_INPUT_MAX)
+        {
+            inputitems[i] = -1;
+            inputcounts[i] = inputdurabilities[i] = 0;
+        }
+    }
+};
+extern bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit);
+extern int numfurnacerecipes();
+extern const char *getfurnacerecipeid(int recipe);
+extern int getfurnacerecipeindex(const char *id);
+extern int getfurnacerecipeoutputitem(int recipe);
+extern int getfurnacerecipeoutputcount(int recipe);
+extern int getfurnacerecipeduration(int recipe);
+extern int getfurnacefuelmillis(int item);
+extern bool matchfurnacerecipe(const int *items, const int *counts, int slots, int requestedrecipe, furnacematch &match);
+extern bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchanged);
+
 enum { CRAFT_GRID_MAX = 9 };
 struct craftmatch
 {

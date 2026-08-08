@@ -55,6 +55,7 @@ namespace game
     static uint nextlocaldropid = 1;
     static int personaldrops = 0, droptimeout = 300, maxdrop = 1024, dynamicentsmaxdistance = 64, requireconfirmeditems = 1;
     static void updateworlddrops();
+    static void updatefurnaces();
     static void predictsurvivaldrops(int objectitem, uint requestid, const ivec &target, int action, int orient);
 #endif
 
@@ -328,6 +329,7 @@ namespace game
         connected = remote = false;
         predictedworldactions.deletecontents();
         resetworlddrops();
+        resetfurnaces();
         nextworldrequestid = 1;
         resetsurvivalinventory();
         receiveserversettings(5000, 250, 1024, 128, 4000);
@@ -578,6 +580,7 @@ namespace game
         updatewatersimulation();
         updatesurvivalbreaking();
         updateworlddrops();
+        updatefurnaces();
 #endif
         gets2c();
         c2sinfo();
@@ -796,6 +799,11 @@ namespace game
     static int craftinggridsize = 2, craftingstationitem = -1, craftingrecipe = -1,
                craftingoutputitem = -1, craftingoutputcount = 0, inventorycursoritem = -1, inventorycursorcount = 0,
                inventorycursordurability = 0;
+    static vector<furnaceinstance *> localfurnaces;
+    static furnaceinstance synchronizedfurnace;
+    static ivec openfurnacetarget(0, 0, 0);
+    static bool furnaceopen = false, synchronizedfurnacecooking = false;
+    static int furnacesyncmillis = 0;
 
     enum
     {
@@ -950,6 +958,186 @@ namespace game
 #endif
     }
 
+    static void requestfurnaceaction(int action, int first = 0, int second = 0, int third = 0, int fourth = 0)
+    {
+#ifndef STANDALONE
+        if(waitforserveredit()) addmsg(N_FURNACEACTION, "ri6", int(newworldrequestid()), action, first, second, third, fourth);
+#else
+        (void)action; (void)first; (void)second; (void)third; (void)fourth;
+#endif
+    }
+
+    static furnaceinstance *findlocalfurnace(const ivec &target)
+    {
+        loopv(localfurnaces) if(localfurnaces[i]->target == target) return localfurnaces[i];
+        return NULL;
+    }
+
+    static void removelocalfurnace(const ivec &target)
+    {
+        loopv(localfurnaces) if(localfurnaces[i]->target == target)
+        {
+            delete localfurnaces.remove(i);
+            if(furnaceopen && openfurnacetarget == target)
+            {
+                furnaceopen = false;
+#ifndef STANDALONE
+                execute("hideui furnace");
+#endif
+            }
+            return;
+        }
+    }
+
+    static furnaceinstance *currentfurnace()
+    {
+        if(!furnaceopen) return NULL;
+        return waitforserveredit() ? &synchronizedfurnace : findlocalfurnace(openfurnacetarget);
+    }
+
+    static bool limitedinventoryclick(int &cursoritem, int &cursorcount, int &cursordurability, int &slotitem, int &slotcount,
+                                      int &slotdurability, int button, int slotlimit)
+    {
+        if(button != INVENTORY_CLICK_LEFT && button != INVENTORY_CLICK_RIGHT) return false;
+        const int oldcursoritem = cursoritem, oldcursorcount = cursorcount, oldcursordurability = cursordurability,
+                  oldslotitem = slotitem, oldslotcount = slotcount, oldslotdurability = slotdurability;
+        slotlimit = max(slotlimit, 1);
+        if(button == INVENTORY_CLICK_LEFT)
+        {
+            if(cursorcount <= 0)
+            {
+                if(slotcount <= 0) return false;
+                swap(cursoritem, slotitem);
+                swap(cursorcount, slotcount);
+            }
+            else if(slotcount <= 0)
+            {
+                const int moved = min(cursorcount, slotlimit);
+                slotitem = cursoritem;
+                slotcount = moved;
+                cursorcount -= moved;
+            }
+            else if(cursoritem != slotitem)
+            {
+                if(cursorcount > slotlimit) return false;
+                swap(cursoritem, slotitem);
+                swap(cursorcount, slotcount);
+            }
+            else
+            {
+                const int moved = min(cursorcount, slotlimit - slotcount);
+                if(moved <= 0) return false;
+                slotcount += moved;
+                cursorcount -= moved;
+            }
+        }
+        else if(cursorcount <= 0)
+        {
+            if(slotcount <= 0) return false;
+            const int moved = (slotcount + 1) / 2;
+            cursoritem = slotitem;
+            cursorcount = moved;
+            slotcount -= moved;
+        }
+        else
+        {
+            if(slotcount > 0 && (slotitem != cursoritem || slotcount >= slotlimit)) return false;
+            if(slotcount <= 0) slotitem = cursoritem;
+            ++slotcount;
+            --cursorcount;
+        }
+        if(cursorcount <= 0) { cursoritem = -1; cursorcount = 0; }
+        if(slotcount <= 0) { slotitem = -1; slotcount = 0; }
+
+        if(cursoritem < 0) cursordurability = 0;
+        else if(cursoritem == oldslotitem && oldcursoritem != cursoritem) cursordurability = oldslotdurability;
+        else if(cursoritem != oldcursoritem) cursordurability = oldslotdurability;
+        if(slotitem < 0) slotdurability = 0;
+        else if(slotitem == oldcursoritem && oldslotitem != slotitem) slotdurability = oldcursordurability;
+        else if(slotitem != oldslotitem) slotdurability = oldcursordurability;
+        (void)oldcursorcount;
+        (void)oldslotcount;
+        return true;
+    }
+
+    static bool takefurnaceoutput(furnaceinstance &furnace, int button)
+    {
+        if(furnace.outputcount <= 0 || (button != INVENTORY_CLICK_LEFT && button != INVENTORY_CLICK_RIGHT)) return false;
+        if(inventorycursorcount > 0 && inventorycursoritem != furnace.outputitem) return false;
+        const int capacity = max(getinventoryitemmaxstack(furnace.outputitem), 1) - inventorycursorcount,
+                  moved = min(capacity, button == INVENTORY_CLICK_RIGHT ? 1 : furnace.outputcount);
+        if(moved <= 0) return false;
+        inventorycursoritem = furnace.outputitem;
+        inventorycursorcount += moved;
+        inventorycursordurability = furnace.outputdurability;
+        furnace.outputcount -= moved;
+        if(furnace.outputcount <= 0)
+        {
+            furnace.outputitem = -1;
+            furnace.outputcount = furnace.outputdurability = 0;
+        }
+        return true;
+    }
+
+    void receivefurnacestate(const furnaceinstance &furnace, bool open, bool cooking)
+    {
+        synchronizedfurnace = furnace;
+        openfurnacetarget = furnace.target;
+        furnaceopen = open;
+        synchronizedfurnacecooking = cooking;
+        furnacesyncmillis = lastmillis;
+#ifndef STANDALONE
+        if(open) execute("hideui survival_inventory; hideui crafting_table; showui furnace");
+        else execute("hideui furnace");
+#endif
+    }
+
+    void resetfurnaces()
+    {
+        localfurnaces.deletecontents();
+        synchronizedfurnace = furnaceinstance();
+        openfurnacetarget = ivec(0, 0, 0);
+        furnaceopen = synchronizedfurnacecooking = false;
+        furnacesyncmillis = 0;
+    }
+
+    static void updatefurnaces()
+    {
+        if(waitforserveredit() || !islocalworld()) return;
+        loopv(localfurnaces)
+        {
+            bool syncchanged = false;
+            updatefurnaceinstance(*localfurnaces[i], curtime, syncchanged);
+        }
+    }
+
+    static bool openworldfurnace(const selinfo &hit)
+    {
+        if(!m_survival) return false;
+        const int cube = getworldcubeindexat(ivec(hit.o).add(CREATIVE_GRID / 2), WORLD_ORIENT_TOP), item = getworldcubeitem(cube);
+        int inputslots = 0, inputlimit = 0;
+        if(!getworldfurnaceconfig(item, inputslots, inputlimit)) return false;
+        selinfo absolute = hit;
+        worldselectiontoabsolute(absolute);
+        openfurnacetarget = absolute.o;
+        if(waitforserveredit())
+        {
+            requestfurnaceaction(FURNACE_ACTION_OPEN, absolute.o.x, absolute.o.y, absolute.o.z, 0);
+            return true;
+        }
+        furnaceinstance *furnace = findlocalfurnace(absolute.o);
+        if(!furnace)
+        {
+            furnace = new furnaceinstance(absolute.o, item, inputslots, inputlimit);
+            localfurnaces.add(furnace);
+        }
+        furnaceopen = true;
+#ifndef STANDALONE
+        execute("hideui survival_inventory; hideui crafting_table; showui furnace");
+#endif
+        return true;
+    }
+
     void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed)
     {
         authoritativebreakmillis = clamp(breakmillis, 100, 60000);
@@ -1052,6 +1240,114 @@ namespace game
             f->printf("inventory %d %d %d %d\n", i, survivalitems[i], survivalcounts[i], survivaldurabilities[i]);
         if(inventorycursoritem >= 0 && inventorycursorcount > 0)
             f->printf("inventory_cursor %d %d %d\n", inventorycursoritem, inventorycursorcount, inventorycursordurability);
+    }
+
+    static bool writefurnacestring(stream &file, const char *value)
+    {
+        const int length = value ? int(strlen(value)) : 0;
+        return length < MAXSTRLEN && file.putlil<ushort>(ushort(length)) &&
+               (!length || file.write(value, length) == size_t(length));
+    }
+
+    static bool readfurnacestring(stream &file, char *value, int size)
+    {
+        const uint length = file.getlil<ushort>();
+        if(length >= uint(size) || (length && file.read(value, length) != length)) return false;
+        value[length] = '\0';
+        return true;
+    }
+
+    static bool writefurnacestack(stream &file, int item, int count, int durability)
+    {
+        return writefurnacestring(file, count > 0 ? getinventoryitemid(item) : "") &&
+               file.putlil<int>(max(count, 0)) && file.putlil<int>(max(durability, 0));
+    }
+
+    static bool readfurnacestack(stream &file, int &item, int &count, int &durability, int limit)
+    {
+        string id;
+        if(!readfurnacestring(file, id, sizeof(id))) return false;
+        count = file.getlil<int>();
+        durability = file.getlil<int>();
+        item = id[0] ? getinventoryitemindex(id) : -1;
+        if(item < 0 || count <= 0)
+        {
+            item = -1;
+            count = durability = 0;
+        }
+        else count = clamp(count, 1, min(max(getinventoryitemmaxstack(item), 1), max(limit, 1)));
+        return true;
+    }
+
+    bool savelocalfurnaces(const char *world)
+    {
+        if(!world || !world[0]) return false;
+        defformatstring(name, "media/map/%s/world.furnaces", world);
+        stream *file = openrawfile(path(name), "wb");
+        if(!file) return false;
+        bool ok = file->write("CCFU", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(localfurnaces.length()));
+        loopv(localfurnaces) if(ok)
+        {
+            furnaceinstance &furnace = *localfurnaces[i];
+            ok = file->putlil<int>(furnace.target.x) && file->putlil<int>(furnace.target.y) && file->putlil<int>(furnace.target.z) &&
+                 writefurnacestring(*file, getinventoryitemid(furnace.worlditem));
+            loopj(FURNACE_INPUT_MAX) if(ok)
+                ok = writefurnacestack(*file, furnace.inputitems[j], furnace.inputcounts[j], furnace.inputdurabilities[j]);
+            if(ok) ok = writefurnacestack(*file, furnace.fuelitem, furnace.fuelcount, furnace.fueldurability) &&
+                        writefurnacestack(*file, furnace.outputitem, furnace.outputcount, furnace.outputdurability) &&
+                        writefurnacestring(*file, getfurnacerecipeid(furnace.activerecipe)) &&
+                        file->putlil<int>(max(furnace.progress, 0)) && file->putlil<int>(max(furnace.heat, 0)) &&
+                        file->putlil<int>(max(furnace.heatcapacity, 0));
+        }
+        delete file;
+        return ok;
+    }
+
+    bool loadlocalfurnaces(const char *world)
+    {
+        localfurnaces.deletecontents();
+        if(!world || !world[0]) return false;
+        defformatstring(name, "media/map/%s/world.furnaces", world);
+        stream *file = openrawfile(path(name), "rb");
+        if(!file) return true;
+        char magic[4] = { 0, 0, 0, 0 };
+        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
+                   count = version == 1 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCFU", 4) && version == 1 && count <= 100000;
+        loopi(ok ? int(count) : 0)
+        {
+            ivec target;
+            target.x = file->getlil<int>(); target.y = file->getlil<int>(); target.z = file->getlil<int>();
+            string worlditemid, recipeid;
+            ok = readfurnacestring(*file, worlditemid, sizeof(worlditemid));
+            const int worlditem = ok ? getinventoryitemindex(worlditemid) : -1;
+            int inputslots = 0, inputlimit = 0;
+            ok = ok && getworldfurnaceconfig(worlditem, inputslots, inputlimit);
+            furnaceinstance *furnace = ok ? new furnaceinstance(target, worlditem, inputslots, inputlimit) : NULL;
+            loopj(FURNACE_INPUT_MAX) if(ok)
+                ok = readfurnacestack(*file, furnace->inputitems[j], furnace->inputcounts[j], furnace->inputdurabilities[j], inputlimit);
+            if(ok) ok = readfurnacestack(*file, furnace->fuelitem, furnace->fuelcount, furnace->fueldurability, INT_MAX) &&
+                        readfurnacestack(*file, furnace->outputitem, furnace->outputcount, furnace->outputdurability, INT_MAX) &&
+                        readfurnacestring(*file, recipeid, sizeof(recipeid));
+            if(ok)
+            {
+                furnace->activerecipe = recipeid[0] ? getfurnacerecipeindex(recipeid) : -1;
+                furnace->progress = clamp(file->getlil<int>(), 0, max(getfurnacerecipeduration(furnace->activerecipe) - 1, 0));
+                furnace->heat = max(file->getlil<int>(), 0);
+                furnace->heatcapacity = max(file->getlil<int>(), furnace->heat);
+                if(furnace->fuelcount > 0 && getfurnacefuelmillis(furnace->fuelitem) <= 0)
+                    furnace->fuelitem = -1, furnace->fuelcount = furnace->fueldurability = 0;
+                bool syncchanged = false;
+                updatefurnaceinstance(*furnace, 0, syncchanged);
+                localfurnaces.add(furnace);
+            }
+            else delete furnace;
+            if(!ok) break;
+        }
+        if(ok) ok = file->tell() == file->size();
+        delete file;
+        if(!ok) localfurnaces.deletecontents();
+        return ok;
     }
 
     static bool addsurvivalitem(int item)
@@ -1518,6 +1814,7 @@ namespace game
     {
         selinfo hit;
         if(!creativehit(hit)) return;
+        if(openworldfurnace(hit)) return;
         if(opencraftingtable(hit)) return;
 
         const int selected = selectedcreativeblock(), type = getworlditemtype(selected), worldindex = getworlditemindex(selected);
@@ -1845,7 +2142,13 @@ namespace game
         {
             item = survivalblockitem(survivalbreaktarget);
             emitsurvivalblockchips(target, 8);
-            if(!waitforserveredit()) mpdelcube(survivalbreaktarget.cube, true);
+            if(!waitforserveredit())
+            {
+                selinfo absolute = survivalbreaktarget.cube;
+                worldselectiontoabsolute(absolute);
+                removelocalfurnace(absolute.o);
+                mpdelcube(survivalbreaktarget.cube, true);
+            }
             else
             {
                 mpdelcube(survivalbreaktarget.cube, false);
@@ -2009,6 +2312,103 @@ namespace game
     });
     ICOMMAND(getinventorycursoritem, "", (), intret(inventorycursorcount > 0 ? inventorycursoritem : -1));
     ICOMMAND(getinventorycursorcount, "", (), intret(inventorycursorcount));
+    ICOMMAND(getfurnaceinputslots, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace ? furnace->inputslots : 0);
+    });
+    ICOMMAND(getfurnaceinputitem, "i", (int *slot),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace && *slot >= 0 && *slot < furnace->inputslots && furnace->inputcounts[*slot] > 0 ? furnace->inputitems[*slot] : -1);
+    });
+    ICOMMAND(getfurnaceinputcount, "i", (int *slot),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace && *slot >= 0 && *slot < furnace->inputslots ? furnace->inputcounts[*slot] : 0);
+    });
+    ICOMMAND(getfurnacefuelitem, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace && furnace->fuelcount > 0 ? furnace->fuelitem : -1);
+    });
+    ICOMMAND(getfurnacefuelcount, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace ? furnace->fuelcount : 0);
+    });
+    ICOMMAND(getfurnaceoutputitem, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace && furnace->outputcount > 0 ? furnace->outputitem : -1);
+    });
+    ICOMMAND(getfurnaceoutputcount, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        intret(furnace ? furnace->outputcount : 0);
+    });
+    ICOMMAND(getfurnaceprogress, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace || furnace->activerecipe < 0) { floatret(0); return; }
+        int progress = furnace->progress;
+        if(waitforserveredit() && synchronizedfurnacecooking)
+            progress += min(max(lastmillis - furnacesyncmillis, 0), furnace->heat);
+        floatret(clamp(progress / float(max(getfurnacerecipeduration(furnace->activerecipe), 1)), 0.0f, 1.0f));
+    });
+    ICOMMAND(getfurnaceheat, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace) { floatret(0); return; }
+        const int heat = max(furnace->heat - (waitforserveredit() ? max(lastmillis - furnacesyncmillis, 0) : 0), 0);
+        floatret(clamp(heat / 1000.0f, 0.0f, float(INT_MAX) / 1000.0f));
+    });
+    ICOMMAND(getfurnaceheatratio, "", (),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace || furnace->heatcapacity <= 0) { floatret(0); return; }
+        const int heat = max(furnace->heat - (waitforserveredit() ? max(lastmillis - furnacesyncmillis, 0) : 0), 0);
+        floatret(clamp(heat / float(furnace->heatcapacity), 0.0f, 1.0f));
+    });
+    ICOMMAND(furnaceinputclick, "ii", (int *slot, int *button),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace || *slot < 0 || *slot >= furnace->inputslots) return;
+        if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_CLICK_INPUT, *slot, *button);
+        else if(limitedinventoryclick(inventorycursoritem, inventorycursorcount, inventorycursordurability,
+                                      furnace->inputitems[*slot], furnace->inputcounts[*slot], furnace->inputdurabilities[*slot],
+                                      *button, min(furnace->inputlimit, max(getinventoryitemmaxstack(inventorycursoritem), 1))))
+        {
+            bool syncchanged = false;
+            updatefurnaceinstance(*furnace, 0, syncchanged);
+        }
+    });
+    ICOMMAND(furnacefuelclick, "i", (int *button),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace) return;
+        if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_CLICK_FUEL, *button);
+        else
+        {
+            if(inventorycursorcount > 0 && getfurnacefuelmillis(inventorycursoritem) <= 0) return;
+            limitedinventoryclick(inventorycursoritem, inventorycursorcount, inventorycursordurability,
+                                  furnace->fuelitem, furnace->fuelcount, furnace->fueldurability, *button,
+                                  max(getinventoryitemmaxstack(inventorycursoritem), 1));
+        }
+    });
+    ICOMMAND(furnaceoutputclick, "i", (int *button),
+    {
+        furnaceinstance *furnace = currentfurnace();
+        if(!furnace) return;
+        if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_CLICK_OUTPUT, *button);
+        else takefurnaceoutput(*furnace, *button);
+    });
+    ICOMMAND(closefurnace, "", (),
+    {
+        if(!furnaceopen) return;
+        if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_CLOSE);
+        furnaceopen = synchronizedfurnacecooking = false;
+    });
     ICOMMAND(survivalinventoryclick, "ii", (int *slot, int *button),
     {
         if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
