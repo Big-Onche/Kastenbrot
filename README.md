@@ -1,4 +1,4 @@
-![Logo of Kastenbrot](https://raw.githubusercontent.com/Big-Onche/Cube-Craft/c662889f6539805b216470690c0b74994381be6b/media/interface/logo.png) 
+![Logo of Kastenbrot](https://raw.githubusercontent.com/Big-Onche/Kastenbrot/refs/heads/main/media/asset/logo_large.png) 
 
 **Kastenbrot** is an experimental voxel sandbox built on Cube Engine.
 
@@ -21,7 +21,7 @@ The project is based on [Tesseract](http://tesseract.gg/), a fork of Cube 2: Sau
 - 🟩🟩🟩⬛⬛ **Performance** : Acceptable
 - 🟩🟩🟩🟩⬛ **Multiplayer** : Simple yet working
 - 🟩⬛⬛⬛⬛ **Content:** Extremly early
-- 🟩⬛⬛⬛⬛ **Survival:** Extremly early
+- 🟩🟩⬛⬛⬛ **Survival:** Very early
 - 🟩🟩⬛⬛⬛ **UI:** Very early
 - ⬛⬛⬛⬛⬛ **Accessiblity:** No accessibility settings
 - ⬛⬛⬛⬛⬛ **Sound**: No sound
@@ -66,6 +66,10 @@ Kastenbrot inherits and extends Tesseract’s modern deferred renderer:
 - Foundations for carved blocks, custom geometry, and prefabs
 - Background saving and automatic diff compaction
 - Persistent undo, redo, rollback, and corruption recovery
+
+### Game content
+
+- Crafting and smelting using recipes
 
 ### Multiplayer
 
