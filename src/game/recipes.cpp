@@ -182,24 +182,36 @@ namespace
 
         if(raw.type == RECIPE_SHAPED)
         {
-            recipe->height = raw.pattern.length();
-            recipe->width = recipe->height ? int(strlen(raw.pattern[0])) : 0;
-            if(recipe->width < 1 || recipe->width > 3 || recipe->height < 1 || recipe->height > 3)
+            const int rawheight = raw.pattern.length(), rawwidth = rawheight ? int(strlen(raw.pattern[0])) : 0;
+            if(rawwidth < 1 || rawwidth > 3 || rawheight < 1 || rawheight > 3)
             {
                 recipewarning(raw.id, raw.source, "shaped pattern dimensions must be between 1x1 and 3x3");
                 delete recipe;
                 return false;
             }
-            loopv(raw.pattern) if(int(strlen(raw.pattern[i])) != recipe->width)
+            loopv(raw.pattern) if(int(strlen(raw.pattern[i])) != rawwidth)
             {
                 recipewarning(raw.id, raw.source, "all shaped pattern rows must have the same width");
                 delete recipe;
                 return false;
             }
+            int minx = rawwidth, miny = rawheight, maxx = -1, maxy = -1;
+            loopi(rawheight) loopj(rawwidth) if(raw.pattern[i][j] != ' ')
+            {
+                minx = min(minx, j); miny = min(miny, i); maxx = max(maxx, j); maxy = max(maxy, i);
+            }
+            if(maxx < minx || maxy < miny)
+            {
+                recipewarning(raw.id, raw.source, "shaped recipes require at least one ingredient");
+                delete recipe;
+                return false;
+            }
+            recipe->width = maxx - minx + 1;
+            recipe->height = maxy - miny + 1;
             bool used[256] = { false };
             loopi(recipe->height) loopj(recipe->width)
             {
-                const uchar symbol = raw.pattern[i][j];
+                const uchar symbol = raw.pattern[miny + i][minx + j];
                 if(symbol == ' ') continue;
                 rawingredient *rawingredient = findrawsymbol(raw, symbol);
                 if(!rawingredient)
