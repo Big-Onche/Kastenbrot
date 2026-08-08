@@ -652,10 +652,12 @@ int getworldbreakmillis(int type, int index, int toolitem, float quality)
     const bool tool = isinventorytool(toolitem);
     const char *preferred = getworldobjectpreferredtool(type, index);
     const bool correct = tool && preferred[0] && !cubecasecmp(getinventorytooltype(toolitem), preferred);
-    float speed = tool ? getinventorytoolspeed(toolitem) * (correct ? 1.0f : 0.2f) : 1.0f;
-    if(getinventorytooltier(toolitem) < getworldobjectrequiredtier(type, index)) speed *= 0.2f;
-    speed *= max(quality, 0.05f);
-    return clamp(int(ceilf(getworldobjecthardness(type, index) * 1000.0f / max(speed, 0.01f))), 1, 600000);
+    const bool canharvest = getworlddropeligible(type, index, toolitem);
+    const float speed = (tool ? getinventorytoolspeed(toolitem) * (correct ? 1.0f : 0.2f) : 1.0f) * max(quality, 0.05f);
+    const float damage = speed / getworldobjecthardness(type, index) / (canharvest ? 30.0f : 100.0f);
+    if(damage >= 1.0f) return 0;
+    if(damage <= 1.0f / 12000.0f) return 600000;
+    return int(ceilf(1.0f / damage)) * 50;
 }
 
 bool getworlddropeligible(int type, int index, int toolitem)
@@ -9995,10 +9997,12 @@ int getworldbreakmillis(int type, int index, int toolitem, float quality)
     const bool tool = isinventorytool(toolitem);
     const char *preferred = getworldobjectpreferredtool(type, index);
     const bool correct = tool && preferred[0] && !cubecasecmp(getinventorytooltype(toolitem), preferred);
-    float speed = tool ? getinventorytoolspeed(toolitem) * (correct ? 1.0f : 0.2f) : 1.0f;
-    if(getinventorytooltier(toolitem) < getworldobjectrequiredtier(type, index)) speed *= 0.2f;
-    speed *= max(quality, 0.05f);
-    return clamp(int(ceilf(getworldobjecthardness(type, index) * 1000.0f / max(speed, 0.01f))), 1, 600000);
+    const bool canharvest = getworlddropeligible(type, index, toolitem);
+    const float speed = (tool ? getinventorytoolspeed(toolitem) * (correct ? 1.0f : 0.2f) : 1.0f) * max(quality, 0.05f);
+    const float damage = speed / getworldobjecthardness(type, index) / (canharvest ? 30.0f : 100.0f);
+    if(damage >= 1.0f) return 0;
+    if(damage <= 1.0f / 12000.0f) return 600000;
+    return int(ceilf(1.0f / damage)) * 50;
 }
 
 bool getworlddropeligible(int type, int index, int toolitem)
