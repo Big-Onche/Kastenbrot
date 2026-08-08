@@ -215,6 +215,8 @@
 			<Option compile="1" />
 			<Option weight="0" />
 		</Unit>
+		<Unit filename="../game/mining.cpp" />
+		<Unit filename="../game/mining.h" />
 		<Unit filename="../game/recipes.cpp" />
 		<Unit filename="../game/render.cpp" />
 		<Unit filename="../game/server.cpp" />

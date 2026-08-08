@@ -435,6 +435,7 @@
     <ClInclude Include="..\shared\igame.h" />
     <ClInclude Include="..\shared\tools.h" />
     <ClInclude Include="..\game\game.h" />
+    <ClInclude Include="..\game\mining.h" />
     <ClInclude Include="..\game\world.h" />
   </ItemGroup>
   <ItemGroup>
@@ -1040,6 +1041,10 @@
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|x64'">game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(IntDir)game.pch</PrecompiledHeaderOutputFile>
       <PrecompiledHeaderOutputFile Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)game.pch</PrecompiledHeaderOutputFile>
+    </ClCompile>
+    <ClCompile Include="..\game\mining.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
     <ClCompile Include="..\game\render.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>

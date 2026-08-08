@@ -117,6 +117,7 @@ CLIENT_OBJS= \
 	game/entities.o \
 	game/environment.o \
 	game/game.o \
+	game/mining.o \
 	game/recipes.o \
 	game/render.o \
 	game/server.o \
@@ -157,6 +158,7 @@ SERVER_OBJS= \
 	standalone/engine/worldio.o \
 	standalone/game/entities.o \
 	standalone/game/game.o \
+	standalone/game/mining.o \
 	standalone/game/recipes.o \
 	standalone/game/server.o
 
@@ -467,6 +469,9 @@ game/entities.o: shared/glemu.h shared/iengine.h shared/igame.h
 game/game.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/game.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/game.o: shared/iengine.h shared/igame.h
+game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h shared/geom.h
+game/mining.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
+game/mining.o: shared/iengine.h shared/igame.h
 game/render.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/render.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/render.o: shared/iengine.h shared/igame.h
@@ -510,6 +515,9 @@ standalone/engine/worldio.o: shared/iengine.h shared/igame.h engine/world.h
 standalone/game/entities.o: game/game.h shared/cube.h shared/tools.h
 standalone/game/entities.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/entities.o: shared/iengine.h shared/igame.h
+standalone/game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h
+standalone/game/mining.o: shared/geom.h shared/ents.h shared/command.h
+standalone/game/mining.o: shared/iengine.h shared/igame.h
 standalone/game/server.o: game/game.h shared/cube.h shared/tools.h
 standalone/game/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/server.o: shared/iengine.h shared/igame.h

@@ -2,6 +2,7 @@
 #define __GAME_H__
 
 #include "cube.h"
+#include "mining.h"
 
 #define DMF 16.0f
 #define DNF 100.0f
