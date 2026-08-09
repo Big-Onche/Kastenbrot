@@ -6,6 +6,7 @@ extern const char *getinventorytooltype(int index);
 extern int getinventorytooltier(int index);
 extern float getinventorytoolspeed(int index);
 extern int getinventorytoolmaxdurability(int index);
+extern float getinventorytooldamage(int index);
 extern float getworldobjecthardness(int type, int index);
 extern const char *getworldobjectpreferredtool(int type, int index);
 extern int getworldobjectrequiredtier(int type, int index);

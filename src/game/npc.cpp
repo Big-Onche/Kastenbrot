@@ -394,11 +394,7 @@ namespace game
     static float heldattackdamage()
     {
         const int item = selectedcreativeblock();
-        if(item < 0) return 1.0f;
-        const char *id = getinventoryitemid(item);
-        if(!cubecasecmp(id, "stone_sword")) return 4.0f;
-        if(!cubecasecmp(id, "wood_sword")) return 3.0f;
-        return isinventorytool(item) ? 2.0f : 1.0f;
+        return item >= 0 && isinventorytool(item) ? getinventorytooldamage(item) : 1.0f;
     }
 
     static void despawnnpc(npc *mob)

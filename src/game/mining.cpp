@@ -9,9 +9,9 @@ namespace
     {
         string itemid, type;
         int tier, maxdurability;
-        float speed;
+        float speed, damage;
 
-        tooldefinition(const char *itemid = "") : tier(0), maxdurability(0), speed(1.0f)
+        tooldefinition(const char *itemid = "") : tier(0), maxdurability(0), speed(1.0f), damage(2.0f)
         {
             copystring(this->itemid, itemid);
             type[0] = '\0';
@@ -92,16 +92,17 @@ namespace game
     }
 }
 
-ICOMMAND(inventorytool, "ssifi", (char *id, char *tooltype, int *tier, float *speed, int *maxdurability),
+ICOMMAND(inventorytool, "ssififN",
+         (char *id, char *tooltype, int *tier, float *speed, int *maxdurability, float *damage, int *numargs),
 {
     if(getinventoryitemindex(id) < 0)
     {
         conoutf(CON_ERROR, "inventorytool references unknown inventory item %s", id);
         return;
     }
-    if(!tooltype[0] || *tier < 0 || *speed <= 0 || *maxdurability <= 0)
+    if(!tooltype[0] || *tier < 0 || *speed <= 0 || *maxdurability <= 0 || (*numargs >= 6 && *damage <= 0))
     {
-        conoutf(CON_ERROR, "inventorytool for %s requires a type, non-negative tier, positive speed, and positive durability", id);
+        conoutf(CON_ERROR, "inventorytool for %s requires a type, non-negative tier, positive speed, durability, and damage", id);
         return;
     }
     tooldefinition *tool = findtooldefinition(id);
@@ -110,6 +111,7 @@ ICOMMAND(inventorytool, "ssifi", (char *id, char *tooltype, int *tier, float *sp
     tool->tier = *tier;
     tool->speed = *speed;
     tool->maxdurability = *maxdurability;
+    tool->damage = *numargs >= 6 ? *damage : 2.0f;
 });
 
 ICOMMAND(worldmining, "sfsiiiN",
@@ -161,6 +163,12 @@ int getinventorytoolmaxdurability(int index)
 {
     tooldefinition *tool = gettooldefinition(index);
     return tool ? tool->maxdurability : 0;
+}
+
+float getinventorytooldamage(int index)
+{
+    tooldefinition *tool = gettooldefinition(index);
+    return tool ? tool->damage : 1.0f;
 }
 
 float getworldobjecthardness(int type, int index)
