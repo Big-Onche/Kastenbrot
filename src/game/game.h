@@ -372,7 +372,11 @@ namespace entities
 
 namespace game
 {
-    enum { CREATIVE_ARM_CYCLE = 300 };
+    enum
+    {
+        CREATIVE_ARM_CYCLE = 300,
+        SURVIVAL_BUILD_REACH = 4 * 16
+    };
 
     struct networkedit
     {

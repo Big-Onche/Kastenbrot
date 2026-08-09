@@ -1694,6 +1694,11 @@ namespace game
         return (m_creative || m_survival) && !editmode && player1 && player1->state == CS_ALIVE;
     }
 
+    static float buildactionreach()
+    {
+        return m_survival ? float(SURVIVAL_BUILD_REACH) : float(CREATIVE_REACH);
+    }
+
     float creativearmwave(int elapsed)
     {
         float progress = clamp(elapsed / float(CREATIVE_ARM_CYCLE), 0.0f, 1.0f);
@@ -1724,9 +1729,10 @@ namespace game
 
         const vec origin = camera1 ? camera1->o : player1->o;
         vec hitpos;
-        float dist = raycubepos(origin, camdir, hitpos, CREATIVE_REACH,
+        const float reach = buildactionreach();
+        float dist = raycubepos(origin, camdir, hitpos, reach,
                                 RAY_CLIPMAT | RAY_SKIPFIRST, CREATIVE_GRID);
-        if(dist >= CREATIVE_REACH) return false;
+        if(dist >= reach) return false;
         if(hitpoint) *hitpoint = hitpos;
 
         // Step just through the hit surface so flooring selects the occupied cell.
@@ -1767,7 +1773,7 @@ namespace game
 
         const vec origin = camera1 ? camera1->o : player1->o;
         int orient = -1, entity = -1;
-        rayent(origin, camdir, CREATIVE_REACH, RAY_CLIPMAT | RAY_ENTS | RAY_SKIPFIRST,
+        rayent(origin, camdir, buildactionreach(), RAY_CLIPMAT | RAY_ENTS | RAY_SKIPFIRST,
                CREATIVE_GRID, orient, entity);
         if(entity >= 0 && isworldscatterentity(entity) &&
            getworldscatterentitybox(entity, target.center, target.radius))
@@ -1926,6 +1932,7 @@ namespace game
 
 #ifndef STANDALONE
     static bool survivalbreakactive = false;
+    static bool survivalattackhitnpc = false;
     static creativetarget survivalbreaktarget;
     static int survivalbreakstart = 0, survivalbreakparticlemillis = -1, survivalbreaklaststage = -1,
                survivalbreaktoolslot = -1, survivalbreaktoolitem = -1, survivalbreaktooldurability = 0, survivalbreakduration = 1,
@@ -2015,7 +2022,7 @@ namespace game
 
     static void updatesurvivalbreaking()
     {
-        if(!survivalenabled() || !player1->renderattacking)
+        if(!survivalenabled() || !player1->renderattacking || survivalattackhitnpc)
         {
             if(survivalbreakactive) cancelsurvivalbreak();
             survivalbreakactive = false;
@@ -2239,6 +2246,9 @@ namespace game
                 player1->renderattackmillis = lastmillis;
                 player1->renderattackreleasemillis = -1000;
                 const bool hitnpc = attacknpc();
+#ifndef STANDALONE
+                survivalattackhitnpc = survivalenabled() && hitnpc;
+#endif
                 if(creativeenabled() && !hitnpc) creativeremove();
 #ifndef STANDALONE
                 else if(survivalenabled() && !hitnpc) updatesurvivalbreaking();
@@ -2252,6 +2262,7 @@ namespace game
             player1->renderattackreleasemillis = lastmillis;
             player1->renderattacking = false;
 #ifndef STANDALONE
+            survivalattackhitnpc = false;
             if(survivalbreakactive) cancelsurvivalbreak();
             survivalbreakactive = false;
             survivalbreakparticlemillis = -1;

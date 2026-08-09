@@ -1797,6 +1797,35 @@ namespace server
         }
     }
 
+    static float serveractionreach()
+    {
+        return servercreative() ? float(buildreach) : float(game::SURVIVAL_BUILD_REACH);
+    }
+
+    static bool servernpcinterceptsaction(const clientinfo &ci, const ivec &target)
+    {
+        const vec origin = vec(ci.o).addz(28.0f), direction = serverdirection(float(ci.positionyaw), float(ci.positionpitch)),
+                  minimum(target), maximum = vec(target).add(SERVER_WORLD_BLOCK_SIZE);
+        float targetdistance = serveractionreach();
+        if(!serverraybox(origin, direction, minimum, maximum, targetdistance)) return false;
+
+        loopv(servernpcs)
+        {
+            const servernpc &mob = *servernpcs[i];
+            if(mob.deathmillis) continue;
+            loopj(NUM_HUMANOID_HITBOXES)
+            {
+                if(j != HITBOX_TORSO && mob.detachedparts & (1U << j)) continue;
+                vec center, radius;
+                servernpchitbox(mob, j, center, radius);
+                float distance = targetdistance;
+                if(serverraybox(origin, direction, vec(center).sub(radius), vec(center).add(radius), distance) && distance < targetdistance)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     static float servernpcpartmultiplier(int part)
     {
         return part == HITBOX_HEAD ? 2.0f : part == HITBOX_TORSO ? 1.0f : 0.75f;
@@ -1849,6 +1878,7 @@ namespace server
         const vec hitposition = vec(origin).madd(direction, hitdistance);
         if(!serverlineofsight(origin, hitposition)) return;
 
+        if(ci.breakactive) cancelbreak(ci);
         ci.lastnpcattack = totalmillis;
         const float damage = basedamage * servernpcpartmultiplier(hitpart);
         hit->health = max(hit->health - damage, 0.0f);
@@ -2506,6 +2536,20 @@ namespace server
         return true;
     }
 
+    static bool actiontargetoutofreach(const clientinfo &ci, const ivec &target)
+    {
+        if(servercreative()) return vec(target.x + 8.0f, target.y + 8.0f, target.z + 8.0f).dist(ci.o) > buildreach;
+
+        const vec origin = vec(ci.o).addz(28.0f), minimum(target), maximum = vec(target).add(SERVER_WORLD_BLOCK_SIZE);
+        float squareddistance = 0.0f;
+        loopi(3)
+        {
+            const float offset = origin[i] < minimum[i] ? minimum[i] - origin[i] : origin[i] > maximum[i] ? origin[i] - maximum[i] : 0.0f;
+            squareddistance += offset * offset;
+        }
+        return squareddistance > game::SURVIVAL_BUILD_REACH * game::SURVIVAL_BUILD_REACH;
+    }
+
     static bool validactiontarget(const clientinfo &ci, const ivec &target, int orient, const char *&error)
     {
         if(orient < 0 || orient > 5 || target.x % 16 || target.y % 16 || target.z % 16 ||
@@ -2519,9 +2563,14 @@ namespace server
             error = "a valid player position is required";
             return false;
         }
-        if(vec(target.x + 8.0f, target.y + 8.0f, target.z + 8.0f).dist(ci.o) > buildreach)
+        if(actiontargetoutofreach(ci, target))
         {
             error = "world target is outside allowed range";
+            return false;
+        }
+        if(servernpcinterceptsaction(ci, target))
+        {
+            error = "world target is occluded by an NPC";
             return false;
         }
         return true;
@@ -3748,7 +3797,7 @@ namespace server
                 ci->lastpositionmillis = now;
                 if(ci->breakactive)
                 {
-                    if(vec(ci->breaktarget.x + 8.0f, ci->breaktarget.y + 8.0f, ci->breaktarget.z + 8.0f).dist(ci->o) > buildreach)
+                    if(actiontargetoutofreach(*ci, ci->breaktarget) || servernpcinterceptsaction(*ci, ci->breaktarget))
                         cancelbreak(*ci);
                     else if(flags&(1<<1)) ci->breakrelease = 0;
                     else if(!ci->breakrelease) ci->breakrelease = max(totalmillis, 1);
@@ -4248,7 +4297,7 @@ namespace server
                 conoutf(CON_ERROR, "could not periodically save player position for player ID %s", ci->playerid);
             if(ci->breakactive &&
                (!ci->hasposition ||
-                vec(ci->breaktarget.x + 8.0f, ci->breaktarget.y + 8.0f, ci->breaktarget.z + 8.0f).dist(ci->o) > buildreach ||
+                actiontargetoutofreach(*ci, ci->breaktarget) || servernpcinterceptsaction(*ci, ci->breaktarget) ||
                 (ci->breakrelease && totalmillis - ci->breakrelease >= breakcancelgrace)))
                 cancelbreak(*ci);
         }
