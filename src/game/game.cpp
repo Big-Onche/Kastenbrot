@@ -74,6 +74,7 @@ namespace game
 #ifndef STANDALONE
     static void updatesurvivalbreaking();
     static void cancelclientbreakrequest(uint requestid);
+    static void hidedeathscreen();
 #endif
 
     static void putsel(packetbuf &p, const selinfo &sel)
@@ -335,6 +336,8 @@ namespace game
         connected = remote = false;
 #ifndef STANDALONE
         resetnpcs();
+        if(player1 && player1->state == CS_DEAD) hidedeathscreen();
+        clearplayerragdoll(player1);
 #endif
         predictedworldactions.deletecontents();
         resetworlddrops();
@@ -352,6 +355,9 @@ namespace game
         {
             player1->clientnum = -1;
             player1->privilege = PRIV_NONE;
+            player1->health = PLAYER_MAX_HEALTH;
+            player1->state = player1->editstate = CS_ALIVE;
+            player1->collidetype = COLLIDE_ELLIPSE;
         }
 #ifndef STANDALONE
         if(editmode) toggleedit(true);
@@ -585,7 +591,7 @@ namespace game
         updatenpcs();
 #endif
         otherplayers();
-        if(player1)
+        if(player1 && (player1->state == CS_ALIVE || player1->state == CS_EDITING))
         {
             crouchplayer(player1, 10, true);
             moveplayer(player1, 10, true);
@@ -768,6 +774,13 @@ namespace game
         findplayerspawn(player1, -1, 0);
         if(player1)
         {
+#ifndef STANDALONE
+            if(player1->state == CS_DEAD) hidedeathscreen();
+            clearplayerragdoll(player1);
+#endif
+            player1->health = PLAYER_MAX_HEALTH;
+            player1->state = player1->editstate = CS_ALIVE;
+            player1->collidetype = COLLIDE_ELLIPSE;
             player1->renderbodyyawmillis = -1;
             player1->rendercrouchmillis = -1;
             player1->renderstridemillis = -1;
@@ -1423,8 +1436,21 @@ namespace game
         return false;
     }
 
-    static bool addsurvivalitems(int item, int quantity)
+    static bool addsurvivalitems(int item, int quantity, int durability = 0)
     {
+        if(isinventorytool(item))
+        {
+            if(quantity != 1) return false;
+            loopi(SURVIVAL_USABLE_SLOTS) if(survivalitems[i] < 0 || survivalcounts[i] <= 0)
+            {
+                survivalitems[i] = item;
+                survivalcounts[i] = 1;
+                survivaldurabilities[i] = clamp(durability > 0 ? durability : getinventorytoolmaxdurability(item),
+                                                1, getinventorytoolmaxdurability(item));
+                return true;
+            }
+            return false;
+        }
         if(quantity <= 0 || !survivalhasroom(item, quantity)) return false;
         loopi(quantity) if(!addsurvivalitem(item)) return false;
         return true;
@@ -1473,7 +1499,7 @@ namespace game
 
     static void beginlocaldroppickup(worlddrop &drop)
     {
-        if(drop.removed || !addsurvivalitems(drop.item, drop.count))
+        if(drop.removed || !addsurvivalitems(drop.item, drop.count, drop.durability))
         {
             drop.pickupblocked = true;
             drop.picking = false;
@@ -1602,7 +1628,7 @@ namespace game
         while(worlddrops.length() > maxdrop) delete worlddrops.remove(0);
     }
 
-    void receivedropspawn(uint id, int source, uint sourcerequestid, int item, int count, int owner, const vec &o)
+    void receivedropspawn(uint id, int source, uint sourcerequestid, int item, int count, int durability, int owner, const vec &o)
     {
         if(!id || item < 0 || item >= numinventoryitems() || count <= 0 || findworlddrop(id)) return;
         worlddrop *drop = NULL;
@@ -1627,6 +1653,8 @@ namespace game
         drop->source = source;
         drop->item = item;
         drop->count = count;
+        drop->durability = isinventorytool(item)
+                         ? clamp(durability > 0 ? durability : getinventorytoolmaxdurability(item), 1, getinventorytoolmaxdurability(item)) : 0;
         drop->owner = owner;
         drop->created = lastmillis;
         drop->confirmed = true;
@@ -1679,6 +1707,122 @@ namespace game
     {
         return dynamicentsmaxdistance;
     }
+
+    static int localdeathsequence = 0, deaththirdperson = 0;
+
+    static void addlocaldeathdrop(int item, int count, int durability, const vec &origin, uint spreadseed)
+    {
+        if(item < 0 || count <= 0) return;
+        while(worlddrops.length() >= maxdrop) delete worlddrops.remove(0);
+        const uint hash = worlddrophash(spreadseed), anglehash = worlddrophash(hash ^ 0x9E3779B9U);
+        const float angle = float(anglehash % 36000U) * RAD / 100.0f,
+                    radius = 1.5f + float(hash % 350U) / 100.0f;
+        worlddrop *drop = new worlddrop;
+        if(!nextlocaldropid) nextlocaldropid = 1;
+        drop->id = 0x80000000U | nextlocaldropid++;
+        drop->source = player1 ? player1->clientnum : -1;
+        drop->item = item;
+        drop->count = count;
+        drop->durability = isinventorytool(item) ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
+        drop->owner = -1;
+        drop->created = drop->physicsmillis = lastmillis;
+        drop->confirmed = true;
+        drop->o = vec(origin).add(vec(cosf(angle) * radius, sinf(angle) * radius, 3.0f));
+        worlddrops.add(drop);
+    }
+
+    static void droplocalplayerinventory(const vec &origin)
+    {
+        const uint seed = worlddrophash(uint(++localdeathsequence) ^ uint(max(lastmillis, 1)));
+        loopi(SURVIVAL_USABLE_SLOTS)
+            addlocaldeathdrop(survivalitems[i], survivalcounts[i], survivaldurabilities[i], origin, seed ^ uint(i + 1) * 0x85EBCA6BU);
+        loopi(CRAFT_GRID_MAX)
+            addlocaldeathdrop(craftingitems[i], craftingcounts[i], craftingdurabilities[i], origin, seed ^ uint(i + 65) * 0xC2B2AE35U);
+        addlocaldeathdrop(inventorycursoritem, inventorycursorcount, inventorycursordurability, origin, seed ^ 0x27D4EB2FU);
+        resetsurvivalinventory();
+    }
+
+    static void showdeathscreen()
+    {
+        deaththirdperson = thirdperson;
+        thirdperson = 1;
+        execute("hideui survival_inventory; hideui crafting_table; hideui furnace; showui death_screen");
+    }
+
+    static void hidedeathscreen()
+    {
+        execute("hideui death_screen");
+        thirdperson = deaththirdperson;
+    }
+
+    static void setplayerdead(gameent &d, const vec &impulse)
+    {
+        if(d.state == CS_DEAD) return;
+        d.state = CS_DEAD;
+        d.collidetype = COLLIDE_NONE;
+        d.stopmoving();
+        d.vel = d.falling = vec(0, 0, 0);
+        beginplayerragdoll(&d, impulse);
+        if(&d == player1) showdeathscreen();
+        cleardynentcache();
+    }
+
+    static void setplayeralive(gameent &d, const vec &position)
+    {
+        clearplayerragdoll(&d);
+        d.o = position;
+        d.health = PLAYER_MAX_HEALTH;
+        d.state = d.editstate = CS_ALIVE;
+        d.collidetype = COLLIDE_ELLIPSE;
+        d.stopmoving();
+        d.vel = d.falling = vec(0, 0, 0);
+        d.resetinterp();
+        if(&d == player1) hidedeathscreen();
+        cleardynentcache();
+    }
+
+    void damageplayer(float damage, const vec &source)
+    {
+        if(!m_survival || multiplayer(false) || !player1 || player1->state != CS_ALIVE || damage <= 0) return;
+        player1->health = max(player1->health - damage, 0.0f);
+        if(player1->health > 0) return;
+        vec impulse = vec(player1->o).sub(source);
+        if(impulse.squaredlen() > 1e-4f) impulse.normalize().mul(45.0f);
+        droplocalplayerinventory(player1->feetpos());
+        setplayerdead(*player1, impulse);
+    }
+
+    void receiveplayerstate(int clientnum, float health, int state, const vec &absoluteposition, const vec &impulse)
+    {
+        gameent *d = player1 && clientnum == player1->clientnum ? player1 : clients.inrange(clientnum) ? clients[clientnum] : NULL;
+        if(!d) return;
+        d->lastupdate = lastmillis;
+        if(d != player1) d->smoothmillis = 0;
+        vec position(absoluteposition);
+        if(waitforserveredit()) worldpositiontolocal(position);
+        d->health = clamp(health, 0.0f, float(PLAYER_MAX_HEALTH));
+        if(state == CS_DEAD)
+        {
+            d->o = position;
+            d->resetinterp();
+            setplayerdead(*d, impulse);
+        }
+        else if(d->state == CS_DEAD) setplayeralive(*d, position);
+        else d->state = CS_ALIVE;
+    }
+
+    ICOMMAND(getplayerhealth, "", (), intret(player1 ? int(ceilf(player1->health)) : PLAYER_MAX_HEALTH));
+    ICOMMAND(isplayerdead, "", (), intret(player1 && player1->state == CS_DEAD));
+    ICOMMAND(respawnplayer, "", (),
+    {
+        if(!player1 || player1->state != CS_DEAD) return;
+        if(multiplayer(false)) addmsg(N_RESPAWN, "r");
+        else
+        {
+            findplayerspawn(player1, -1, 0);
+            setplayeralive(*player1, player1->o);
+        }
+    });
 #endif
 
     static void consumesurvivalitem()
@@ -2654,9 +2798,9 @@ namespace game
     });
 
     void gameplayhud(int w, int h) {}
-    bool canjump() { return true; }
-    bool cancrouch() { return true; }
-    bool allowmove(physent *d) { return true; }
+    bool canjump() { return player1 && player1->state == CS_ALIVE; }
+    bool cancrouch() { return player1 && player1->state == CS_ALIVE; }
+    bool allowmove(physent *d) { return !d || d->state == CS_ALIVE || d->state == CS_EDITING; }
     dynent *iterdynents(int i)
     {
         if(players.inrange(i)) return players[i];

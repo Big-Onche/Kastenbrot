@@ -664,6 +664,17 @@ namespace game
                 if(!p.overread()) receivenpcevent(id, event, tick, health, detachedparts, part, position, impulse);
                 break;
             }
+            case N_PLAYERSTATE:
+            {
+                const int clientnum = getint(p);
+                const float health = getint(p) / 1000.0f;
+                const int state = getint(p);
+                vec position, impulse;
+                loopk(3) position[k] = getint(p) / DMF;
+                loopk(3) impulse[k] = getint(p) / DNF;
+                if(!p.overread()) receiveplayerstate(clientnum, health, state, position, impulse);
+                break;
+            }
             case N_DROPSETTINGS:
             {
                 const int personal = getint(p), timeout = getint(p), maximum = getint(p), maxdistance = getint(p), requireconfirmation = getint(p);
@@ -675,8 +686,10 @@ namespace game
                 const uint id = uint(getint(p));
                 const int source = getint(p);
                 const uint sourcerequestid = uint(getint(p));
-                const int item = getint(p), count = getint(p), owner = getint(p), x = getint(p), y = getint(p), z = getint(p);
-                if(!p.overread()) receivedropspawn(id, source, sourcerequestid, item, count, owner, vec(float(x), float(y), float(z)));
+                const int item = getint(p), count = getint(p), durability = getint(p), owner = getint(p),
+                          x = getint(p), y = getint(p), z = getint(p);
+                if(!p.overread()) receivedropspawn(id, source, sourcerequestid, item, count, durability, owner,
+                                                  vec(float(x), float(y), float(z)));
                 break;
             }
             case N_DROPDELETE:

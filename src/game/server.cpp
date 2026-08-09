@@ -19,7 +19,7 @@ namespace server
         PLAYER_IDENTITY_VERSION = 1,
         PLAYER_IDENTITY_TIMEOUT = 15000,
         PLAYER_IDENTITY_MAX_RECORDS = 100000,
-        PLAYER_STATE_VERSION = 1,
+        PLAYER_STATE_VERSION = 2,
         DROP_PICKUP_DELAY = 500
     };
 
@@ -114,10 +114,13 @@ namespace server
             identityfailures, identityfailurewindow, selectedslot, inventorycursoritem, inventorycursorcount, lastinventorysave,
             violations, violationwindow, actionwindow, placements, destructions,
             breakaction, breakorient, breakitem, breakstart, breakupdate, breakstage, breakrelease,
-            breakduration, breaktoolitem, breaktoolslot, breaktooldurability, selectedcreative, lastnpcattack, lastnpcattackattempt;
+            breakduration, breaktoolitem, breaktoolslot, breaktooldurability, selectedcreative, lastnpcattack, lastnpcattackattempt,
+            deathsequence;
+        float health;
         uint ip;
         uint lastrequestid, breakrequestid, lastnpcattackrequest;
-        bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen;
+        bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen,
+             dead;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
         int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
@@ -139,12 +142,12 @@ namespace server
                        actionwindow(0), placements(0), destructions(0), breakaction(-1),
                        breakorient(0), breakitem(-1), breakstart(0), breakupdate(0), breakstage(0), breakrelease(0),
                        breakduration(0), breaktoolitem(-1), breaktoolslot(-1), breaktooldurability(0), selectedcreative(-1),
-                       lastnpcattack(-1000), lastnpcattackattempt(-1000),
+                       lastnpcattack(-1000), lastnpcattackattempt(-1000), deathsequence(0), health(game::PLAYER_MAX_HEALTH),
                        ip(0),
                        lastrequestid(0), breakrequestid(0), lastnpcattackrequest(0),
                        connected(false), local(false),
                        worldready(false), hasposition(false), positiondirty(false), inventoryloaded(false), inventorydirty(false),
-                       breakactive(false), breakdropeligible(true), furnaceopen(false),
+                       breakactive(false), breakdropeligible(true), furnaceopen(false), dead(false),
                        craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
                        positioncoords(0, 0, 0), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0),
                        o(0, 0, 0), getmap(NULL),
@@ -237,11 +240,11 @@ namespace server
     struct serverdrop
     {
         uint id, sourcerequestid;
-        int source, item, count, created;
+        int source, item, count, durability, created;
         string ownerid;
         vec o;
 
-        serverdrop() : id(0), sourcerequestid(0), source(-1), item(-1), count(0), created(0), o(0, 0, 0)
+        serverdrop() : id(0), sourcerequestid(0), source(-1), item(-1), count(0), durability(0), created(0), o(0, 0, 0)
         {
             ownerid[0] = '\0';
         }
@@ -251,6 +254,8 @@ namespace server
     static vector<servercollisionchunk *> servercollisionchunks;
     static vector<servernpc *> servernpcs;
     static game::worldgenerator *serverworldgenerator = NULL;
+    static bool servermapspawnready = false;
+    static vec servermapspawn;
     static uint nextnpcid = 1;
     static int lastnpcsnapshot = 0;
     static vector<serverdrop *> serverdrops;
@@ -888,7 +893,9 @@ namespace server
                   file->putlil<int>(ci.positioncoords.y) &&
                   file->putlil<int>(ci.positioncoords.z) &&
                   file->putlil<int>(ci.positionyaw) &&
-                  file->putlil<int>(ci.positionpitch);
+                  file->putlil<int>(ci.positionpitch) &&
+                  file->putlil<int>(int(ci.health * 1000.0f)) &&
+                  file->putlil<int>(ci.dead ? 1 : 0);
         delete file;
         if(!ok || !replaceserveridentityfile(temppath, finalpath))
         {
@@ -907,6 +914,8 @@ namespace server
         ci.lastpositionsave = max(totalmillis, 1);
         ci.positioncoords = ivec(0, 0, 0);
         ci.positionyaw = ci.positionpitch = 0;
+        ci.health = game::PLAYER_MAX_HEALTH;
+        ci.dead = false;
         string relative;
         playerstatename(relative, sizeof(relative), ci.playerid);
         stream *file = openrawfile(relative, "rb");
@@ -917,10 +926,10 @@ namespace server
         ivec position;
         int yaw = 0, pitch = 0;
         bool valid = file->read(magic, 4) == 4 && !memcmp(magic, "CCPS", 4) &&
-                     (version = file->getlil<uint>()) == PLAYER_STATE_VERSION &&
+                     (version = file->getlil<uint>()) >= 1 && version <= PLAYER_STATE_VERSION &&
                      readserveridentitystring(*file, world, sizeof(world)) &&
                      (seed = file->getlil<uint>()) == uint(serverworldseed) &&
-                     !strcmp(world, serverworld) && file->size() - file->tell() == 5 * int(sizeof(int));
+                     !strcmp(world, serverworld) && file->size() - file->tell() == (version >= 2 ? 7 : 5) * int(sizeof(int));
         if(valid)
         {
             position.x = file->getlil<int>();
@@ -928,8 +937,14 @@ namespace server
             position.z = file->getlil<int>();
             yaw = file->getlil<int>();
             pitch = file->getlil<int>();
+            if(version >= 2)
+            {
+                ci.health = file->getlil<int>() / 1000.0f;
+                ci.dead = file->getlil<int>() != 0;
+            }
             valid = position.z >= 0 && position.z <= int((1 << 13) * DMF) &&
-                    yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90 && file->tell() == file->size();
+                    yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90 &&
+                    ci.health >= 0 && ci.health <= game::PLAYER_MAX_HEALTH && ci.dead == (ci.health <= 0) && file->tell() == file->size();
         }
         delete file;
         if(!valid)
@@ -1381,8 +1396,22 @@ namespace server
         return false;
     }
 
-    static bool addinventoryitems(clientinfo &ci, int item, int quantity)
+    static bool addinventoryitems(clientinfo &ci, int item, int quantity, int durability = 0)
     {
+        if(isinventorytool(item))
+        {
+            if(quantity != 1) return false;
+            loopi(SURVIVAL_USABLE_SLOTS) if(ci.inventoryitems[i] < 0 || ci.inventorycounts[i] <= 0)
+            {
+                ci.inventoryitems[i] = item;
+                ci.inventorycounts[i] = 1;
+                ci.inventorydurabilities[i] = clamp(durability > 0 ? durability : getinventorytoolmaxdurability(item),
+                                                    1, getinventorytoolmaxdurability(item));
+                markinventorydirty(ci);
+                return true;
+            }
+            return false;
+        }
         if(quantity <= 0 || !inventoryhasroom(ci, item, quantity)) return false;
         loopi(quantity) if(!addinventoryitem(ci, item)) return false;
         return true;
@@ -1421,7 +1450,7 @@ namespace server
     static void senddropspawn(int cn, const serverdrop &drop)
     {
         clientinfo *owner = dropowner(drop);
-        sendf(cn, 1, "ri9i", N_DROPSPAWN, int(drop.id), drop.source, int(drop.sourcerequestid), drop.item, drop.count,
+        sendf(cn, 1, "ri9i2", N_DROPSPAWN, int(drop.id), drop.source, int(drop.sourcerequestid), drop.item, drop.count, drop.durability,
               owner ? owner->clientnum : drop.ownerid[0] ? -2 : -1, int(drop.o.x), int(drop.o.y), int(drop.o.z));
     }
 
@@ -1623,6 +1652,154 @@ namespace server
                                                  serverfloordiv(int(floorf(y)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
                                                  top - SERVER_WORLD_BLOCK_SIZE))) top -= SERVER_WORLD_BLOCK_SIZE;
         return float(top);
+    }
+
+    static vec getservermapspawn()
+    {
+        if(servermapspawnready) return servermapspawn;
+        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
+        const auto dry = [](const game::worldgenerator &generator, int x, int y)
+        {
+            const int height = generator.height(x, y);
+            return height >= generator.settings.sealevel && height <= 253;
+        };
+        int bestx = 0, besty = 0;
+        long long bestdistance = LLONG_MAX;
+        if(dry(*serverworldgenerator, 0, 0)) bestdistance = 0;
+        else
+        {
+            const int exactradius = 64;
+            for(int y = -exactradius; y <= exactradius; ++y) for(int x = -exactradius; x <= exactradius; ++x)
+            {
+                if(!dry(*serverworldgenerator, x, y)) continue;
+                const long long distance = (long long)x * x + (long long)y * y;
+                if(distance >= bestdistance) continue;
+                bestx = x; besty = y; bestdistance = distance;
+            }
+            if(bestdistance == LLONG_MAX)
+            {
+                const int searchradius = 8192, step = 64;
+                for(int y = -searchradius; y <= searchradius; y += step) for(int x = -searchradius; x <= searchradius; x += step)
+                {
+                    if(!dry(*serverworldgenerator, x, y)) continue;
+                    const long long distance = (long long)x * x + (long long)y * y;
+                    if(distance >= bestdistance) continue;
+                    bestx = x; besty = y; bestdistance = distance;
+                }
+            }
+            if(bestdistance != LLONG_MAX)
+            {
+                const int refine = 64, coarsex = bestx, coarsey = besty;
+                for(int y = coarsey - refine; y <= coarsey + refine; ++y) for(int x = coarsex - refine; x <= coarsex + refine; ++x)
+                {
+                    if(!dry(*serverworldgenerator, x, y)) continue;
+                    const long long distance = (long long)x * x + (long long)y * y;
+                    if(distance >= bestdistance) continue;
+                    bestx = x; besty = y; bestdistance = distance;
+                }
+            }
+        }
+        const float x = (bestx + 0.5f) * SERVER_WORLD_BLOCK_SIZE, y = (besty + 0.5f) * SERVER_WORLD_BLOCK_SIZE;
+        servermapspawn = vec(x, y, servergroundheight(x, y) + 28.0f);
+        servermapspawnready = true;
+        return servermapspawn;
+    }
+
+    static void sendplayerstate(int cn, const clientinfo &subject, const vec &impulse = vec(0, 0, 0))
+    {
+        sendf(cn, 1, "ri9", N_PLAYERSTATE, subject.clientnum, int(subject.health * 1000.0f), subject.dead ? CS_DEAD : CS_ALIVE,
+              int(subject.o.x * DMF), int(subject.o.y * DMF), int(subject.o.z * DMF), int(impulse.x * DNF), int(impulse.y * DNF),
+              int(impulse.z * DNF));
+    }
+
+    static void broadcastplayerstate(const clientinfo &subject, const vec &impulse = vec(0, 0, 0))
+    {
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready)
+            sendplayerstate(clients[i]->clientnum, subject, impulse);
+    }
+
+    static void addserverplayerdrop(clientinfo &ci, int item, int count, int durability, const vec &origin, uint spreadseed)
+    {
+        if(item < 0 || count <= 0) return;
+        while(serverdrops.length() >= maxdrop) removeserverdrop(0);
+        const uint hash = worlddrophash(spreadseed), anglehash = worlddrophash(hash ^ 0x9E3779B9U);
+        const float angle = float(anglehash % 36000U) * RAD / 100.0f,
+                    radius = 1.5f + float(hash % 350U) / 100.0f;
+        serverdrop *drop = new serverdrop;
+        if(!nextdropid || nextdropid > uint(INT_MAX)) nextdropid = 1;
+        drop->id = nextdropid++;
+        drop->sourcerequestid = uint(ci.deathsequence);
+        drop->source = ci.clientnum;
+        drop->item = item;
+        drop->count = count;
+        drop->durability = isinventorytool(item) ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
+        drop->created = max(totalmillis, 1);
+        drop->o = vec(origin).add(vec(cosf(angle) * radius, sinf(angle) * radius, 3.0f));
+        copystring(drop->ownerid, ci.playerid);
+        serverdrops.add(drop);
+        broadcastdropspawn(*drop);
+    }
+
+    static void dropserverplayerinventory(clientinfo &ci)
+    {
+        const uint seed = worlddrophash(uint(++ci.deathsequence) ^ uint(max(totalmillis, 1)) ^ uint(ci.clientnum + 1) * 0x85EBCA6BU);
+        const vec origin = vec(ci.o).addz(-28.0f);
+        loopi(SURVIVAL_USABLE_SLOTS)
+        {
+            addserverplayerdrop(ci, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i], origin,
+                                seed ^ uint(i + 1) * 0xC2B2AE35U);
+            ci.inventoryitems[i] = -1;
+            ci.inventorycounts[i] = ci.inventorydurabilities[i] = 0;
+        }
+        loopi(CRAFT_GRID_MAX)
+        {
+            addserverplayerdrop(ci, ci.craftingitems[i], ci.craftingcounts[i], ci.craftingdurabilities[i], origin,
+                                seed ^ uint(i + 65) * 0x27D4EB2FU);
+            ci.craftingitems[i] = -1;
+            ci.craftingcounts[i] = ci.craftingdurabilities[i] = 0;
+        }
+        addserverplayerdrop(ci, ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability, origin, seed ^ 0x165667B1U);
+        ci.inventorycursoritem = -1;
+        ci.inventorycursorcount = ci.inventorycursordurability = 0;
+        ci.craftinggridsize = 2;
+        ci.craftingstationitem = -1;
+        markinventorydirty(ci);
+        sendinventory(ci);
+        sendcraftstate(ci);
+    }
+
+    static void damageserverplayer(clientinfo &ci, float damage, const vec &source)
+    {
+        if(servercreative() || ci.dead || damage <= 0) return;
+        ci.health = max(ci.health - damage, 0.0f);
+        vec impulse = vec(ci.o).sub(source);
+        if(impulse.squaredlen() > 1e-4f) impulse.normalize().mul(45.0f);
+        if(ci.health <= 0)
+        {
+            ci.dead = true;
+            ci.position.setsize(0);
+            if(ci.breakactive) cancelbreak(ci);
+            dropserverplayerinventory(ci);
+            ci.positiondirty = true;
+            saveinventory(ci, true);
+            saveplayerstate(ci, true);
+        }
+        broadcastplayerstate(ci, impulse);
+    }
+
+    static void respawnserverplayer(clientinfo &ci)
+    {
+        if(!ci.dead) return;
+        ci.o = getservermapspawn();
+        ci.positioncoords = ivec(int(ci.o.x * DMF), int(ci.o.y * DMF), int(ci.o.z * DMF));
+        ci.positionyaw = ci.positionpitch = 0;
+        ci.health = game::PLAYER_MAX_HEALTH;
+        ci.dead = false;
+        ci.hasposition = ci.positiondirty = true;
+        ci.lastpositionmillis = max(totalmillis, 1);
+        ci.position.setsize(0);
+        broadcastplayerstate(ci);
+        saveplayerstate(ci, true);
     }
 
     static bool serverlineofsight(const vec &from, const vec &to)
@@ -1922,7 +2099,7 @@ namespace server
         loopv(clients)
         {
             clientinfo *candidate = clients[i];
-            if(!candidate || !candidate->connected || !candidate->worldready || !candidate->hasposition) continue;
+            if(!candidate || !candidate->connected || !candidate->worldready || !candidate->hasposition || candidate->dead) continue;
             const float distance = mob.o.squaredist(candidate->o);
             if(distance > bestdistance) continue;
             best = candidate;
@@ -1966,12 +2143,13 @@ namespace server
             else
             {
                 mob.destination = targetposition;
-                if(mob.o.dist(targetposition) <= 4.0f * GAMEUNITSPERMETER && serverlineofsight(mob.o, targetposition) &&
+                if(mob.o.dist(targetposition) <= game::NPC_ATTACK_REACH && serverlineofsight(mob.o, targetposition) &&
                    totalmillis - mob.lastattack >= mob.definition->attackmillis)
                 {
                     mob.lastattack = totalmillis;
                     mob.attacking = true;
                     broadcastnpcevent(mob, NPC_EVENT_ATTACK, -1, targetposition, vec(0, 0, 0));
+                    damageserverplayer(*target, mob.definition->damage, mob.o);
                 }
             }
             mob.paused = false;
@@ -2266,6 +2444,10 @@ namespace server
         loopv(serverdrops) senddropspawn(ci.clientnum, *serverdrops[i]);
         sendf(ci.clientnum, 1, "ri2", N_WORLDSYNC, int(worldeditrevision));
         ci.worldready = true;
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->hasposition)
+            sendplayerstate(ci.clientnum, *clients[i]);
+        loopv(clients) if(clients[i] && clients[i] != &ci && clients[i]->connected && clients[i]->worldready && ci.hasposition)
+            sendplayerstate(clients[i]->clientnum, ci);
     }
 
     static void resetallclients()
@@ -2295,6 +2477,8 @@ namespace server
         servercollisionchunks.deletecontents();
         delete serverworldgenerator;
         serverworldgenerator = NULL;
+        servermapspawnready = false;
+        servermapspawn = vec(0, 0, 0);
         nextnpcid = 1;
         lastnpcsnapshot = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
@@ -2991,7 +3175,8 @@ namespace server
         if(dx * dx + dy * dy > 24.0f * 24.0f || position.z > drop.o.z + 24.0f)
             return rejectaction(ci, requestid, "drop is beyond the 24-unit pickup distance");
         if(!inventoryhasroom(ci, drop.item, drop.count)) return rejectaction(ci, requestid, "inventory is full");
-        if(!addinventoryitems(ci, drop.item, drop.count)) return rejectaction(ci, requestid, "server could not add the drop to inventory");
+        if(!addinventoryitems(ci, drop.item, drop.count, drop.durability))
+            return rejectaction(ci, requestid, "server could not add the drop to inventory");
         removeserverdrop(index, ci.clientnum);
         sendactionresult(ci, requestid, true);
         sendinventory(ci);
@@ -3788,7 +3973,7 @@ namespace server
                     }
                 }
                 if(p.overread()) return;
-                if(cn != sender || (physstate&7) > PHYS_BOUNCE) continue;
+                if(cn != sender || (physstate&7) > PHYS_BOUNCE || ci->dead) continue;
 
                 vec nextposition(coords[0]/DMF, coords[1]/DMF, coords[2]/DMF);
                 int now = max(totalmillis, 1),
@@ -4073,8 +4258,10 @@ namespace server
                     ivec target;
                     target.x = getint(p); target.y = getint(p); target.z = getint(p);
                     const int orient = getint(p), item = getint(p), slot = getint(p);
-                    if(ci && ci->connected && ci->worldready && !p.overread())
+                    if(ci && ci->connected && ci->worldready && !ci->dead && !p.overread())
                         handleworldaction(*ci, requestid, action, target, orient, item, slot);
+                    else if(ci && ci->connected && ci->dead)
+                        rejectaction(*ci, requestid, "dead players cannot change the world");
                     else if(ci && ci->connected && !ci->worldready)
                         rejectaction(*ci, requestid, "world actions are disabled until synchronization completes");
                     break;
@@ -4085,7 +4272,7 @@ namespace server
                     const uint requestid = uint(getint(p)), dropid = uint(getint(p));
                     int coords[3];
                     loopk(3) coords[k] = getint(p);
-                    if(ci && ci->connected && !p.overread())
+                    if(ci && ci->connected && !ci->dead && !p.overread())
                         handledroppickup(*ci, requestid, dropid, vec(coords[0] / DMF, coords[1] / DMF, coords[2] / DMF));
                     break;
                 }
@@ -4094,7 +4281,13 @@ namespace server
                     clientinfo *ci = getinfo(sender);
                     const uint requestid = uint(getint(p)), npcid = uint(getint(p));
                     const int part = getint(p);
-                    if(ci && ci->connected && ci->worldready && !p.overread()) handleservernpcattack(*ci, requestid, npcid, part);
+                    if(ci && ci->connected && ci->worldready && !ci->dead && !p.overread()) handleservernpcattack(*ci, requestid, npcid, part);
+                    break;
+                }
+                case N_RESPAWN:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    if(ci && ci->connected && ci->worldready) respawnserverplayer(*ci);
                     break;
                 }
                 case N_EDITENT:

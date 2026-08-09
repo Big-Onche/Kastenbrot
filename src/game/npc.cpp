@@ -352,6 +352,13 @@ namespace game
         pose.rightarmpitch = stride * 28.0f;
         pose.leftlegpitch = stride * 32.0f;
         pose.rightlegpitch = -stride * 32.0f;
+        const int attackelapsed = lastmillis - mob.lastattack;
+        if(attackelapsed >= 0 && attackelapsed < CREATIVE_ARM_CYCLE)
+        {
+            const float progress = attackelapsed / float(CREATIVE_ARM_CYCLE), swing = sinf(progress * PI) * 75.0f;
+            pose.leftarmpitch += swing;
+            pose.rightarmpitch += swing;
+        }
 
         float torsoheight = HIP_HEIGHT + fabsf(cosf(mob.renderstride)) * 0.45f * movement;
         if(legs == 1)
@@ -987,6 +994,7 @@ namespace game
             spawnblood(position, false);
             ragdollnpc(*mob, position, impulse);
         }
+        else if(event == NPC_EVENT_ATTACK) mob->lastattack = lastmillis;
     }
 
     bool attacknpc()
@@ -1113,7 +1121,8 @@ namespace game
         const int previousbehavior = mob.behavior;
         if(mob.attitude == NPC_AGGRESSIVE)
         {
-            mob.target = nearestnpctarget(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
+            const float radius = mob.definition->aggrodist * GAMEUNITSPERMETER;
+            mob.target = player1 && player1->state == CS_ALIVE && mob.o.squaredist(player1->o) <= radius * radius ? player1 : NULL;
             mob.behavior = mob.target ? NPC_CHASE : mob.definition->behavior;
         }
         else if(mob.attitude == NPC_SCARED)
@@ -1211,6 +1220,20 @@ namespace game
         }
         moveplayer(&mob, 10, true);
         if(mob.blocked && mob.behavior == NPC_WANDERING) mob.nextdecision = min(mob.nextdecision, lastmillis + 1500);
+    }
+
+    static void attacklocalplayer(npc &mob)
+    {
+        if(mob.target != player1 || !player1 || player1->state != CS_ALIVE ||
+           lastmillis - mob.lastattack < mob.definition->attackmillis) return;
+        vec direction = vec(player1->o).sub(mob.o);
+        const float distance = direction.magnitude();
+        if(distance > NPC_ATTACK_REACH || distance < 1e-4f) return;
+        direction.div(distance);
+        const float obstruction = raycube(mob.o, direction, distance, RAY_CLIPMAT | RAY_SKIPFIRST);
+        if(obstruction >= 0 && obstruction + 0.5f < distance) return;
+        mob.lastattack = lastmillis;
+        damageplayer(mob.definition->damage, mob.o);
     }
 
     static void shownpcdebugtext(npc &mob)
@@ -1402,6 +1425,7 @@ namespace game
             {
                 updatebehavior(mob);
                 walktowardsdestination(mob);
+                attacklocalplayer(mob);
             }
             updatenpchitboxes(mob);
             updatenpcbleeding(mob);

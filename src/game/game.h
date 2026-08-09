@@ -69,6 +69,7 @@ enum
     N_BREAKSTATE, N_DROPSETTINGS, N_DROPSPAWN, N_DROPDELETE, N_DROPPICKUP,
     N_FURNACESTATE, N_FURNACEACTION,
     N_NPCSPAWN, N_NPCDESPAWN, N_NPCSNAPSHOT, N_NPCEVENT, N_NPCATTACK,
+    N_PLAYERSTATE, N_RESPAWN,
     NUMMSG
 };
 
@@ -148,16 +149,17 @@ static const int msgsizes[] =
     N_SERVERIDENTITY, 0, N_IDENTITYLOGIN, 0, N_IDENTITYREGISTER, 0, N_IDENTITYCHALLENGE, 0,
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
     N_INVENTORYSTATE, 0, N_INVENTORYACTION, 5, N_CRAFTSTATE, 0, N_CRAFTACTION, 7, N_WORLDACTION, 9, N_WORLDAUTH, 7,
-    N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 10, N_DROPDELETE, 3, N_DROPPICKUP, 6,
+    N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 11, N_DROPDELETE, 3, N_DROPPICKUP, 6,
     N_FURNACESTATE, 0, N_FURNACEACTION, 7,
     N_NPCSPAWN, 0, N_NPCDESPAWN, 3, N_NPCSNAPSHOT, 11, N_NPCEVENT, 0, N_NPCATTACK, 4,
+    N_PLAYERSTATE, 10, N_RESPAWN, 1,
     -1
 };
 
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 21
+#define PROTOCOL_VERSION 22
 
 enum
 {
@@ -297,12 +299,12 @@ static inline bool worlddroproll(int source, uint requestid, int objectitem, int
 struct worlddrop
 {
     uint id, sourcerequestid, pickuprequestid;
-    int source, item, count, owner, created, pickupmillis, picker, physicsmillis, settledmillis;
+    int source, item, count, durability, owner, created, pickupmillis, picker, physicsmillis, settledmillis;
     float fallvelocity;
     bool confirmed, picking, removed, pickupblocked, settled, landingknown;
     vec o, pickupfrom, landing;
 
-    worlddrop() : id(0), sourcerequestid(0), pickuprequestid(0), source(-1), item(-1), count(0), owner(-1), created(0), pickupmillis(0),
+    worlddrop() : id(0), sourcerequestid(0), pickuprequestid(0), source(-1), item(-1), count(0), durability(0), owner(-1), created(0), pickupmillis(0),
                   picker(-1), physicsmillis(0), settledmillis(0), fallvelocity(0), confirmed(false), picking(false), removed(false),
                   pickupblocked(false), settled(false), landingknown(false), o(0, 0, 0), pickupfrom(0, 0, 0), landing(0, 0, 0)
     {
@@ -316,7 +318,8 @@ struct gameent : dynent
     float deltayaw, deltapitch, deltaroll, newyaw, newpitch, newroll;
     float renderbodyyaw, rendercrouch, renderstridephase, renderattackreleasepitch;
     int smoothmillis, renderbodyyawmillis, rendercrouchmillis, renderstridemillis, selectedcreative,
-        renderattackmillis, renderattackreleasemillis, renderplacemillis;
+        renderattackmillis, renderattackreleasemillis, renderplacemillis, ragdollstart[6], ragdollend[6];
+    float health;
     bool renderattacking, renderplacetoggle, renderactioninitialized;
     string name;
 
@@ -326,13 +329,14 @@ struct gameent : dynent
                 smoothmillis(-1), renderbodyyawmillis(-1), rendercrouchmillis(-1),
                 renderstridemillis(-1), selectedcreative(-1), renderattackmillis(0),
                 renderattackreleasemillis(-1000),
-                renderplacemillis(-1000), renderattacking(false), renderplacetoggle(false),
+                renderplacemillis(-1000), health(20.0f), renderattacking(false), renderplacetoggle(false),
                 renderactioninitialized(false)
     {
         type = ENT_PLAYER;
         state = editstate = CS_ALIVE;
         maxspeed = 120.0f;
         name[0] = '\0';
+        loopi(6) ragdollstart[i] = ragdollend[i] = -1;
     }
 
     ~gameent()
@@ -375,7 +379,9 @@ namespace game
     enum
     {
         CREATIVE_ARM_CYCLE = 300,
-        SURVIVAL_BUILD_REACH = 4 * 16
+        SURVIVAL_BUILD_REACH = 4 * 16,
+        PLAYER_MAX_HEALTH = 20,
+        NPC_ATTACK_REACH = 2 * 16
     };
 
     struct networkedit
@@ -413,9 +419,13 @@ namespace game
     extern float creativearmwave(int elapsed);
     extern int selectedcreativeblock();
     extern void wearselectedsurvivaltool();
+    extern void damageplayer(float damage, const vec &source);
+    extern void receiveplayerstate(int clientnum, float health, int state, const vec &position, const vec &impulse);
+    extern void beginplayerragdoll(gameent *d, const vec &impulse);
+    extern void clearplayerragdoll(gameent *d);
     extern void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed);
     extern void receivedropsettings(int personal, int timeout, int maximum, int maxdistance, int requireconfirmation);
-    extern void receivedropspawn(uint id, int source, uint sourcerequestid, int item, int count, int owner, const vec &o);
+    extern void receivedropspawn(uint id, int source, uint sourcerequestid, int item, int count, int durability, int owner, const vec &o);
     extern void receivedropdelete(uint id, int picker);
     extern void resetworlddrops();
     extern const vector<worlddrop *> &getworlddrops();

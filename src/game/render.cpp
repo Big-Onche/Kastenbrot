@@ -8,7 +8,7 @@ namespace game
     VARF(extrudedspritealphathreshold, 0, 1, 255, reloaditemsprites());
     FVARF(extrudedspritedepth, 0.05f, 1.5f, 8.0f, reloaditemsprites());
     FVARF(extrudedspritesideshade, 0.0f, 0.72f, 1.0f, reloaditemsprites());
-    FVAR(extrudedspritegripvoffset, -8.0f, 0.0f, 8.0f);
+    FVAR(extrudedspritegripvoffset, -8.0f, -2.0f, 8.0f);
     FVAR(extrudedspritegriphoffset, -8.0f, 4.0f, 8.0f);
 
     static const float EXTRUDED_SPRITE_HEIGHT = 18.0f;
@@ -414,6 +414,135 @@ namespace game
         rendermodel(playermodels[part], ANIM_MAPMODEL | ANIM_LOOP, origin, yaw, pitch, roll, flags, d);
     }
 
+    static vec transformedplayervector(const vec &value, float yaw)
+    {
+        matrix3 orientation;
+        orientation.identity();
+        if(yaw) orientation.rotate_around_z(sincosmod360(-yaw));
+        return orientation.transposedtransform(value);
+    }
+
+    void clearplayerragdoll(gameent *d)
+    {
+        if(!d) return;
+        cleanragdoll(d);
+        loopi(NUM_PLAYER_PARTS) d->ragdollstart[i] = d->ragdollend[i] = -1;
+    }
+
+    void beginplayerragdoll(gameent *d, const vec &impulse)
+    {
+        if(!d) return;
+        clearplayerragdoll(d);
+        const vec torsoorigin = d->feetpos(HIP_HEIGHT);
+        vec origins[NUM_PLAYER_PARTS];
+        bool found[NUM_PLAYER_PARTS] = { false };
+        modeltagpositions(playermodels[PART_TORSO], &playerparttags[PART_HEAD], &origins[PART_HEAD], &found[PART_HEAD],
+                          NUM_PLAYER_PARTS - PART_HEAD, torsoorigin, d->renderbodyyaw, 0, 0);
+        const vec fallbackoffsets[NUM_PLAYER_PARTS] =
+        {
+            vec(0, 0, 0), vec(0, 0, 12), vec(-6, 0, 10), vec(6, 0, 10), vec(-2, 0, 0), vec(2, 0, 0)
+        };
+        for(int i = PART_HEAD; i < NUM_PLAYER_PARTS; ++i) if(!found[i])
+            origins[i] = vec(torsoorigin).add(transformedplayervector(fallbackoffsets[i], d->renderbodyyaw));
+
+        vector<vec> positions;
+        vector<float> radii;
+        vector<int> links, triangles;
+        vector<ragdollrotconstraint> constraints;
+        const auto addvertex = [&positions, &radii](const vec &position, float radius)
+        {
+            positions.add(position);
+            radii.add(radius);
+            return positions.length() - 1;
+        };
+        const auto addlink = [&links](int first, int second) { links.add(first); links.add(second); };
+        const auto addtriangle = [&triangles](int first, int second, int third)
+        {
+            triangles.add(first); triangles.add(second); triangles.add(third);
+            return triangles.length() / 3 - 1;
+        };
+
+        const int pelvis = addvertex(torsoorigin, 3.0f), neck = addvertex(origins[PART_HEAD], 2.5f),
+                  leftshoulder = addvertex(origins[PART_LEFT_ARM], 2.0f), rightshoulder = addvertex(origins[PART_RIGHT_ARM], 2.0f),
+                  lefthip = addvertex(origins[PART_LEFT_LEG], 2.0f), righthip = addvertex(origins[PART_RIGHT_LEG], 2.0f),
+                  core[] = { pelvis, neck, leftshoulder, rightshoulder, lefthip, righthip };
+        loopi(int(sizeof(core) / sizeof(core[0]))) for(int j = i + 1; j < int(sizeof(core) / sizeof(core[0])); ++j)
+            addlink(core[i], core[j]);
+
+        d->ragdollstart[PART_TORSO] = pelvis; d->ragdollend[PART_TORSO] = neck;
+        d->ragdollstart[PART_HEAD] = neck;
+        d->ragdollstart[PART_LEFT_ARM] = leftshoulder; d->ragdollstart[PART_RIGHT_ARM] = rightshoulder;
+        d->ragdollstart[PART_LEFT_LEG] = lefthip; d->ragdollstart[PART_RIGHT_LEG] = righthip;
+        const float endpoints[NUM_PLAYER_PARTS] = { 0, 8, -10, -10, -12, -12 }, partradii[NUM_PLAYER_PARTS] = { 0, 3.5f, 2, 2, 2, 2 };
+        for(int part = PART_HEAD; part < NUM_PLAYER_PARTS; ++part)
+        {
+            const vec endpoint = vec(origins[part]).add(transformedplayervector(vec(0, 0, endpoints[part]), d->renderbodyyaw));
+            d->ragdollend[part] = addvertex(endpoint, partradii[part]);
+            addlink(d->ragdollstart[part], d->ragdollend[part]);
+        }
+
+        constraints.add(ragdollrotconstraint(addtriangle(neck, rightshoulder, pelvis),
+                                             addtriangle(neck, d->ragdollend[PART_HEAD], rightshoulder), 55.0f));
+        constraints.add(ragdollrotconstraint(addtriangle(leftshoulder, neck, pelvis),
+                                             addtriangle(leftshoulder, d->ragdollend[PART_LEFT_ARM], neck), 95.0f));
+        constraints.add(ragdollrotconstraint(addtriangle(rightshoulder, pelvis, neck),
+                                             addtriangle(rightshoulder, neck, d->ragdollend[PART_RIGHT_ARM]), 95.0f));
+        constraints.add(ragdollrotconstraint(addtriangle(lefthip, leftshoulder, pelvis),
+                                             addtriangle(lefthip, pelvis, d->ragdollend[PART_LEFT_LEG]), 70.0f));
+        constraints.add(ragdollrotconstraint(addtriangle(righthip, pelvis, rightshoulder),
+                                             addtriangle(righthip, d->ragdollend[PART_RIGHT_LEG], pelvis), 70.0f));
+        if(createcustomragdoll(d, positions.getbuf(), radii.getbuf(), positions.length(), links.getbuf(), links.length() / 2,
+                              triangles.getbuf(), triangles.length() / 3, constraints.getbuf(), constraints.length()))
+        {
+            pushragdollvertex(d, pelvis, impulse);
+            scaleragdollvelocity(d, 1.5f);
+        }
+    }
+
+    static bool playerragdollangles(const gameent &d, int part, float &yaw, float &pitch, float &roll)
+    {
+        vec start, end, leftshoulder, rightshoulder;
+        if(!getragdollvertex(&d, d.ragdollstart[part], start) || !getragdollvertex(&d, d.ragdollend[part], end) ||
+           !getragdollvertex(&d, d.ragdollstart[PART_LEFT_ARM], leftshoulder) ||
+           !getragdollvertex(&d, d.ragdollstart[PART_RIGHT_ARM], rightshoulder)) return false;
+        vec z = vec(end).sub(start);
+        if(part >= PART_LEFT_ARM) z.neg();
+        if(z.squaredlen() < 1e-6f) return false;
+        z.normalize();
+        vec x = vec(rightshoulder).sub(leftshoulder);
+        x.msub(z, x.dot(z));
+        if(x.squaredlen() < 1e-6f) x.cross(fabsf(z.z) < 0.9f ? vec(0, 0, 1) : vec(0, 1, 0), z);
+        x.normalize();
+        vec y;
+        y.cross(z, x).normalize();
+        pitch = asinf(clamp(y.z, -1.0f, 1.0f)) / RAD;
+        const float cp = cosf(pitch * RAD);
+        if(fabsf(cp) > 1e-4f)
+        {
+            yaw = atan2f(-y.x, y.y) / RAD;
+            roll = atan2f(x.z, z.z) / RAD;
+        }
+        else
+        {
+            yaw = y.z >= 0 ? atan2f(z.x, -z.y) / RAD : atan2f(-z.x, z.y) / RAD;
+            roll = 0;
+        }
+        yaw = fmodf(yaw + 360.0f, 360.0f);
+        return true;
+    }
+
+    static void renderplayerragdoll(gameent &d)
+    {
+        const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
+        loopi(NUM_PLAYER_PARTS)
+        {
+            vec origin;
+            float yaw, pitch, roll;
+            if(!getragdollvertex(&d, d.ragdollstart[i], origin) || !playerragdollangles(d, i, yaw, pitch, roll)) continue;
+            rendermodel(playermodels[i], ANIM_MAPMODEL | ANIM_LOOP, origin, yaw, pitch, roll, flags);
+        }
+    }
+
     static bool playerpartorigin(int part, vec &origin, const vec &torsoorigin, float torsoyaw, float torsopitch)
     {
         return part > PART_TORSO && part < NUM_PLAYER_PARTS &&
@@ -548,6 +677,12 @@ namespace game
     static void renderplayer(gameent *d, bool local)
     {
         if(!d || d->state == CS_SPECTATOR || (!local && d->smoothmillis < 0)) return;
+        if(d->state == CS_DEAD && d->ragdoll)
+        {
+            moveragdoll(d);
+            renderplayerragdoll(*d);
+            return;
+        }
 
         int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
         if(local && !isthirdperson()) flags |= MDL_ONLYSHADOW;
