@@ -39,19 +39,20 @@ namespace game
     struct npc : dynent
     {
         npcdefinition *definition;
-        int instanceid, attitude, behavior, health, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
+        int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
             renderlastmillis;
-        float renderstride;
+        float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
+        uint detachedparts;
         bool frozen, wanderpaused;
         vec spawn, destination;
         physent *target;
         vector<characterhitbox> hitboxes;
 
         npc(npcdefinition *definition, int instanceid)
-            : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior),
-              health(definition->health),
-              nextdecision(0), wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
-              renderlastmillis(-1), renderstride(0), frozen(false), wanderpaused(false), spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
+            : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior), nextdecision(0),
+              wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
+              renderlastmillis(-1), renderstride(0), totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false),
+              spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -59,6 +60,31 @@ namespace game
             radius = xradius = yradius = 4.1f;
             maxheight = eyeheight = 28.0f;
             aboveeye = 2.0f;
+            parthealth[HITBOX_TORSO] = definition->health;
+            loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
+        }
+    };
+
+    struct severedlimb
+    {
+        physent body;
+        string model;
+        vec angularvelocity;
+        float renderyaw, renderpitch, renderroll;
+        int part, lastupdate, sleepmillis;
+        bool sleeping;
+
+        severedlimb(const char *model, int part)
+            : angularvelocity(0, 0, 0), renderyaw(0), renderpitch(0), renderroll(0), part(part), lastupdate(lastmillis), sleepmillis(0),
+              sleeping(false)
+        {
+            copystring(this->model, model);
+            body.type = ENT_BOUNCE;
+            body.state = CS_DEAD;
+            body.collidetype = COLLIDE_OBB;
+            body.yaw = body.pitch = body.roll = 0;
+            body.radius = body.xradius = body.yradius = part == HITBOX_HEAD ? 4.0f : 2.0f;
+            body.eyeheight = body.aboveeye = part == HITBOX_HEAD ? 4.0f : part >= HITBOX_LEFT_LEG ? 6.0f : 5.0f;
         }
     };
 
@@ -87,6 +113,7 @@ namespace game
     static const float HIP_HEIGHT = 11.25f;
     static vector<npcdefinition *> npcdefinitions;
     static vector<npc *> npcs;
+    static vector<severedlimb *> severedlimbs;
     static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0;
 
     VARP(npcmaxdist, 1, 256, 4096);
@@ -202,6 +229,7 @@ namespace game
     void resetnpcs()
     {
         npcs.deletecontents();
+        severedlimbs.deletecontents();
         nextnpcid = 1;
         cleardynentcache();
     }
@@ -234,6 +262,14 @@ namespace game
                 mob.hitboxes[j].center.x -= shiftx;
                 mob.hitboxes[j].center.y -= shifty;
             }
+        }
+        loopv(severedlimbs)
+        {
+            severedlimb &limb = *severedlimbs[i];
+            limb.body.o.x -= shiftx;
+            limb.body.o.y -= shifty;
+            limb.body.newpos.x -= shiftx;
+            limb.body.newpos.y -= shifty;
         }
         cleardynentcache();
     }
@@ -289,6 +325,131 @@ namespace game
     static void updatenpchitboxes(npc &mob)
     {
         buildhumanoidhitboxes(&mob, mob.definition->model, mob.yaw, mob.hitboxes);
+        for(int i = mob.hitboxes.length() - 1; i >= 0; --i)
+            if(mob.detachedparts & (1U << mob.hitboxes[i].part)) mob.hitboxes.remove(i);
+    }
+
+    static characterhitbox *findnpchitbox(npc &mob, int part)
+    {
+        loopv(mob.hitboxes) if(mob.hitboxes[i].part == part) return &mob.hitboxes[i];
+        return NULL;
+    }
+
+    static vec hitboxtagposition(const characterhitbox &hitbox)
+    {
+        vec position = hitbox.center;
+        if(hitbox.part == HITBOX_HEAD) position.z -= hitbox.radius.z;
+        else if(hitbox.part != HITBOX_TORSO) position.z += hitbox.radius.z;
+        return position;
+    }
+
+    static void spawnblood(const vec &position, bool detached)
+    {
+        regular_particle_splash(PART_BLOOD, detached ? 9 : 3, detached ? 900 : 450, position, 0x60FFFF, detached ? 1.50f : 1.25f, detached ? 150 : 75, 2);
+    }
+
+    static void detachnpcpart(npc &mob, int part)
+    {
+        if(part == HITBOX_TORSO || mob.detachedparts & (1U << part)) return;
+        characterhitbox *hitbox = findnpchitbox(mob, part);
+        if(!hitbox) return;
+
+        string model;
+        npcmodelpath(*mob.definition, part, model);
+        severedlimb *limb = new severedlimb(model, part);
+        limb->body.o = hitbox->center;
+        loopi(16)
+        {
+            if(!collide(&limb->body, vec(0, 0, 0), 0, false)) break;
+            limb->body.o.z += 1.0f;
+        }
+        limb->body.vel = vec(mob.vel).mul(0.35f).add(vec(camdir).mul(24.0f));
+        limb->body.vel.x += rnd(25) - 12;
+        limb->body.vel.y += rnd(25) - 12;
+        limb->body.vel.z = max(limb->body.vel.z + 35.0f + rnd(26), 28.0f);
+        limb->body.resetinterp();
+        limb->renderyaw = mob.yaw;
+        const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
+                    movement = clamp(gamespeed / max(mob.maxheight * 2.25f, 1.0f), 0.0f, 1.0f),
+                    stride = sinf(mob.renderstride) * movement;
+        if(part == HITBOX_LEFT_ARM) limb->renderpitch = -stride * 28.0f;
+        else if(part == HITBOX_RIGHT_ARM) limb->renderpitch = stride * 28.0f;
+        else if(part == HITBOX_LEFT_LEG) limb->renderpitch = stride * 32.0f;
+        else if(part == HITBOX_RIGHT_LEG) limb->renderpitch = -stride * 32.0f;
+        limb->angularvelocity = vec(rnd(241) - 120, rnd(241) - 120, rnd(361) - 180);
+        severedlimbs.add(limb);
+
+        spawnblood(hitboxtagposition(*hitbox), true);
+        mob.detachedparts |= 1U << part;
+        updatenpchitboxes(mob);
+    }
+
+    static float npcdamagemultiplier(int part)
+    {
+        if(part == HITBOX_HEAD) return 2.0f;
+        if(part == HITBOX_TORSO) return 1.0f;
+        return 0.75f;
+    }
+
+    static float heldattackdamage()
+    {
+        const int item = selectedcreativeblock();
+        if(item < 0) return 1.0f;
+        const char *id = getinventoryitemid(item);
+        if(!cubecasecmp(id, "stone_sword")) return 4.0f;
+        if(!cubecasecmp(id, "wood_sword")) return 3.0f;
+        return isinventorytool(item) ? 2.0f : 1.0f;
+    }
+
+    static void despawnnpc(npc *mob)
+    {
+        if(!mob) return;
+        loopv(npcs) if(npcs[i]->target == mob) npcs[i]->target = NULL;
+        const int index = npcs.find(mob);
+        if(index < 0) return;
+        delete mob;
+        npcs.remove(index);
+        cleardynentcache();
+    }
+
+    bool attacknpc()
+    {
+        if(multiplayer(false) || editmode || (!m_creative && !m_survival) || !player1 || player1->state != CS_ALIVE || !camera1) return false;
+
+        static const float attackreach = 5.0f * GAMEUNITSPERMETER;
+        float worlddistance = raycube(camera1->o, camdir, attackreach, RAY_CLIPMAT | RAY_SKIPFIRST);
+        if(worlddistance < 0 || worlddistance > attackreach) worlddistance = attackreach;
+
+        npc *hitmob = NULL;
+        int hitpart = HITBOX_TORSO;
+        float hitdistance = worlddistance;
+        loopv(npcs)
+        {
+            npc &mob = *npcs[i];
+            loopvj(mob.hitboxes)
+            {
+                const characterhitbox &hitbox = mob.hitboxes[j];
+                const vec minimum = vec(hitbox.center).sub(hitbox.radius), size = vec(hitbox.radius).mul(2.0f);
+                float distance = 0;
+                int orient = -1;
+                if(!rayboxintersect(minimum, size, camera1->o, camdir, distance, orient) || distance < 0 || distance > hitdistance) continue;
+                hitmob = &mob;
+                hitpart = hitbox.part;
+                hitdistance = distance;
+            }
+        }
+        if(!hitmob) return false;
+
+        const float damage = heldattackdamage() * npcdamagemultiplier(hitpart);
+        spawnblood(vec(camera1->o).madd(camdir, hitdistance), false);
+        hitmob->totalhealth = max(hitmob->totalhealth - damage, 0.0f);
+        if(hitpart != HITBOX_TORSO)
+        {
+            hitmob->parthealth[hitpart] = max(hitmob->parthealth[hitpart] - damage, 0.0f);
+            if(hitmob->parthealth[hitpart] <= 0) detachnpcpart(*hitmob, hitpart);
+        }
+        if(hitmob->totalhealth <= 0) despawnnpc(hitmob);
+        return true;
     }
 
     static void beginwanderpause(npc &mob)
@@ -438,9 +599,42 @@ namespace game
             break;
         }
         const char *activity = mob.frozen ? " / Frozen" : mob.behavior == NPC_WANDERING && mob.wanderpaused ? " / Paused" : "";
-        defformatstring(text, "%s #%d\n%s / %s%s\nHP %d/%d  target: %s", mob.definition->name, mob.instanceid, attitudename(mob.attitude),
-                        behaviorname(mob.behavior), activity, mob.health, mob.definition->health, targetname);
+        defformatstring(text, "%s #%d\n%s / %s%s\nHP %.2f/%d  target: %s", mob.definition->name, mob.instanceid, attitudename(mob.attitude),
+                        behaviorname(mob.behavior), activity, mob.totalhealth, mob.definition->health, targetname);
         particle_textcopy(mob.abovehead(), text, PART_TEXT, 150, 0xFFE28A, 1.5f, 0);
+    }
+
+    static void updateseveredlimbs()
+    {
+        loopv(severedlimbs)
+        {
+            severedlimb &limb = *severedlimbs[i];
+            if(limb.sleeping) continue;
+
+            const int elapsed = clamp(lastmillis - limb.lastupdate, 0, 100);
+            limb.lastupdate = lastmillis;
+            bounce(&limb.body, 0.38f, 3.0f, 1.0f);
+            limb.renderyaw = fmodf(limb.renderyaw + limb.angularvelocity.z * elapsed / 1000.0f + 360.0f, 360.0f);
+            limb.renderpitch = fmodf(limb.renderpitch + limb.angularvelocity.x * elapsed / 1000.0f + 360.0f, 360.0f);
+            limb.renderroll = fmodf(limb.renderroll + limb.angularvelocity.y * elapsed / 1000.0f + 360.0f, 360.0f);
+            limb.angularvelocity.mul(powf(0.35f, elapsed / 1000.0f));
+
+            const float groundreach = limb.body.eyeheight + 0.75f,
+                        grounddistance = raycube(limb.body.o, vec(0, 0, -1), groundreach, RAY_CLIPMAT | RAY_SKIPFIRST);
+            if(limb.body.vel.squaredlen() <= 6.25f && grounddistance >= 0 && grounddistance < groundreach)
+            {
+                if(!limb.sleepmillis) limb.sleepmillis = lastmillis;
+                else if(lastmillis - limb.sleepmillis >= 650)
+                {
+                    limb.sleeping = true;
+                    limb.body.vel = limb.body.falling = vec(0, 0, 0);
+                    limb.body.newpos = limb.body.o;
+                    limb.body.deltapos = vec(0, 0, 0);
+                    limb.angularvelocity = vec(0, 0, 0);
+                }
+            }
+            else limb.sleepmillis = 0;
+        }
     }
 
     void updatenpcs()
@@ -489,6 +683,7 @@ namespace game
             updatenpchitboxes(mob);
             shownpcdebugtext(mob);
         }
+        updateseveredlimbs();
     }
 
     static void rendernpc(npc &mob)
@@ -515,20 +710,31 @@ namespace game
         rendermodel(models[NPC_PART_TORSO], ANIM_MAPMODEL | ANIM_LOOP, torsoorigin, mob.yaw, 0, 0, flags, &mob);
         modeltagpositions(models[NPC_PART_TORSO], &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD],
                           NUM_NPC_PARTS - NPC_PART_HEAD, torsoorigin, mob.yaw, 0, 0);
-        if(found[NPC_PART_HEAD]) rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw, 0, 0, flags, &mob);
-        if(found[NPC_PART_LEFT_ARM])
+        if(found[NPC_PART_HEAD] && !(mob.detachedparts & (1U << HITBOX_HEAD)))
+            rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw, 0, 0, flags, &mob);
+        if(found[NPC_PART_LEFT_ARM] && !(mob.detachedparts & (1U << HITBOX_LEFT_ARM)))
             rendermodel(models[NPC_PART_LEFT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_ARM], mob.yaw, -armpitch, 0, flags, &mob);
-        if(found[NPC_PART_RIGHT_ARM])
+        if(found[NPC_PART_RIGHT_ARM] && !(mob.detachedparts & (1U << HITBOX_RIGHT_ARM)))
             rendermodel(models[NPC_PART_RIGHT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_RIGHT_ARM], mob.yaw, armpitch, 0, flags, &mob);
-        if(found[NPC_PART_LEFT_LEG])
+        if(found[NPC_PART_LEFT_LEG] && !(mob.detachedparts & (1U << HITBOX_LEFT_LEG)))
             rendermodel(models[NPC_PART_LEFT_LEG], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_LEG], mob.yaw, legpitch, 0, flags, &mob);
-        if(found[NPC_PART_RIGHT_LEG])
+        if(found[NPC_PART_RIGHT_LEG] && !(mob.detachedparts & (1U << HITBOX_RIGHT_LEG)))
             rendermodel(models[NPC_PART_RIGHT_LEG], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_RIGHT_LEG], mob.yaw, -legpitch, 0, flags, &mob);
+    }
+
+    static void renderseveredlimb(const severedlimb &limb)
+    {
+        vec offset(0, 0, limb.part == HITBOX_HEAD ? -limb.body.aboveeye : limb.body.eyeheight);
+        offset.rotate_around_x(limb.renderpitch * RAD).rotate_around_y(limb.renderroll * RAD).rotate_around_z(limb.renderyaw * RAD);
+        const vec origin = vec(limb.body.o).add(offset);
+        const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
+        rendermodel(limb.model, ANIM_MAPMODEL | ANIM_LOOP, origin, limb.renderyaw, limb.renderpitch, limb.renderroll, flags);
     }
 
     void rendernpcs()
     {
         loopv(npcs) rendernpc(*npcs[i]);
+        loopv(severedlimbs) renderseveredlimb(*severedlimbs[i]);
     }
 
     void rendernpcdebug()
@@ -541,6 +747,9 @@ namespace game
             loopvj(hitboxes) renderboundingbox(hitboxes[j].center, hitboxes[j].radius);
         }
         loopv(npcs) loopvj(npcs[i]->hitboxes) renderboundingbox(npcs[i]->hitboxes[j].center, npcs[i]->hitboxes[j].radius);
+        loopv(severedlimbs) renderboundingbox(severedlimbs[i]->body.o,
+                                              vec(severedlimbs[i]->body.xradius, severedlimbs[i]->body.yradius,
+                                                  severedlimbs[i]->body.eyeheight));
     }
 
     static bool spawnnpc(const char *id)

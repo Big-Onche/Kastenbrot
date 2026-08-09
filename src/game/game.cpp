@@ -2238,9 +2238,10 @@ namespace game
                 player1->renderattacking = buildenabled();
                 player1->renderattackmillis = lastmillis;
                 player1->renderattackreleasemillis = -1000;
-                if(creativeenabled()) creativeremove();
+                const bool hitnpc = attacknpc();
+                if(creativeenabled() && !hitnpc) creativeremove();
 #ifndef STANDALONE
-                else if(survivalenabled()) updatesurvivalbreaking();
+                else if(survivalenabled() && !hitnpc) updatesurvivalbreaking();
 #endif
             }
         }

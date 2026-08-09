@@ -382,6 +382,7 @@ namespace game
     extern void updatenpcs();
     extern void rendernpcs();
     extern void rendernpcdebug();
+    extern bool attacknpc();
     extern int numnpcs();
     extern dynent *iternpc(int index);
     extern void getplayerhitboxes(gameent *d, vector<characterhitbox> &hitboxes);
