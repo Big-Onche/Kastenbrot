@@ -1769,12 +1769,18 @@ namespace game
 
     static bool findlocalfallblocklanding(fallingblock &block)
     {
-        vec landing = block.o;
-        worldpositiontolocal(landing);
-        if(!droptofloor(landing, 7.9f, 8.0f)) return false;
-        worldpositiontoabsolute(landing);
-        const int landingz = int(floorf((landing.z - 7.5f) / CREATIVE_GRID)) * CREATIVE_GRID;
-        block.landing = vec(block.origin.x + 8.0f, block.origin.y + 8.0f, landingz + 8.0f);
+        for(int z = block.origin.z - CREATIVE_GRID; z >= 0; z -= CREATIVE_GRID)
+        {
+            int item = -1;
+            bool solid = false;
+            if(!localfallblockcell(ivec(block.origin.x, block.origin.y, z), item, solid)) return false;
+            if(!solid) continue;
+            block.landing = vec(block.origin.x + CREATIVE_GRID / 2, block.origin.y + CREATIVE_GRID / 2,
+                                z + CREATIVE_GRID + CREATIVE_GRID / 2);
+            block.landingknown = true;
+            return true;
+        }
+        block.landing = vec(block.origin.x + CREATIVE_GRID / 2, block.origin.y + CREATIVE_GRID / 2, CREATIVE_GRID / 2);
         block.landingknown = true;
         return true;
     }
@@ -1796,7 +1802,7 @@ namespace game
 
     static void updatelocalfallingblock(fallingblock &block)
     {
-        if(!block.landingknown && !findlocalfallblocklanding(block)) return;
+        if(!findlocalfallblocklanding(block)) return;
         const int elapsedmillis = min(max(lastmillis - block.physicsmillis, 0), 100);
         block.physicsmillis = lastmillis;
         if(!elapsedmillis) return;
@@ -1815,7 +1821,7 @@ namespace game
         if(!localfallblockcell(destination, occupieditem, occupied)) return;
         if(occupied)
         {
-            block.landingknown = false;
+            findlocalfallblocklanding(block);
             return;
         }
         const ivec support = ivec(destination).sub(ivec(0, 0, CREATIVE_GRID));

@@ -3010,7 +3010,7 @@ namespace server
 
     static float serverfallblocklanding(const serverfallingblock &block)
     {
-        int z = serverfloordiv(int(floorf(block.o.z - SERVER_WORLD_BLOCK_SIZE / 2 - 0.01f)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE;
+        int z = block.origin.z - SERVER_WORLD_BLOCK_SIZE;
         for(; z >= -SERVER_WORLD_BLOCK_SIZE; z -= SERVER_WORLD_BLOCK_SIZE)
             if(serverblocksolid(ivec(block.origin.x, block.origin.y, z))) return z + SERVER_WORLD_BLOCK_SIZE * 1.5f;
         return SERVER_WORLD_BLOCK_SIZE / 2.0f;
