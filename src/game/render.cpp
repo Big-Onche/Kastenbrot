@@ -694,9 +694,9 @@ namespace game
         arm.pitch = camera1->pitch + relativepitch;
         arm.roll = 180.0f + HUD_ARM_ROLL + (actionpitch >= 0 ? 0 : -strafestride * ARM_STRAFE_SWING * HUD_ARM_GAIT_SCALE);
 
-        item.yaw = camera1->yaw;
-        item.pitch = camera1->pitch - max(actionpitch, 0.0f) * 0.35f;
-        item.roll = 0;
+        item.yaw = arm.yaw;
+        item.pitch = arm.pitch - HUD_ARM_IDLE_PITCH;
+        item.roll = arm.roll - (180.0f + HUD_ARM_ROLL);
         return modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", item.origin, arm.origin, arm.yaw, arm.pitch, arm.roll);
     }
 
