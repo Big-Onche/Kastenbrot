@@ -204,7 +204,9 @@ namespace server
         SERVER_WORLD_BLOCK_SIZE = 16,
         SERVER_WORLD_CHUNK_BLOCKS = 64,
         SERVER_WORLD_CHUNK_SIZE = SERVER_WORLD_BLOCK_SIZE * SERVER_WORLD_CHUNK_BLOCKS,
-        SERVER_WORLD_GROUND_HEIGHT = 4096
+        SERVER_WORLD_GROUND_HEIGHT = 4096,
+        SERVER_WORLD_MAP_SIZE = SERVER_WORLD_GROUND_HEIGHT * 2,
+        SERVER_PLAYER_EYE_HEIGHT = 28
     };
 
     struct servercollisionchunk
@@ -256,6 +258,7 @@ namespace server
     static game::worldgenerator *serverworldgenerator = NULL;
     static bool servermapspawnready = false;
     static vec servermapspawn;
+    static int servermapspawnyaw = 0, servermapspawnpitch = 0;
     static uint nextnpcid = 1;
     static int lastnpcsnapshot = 0;
     static vector<serverdrop *> serverdrops;
@@ -1654,61 +1657,11 @@ namespace server
         return float(top);
     }
 
-    static vec getservermapspawn()
-    {
-        if(servermapspawnready) return servermapspawn;
-        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
-        const auto dry = [](const game::worldgenerator &generator, int x, int y)
-        {
-            const int height = generator.height(x, y);
-            return height >= generator.settings.sealevel && height <= 253;
-        };
-        int bestx = 0, besty = 0;
-        long long bestdistance = LLONG_MAX;
-        if(dry(*serverworldgenerator, 0, 0)) bestdistance = 0;
-        else
-        {
-            const int exactradius = 64;
-            for(int y = -exactradius; y <= exactradius; ++y) for(int x = -exactradius; x <= exactradius; ++x)
-            {
-                if(!dry(*serverworldgenerator, x, y)) continue;
-                const long long distance = (long long)x * x + (long long)y * y;
-                if(distance >= bestdistance) continue;
-                bestx = x; besty = y; bestdistance = distance;
-            }
-            if(bestdistance == LLONG_MAX)
-            {
-                const int searchradius = 8192, step = 64;
-                for(int y = -searchradius; y <= searchradius; y += step) for(int x = -searchradius; x <= searchradius; x += step)
-                {
-                    if(!dry(*serverworldgenerator, x, y)) continue;
-                    const long long distance = (long long)x * x + (long long)y * y;
-                    if(distance >= bestdistance) continue;
-                    bestx = x; besty = y; bestdistance = distance;
-                }
-            }
-            if(bestdistance != LLONG_MAX)
-            {
-                const int refine = 64, coarsex = bestx, coarsey = besty;
-                for(int y = coarsey - refine; y <= coarsey + refine; ++y) for(int x = coarsex - refine; x <= coarsex + refine; ++x)
-                {
-                    if(!dry(*serverworldgenerator, x, y)) continue;
-                    const long long distance = (long long)x * x + (long long)y * y;
-                    if(distance >= bestdistance) continue;
-                    bestx = x; besty = y; bestdistance = distance;
-                }
-            }
-        }
-        const float x = (bestx + 0.5f) * SERVER_WORLD_BLOCK_SIZE, y = (besty + 0.5f) * SERVER_WORLD_BLOCK_SIZE;
-        servermapspawn = vec(x, y, servergroundheight(x, y) + 28.0f);
-        servermapspawnready = true;
-        return servermapspawn;
-    }
-
     static void sendplayerstate(int cn, const clientinfo &subject, const vec &impulse = vec(0, 0, 0))
     {
+        const vec position = vec(subject.o).addz(SERVER_PLAYER_EYE_HEIGHT);
         sendf(cn, 1, "ri9", N_PLAYERSTATE, subject.clientnum, int(subject.health * 1000.0f), subject.dead ? CS_DEAD : CS_ALIVE,
-              int(subject.o.x * DMF), int(subject.o.y * DMF), int(subject.o.z * DMF), int(impulse.x * DNF), int(impulse.y * DNF),
+              int(position.x * DMF), int(position.y * DMF), int(position.z * DMF), int(impulse.x * DNF), int(impulse.y * DNF),
               int(impulse.z * DNF));
     }
 
@@ -1743,7 +1696,7 @@ namespace server
     static void dropserverplayerinventory(clientinfo &ci)
     {
         const uint seed = worlddrophash(uint(++ci.deathsequence) ^ uint(max(totalmillis, 1)) ^ uint(ci.clientnum + 1) * 0x85EBCA6BU);
-        const vec origin = vec(ci.o).addz(-28.0f);
+        const vec origin = ci.o;
         loopi(SURVIVAL_USABLE_SLOTS)
         {
             addserverplayerdrop(ci, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i], origin,
@@ -1789,10 +1742,11 @@ namespace server
 
     static void respawnserverplayer(clientinfo &ci)
     {
-        if(!ci.dead) return;
-        ci.o = getservermapspawn();
+        if(!ci.dead || !servermapspawnready) return;
+        ci.o = vec(servermapspawn).addz(-SERVER_PLAYER_EYE_HEIGHT);
         ci.positioncoords = ivec(int(ci.o.x * DMF), int(ci.o.y * DMF), int(ci.o.z * DMF));
-        ci.positionyaw = ci.positionpitch = 0;
+        ci.positionyaw = servermapspawnyaw;
+        ci.positionpitch = servermapspawnpitch;
         ci.health = game::PLAYER_MAX_HEALTH;
         ci.dead = false;
         ci.hasposition = ci.positiondirty = true;
@@ -2479,6 +2433,7 @@ namespace server
         serverworldgenerator = NULL;
         servermapspawnready = false;
         servermapspawn = vec(0, 0, 0);
+        servermapspawnyaw = servermapspawnpitch = 0;
         nextnpcid = 1;
         lastnpcsnapshot = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
@@ -4321,8 +4276,20 @@ namespace server
                 case N_WORLDREADY:
                 {
                     clientinfo *ci = getinfo(sender);
-                    getint(p);
-                    if(ci && ci->connected) replayworld(*ci);
+                    vec spawn;
+                    loopk(3) spawn[k] = getint(p)/DMF;
+                    const int yaw = getint(p), pitch = getint(p);
+                    if(ci && ci->connected)
+                    {
+                        if(!servermapspawnready && spawn.z > SERVER_PLAYER_EYE_HEIGHT && spawn.z < SERVER_WORLD_MAP_SIZE)
+                        {
+                            servermapspawn = spawn;
+                            servermapspawnyaw = clamp(yaw, 0, 359);
+                            servermapspawnpitch = clamp(pitch, -90, 90);
+                            servermapspawnready = true;
+                        }
+                        replayworld(*ci);
+                    }
                     break;
                 }
                 case N_SETMASTER:

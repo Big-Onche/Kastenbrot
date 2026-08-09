@@ -7969,6 +7969,7 @@ static worldspawnmetadata requestedworldspawn;
 static bool hasrequestedworldspawn = false;
 static bool preparedworldspawn = false;
 static vec preparedworldspawnposition;
+static vec preparedworldspawnabsolute;
 static float preparedworldspawnyaw = 0, preparedworldspawnpitch = 0;
 
 static ullong currentworldparameterhash()
@@ -8311,10 +8312,21 @@ static bool prepareworldspawn(const worldspawnmetadata &saved)
     rebuildworldchunks(chunkx, chunky, chunkx, chunky, true, false);
 
     preparedworldspawnposition = player->o;
+    preparedworldspawnabsolute = player->o;
+    worldpositiontoabsolute(preparedworldspawnabsolute);
     preparedworldspawnyaw = player->yaw;
     preparedworldspawnpitch = player->pitch;
     preparedworldspawn = true;
     renderprogress(0.9f, "ground found - putting your boots on...");
+    return true;
+}
+
+bool getpreparedworldspawn(vec &position, float &yaw, float &pitch)
+{
+    if(!preparedworldspawn) return false;
+    position = preparedworldspawnabsolute;
+    yaw = preparedworldspawnyaw;
+    pitch = preparedworldspawnpitch;
     return true;
 }
 

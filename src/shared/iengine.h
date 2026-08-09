@@ -676,6 +676,7 @@ extern bool isdedicatedserver();
 
 #ifndef STANDALONE
 extern void startnetworkworld(int seed);
+extern bool getpreparedworldspawn(vec &position, float &yaw, float &pitch);
 extern void worldpositiontoabsolute(vec &position);
 extern void worldpositiontolocal(vec &position);
 extern void worldselectiontoabsolute(selinfo &selection);

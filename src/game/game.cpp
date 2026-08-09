@@ -580,7 +580,12 @@ namespace game
             }
             environment::synctime(timemillis, frozen);
             pendingnetworkworld = false;
-            addmsg(N_WORLDREADY, "ri", 0);
+            vec worldspawn;
+            float worldspawnyaw = 0, worldspawnpitch = 0;
+            if(getpreparedworldspawn(worldspawn, worldspawnyaw, worldspawnpitch))
+                addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF),
+                       int(worldspawnyaw), int(worldspawnpitch));
+            else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
         }
         environment::update();
 #endif
@@ -1819,8 +1824,21 @@ namespace game
         if(multiplayer(false)) addmsg(N_RESPAWN, "r");
         else
         {
-            findplayerspawn(player1, -1, 0);
-            setplayeralive(*player1, player1->o);
+            vec worldspawn;
+            float worldspawnyaw = 0;
+            float worldspawnpitch = 0;
+            if(getpreparedworldspawn(worldspawn, worldspawnyaw, worldspawnpitch))
+            {
+                worldpositiontolocal(worldspawn);
+                player1->yaw = worldspawnyaw;
+                player1->pitch = worldspawnpitch;
+                setplayeralive(*player1, worldspawn);
+            }
+            else
+            {
+                findplayerspawn(player1, -1, 0);
+                setplayeralive(*player1, player1->o);
+            }
         }
     });
 #endif
