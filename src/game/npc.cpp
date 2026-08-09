@@ -40,7 +40,7 @@ namespace game
     {
         npcdefinition *definition;
         int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
-            renderlastmillis, staggeruntil, crawlstart, lastlimbhop, ragdollstart[6], ragdollend[6];
+            renderlastmillis, staggeruntil, crawlstart, lastlimbhop, ragdollstart[6], ragdollend[6], partdetachedmillis[6], partlastblood[6];
         float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
         uint detachedparts;
         bool frozen, wanderpaused;
@@ -61,7 +61,11 @@ namespace game
             radius = xradius = yradius = 4.1f;
             maxheight = eyeheight = 28.0f;
             aboveeye = 2.0f;
-            loopi(6) ragdollstart[i] = ragdollend[i] = -1;
+            loopi(6)
+            {
+                ragdollstart[i] = ragdollend[i] = -1;
+                partdetachedmillis[i] = partlastblood[i] = 0;
+            }
             parthealth[HITBOX_TORSO] = definition->health;
             loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
         }
@@ -73,13 +77,14 @@ namespace game
         string model;
         vec angularvelocity, localradius, modelcenter;
         float renderyaw, renderpitch, renderroll, settlepitch, settleroll;
-        int part, lastupdate, sleepmillis, settleaxis;
+        int part, lastupdate, sleepmillis, settleaxis, detachedmillis, lastblood;
         bool sleeping;
 
         severedlimb(const char *model, int part)
             : angularvelocity(0, 0, 0), localradius(part == HITBOX_HEAD ? vec(4, 4, 4) : vec(2, 2, part >= HITBOX_LEFT_LEG ? 6 : 5)),
               modelcenter(0, 0, part == HITBOX_HEAD ? localradius.z : -localradius.z), renderyaw(0), renderpitch(0), renderroll(0),
-              settlepitch(0), settleroll(0), part(part), lastupdate(lastmillis), sleepmillis(0), settleaxis(0), sleeping(false)
+              settlepitch(0), settleroll(0), part(part), lastupdate(lastmillis), sleepmillis(0), settleaxis(0), detachedmillis(lastmillis),
+              lastblood(lastmillis), sleeping(false)
         {
             copystring(this->model, model);
             ::model *geometry = loadmodel(model);
@@ -128,6 +133,7 @@ namespace game
     VARP(npcmaxdist, 1, 256, 4096);
     VARP(npcdebrisduration, 1000, 20000, 120000);
     VARP(npcdebrissinktime, 250, 3000, 10000);
+    VAR(npcbleedduration, 0, 2000, 10000);
     FVAR(npclimbvelocitymultiplier, 0.0f, 8.0f, 10.0f);
     FVAR(npclimbangularvelocitymultiplier, 0.0f, 4.0f, 10.0f);
     FVAR(npclimbbounciness, 0.0f, 0.75f, 8.0f);
@@ -386,6 +392,55 @@ namespace game
         return result.addz(vertical);
     }
 
+    static bool npcjointposition(npc &mob, int part, vec &position)
+    {
+        if(part <= NPC_PART_TORSO || part >= NUM_NPC_PARTS) return false;
+        if(mob.state == CS_DEAD && getragdollvertex(&mob, mob.ragdollstart[part], position)) return true;
+
+        npcpose pose;
+        calcnpcpose(mob, pose);
+        string torso;
+        humanoidmodelpath(mob.definition->model, NPC_PART_TORSO, torso);
+        if(modeltagposition(torso, humanoidtags[part], position, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll)) return true;
+
+        static const vec fallbackoffsets[NUM_NPC_PARTS] =
+        {
+            vec(0, 0, 0), vec(0, 0, 12), vec(-6, 0, 10), vec(6, 0, 10), vec(-2, 0, 0), vec(2, 0, 0)
+        };
+        position = vec(pose.torsoorigin).add(transformedmodelvector(fallbackoffsets[part], mob.yaw, pose.torsopitch, pose.torsoroll));
+        return true;
+    }
+
+    static bool npcjointdirection(npc &mob, int part, vec &direction)
+    {
+        if(part != NPC_PART_HEAD && part != NPC_PART_LEFT_ARM && part != NPC_PART_RIGHT_ARM) return false;
+        direction = vec(0, 0, 0);
+        if(mob.state == CS_DEAD)
+        {
+            vec leftshoulder, rightshoulder;
+            if(part == NPC_PART_HEAD)
+            {
+                vec pelvis, neck;
+                if(getragdollvertex(&mob, mob.ragdollstart[NPC_PART_TORSO], pelvis) &&
+                   getragdollvertex(&mob, mob.ragdollstart[NPC_PART_HEAD], neck)) direction = vec(neck).sub(pelvis);
+            }
+            else if(getragdollvertex(&mob, mob.ragdollstart[NPC_PART_LEFT_ARM], leftshoulder) &&
+                    getragdollvertex(&mob, mob.ragdollstart[NPC_PART_RIGHT_ARM], rightshoulder))
+                direction = part == NPC_PART_LEFT_ARM ? vec(leftshoulder).sub(rightshoulder) : vec(rightshoulder).sub(leftshoulder);
+            if(!direction.iszero())
+            {
+                direction.normalize();
+                return true;
+            }
+        }
+
+        npcpose pose;
+        calcnpcpose(mob, pose);
+        const vec localdirection = part == NPC_PART_HEAD ? vec(0, 0, 1) : part == NPC_PART_LEFT_ARM ? vec(-1, 0, 0) : vec(1, 0, 0);
+        direction = transformedmodelvector(localdirection, mob.yaw, pose.torsopitch, pose.torsoroll).safenormalize();
+        return true;
+    }
+
     static void buildhumanoidhitboxes(dynent *entity, const char *root, float bodyyaw, vector<characterhitbox> &hitboxes)
     {
         hitboxes.setsize(0);
@@ -466,8 +521,21 @@ namespace game
 
     static void spawnblood(const vec &position, bool detached)
     {
-        regular_particle_splash(PART_BLOOD, detached ? 9 : 3, detached ? 900 : 450, position, 0x60FFFF, detached ? 1.50f : 1.25f,
-                                detached ? 150 : 75, 2);
+        regular_particle_splash(PART_BLOOD, detached ? 9 : 3, detached ? 900 : 450, position, 0x60FFFF, detached ? 1.50f : 1.25f, detached ? 150 : 75, 2);
+    }
+
+    static void spawnbleedingparticle(const vec &position, const vec *direction = NULL)
+    {
+        if(direction) regular_particle_spray(PART_BLOOD, 1, 400, position, *direction, 0x60FFFF, 1.0f, 175, 30, 2);
+        else regular_particle_splash(PART_BLOOD, 1, 400, position, 0x60FFFF, 1.0f, 90, 2);
+    }
+
+    static bool shouldemitblood(int detachedmillis, int &lastblood)
+    {
+        static const int bleedinterval = 50;
+        if(npcbleedduration <= 0 || lastmillis - detachedmillis >= npcbleedduration || lastmillis - lastblood < bleedinterval) return false;
+        lastblood = lastmillis;
+        return true;
     }
 
     static matrix3 severedorientation(const severedlimb &limb)
@@ -683,6 +751,7 @@ namespace game
 
         spawnblood(vec(limb->body.o).add(rotateseveredvector(*limb, vec(limb->modelcenter).neg())), true);
         mob.detachedparts |= 1U << part;
+        mob.partdetachedmillis[part] = mob.partlastblood[part] = lastmillis;
         if(!npcremaininglegs(mob)) beginnpccrawl(mob);
         updatenpchitboxes(mob);
     }
@@ -1068,11 +1137,25 @@ namespace game
         particle_textcopy(mob.abovehead(), text, PART_TEXT, 150, 0xFFE28A, 1.5f, 0);
     }
 
+    static void updatenpcbleeding(npc &mob)
+    {
+        for(int part = NPC_PART_HEAD; part < NUM_NPC_PARTS; ++part)
+        {
+            if(!(mob.detachedparts & (1U << part)) ||
+               !shouldemitblood(mob.partdetachedmillis[part], mob.partlastblood[part])) continue;
+            vec position, direction;
+            if(!npcjointposition(mob, part, position)) continue;
+            spawnbleedingparticle(position, npcjointdirection(mob, part, direction) ? &direction : NULL);
+        }
+    }
+
     static void updateseveredlimbs()
     {
         for(int i = 0; i < severedlimbs.length();)
         {
             severedlimb &limb = *severedlimbs[i];
+            if(shouldemitblood(limb.detachedmillis, limb.lastblood))
+                spawnbleedingparticle(vec(limb.body.o).add(rotateseveredvector(limb, vec(limb.modelcenter).neg())));
             if(limb.sleeping)
             {
                 if(lastmillis - limb.sleepmillis >= npcdebrisduration)
@@ -1179,6 +1262,7 @@ namespace game
                 if(mob.frozen) freezeragdoll(&mob);
                 else moveragdoll(&mob);
                 mob.hitboxes.setsize(0);
+                updatenpcbleeding(mob);
                 shownpcdebugtext(mob);
                 continue;
             }
@@ -1195,6 +1279,7 @@ namespace game
                 walktowardsdestination(mob);
             }
             updatenpchitboxes(mob);
+            updatenpcbleeding(mob);
             shownpcdebugtext(mob);
         }
         updateseveredlimbs();

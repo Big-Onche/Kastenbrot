@@ -1234,6 +1234,35 @@ static void regularsplash(int type, int color, int radius, int num, int fade, co
     splash(type, color, radius, num, fade, p, size, gravity);
 }
 
+static void regularspray(int type, int color, int speed, int spread, int num, int fade, const vec &p, const vec &direction, float size,
+                         int gravity, int delay = 0)
+{
+    if(!canemitparticles() || (delay > 0 && rnd(delay) != 0) || (camera1->o.dist(p) > maxparticledistance && !seedemitter)) return;
+    const float collidez = parts[type]->type & PT_COLLIDE
+                         ? p.z - raycube(p, vec(0, 0, -1), COLLIDERADIUS, RAY_CLIPMAT) + (parts[type]->stain >= 0 ? COLLIDEERROR : 0)
+                         : -1;
+    vec base(direction);
+    if(base.iszero()) base = vec(0, 0, 1);
+    base.safenormalize().mul(speed);
+    loopi(num)
+    {
+        vec velocity(base);
+        if(spread > 0)
+        {
+            int x, y, z;
+            do
+            {
+                x = rnd(spread * 2 + 1) - spread;
+                y = rnd(spread * 2 + 1) - spread;
+                z = rnd(spread * 2 + 1) - spread;
+            }
+            while(x * x + y * y + z * z > spread * spread);
+            velocity.add(vec(float(x), float(y), float(z)));
+        }
+        newparticle(p, velocity, rnd(max(fade * 3, 1)) + 1, type, color, size, gravity)->val = collidez;
+    }
+}
+
 bool canaddparticles()
 {
     return !minimized;
@@ -1249,6 +1278,12 @@ void regular_particle_splash(int type, int num, int fade, const vec &p, int colo
 {
     if(!canaddparticles()) return;
     regularsplash(type, color, radius, num, fade, p, size, gravity, delay);
+}
+
+void regular_particle_spray(int type, int num, int fade, const vec &p, const vec &direction, int color, float size, int speed, int spread, int gravity, int delay)
+{
+    if(!canaddparticles()) return;
+    regularspray(type, color, speed, spread, num, fade, p, direction, size, gravity, delay);
 }
 
 void particle_splash(int type, int num, int fade, const vec &p, int color, float size, int radius, int gravity)
