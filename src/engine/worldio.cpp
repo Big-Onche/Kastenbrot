@@ -243,11 +243,11 @@ struct worldcubedefinition
     float texsize;
     int item, slot, sideslot, bottomslot, furnaceinputslots, furnaceinputlimit;
     vector<worlddropdefinition> drops;
-    bool explicitdrops, errorfallback;
+    bool explicitdrops, errorfallback, fall;
 
     worldcubedefinition()
         : texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), furnaceinputslots(0),
-          furnaceinputlimit(0), explicitdrops(false), errorfallback(false)
+          furnaceinputlimit(0), explicitdrops(false), errorfallback(false), fall(false)
     {
         id[0] = itemid[0] = texture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = '\0';
     }
@@ -370,6 +370,14 @@ int getworldcubetextureslotat(const ivec &position, int orient)
     return c.texture[clamp(orient, 0, 5)];
 }
 
+bool isworldcubesolidat(const ivec &position)
+{
+    ivec origin;
+    int size;
+    const cube &c = lookupcube(position, 0, origin, size);
+    return !isempty(c) && isentirelysolid(c);
+}
+
 const char *getworldcubename(int index)
 {
     index = validworldcubeindex(index);
@@ -468,6 +476,12 @@ const char *getinventoryitemname(int index)
 const char *getinventoryitemid(int index)
 {
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->id : "";
+}
+
+bool getworldcubefall(int index)
+{
+    index = validworldcubeindex(index);
+    return index >= 0 && worldcubedefinitions[index]->fall;
 }
 
 int getinventoryitemindex(const char *id)
@@ -711,6 +725,17 @@ static void defineworldcube(const char *id, const char *itemid, const char *text
 ICOMMAND(worldcube, "sssfsssN", (char *id, char *itemid, char *texture, float *texsize, char *side, char *bottom, char *bottomalternate, int *numargs),
 {
     defineworldcube(id, itemid, texture, *texsize, side, bottom, bottomalternate, *numargs);
+});
+
+ICOMMAND(worldfall, "si", (char *id, int *enabled),
+{
+    worldcubedefinition *cube = findworldcube(id);
+    if(!cube || (*enabled != 0 && *enabled != 1))
+    {
+        conoutf(CON_ERROR, "worldfall requires a known world cube and either 0 or 1");
+        return;
+    }
+    cube->fall = *enabled != 0;
 });
 
 ICOMMAND(worldfurnace, "sii", (char *id, int *inputslots, int *inputlimit),
@@ -9550,11 +9575,11 @@ struct serverworldobjectdefinition
     int item, type, furnaceinputslots, furnaceinputlimit;
     float lightradius;
     vector<serverworlddropdefinition> drops;
-    bool explicitdrops, scatter, placeable;
+    bool explicitdrops, scatter, placeable, fall;
 
     serverworldobjectdefinition()
         : item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), lightradius(0), explicitdrops(false), scatter(false),
-          placeable(false)
+          placeable(false), fall(false)
     {
         id[0] = itemid[0] = '\0';
     }
@@ -9620,6 +9645,17 @@ ICOMMAND(worldcube, "sssfsssN",
     copystring(cube->id, id);
     copystring(cube->itemid, itemid ? itemid : "");
     cube->type = WORLD_ITEM_CUBE;
+});
+
+ICOMMAND(worldfall, "si", (char *id, int *enabled),
+{
+    serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, id);
+    if(!cube || (*enabled != 0 && *enabled != 1))
+    {
+        conoutf(CON_ERROR, "worldfall requires a known world cube and either 0 or 1");
+        return;
+    }
+    cube->fall = *enabled != 0;
 });
 
 ICOMMAND(worldfurnace, "sii", (char *id, int *inputslots, int *inputlimit),
@@ -9779,6 +9815,16 @@ float getinventoryitemworldsize(int index) { return 1.0f; }
 
 int numworldcubes() { return serverworldcubes.length(); }
 
+int getworldcubeitem(int index)
+{
+    return serverworldcubes.inrange(index) ? serverworldcubes[index]->item : -1;
+}
+
+bool getworldcubefall(int index)
+{
+    return serverworldcubes.inrange(index) && serverworldcubes[index]->fall;
+}
+
 const char *getworldcubename(int index)
 {
     return serverworldcubes.inrange(index) ? serverworldcubes[index]->id : "";
@@ -9858,6 +9904,12 @@ int getworldcubefaceslot(int index, int orient)
     (void)index;
     (void)orient;
     return DEFAULT_GEOM;
+}
+
+bool isworldcubesolidat(const ivec &position)
+{
+    (void)position;
+    return false;
 }
 
 int getworldscatterindexat(const ivec &support, int orient)

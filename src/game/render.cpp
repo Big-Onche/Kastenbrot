@@ -807,10 +807,39 @@ namespace game
         loopv(drops) renderworlddrop(*drops[i]);
     }
 
+    static void renderfallingblocks()
+    {
+        const vector<fallingblock *> &blocks = getfallingblocks();
+        const float maxdistance = getdynamicentsmaxdistance() * GAMEUNITSPERMETER;
+        loopv(blocks)
+        {
+            const fallingblock &block = *blocks[i];
+            const int worldindex = getworlditemindex(block.item);
+            if(worldindex < 0) continue;
+            vec position = block.o;
+            position.z -= GAMEUNITSPERMETER / 2;
+            worldpositiontolocal(position);
+            if(camera1 && position.squaredist(camera1->o) > maxdistance * maxdistance) continue;
+            string toptexture, sidetexture, bottomtexture;
+            copystring(toptexture, getworldcubetexture(worldindex, WORLD_CUBE_TOP));
+            copystring(sidetexture, getworldcubetexture(worldindex, WORLD_CUBE_SIDE));
+            copystring(bottomtexture, getworldcubetexture(worldindex, WORLD_CUBE_BOTTOM));
+            modelskinoverride skins[] =
+            {
+                modelskinoverride("top", toptexture),
+                modelskinoverride("side", sidetexture),
+                modelskinoverride("bottom", bottomtexture)
+            };
+            rendermodelwithskins(worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP, position, 0, 0, 0,
+                                 MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED, NULL, skins, 3, 2.0f);
+        }
+    }
+
     void rendergame()
     {
         entities::renderentities();
         renderworlddrops();
+        renderfallingblocks();
         rendernpcs();
         loopv(players) renderplayer(players[i], players[i] == player1);
     }

@@ -253,6 +253,17 @@ namespace server
         }
     };
 
+    struct serverfallingblock
+    {
+        uint id;
+        int item, lastupdate;
+        float velocity;
+        ivec origin;
+        vec o;
+
+        serverfallingblock() : id(0), item(-1), lastupdate(totalmillis), velocity(0), origin(0, 0, 0), o(0, 0, 0) {}
+    };
+
     static vector<serverworldaction *> serverworldactions;
     static vector<servercollisionchunk *> servercollisionchunks;
     static vector<servernpc *> servernpcs;
@@ -263,12 +274,17 @@ namespace server
     static uint nextnpcid = 1;
     static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0;
     static vector<serverdrop *> serverdrops;
+    static vector<serverfallingblock *> serverfallingblocks;
+    static vector<ivec> serverfallblockchecks;
     static vector<furnaceinstance *> serverfurnaces;
     static uint nextdropid = 1;
+    static uint nextfallblockid = 1;
     static bool furnacesdirty = false;
     static int lastfurnacesave = 0;
     static serverworldaction *findworldaction(const ivec &target, int action);
     static void setworldactionstate(const ivec &target, int action, int orient, int item);
+    static void queueserverfallblockcheck(const ivec &cell);
+    static void sendfallblockspawn(int cn, const serverfallingblock &block);
     static bool loadserverfurnaces();
     static bool saveserverfurnaces(bool force = false);
 
@@ -596,8 +612,11 @@ namespace server
         worldredostack.deletecontents();
         serverworldactions.deletecontents();
         serverdrops.deletecontents();
+        serverfallingblocks.deletecontents();
+        serverfallblockchecks.setsize(0);
         serverfurnaces.deletecontents();
         nextdropid = 1;
+        nextfallblockid = 1;
         worldeditrevision = 0;
         serverworldready = true;
 
@@ -1555,6 +1574,12 @@ namespace server
         return NULL;
     }
 
+    static void queueserverfallblockcheck(const ivec &cell)
+    {
+        loopv(serverfallblockchecks) if(serverfallblockchecks[i] == cell) return;
+        serverfallblockchecks.add(cell);
+    }
+
     static void setworldactionstate(const ivec &target, int action, int orient, int item)
     {
         serverworldaction *state = findworldaction(target, action);
@@ -1567,6 +1592,8 @@ namespace server
         state->action = action;
         state->orient = orient;
         state->item = item;
+        queueserverfallblockcheck(target);
+        queueserverfallblockcheck(ivec(target).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
     }
 
     static int serverfloordiv(int value, int divisor)
@@ -1607,12 +1634,64 @@ namespace server
         return SERVER_WORLD_GROUND_HEIGHT + chunk->heights[localy * SERVER_WORLD_CHUNK_BLOCKS + localx] * SERVER_WORLD_BLOCK_SIZE;
     }
 
+    static int serverworldcubeindex(const char *id)
+    {
+        loopi(numworldcubes()) if(!cubecasecmp(getworldcubename(i), id)) return i;
+        return -1;
+    }
+
+    static int serverbaseworldcubeindex(const ivec &cell)
+    {
+        if(cell.z < 0 || cell.z >= SERVER_WORLD_MAP_SIZE) return -1;
+        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
+        const int x = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE), y = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE);
+        game::worldtectonicsample tectonics;
+        const int height = serverworldgenerator->height(x, y, &tectonics),
+                  surface = SERVER_WORLD_GROUND_HEIGHT + height * SERVER_WORLD_BLOCK_SIZE,
+                  watertop = SERVER_WORLD_GROUND_HEIGHT + serverworldgenerator->settings.sealevel * SERVER_WORLD_BLOCK_SIZE,
+                  dirtbottom = surface - serverworldgenerator->settings.soildepth * SERVER_WORLD_BLOCK_SIZE,
+                  grassbottom = surface - SERVER_WORLD_BLOCK_SIZE;
+        if(cell.z >= max(surface, watertop) || (surface < watertop && cell.z >= surface)) return -1;
+        if(cell.z + SERVER_WORLD_BLOCK_SIZE <= dirtbottom) return serverworldcubeindex("stone");
+        const int biome = serverworldgenerator->biome(x, y, height);
+        const bool cliff = tectonics.rockyledge > 0.22f || serverworldgenerator->cliff(x, y, height), rock = serverworldgenerator->rock(x, y, height);
+        if(cliff) return cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface ? serverworldcubeindex("stone") : -1;
+        if(rock)
+        {
+            if(biome == game::WORLD_BIOME_SNOW && cell.z >= grassbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
+                return serverworldcubeindex("snow");
+            return cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface ? serverworldcubeindex("stone") : -1;
+        }
+        const int beachminimum = serverworldgenerator->settings.sealevel + min(serverworldgenerator->settings.beachminheight,
+                                                                                serverworldgenerator->settings.beachmaxheight),
+                  beachmaximum = serverworldgenerator->settings.sealevel + max(serverworldgenerator->settings.beachminheight,
+                                                                                serverworldgenerator->settings.beachmaxheight);
+        if((biome == game::WORLD_BIOME_DESERT || (height >= beachminimum && height <= beachmaximum && serverworldgenerator->coast(x, y))) &&
+           cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
+            return serverworldcubeindex("sand");
+        if(biome == game::WORLD_BIOME_OCEAN)
+            return cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface ? serverworldcubeindex("dirt") : -1;
+        if(cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= grassbottom) return serverworldcubeindex("dirt");
+        if(cell.z >= grassbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
+            return serverworldcubeindex(biome == game::WORLD_BIOME_SNOW ? "snow" : "grass");
+        return -1;
+    }
+
     static bool servereditcontains(const serveredit &edit, const ivec &cell)
     {
         if(!edit.active || !edit.hasselection || edit.selection.grid <= 0) return false;
         const ivec end = ivec(edit.selection.o).add(ivec(edit.selection.s).mul(edit.selection.grid));
         return cell.x >= edit.selection.o.x && cell.y >= edit.selection.o.y && cell.z >= edit.selection.o.z &&
                cell.x < end.x && cell.y < end.y && cell.z < end.z;
+    }
+
+    static int serverblockitem(const ivec &cell)
+    {
+        if(serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE))
+            return state->action == WORLD_ACTION_PLACE_CUBE ? state->item : -1;
+        loopvrev(worldhistory) if(worldhistory[i]->type != N_WORLDAUTH && servereditcontains(*worldhistory[i], cell)) return -1;
+        const int worldindex = serverbaseworldcubeindex(cell);
+        return worldindex >= 0 ? getworldcubeitem(worldindex) : -1;
     }
 
     static bool serverblocksolid(const ivec &cell)
@@ -2552,6 +2631,7 @@ namespace server
             if(worldhistory[i]->active) sendserveredit(ci.clientnum, *worldhistory[i]);
         }
         loopv(serverdrops) senddropspawn(ci.clientnum, *serverdrops[i]);
+        loopv(serverfallingblocks) sendfallblockspawn(ci.clientnum, *serverfallingblocks[i]);
         sendf(ci.clientnum, 1, "ri2", N_WORLDSYNC, int(worldeditrevision));
         ci.worldready = true;
         loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->hasposition)
@@ -2844,6 +2924,162 @@ namespace server
         return true;
     }
 
+    static bool acceptsystemworldaction(int action, const ivec &cell, int item)
+    {
+        const int orient = WORLD_ORIENT_TOP;
+        ivec target = cell;
+        if(action == WORLD_ACTION_PLACE_CUBE) target.z -= SERVER_WORLD_BLOCK_SIZE;
+        serveredit *edit = new serveredit;
+        edit->author = -1;
+        edit->type = N_WORLDAUTH;
+        packetbuf payload(MAXTRANS);
+        putint(payload, action);
+        putint(payload, target.x); putint(payload, target.y); putint(payload, target.z);
+        putint(payload, orient);
+        putint(payload, item);
+        edit->payload.put(payload.buf, payload.length());
+        if(!acceptededit(edit)) return false;
+        setworldactionstate(cell, action, orient, item);
+        return true;
+    }
+
+    static void sendfallblockspawn(int cn, const serverfallingblock &block)
+    {
+        sendf(cn, 1, "ri7", N_FALLBLOCKSPAWN, int(block.id), block.item, int(block.o.x * DMF), int(block.o.y * DMF), int(block.o.z * DMF),
+              int(block.velocity * DNF));
+    }
+
+    static void broadcastfallblockspawn(const serverfallingblock &block)
+    {
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready) sendfallblockspawn(clients[i]->clientnum, block);
+    }
+
+    static bool serverfallingblockoriginactive(const ivec &origin)
+    {
+        loopv(serverfallingblocks) if(serverfallingblocks[i]->origin == origin) return true;
+        return false;
+    }
+
+    static bool serverfallingblockoccupies(const ivec &cell)
+    {
+        loopv(serverfallingblocks)
+        {
+            const serverfallingblock &block = *serverfallingblocks[i];
+            if(cell.x == block.origin.x && cell.y == block.origin.y &&
+               cell.z + SERVER_WORLD_BLOCK_SIZE > block.o.z - SERVER_WORLD_BLOCK_SIZE / 2 && cell.z < block.o.z + SERVER_WORLD_BLOCK_SIZE / 2)
+                return true;
+        }
+        return false;
+    }
+
+    static void removeserverfallingblock(int index)
+    {
+        if(!serverfallingblocks.inrange(index)) return;
+        serverfallingblock *block = serverfallingblocks.remove(index);
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready)
+            sendf(clients[i]->clientnum, 1, "ri2", N_FALLBLOCKDELETE, int(block->id));
+        delete block;
+    }
+
+    static bool serverfallblockinrange(const ivec &cell)
+    {
+        const vec center = vec(cell).add(SERVER_WORLD_BLOCK_SIZE / 2);
+        const float radius = serversimulationmaxdist * GAMEUNITSPERMETER, radiussquared = radius * radius;
+        loopv(clients)
+        {
+            const clientinfo *ci = clients[i];
+            if(ci && ci->connected && ci->worldready && ci->hasposition && center.squaredist(ci->o) <= radiussquared) return true;
+        }
+        return false;
+    }
+
+    static bool startserverfallingblock(const ivec &cell, int item)
+    {
+        if(serverfallingblockoriginactive(cell) || !acceptsystemworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, item)) return false;
+        serverfallingblock *block = new serverfallingblock;
+        if(!nextfallblockid || nextfallblockid > uint(INT_MAX)) nextfallblockid = 1;
+        block->id = nextfallblockid++;
+        block->item = item;
+        block->origin = cell;
+        block->o = vec(cell).add(SERVER_WORLD_BLOCK_SIZE / 2);
+        block->lastupdate = totalmillis;
+        serverfallingblocks.add(block);
+        broadcastfallblockspawn(*block);
+        return true;
+    }
+
+    static float serverfallblocklanding(const serverfallingblock &block)
+    {
+        int z = serverfloordiv(int(floorf(block.o.z - SERVER_WORLD_BLOCK_SIZE / 2 - 0.01f)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE;
+        for(; z >= -SERVER_WORLD_BLOCK_SIZE; z -= SERVER_WORLD_BLOCK_SIZE)
+            if(serverblocksolid(ivec(block.origin.x, block.origin.y, z))) return z + SERVER_WORLD_BLOCK_SIZE * 1.5f;
+        return SERVER_WORLD_BLOCK_SIZE / 2.0f;
+    }
+
+    static bool updateserverfallingblock(serverfallingblock &block)
+    {
+        const int elapsedmillis = min(max(totalmillis - block.lastupdate, 0), 100);
+        block.lastupdate = totalmillis;
+        if(!elapsedmillis) return false;
+        const float seconds = elapsedmillis / 1000.0f, previousvelocity = block.velocity;
+        block.velocity += 210.0f * seconds;
+        const float distance = (previousvelocity + block.velocity) * 0.5f * seconds,
+                    landing = serverfallblocklanding(block);
+        if(block.o.z - distance > landing)
+        {
+            block.o.z -= distance;
+            return false;
+        }
+        const ivec destination(block.origin.x, block.origin.y, int(landing) - SERVER_WORLD_BLOCK_SIZE / 2);
+        if(serverblocksolid(destination)) return false;
+        if(!acceptsystemworldaction(WORLD_ACTION_PLACE_CUBE, destination, block.item)) return false;
+        queueserverfallblockcheck(ivec(block.origin).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
+        queueserverfallblockcheck(ivec(destination).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
+        return true;
+    }
+
+    static void sendserverfallblocksnapshots()
+    {
+        static int lastsnapshot = 0;
+        if(totalmillis - lastsnapshot < 50) return;
+        lastsnapshot = totalmillis;
+        loopv(clients)
+        {
+            clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->worldready) continue;
+            loopvj(serverfallingblocks)
+            {
+                const serverfallingblock &block = *serverfallingblocks[j];
+                packetbuf p(48);
+                putint(p, N_FALLBLOCKUPDATE); putint(p, int(block.id)); putint(p, totalmillis);
+                putint(p, int(block.o.x * DMF)); putint(p, int(block.o.y * DMF)); putint(p, int(block.o.z * DMF));
+                putint(p, int(block.velocity * DNF));
+                sendpacket(ci->clientnum, 0, p.finalize());
+            }
+        }
+    }
+
+    static void updateserverfallingblocks()
+    {
+        for(int i = serverfallingblocks.length() - 1; i >= 0; --i)
+            if(updateserverfallingblock(*serverfallingblocks[i])) removeserverfallingblock(i);
+
+        const int checks = min(serverfallblockchecks.length(), 64);
+        loopi(checks)
+        {
+            const ivec cell = serverfallblockchecks.remove(0);
+            if(!serverfallblockinrange(cell))
+            {
+                serverfallblockchecks.add(cell);
+                continue;
+            }
+            const int item = serverblockitem(cell), worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+            if(item >= 0 && getworldcubefall(worldindex) && !serverblocksolid(ivec(cell).sub(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE))))
+                startserverfallingblock(cell, item);
+        }
+        sendserverfallblocksnapshots();
+    }
+
     static bool actiontargetoutofreach(const clientinfo &ci, const ivec &target)
     {
         if(servercreative()) return vec(target.x + 8.0f, target.y + 8.0f, target.z + 8.0f).dist(ci.o) > buildreach;
@@ -3029,7 +3265,8 @@ namespace server
         const ivec occupied = worldactionstatecell(support, action, orient);
         if(!validactiontarget(ci, occupied, orient, error)) return rejectaction(ci, requestid, error, true);
         if(!actionrate(ci, true)) return rejectaction(ci, requestid, "excessive placement rate", true);
-        if(action != WORLD_ACTION_PLACE_ITEM && playeroccupies(occupied)) return rejectaction(ci, requestid, "");
+        if(action != WORLD_ACTION_PLACE_ITEM && (playeroccupies(occupied) || serverfallingblockoccupies(occupied)))
+            return rejectaction(ci, requestid, "");
         serverworldaction *state = findworldaction(occupied, action);
         serverworldaction *other = findworldaction(occupied, action == WORLD_ACTION_PLACE_CUBE
                                                             ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_CUBE);
@@ -4500,6 +4737,9 @@ namespace server
                 case N_DROPSETTINGS:
                 case N_DROPSPAWN:
                 case N_DROPDELETE:
+                case N_FALLBLOCKSPAWN:
+                case N_FALLBLOCKUPDATE:
+                case N_FALLBLOCKDELETE:
                 case N_NPCSPAWN:
                 case N_NPCDESPAWN:
                 case N_NPCSNAPSHOT:
@@ -4606,6 +4846,7 @@ namespace server
     {
         if(!journalinitialized) return;
         updateserverfurnaces();
+        updateserverfallingblocks();
         updateservernpcs();
         loopv(clients)
         {

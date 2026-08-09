@@ -625,6 +625,7 @@ namespace game
                 }
                 pendingnetworkedits.deletecontents();
                 resetworlddrops();
+                resetfallingblocks();
                 resetnpcs();
                 authoritativeauthor = -1;
                 authoritativerevision = authoritativerequestid = 0;
@@ -697,6 +698,28 @@ namespace game
                 const uint id = uint(getint(p));
                 const int picker = getint(p);
                 if(!p.overread()) receivedropdelete(id, picker);
+                break;
+            }
+            case N_FALLBLOCKSPAWN:
+            {
+                const uint id = uint(getint(p));
+                const int item = getint(p), x = getint(p), y = getint(p), z = getint(p);
+                const float velocity = getint(p) / DNF;
+                if(!p.overread()) receivefallblockspawn(id, item, vec(x / DMF, y / DMF, z / DMF), velocity);
+                break;
+            }
+            case N_FALLBLOCKUPDATE:
+            {
+                const uint id = uint(getint(p));
+                const int tick = getint(p), x = getint(p), y = getint(p), z = getint(p);
+                const float velocity = getint(p) / DNF;
+                if(!p.overread()) receivefallblockupdate(id, tick, vec(x / DMF, y / DMF, z / DMF), velocity);
+                break;
+            }
+            case N_FALLBLOCKDELETE:
+            {
+                const uint id = uint(getint(p));
+                if(!p.overread()) receivefallblockdelete(id);
                 break;
             }
             case N_WORLDSYNC:

@@ -67,6 +67,7 @@ enum
     N_IDENTITYRESPONSE, N_IDENTITYSUCCESS, N_IDENTITYFAILURE, N_IDENTITYREVOKED,
     N_INVENTORYSTATE, N_INVENTORYACTION, N_CRAFTSTATE, N_CRAFTACTION, N_WORLDACTION, N_WORLDAUTH, N_ACTIONRESULT,
     N_BREAKSTATE, N_DROPSETTINGS, N_DROPSPAWN, N_DROPDELETE, N_DROPPICKUP,
+    N_FALLBLOCKSPAWN, N_FALLBLOCKUPDATE, N_FALLBLOCKDELETE,
     N_FURNACESTATE, N_FURNACEACTION,
     N_NPCSPAWN, N_NPCDESPAWN, N_NPCSNAPSHOT, N_NPCEVENT, N_NPCATTACK,
     N_PLAYERSTATE, N_RESPAWN,
@@ -150,6 +151,7 @@ static const int msgsizes[] =
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
     N_INVENTORYSTATE, 0, N_INVENTORYACTION, 5, N_CRAFTSTATE, 0, N_CRAFTACTION, 7, N_WORLDACTION, 9, N_WORLDAUTH, 7,
     N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 11, N_DROPDELETE, 3, N_DROPPICKUP, 6,
+    N_FALLBLOCKSPAWN, 7, N_FALLBLOCKUPDATE, 7, N_FALLBLOCKDELETE, 2,
     N_FURNACESTATE, 0, N_FURNACEACTION, 7,
     N_NPCSPAWN, 0, N_NPCDESPAWN, 3, N_NPCSNAPSHOT, 11, N_NPCEVENT, 0, N_NPCATTACK, 4,
     N_PLAYERSTATE, 10, N_RESPAWN, 1,
@@ -159,7 +161,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 23
+#define PROTOCOL_VERSION 24
 
 enum
 {
@@ -311,6 +313,22 @@ struct worlddrop
     }
 };
 
+struct fallingblock
+{
+    uint id;
+    int item, snapshotmillis, servertick, physicsmillis;
+    float velocity, servervelocity;
+    bool replicated, landingknown;
+    ivec origin;
+    vec o, serverposition, landing;
+
+    fallingblock()
+        : id(0), item(-1), snapshotmillis(0), servertick(0), physicsmillis(0), velocity(0), servervelocity(0), replicated(false),
+          landingknown(false), origin(0, 0, 0), o(0, 0, 0), serverposition(0, 0, 0), landing(0, 0, 0)
+    {
+    }
+};
+
 struct gameent : dynent
 {
     int clientnum, privilege, ping, lastupdate, plag;
@@ -431,6 +449,11 @@ namespace game
     extern void receivedropdelete(uint id, int picker);
     extern void resetworlddrops();
     extern const vector<worlddrop *> &getworlddrops();
+    extern void receivefallblockspawn(uint id, int item, const vec &position, float velocity);
+    extern void receivefallblockupdate(uint id, int tick, const vec &position, float velocity);
+    extern void receivefallblockdelete(uint id);
+    extern void resetfallingblocks();
+    extern const vector<fallingblock *> &getfallingblocks();
     extern int getdynamicentsmaxdistance();
     extern void receiveinventory(const int *items, const int *counts, const int *durabilities, int slots, int selected,
                                  int cursoritem, int cursorcount, int cursordurability);

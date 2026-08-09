@@ -90,6 +90,7 @@ namespace game
         worldtectonicsample tectonics(int x, int y, float cavedepth = 0) const;
         float coasttransitionwidth(int x, int y) const;
         float maxcoasttransitionwidth() const;
+        bool coast(int x, int y) const;
         float fracturecorridor(int x, int y) const;
         int height(int x, int y, worldtectonicsample *tectonics = NULL) const;
         int biome(int x, int y, int height) const;

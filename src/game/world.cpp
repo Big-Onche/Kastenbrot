@@ -428,6 +428,30 @@ namespace game
         return 60.0f;
     }
 
+    bool worldgenerator::coast(int x, int y) const
+    {
+        if(settings.coastwidth <= 0) return false;
+        const float noisex = x + 10000.5f, noisey = y - 10000.5f,
+                    configuredwidth = max(settings.coastwidth + biomeblend.GetNoise(noisex, noisey) * settings.coastvariation, 0.0f),
+                    width = max(configuredwidth, coasttransitionwidth(x, y));
+        const int maximumcost = int(floorf(width * 3.0f + 0.5f)),
+                  searchradius = max(settings.coastwidth + settings.coastvariation, int(ceilf(maxcoasttransitionwidth()))) + 1;
+        for(int dy = -searchradius; dy <= searchradius; ++dy) for(int dx = -searchradius; dx <= searchradius; ++dx)
+        {
+            const int diagonal = min(abs(dx), abs(dy)), straight = max(abs(dx), abs(dy)) - diagonal,
+                      cost = diagonal * 4 + straight * 3;
+            if(cost > maximumcost) continue;
+            const int samplex = x + dx, sampley = y + dy;
+            const bool water = height(samplex, sampley) < settings.sealevel;
+            if((height(samplex - 1, sampley) < settings.sealevel) != water ||
+               (height(samplex + 1, sampley) < settings.sealevel) != water ||
+               (height(samplex, sampley - 1) < settings.sealevel) != water ||
+               (height(samplex, sampley + 1) < settings.sealevel) != water)
+                return true;
+        }
+        return false;
+    }
+
     float worldgenerator::fracturecorridor(int x, int y) const
     {
         return fabs(fracturecorridors.GetNoise(x + 24500.5f, y - 24500.5f));

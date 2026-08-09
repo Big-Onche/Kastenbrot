@@ -53,9 +53,14 @@ namespace game
 
     static vector<predictedworldaction *> predictedworldactions;
     static vector<worlddrop *> worlddrops;
+    static vector<fallingblock *> fallingblocks;
+    static vector<ivec> fallblockchecks;
     static uint nextlocaldropid = 1;
+    static uint nextlocalfallblockid = 1;
     static int personaldrops = 0, droptimeout = 300, maxdrop = 1024, dynamicentsmaxdistance = 64, requireconfirmeditems = 1;
     static void updateworlddrops();
+    static void updatefallingblocks();
+    static void queuefallblockcheck(const ivec &cell);
     static void updatefurnaces();
     static void predictsurvivaldrops(int objectitem, uint requestid, const ivec &target, int action, int orient);
 #endif
@@ -150,6 +155,7 @@ namespace game
                 mpeditface(-1, 1, sel, false);
                 paintworldcube(type, placed, false);
                 waterterrainchanged(absoluteplacedorigin);
+                if(!waitforserveredit()) queuefallblockcheck(absoluteplacedorigin);
                 return true;
             }
             case WORLD_ACTION_PLACE_SCATTER:
@@ -159,6 +165,7 @@ namespace game
             case WORLD_ACTION_BREAK_CUBE_START:
                 mpdelcube(sel, false);
                 waterterrainchanged(absolutetarget);
+                if(!waitforserveredit()) queuefallblockcheck(ivec(absolutetarget).add(ivec(0, 0, 16)));
                 return true;
             case WORLD_ACTION_BREAK_SCATTER_START:
                 return (getworlditemtype(item) == WORLD_ITEM_SCATTER || getworlditemtype(item) == WORLD_ITEM_PLACEABLE) &&
@@ -342,6 +349,7 @@ namespace game
 #endif
         predictedworldactions.deletecontents();
         resetworlddrops();
+        resetfallingblocks();
         resetfurnaces();
         nextworldrequestid = 1;
         resetsurvivalinventory();
@@ -390,6 +398,7 @@ namespace game
         connected = remote = false;
         localworldactive = true;
         resetwatersimulationsettings();
+        resetfallingblocks();
 #ifndef STANDALONE
         resetclientreceive();
 #endif
@@ -607,6 +616,7 @@ namespace game
         updatewatersimulation();
         updatesurvivalbreaking();
         updateworlddrops();
+        updatefallingblocks();
         updatefurnaces();
 #endif
         gets2c();
@@ -766,6 +776,7 @@ namespace game
         resetnpcs();
         resetwatersimulation();
         if(!pendingnetworkworld) resetworlddrops();
+        if(!pendingnetworkworld) resetfallingblocks();
 #endif
         copystring(clientmap, name ? name : "");
 #ifndef STANDALONE
@@ -1721,6 +1732,195 @@ namespace game
         return worlddrops;
     }
 
+    static fallingblock *findfallingblock(uint id)
+    {
+        loopv(fallingblocks) if(fallingblocks[i]->id == id && id) return fallingblocks[i];
+        return NULL;
+    }
+
+    static bool fallingblockoriginactive(const ivec &origin)
+    {
+        loopv(fallingblocks) if(!fallingblocks[i]->replicated && fallingblocks[i]->origin == origin) return true;
+        return false;
+    }
+
+    static void queuefallblockcheck(const ivec &cell)
+    {
+        loopv(fallblockchecks) if(fallblockchecks[i] == cell) return;
+        fallblockchecks.add(cell);
+    }
+
+    static bool localfallblockcell(const ivec &absolute, int &item, bool &solid)
+    {
+        selinfo selection;
+        worldactionselection(selection, absolute, WORLD_ORIENT_TOP);
+        worldselectiontolocal(selection);
+        if(!selection.validate() || !worldselectionready(selection)) return false;
+        const ivec center = ivec(selection.o).add(CREATIVE_GRID / 2);
+        solid = isworldcubesolidat(center);
+        if(!solid)
+        {
+            item = -1;
+            return true;
+        }
+        item = getworldcubeitem(getworldcubeindexat(center, WORLD_ORIENT_TOP));
+        return true;
+    }
+
+    static bool findlocalfallblocklanding(fallingblock &block)
+    {
+        vec landing = block.o;
+        worldpositiontolocal(landing);
+        if(!droptofloor(landing, 7.9f, 8.0f)) return false;
+        worldpositiontoabsolute(landing);
+        const int landingz = int(floorf((landing.z - 7.5f) / CREATIVE_GRID)) * CREATIVE_GRID;
+        block.landing = vec(block.origin.x + 8.0f, block.origin.y + 8.0f, landingz + 8.0f);
+        block.landingknown = true;
+        return true;
+    }
+
+    static bool startlocalfallingblock(const ivec &cell, int item)
+    {
+        if(fallingblockoriginactive(cell) || !applyworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item)) return false;
+        fallingblock *block = new fallingblock;
+        if(!nextlocalfallblockid || nextlocalfallblockid > uint(INT_MAX)) nextlocalfallblockid = 1;
+        block->id = 0x80000000U | nextlocalfallblockid++;
+        block->item = item;
+        block->origin = cell;
+        block->o = vec(cell).add(8.0f);
+        block->physicsmillis = lastmillis;
+        fallingblocks.add(block);
+        findlocalfallblocklanding(*block);
+        return true;
+    }
+
+    static void updatelocalfallingblock(fallingblock &block)
+    {
+        if(!block.landingknown && !findlocalfallblocklanding(block)) return;
+        const int elapsedmillis = min(max(lastmillis - block.physicsmillis, 0), 100);
+        block.physicsmillis = lastmillis;
+        if(!elapsedmillis) return;
+        const float seconds = elapsedmillis / 1000.0f, previousvelocity = block.velocity;
+        block.velocity += DROP_GRAVITY * seconds;
+        const float distance = (previousvelocity + block.velocity) * 0.5f * seconds;
+        if(block.o.z - distance > block.landing.z)
+        {
+            block.o.z -= distance;
+            return;
+        }
+
+        const ivec destination(block.origin.x, block.origin.y, int(block.landing.z) - CREATIVE_GRID / 2);
+        int occupieditem = -1;
+        bool occupied = false;
+        if(!localfallblockcell(destination, occupieditem, occupied)) return;
+        if(occupied)
+        {
+            block.landingknown = false;
+            return;
+        }
+        const ivec support = ivec(destination).sub(ivec(0, 0, CREATIVE_GRID));
+        if(!applyworldaction(WORLD_ACTION_PLACE_CUBE, support, WORLD_ORIENT_TOP, block.item)) return;
+        block.o = block.landing;
+        block.velocity = 0;
+        queuefallblockcheck(ivec(block.origin).add(ivec(0, 0, CREATIVE_GRID)));
+        queuefallblockcheck(ivec(destination).add(ivec(0, 0, CREATIVE_GRID)));
+        block.item = -1;
+    }
+
+    static void updatefallingblocks()
+    {
+        for(int i = fallingblocks.length() - 1; i >= 0; --i)
+        {
+            fallingblock &block = *fallingblocks[i];
+            if(block.replicated)
+            {
+                const int age = clamp(lastmillis - block.snapshotmillis, 0, 200);
+                const float seconds = age / 1000.0f;
+                vec target = block.serverposition;
+                target.z -= block.servervelocity * seconds + 0.5f * DROP_GRAVITY * seconds * seconds;
+                const float blend = fabsf(target.z - block.o.z) > 96.0f ? 1.0f : clamp(curtime / 75.0f, 0.0f, 0.5f);
+                block.o.lerp(target, blend);
+                continue;
+            }
+            updatelocalfallingblock(block);
+            if(block.item < 0) delete fallingblocks.remove(i);
+        }
+        if(waitforserveredit() || !islocalworld() || !player1) return;
+
+        vec playerposition = player1->o;
+        worldpositiontoabsolute(playerposition);
+        const float radius = simulationmaxdist * GAMEUNITSPERMETER, radiussquared = radius * radius;
+        const int checks = min(fallblockchecks.length(), 32);
+        loopi(checks)
+        {
+            const ivec cell = fallblockchecks.remove(0);
+            const vec center = vec(cell).add(8.0f);
+            if(center.squaredist(playerposition) > radiussquared)
+            {
+                fallblockchecks.add(cell);
+                continue;
+            }
+            int item = -1, belowitem = -1;
+            bool solid = false, belowsolid = false;
+            if(!localfallblockcell(cell, item, solid) ||
+               !localfallblockcell(ivec(cell).sub(ivec(0, 0, CREATIVE_GRID)), belowitem, belowsolid))
+            {
+                fallblockchecks.add(cell);
+                continue;
+            }
+            const int worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+            if(solid && item >= 0 && !belowsolid && getworldcubefall(worldindex)) startlocalfallingblock(cell, item);
+        }
+    }
+
+    void receivefallblockspawn(uint id, int item, const vec &position, float velocity)
+    {
+        if(!id || getworlditemtype(item) != WORLD_ITEM_CUBE) return;
+        fallingblock *block = findfallingblock(id);
+        if(!block)
+        {
+            block = new fallingblock;
+            block->id = id;
+            fallingblocks.add(block);
+        }
+        block->item = item;
+        block->replicated = true;
+        block->o = block->serverposition = position;
+        block->velocity = block->servervelocity = max(velocity, 0.0f);
+        block->snapshotmillis = lastmillis;
+    }
+
+    void receivefallblockupdate(uint id, int tick, const vec &position, float velocity)
+    {
+        fallingblock *block = findfallingblock(id);
+        if(!block || !block->replicated || tick <= block->servertick) return;
+        block->servertick = tick;
+        block->serverposition = position;
+        block->servervelocity = max(velocity, 0.0f);
+        block->snapshotmillis = lastmillis;
+    }
+
+    void receivefallblockdelete(uint id)
+    {
+        loopv(fallingblocks) if(fallingblocks[i]->id == id)
+        {
+            delete fallingblocks.remove(i);
+            return;
+        }
+    }
+
+    void resetfallingblocks()
+    {
+        fallingblocks.deletecontents();
+        fallblockchecks.setsize(0);
+        nextlocalfallblockid = 1;
+    }
+
+    const vector<fallingblock *> &getfallingblocks()
+    {
+        return fallingblocks;
+    }
+
     int getdynamicentsmaxdistance()
     {
         return dynamicentsmaxdistance;
@@ -2073,6 +2273,7 @@ namespace game
             selinfo absolute = placed;
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
+            queuefallblockcheck(absolute.o);
         }
         else
         {
@@ -2117,6 +2318,7 @@ namespace game
             selinfo absolute = target.cube;
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
+            queuefallblockcheck(ivec(absolute.o).add(ivec(0, 0, CREATIVE_GRID)));
         }
         else
         {
@@ -2378,6 +2580,8 @@ namespace game
                 worldselectiontoabsolute(absolute);
                 removelocalfurnace(absolute.o);
                 mpdelcube(survivalbreaktarget.cube, true);
+                waterterrainchanged(absolute.o);
+                queuefallblockcheck(ivec(absolute.o).add(ivec(0, 0, CREATIVE_GRID)));
             }
             else
             {
