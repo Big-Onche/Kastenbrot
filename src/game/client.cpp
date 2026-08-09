@@ -267,6 +267,19 @@ namespace game
             while(p.remaining())
             {
                 int type = getint(p);
+                if(type == N_NPCSNAPSHOT)
+                {
+                    const uint id = uint(getint(p));
+                    const int tick = getint(p);
+                    vec position, velocity;
+                    loopk(3) position[k] = getint(p) / DMF;
+                    loopk(3) velocity[k] = getint(p) / DNF;
+                    const float yaw = getint(p) / 10.0f;
+                    const int stateflags = getint(p);
+                    if(p.overread()) return;
+                    receivenpcsnapshot(id, tick, position, velocity, yaw, stateflags);
+                    continue;
+                }
                 if(type != N_POS)
                 {
                     p.pad(p.remaining());
@@ -612,9 +625,43 @@ namespace game
                 }
                 pendingnetworkedits.deletecontents();
                 resetworlddrops();
+                resetnpcs();
                 authoritativeauthor = -1;
                 authoritativerevision = authoritativerequestid = 0;
                 pendingnetworkworld = true;
+                break;
+            }
+            case N_NPCSPAWN:
+            {
+                const uint id = uint(getint(p));
+                string definition;
+                getstring(definition, p, sizeof(definition));
+                vec position;
+                loopk(3) position[k] = getint(p) / DMF;
+                const float yaw = getint(p) / 10.0f, health = getint(p) / 1000.0f;
+                const uint detachedparts = uint(getint(p));
+                const int stateflags = getint(p);
+                if(!p.overread()) receivenpcspawn(id, definition, position, yaw, health, detachedparts, stateflags);
+                break;
+            }
+            case N_NPCDESPAWN:
+            {
+                const uint id = uint(getint(p));
+                getint(p);
+                if(!p.overread()) receivenpcdespawn(id);
+                break;
+            }
+            case N_NPCEVENT:
+            {
+                const uint id = uint(getint(p));
+                const int event = getint(p), tick = getint(p);
+                const float health = getint(p) / 1000.0f;
+                const uint detachedparts = uint(getint(p));
+                const int part = getint(p);
+                vec position, impulse;
+                loopk(3) position[k] = getint(p) / DMF;
+                loopk(3) impulse[k] = getint(p) / DNF;
+                if(!p.overread()) receivenpcevent(id, event, tick, health, detachedparts, part, position, impulse);
                 break;
             }
             case N_DROPSETTINGS:

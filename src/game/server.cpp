@@ -1,4 +1,5 @@
 #include "game.h"
+#include "world.h"
 
 namespace server
 {
@@ -63,6 +64,10 @@ namespace server
     VAR(desynctolerance, 0, 4, 100);
     VAR(violationresetinterval, 1, 60, 3600);
     VAR(identitybankicks, 1, 3, 100);
+    VAR(serversimulationmaxdist, 1, 128, 1024);
+    VAR(servernpcmaxdist, 1, 256, 4096);
+    VAR(servernpcsnapshotmillis, 33, 100, 1000);
+    VAR(servernpcdeathtimeout, 1000, 20000, 120000);
 #ifdef STANDALONE
     VAR(personaldrops, 0, 0, 1);
     VAR(droptimeout, 1, 300, 86400);
@@ -109,9 +114,9 @@ namespace server
             identityfailures, identityfailurewindow, selectedslot, inventorycursoritem, inventorycursorcount, lastinventorysave,
             violations, violationwindow, actionwindow, placements, destructions,
             breakaction, breakorient, breakitem, breakstart, breakupdate, breakstage, breakrelease,
-            breakduration, breaktoolitem, breaktoolslot, breaktooldurability;
+            breakduration, breaktoolitem, breaktoolslot, breaktooldurability, selectedcreative, lastnpcattack, lastnpcattackattempt;
         uint ip;
-        uint lastrequestid, breakrequestid;
+        uint lastrequestid, breakrequestid, lastnpcattackrequest;
         bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
@@ -119,6 +124,7 @@ namespace server
             craftinggridsize, craftingstationitem, inventorycursordurability;
         ivec positioncoords, breaktarget, craftingstationtarget, furnacetarget;
         vector<uchar> position;
+        vector<uint> knownnpcs;
         vec o;
         ENetPacket *getmap;
         void *identitychallenge;
@@ -132,9 +138,10 @@ namespace server
                        violations(0), violationwindow(0),
                        actionwindow(0), placements(0), destructions(0), breakaction(-1),
                        breakorient(0), breakitem(-1), breakstart(0), breakupdate(0), breakstage(0), breakrelease(0),
-                       breakduration(0), breaktoolitem(-1), breaktoolslot(-1), breaktooldurability(0),
+                       breakduration(0), breaktoolitem(-1), breaktoolslot(-1), breaktooldurability(0), selectedcreative(-1),
+                       lastnpcattack(-1000), lastnpcattackattempt(-1000),
                        ip(0),
-                       lastrequestid(0), breakrequestid(0),
+                       lastrequestid(0), breakrequestid(0), lastnpcattackrequest(0),
                        connected(false), local(false),
                        worldready(false), hasposition(false), positiondirty(false), inventoryloaded(false), inventorydirty(false),
                        breakactive(false), breakdropeligible(true), furnaceopen(false),
@@ -189,6 +196,44 @@ namespace server
         serverworldaction() : target(0, 0, 0), action(-1), orient(0), item(-1) {}
     };
 
+    enum
+    {
+        SERVER_WORLD_BLOCK_SIZE = 16,
+        SERVER_WORLD_CHUNK_BLOCKS = 64,
+        SERVER_WORLD_CHUNK_SIZE = SERVER_WORLD_BLOCK_SIZE * SERVER_WORLD_CHUNK_BLOCKS,
+        SERVER_WORLD_GROUND_HEIGHT = 4096
+    };
+
+    struct servercollisionchunk
+    {
+        int x, y, lastused;
+        short heights[SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS];
+
+        servercollisionchunk(int x = 0, int y = 0) : x(x), y(y), lastused(totalmillis)
+        {
+            memset(heights, 0, sizeof(heights));
+        }
+    };
+
+    struct servernpc
+    {
+        uint id, detachedparts;
+        npcdefinition *definition;
+        vec o, velocity, spawn, destination;
+        float yaw, health, parthealth[NUM_HUMANOID_HITBOXES];
+        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis;
+        bool paused, frozen, attacking;
+
+        servernpc(uint id, npcdefinition *definition)
+            : id(id), detachedparts(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0), yaw(0),
+              health(definition->health), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis), lastattack(-1000),
+              deathmillis(0), paused(true), frozen(false), attacking(false)
+        {
+            parthealth[HITBOX_TORSO] = definition->health;
+            loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
+        }
+    };
+
     struct serverdrop
     {
         uint id, sourcerequestid;
@@ -203,6 +248,11 @@ namespace server
     };
 
     static vector<serverworldaction *> serverworldactions;
+    static vector<servercollisionchunk *> servercollisionchunks;
+    static vector<servernpc *> servernpcs;
+    static game::worldgenerator *serverworldgenerator = NULL;
+    static uint nextnpcid = 1;
+    static int lastnpcsnapshot = 0;
     static vector<serverdrop *> serverdrops;
     static vector<furnaceinstance *> serverfurnaces;
     static uint nextdropid = 1;
@@ -1486,6 +1536,506 @@ namespace server
         state->item = item;
     }
 
+    static int serverfloordiv(int value, int divisor)
+    {
+        int quotient = value / divisor, remainder = value % divisor;
+        if(remainder < 0) --quotient;
+        return quotient;
+    }
+
+    static vec serverdirection(float yaw, float pitch)
+    {
+        const float pitchcos = cosf(RAD * pitch);
+        return vec(-sinf(RAD * yaw) * pitchcos, cosf(RAD * yaw) * pitchcos, sinf(RAD * pitch));
+    }
+
+    static servercollisionchunk *getservercollisionchunk(int x, int y)
+    {
+        loopv(servercollisionchunks) if(servercollisionchunks[i]->x == x && servercollisionchunks[i]->y == y)
+        {
+            servercollisionchunks[i]->lastused = totalmillis;
+            return servercollisionchunks[i];
+        }
+        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
+        servercollisionchunk *chunk = new servercollisionchunk(x, y);
+        loop(row, SERVER_WORLD_CHUNK_BLOCKS) loop(column, SERVER_WORLD_CHUNK_BLOCKS)
+            chunk->heights[row * SERVER_WORLD_CHUNK_BLOCKS + column] = short(serverworldgenerator->height(x * SERVER_WORLD_CHUNK_BLOCKS + column,
+                                                                                                         y * SERVER_WORLD_CHUNK_BLOCKS + row));
+        servercollisionchunks.add(chunk);
+        return chunk;
+    }
+
+    static int serverbasesurface(int x, int y)
+    {
+        const int blockx = serverfloordiv(x, SERVER_WORLD_BLOCK_SIZE), blocky = serverfloordiv(y, SERVER_WORLD_BLOCK_SIZE),
+                  chunkx = serverfloordiv(blockx, SERVER_WORLD_CHUNK_BLOCKS), chunky = serverfloordiv(blocky, SERVER_WORLD_CHUNK_BLOCKS),
+                  localx = blockx - chunkx * SERVER_WORLD_CHUNK_BLOCKS, localy = blocky - chunky * SERVER_WORLD_CHUNK_BLOCKS;
+        servercollisionchunk *chunk = getservercollisionchunk(chunkx, chunky);
+        return SERVER_WORLD_GROUND_HEIGHT + chunk->heights[localy * SERVER_WORLD_CHUNK_BLOCKS + localx] * SERVER_WORLD_BLOCK_SIZE;
+    }
+
+    static bool servereditcontains(const serveredit &edit, const ivec &cell)
+    {
+        if(!edit.active || !edit.hasselection || edit.selection.grid <= 0) return false;
+        const ivec end = ivec(edit.selection.o).add(ivec(edit.selection.s).mul(edit.selection.grid));
+        return cell.x >= edit.selection.o.x && cell.y >= edit.selection.o.y && cell.z >= edit.selection.o.z &&
+               cell.x < end.x && cell.y < end.y && cell.z < end.z;
+    }
+
+    static bool serverblocksolid(const ivec &cell)
+    {
+        if(cell.z < 0 || cell.z >= 8192) return cell.z < 0;
+        if(serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE)) return state->action == WORLD_ACTION_PLACE_CUBE;
+        loopvrev(worldhistory)
+        {
+            const serveredit &edit = *worldhistory[i];
+            if(edit.type == N_WORLDAUTH || !servereditcontains(edit, cell)) continue;
+            if(edit.type == N_DELCUBE) return false;
+            if(edit.type == N_EDITF)
+            {
+                ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
+                selinfo unused;
+                if(readselection(payload, unused)) return getint(payload) >= 0;
+            }
+            return true;
+        }
+        return cell.z < serverbasesurface(cell.x + SERVER_WORLD_BLOCK_SIZE / 2, cell.y + SERVER_WORLD_BLOCK_SIZE / 2);
+    }
+
+    static ivec serverblockat(const vec &position)
+    {
+        return ivec(serverfloordiv(int(floorf(position.x)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
+                    serverfloordiv(int(floorf(position.y)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
+                    serverfloordiv(int(floorf(position.z)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE);
+    }
+
+    static float servergroundheight(float x, float y)
+    {
+        int top = serverbasesurface(int(floorf(x)), int(floorf(y)));
+        loopv(serverworldactions)
+        {
+            const serverworldaction &state = *serverworldactions[i];
+            if(state.action == WORLD_ACTION_PLACE_CUBE && x >= state.target.x && x < state.target.x + SERVER_WORLD_BLOCK_SIZE &&
+               y >= state.target.y && y < state.target.y + SERVER_WORLD_BLOCK_SIZE)
+                top = max(top, state.target.z + SERVER_WORLD_BLOCK_SIZE);
+        }
+        while(top > 0 && !serverblocksolid(ivec(serverfloordiv(int(floorf(x)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
+                                                 serverfloordiv(int(floorf(y)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
+                                                 top - SERVER_WORLD_BLOCK_SIZE))) top -= SERVER_WORLD_BLOCK_SIZE;
+        return float(top);
+    }
+
+    static bool serverlineofsight(const vec &from, const vec &to)
+    {
+        vec delta = vec(to).sub(from);
+        const float distance = delta.magnitude();
+        if(distance <= 0.01f) return true;
+        delta.div(distance);
+        for(float traveled = 4.0f; traveled + 4.0f < distance; traveled += 4.0f)
+            if(serverblocksolid(serverblockat(vec(from).madd(delta, traveled)))) return false;
+        return true;
+    }
+
+    static servernpc *findservernpc(uint id)
+    {
+        loopv(servernpcs) if(servernpcs[i]->id == id) return servernpcs[i];
+        return NULL;
+    }
+
+    static bool clientknowsnpc(const clientinfo &ci, uint id)
+    {
+        loopv(ci.knownnpcs) if(ci.knownnpcs[i] == id) return true;
+        return false;
+    }
+
+    static int servernpcstateflags(const servernpc &mob)
+    {
+        int flags = mob.deathmillis ? NPC_STATE_DEAD : 0;
+        if(mob.frozen) flags |= NPC_STATE_FROZEN;
+        if(mob.attacking) flags |= NPC_STATE_ATTACKING;
+        if((mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG))) ==
+           ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG))) flags |= NPC_STATE_CRAWLING;
+        return flags;
+    }
+
+    static void sendnpcspawn(clientinfo &ci, const servernpc &mob)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_NPCSPAWN);
+        putint(p, int(mob.id));
+        sendstring(mob.definition->id, p);
+        putint(p, int(mob.o.x * DMF)); putint(p, int(mob.o.y * DMF)); putint(p, int(mob.o.z * DMF));
+        putint(p, int(mob.yaw * 10.0f));
+        putint(p, int(mob.health * 1000.0f));
+        putint(p, int(mob.detachedparts));
+        putint(p, servernpcstateflags(mob));
+        sendpacket(ci.clientnum, 1, p.finalize());
+        ci.knownnpcs.add(mob.id);
+    }
+
+    static void sendnpcdespawn(clientinfo &ci, uint id)
+    {
+        sendf(ci.clientnum, 1, "ri3", N_NPCDESPAWN, int(id), 0);
+        loopv(ci.knownnpcs) if(ci.knownnpcs[i] == id)
+        {
+            ci.knownnpcs.remove(i);
+            break;
+        }
+    }
+
+    static void broadcastnpcevent(const servernpc &mob, int event, int part, const vec &position, const vec &impulse)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_NPCEVENT); putint(p, int(mob.id)); putint(p, event); putint(p, totalmillis);
+        putint(p, int(mob.health * 1000.0f)); putint(p, int(mob.detachedparts)); putint(p, part);
+        putint(p, int(position.x * DMF)); putint(p, int(position.y * DMF)); putint(p, int(position.z * DMF));
+        putint(p, int(impulse.x * DNF)); putint(p, int(impulse.y * DNF)); putint(p, int(impulse.z * DNF));
+        ENetPacket *packet = p.finalize();
+        packet->referenceCount++;
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready && clientknowsnpc(*clients[i], mob.id))
+            sendpacket(clients[i]->clientnum, 1, packet);
+        if(--packet->referenceCount == 0) enet_packet_destroy(packet);
+    }
+
+    static void removeservernpc(int index)
+    {
+        const uint id = servernpcs[index]->id;
+        loopv(clients) if(clients[i] && clientknowsnpc(*clients[i], id)) sendnpcdespawn(*clients[i], id);
+        delete servernpcs.remove(index);
+    }
+
+    void resetservernpcs()
+    {
+        while(servernpcs.length()) removeservernpc(servernpcs.length() - 1);
+        nextnpcid = 1;
+    }
+
+    static bool servernpcclearance(const vec &position, uint ignore = 0)
+    {
+        static const float offsets[3] = { -4.0f, 0.0f, 4.0f };
+        loopi(3) loopj(3)
+        {
+            vec sample(position.x + offsets[i], position.y + offsets[j], position.z - 27.0f);
+            if(serverblocksolid(serverblockat(sample)) || serverblocksolid(serverblockat(sample.addz(16.0f)))) return false;
+        }
+        loopv(servernpcs)
+            if(servernpcs[i]->id != ignore && !servernpcs[i]->deathmillis && servernpcs[i]->o.squaredist(position) < 100.0f) return false;
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->hasposition)
+        {
+            const float dx = clients[i]->o.x - position.x, dy = clients[i]->o.y - position.y,
+                        npcfeet = position.z - 28.0f;
+            if(dx * dx + dy * dy < 67.24f && clients[i]->o.z < position.z + 2.0f && clients[i]->o.z + 30.0f > npcfeet) return false;
+        }
+        return true;
+    }
+
+    static bool serverplayeroverlapsnpc(const vec &feet)
+    {
+        loopv(servernpcs) if(!servernpcs[i]->deathmillis)
+        {
+            const servernpc &mob = *servernpcs[i];
+            const float dx = feet.x - mob.o.x, dy = feet.y - mob.o.y, npcfeet = mob.o.z - 28.0f;
+            if(dx * dx + dy * dy < 67.24f && feet.z < mob.o.z + 2.0f && feet.z + 30.0f > npcfeet) return true;
+        }
+        return false;
+    }
+
+    static servernpc *spawnservernpc(clientinfo &owner, const char *id)
+    {
+        npcdefinition *definition = game::findnpcdefinition(id);
+        if(!definition || !owner.hasposition) return NULL;
+        const vec direction = serverdirection(float(owner.positionyaw), 0);
+        vec position = vec(owner.o).madd(direction, SERVER_WORLD_BLOCK_SIZE * 3.0f);
+        position.x = floorf(position.x / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f;
+        position.y = floorf(position.y / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f;
+        position.z = servergroundheight(position.x, position.y) + 28.0f;
+        if(position.z < 28.0f || position.z > 8191.0f || !servernpcclearance(position) ||
+           !serverlineofsight(vec(owner.o).addz(28.0f), position)) return NULL;
+        servernpc *mob = new servernpc(nextnpcid++, definition);
+        mob->o = mob->spawn = mob->destination = position;
+        mob->yaw = fmodf(owner.positionyaw + 180.0f, 360.0f);
+        mob->pauseuntil = totalmillis + 600;
+        servernpcs.add(mob);
+        return mob;
+    }
+
+    static bool serverraybox(const vec &origin, const vec &direction, const vec &minimum, const vec &maximum, float &distance)
+    {
+        float nearplane = 0.0f, farplane = distance;
+        loopi(3)
+        {
+            if(fabsf(direction[i]) < 1e-6f)
+            {
+                if(origin[i] < minimum[i] || origin[i] > maximum[i]) return false;
+                continue;
+            }
+            float first = (minimum[i] - origin[i]) / direction[i], second = (maximum[i] - origin[i]) / direction[i];
+            if(first > second) swap(first, second);
+            nearplane = max(nearplane, first);
+            farplane = min(farplane, second);
+            if(nearplane > farplane) return false;
+        }
+        distance = nearplane;
+        return true;
+    }
+
+    static void servernpchitbox(const servernpc &mob, int part, vec &center, vec &radius)
+    {
+        const float feet = mob.o.z - 28.0f, torso = feet + 11.25f, cosine = cosf(RAD * mob.yaw), sine = sinf(RAD * mob.yaw);
+        const vec lateral(cosine, sine, 0);
+        switch(part)
+        {
+            case HITBOX_HEAD: center = vec(mob.o.x, mob.o.y, torso + 16.0f); radius = vec(4, 4, 4); break;
+            case HITBOX_LEFT_ARM: center = vec(mob.o).madd(lateral, -6.0f); center.z = torso + 5.0f; radius = vec(2, 2, 5); break;
+            case HITBOX_RIGHT_ARM: center = vec(mob.o).madd(lateral, 6.0f); center.z = torso + 5.0f; radius = vec(2, 2, 5); break;
+            case HITBOX_LEFT_LEG: center = vec(mob.o).madd(lateral, -2.0f); center.z = feet + 5.25f; radius = vec(2, 2, 6); break;
+            case HITBOX_RIGHT_LEG: center = vec(mob.o).madd(lateral, 2.0f); center.z = feet + 5.25f; radius = vec(2, 2, 6); break;
+            default:
+                center = vec(mob.o.x, mob.o.y, torso + 6.0f);
+                radius = vec(fabsf(cosine) * 4.0f + fabsf(sine) * 2.0f, fabsf(sine) * 4.0f + fabsf(cosine) * 2.0f, 6.0f);
+                break;
+        }
+    }
+
+    static float servernpcpartmultiplier(int part)
+    {
+        return part == HITBOX_HEAD ? 2.0f : part == HITBOX_TORSO ? 1.0f : 0.75f;
+    }
+
+    static void handleservernpcattack(clientinfo &ci, uint requestid, uint npcid, int claimedpart)
+    {
+        if(!requestid || requestid <= ci.lastnpcattackrequest || claimedpart < HITBOX_TORSO || claimedpart >= NUM_HUMANOID_HITBOXES)
+        {
+            kickviolation(ci, "stale or malformed NPC attack request");
+            return;
+        }
+        ci.lastnpcattackrequest = requestid;
+        if(!ci.hasposition || totalmillis - ci.lastnpcattackattempt < 75 || totalmillis - ci.lastnpcattack < game::CREATIVE_ARM_CYCLE ||
+           (claimedpart != HITBOX_TORSO && findservernpc(npcid) && (findservernpc(npcid)->detachedparts & (1U << claimedpart)))) return;
+        ci.lastnpcattackattempt = totalmillis;
+        servernpc *requested = findservernpc(npcid);
+        if(!requested || requested->deathmillis) return;
+
+        const int equipped = servercreative() ? ci.selectedcreative : ci.selectedslot >= 0 && ci.selectedslot < SURVIVAL_HOTBAR_SLOTS &&
+                             ci.inventorycounts[ci.selectedslot] > 0 ? ci.inventoryitems[ci.selectedslot] : -1;
+        if(equipped >= numinventoryitems())
+        {
+            kickviolation(ci, "invalid equipped item in NPC attack");
+            return;
+        }
+        const float basedamage = equipped >= 0 && isinventorytool(equipped) ? getinventorytooldamage(equipped) : 1.0f,
+                    reach = 5.0f * GAMEUNITSPERMETER;
+        vec origin = vec(ci.o).addz(28.0f), direction = serverdirection(float(ci.positionyaw), float(ci.positionpitch));
+        servernpc *hit = NULL;
+        int hitpart = HITBOX_TORSO;
+        float hitdistance = reach;
+        loopv(servernpcs)
+        {
+            servernpc &candidate = *servernpcs[i];
+            if(candidate.deathmillis) continue;
+            loopj(NUM_HUMANOID_HITBOXES)
+            {
+                if(j != HITBOX_TORSO && candidate.detachedparts & (1U << j)) continue;
+                vec center, radius;
+                servernpchitbox(candidate, j, center, radius);
+                float distance = hitdistance;
+                if(!serverraybox(origin, direction, vec(center).sub(radius), vec(center).add(radius), distance) || distance > hitdistance) continue;
+                hit = &candidate;
+                hitpart = j;
+                hitdistance = distance;
+            }
+        }
+        if(hit != requested || hitpart != claimedpart) return;
+        const vec hitposition = vec(origin).madd(direction, hitdistance);
+        if(!serverlineofsight(origin, hitposition)) return;
+
+        ci.lastnpcattack = totalmillis;
+        const float damage = basedamage * servernpcpartmultiplier(hitpart);
+        hit->health = max(hit->health - damage, 0.0f);
+        bool detached = false;
+        if(hitpart != HITBOX_TORSO)
+        {
+            hit->parthealth[hitpart] = max(hit->parthealth[hitpart] - damage, 0.0f);
+            if(hit->parthealth[hitpart] <= 0 && !(hit->detachedparts & (1U << hitpart)))
+            {
+                hit->detachedparts |= 1U << hitpart;
+                detached = true;
+            }
+        }
+        vec impulse(direction);
+        impulse.mul(16.0f + min(damage, 12.0f) * 3.0f);
+        if(hit->health <= 0)
+        {
+            hit->deathmillis = totalmillis;
+            hit->velocity = vec(0, 0, 0);
+            broadcastnpcevent(*hit, NPC_EVENT_DEATH, hitpart, hitposition, impulse);
+        }
+        else broadcastnpcevent(*hit, detached ? NPC_EVENT_DISMEMBER : NPC_EVENT_DAMAGE, hitpart, hitposition, impulse);
+    }
+
+    static clientinfo *nearestservernpcplayer(const servernpc &mob, float radius)
+    {
+        clientinfo *best = NULL;
+        float bestdistance = radius * radius;
+        loopv(clients)
+        {
+            clientinfo *candidate = clients[i];
+            if(!candidate || !candidate->connected || !candidate->worldready || !candidate->hasposition) continue;
+            const float distance = mob.o.squaredist(candidate->o);
+            if(distance > bestdistance) continue;
+            best = candidate;
+            bestdistance = distance;
+        }
+        return best;
+    }
+
+    static void pickservernpcdestination(servernpc &mob)
+    {
+        const uint hash = worlddrophash(mob.id ^ uint(max(totalmillis, 1)));
+        const float angle = float(hash % 36000U) * RAD / 100.0f,
+                    distance = mob.definition->wanderradius * GAMEUNITSPERMETER * (0.25f + 0.75f * float((hash >> 16) & 0xFFFFU) / 65535.0f);
+        mob.destination = vec(mob.spawn).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
+        mob.paused = false;
+        mob.nextdecision = totalmillis + 8000 + int(hash % 6001U);
+    }
+
+    static void updateservernpc(servernpc &mob)
+    {
+        mob.attacking = false;
+        if(mob.deathmillis) return;
+        const int elapsed = clamp(totalmillis - mob.lastupdate, 0, 100);
+        mob.lastupdate = totalmillis;
+        clientinfo *target = NULL;
+        if(mob.definition->attitude == NPC_AGGRESSIVE)
+            target = nearestservernpcplayer(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
+        else if(mob.definition->attitude == NPC_SCARED)
+            target = nearestservernpcplayer(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
+        if(target)
+        {
+            vec targetposition = vec(target->o).addz(28.0f), offset;
+            if(mob.definition->attitude == NPC_SCARED)
+            {
+                offset = vec(mob.o).sub(targetposition);
+                offset.z = 0;
+                if(offset.squaredlen() < 0.01f) offset = serverdirection(mob.yaw + 180.0f, 0);
+                else offset.normalize();
+                mob.destination = vec(mob.o).madd(offset, mob.definition->fleedist * GAMEUNITSPERMETER);
+            }
+            else
+            {
+                mob.destination = targetposition;
+                if(mob.o.dist(targetposition) <= 4.0f * GAMEUNITSPERMETER && serverlineofsight(mob.o, targetposition) &&
+                   totalmillis - mob.lastattack >= mob.definition->attackmillis)
+                {
+                    mob.lastattack = totalmillis;
+                    mob.attacking = true;
+                    broadcastnpcevent(mob, NPC_EVENT_ATTACK, -1, targetposition, vec(0, 0, 0));
+                }
+            }
+            mob.paused = false;
+        }
+        else if(mob.paused)
+        {
+            mob.velocity = vec(0, 0, 0);
+            if(totalmillis >= mob.pauseuntil) pickservernpcdestination(mob);
+            return;
+        }
+        else if(totalmillis >= mob.nextdecision || vec(mob.destination).sub(mob.o).squaredlen() < 16.0f)
+        {
+            mob.paused = true;
+            mob.pauseuntil = totalmillis + 600 + int(worlddrophash(mob.id + uint(totalmillis)) % 1801U);
+            mob.velocity = vec(0, 0, 0);
+            return;
+        }
+
+        vec direction = vec(mob.destination).sub(mob.o);
+        direction.z = 0;
+        if(direction.squaredlen() < 1.0f) return;
+        direction.normalize();
+        mob.yaw = fmodf(-atan2f(direction.x, direction.y) / RAD + 360.0f, 360.0f);
+        float speed = mob.definition->speed;
+        const uint missinglegs = mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG));
+        if(missinglegs) speed *= missinglegs == ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG)) ? 0.34f : 0.58f;
+        mob.velocity = vec(direction).mul(speed);
+        vec next = vec(mob.o).madd(mob.velocity, elapsed / 1000.0f);
+        const float ground = servergroundheight(next.x, next.y), oldground = mob.o.z - 28.0f;
+        if(fabsf(ground - oldground) <= SERVER_WORLD_BLOCK_SIZE && servernpcclearance(vec(next.x, next.y, ground + 28.0f), mob.id))
+        {
+            next.z = ground + 28.0f;
+            mob.o = next;
+        }
+        else mob.velocity = vec(0, 0, 0);
+    }
+
+    static void updateservernpcinterest()
+    {
+        const float interestdistance = servernpcmaxdist * GAMEUNITSPERMETER, interestdistancesquared = interestdistance * interestdistance;
+        loopv(clients)
+        {
+            clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->worldready || !ci->hasposition) continue;
+            loopvj(servernpcs)
+            {
+                servernpc &mob = *servernpcs[j];
+                const bool relevant = ci->o.squaredist(mob.o) <= interestdistancesquared, known = clientknowsnpc(*ci, mob.id);
+                if(relevant && !known) sendnpcspawn(*ci, mob);
+                else if(!relevant && known) sendnpcdespawn(*ci, mob.id);
+            }
+        }
+    }
+
+    static void sendservernpcsnapshots()
+    {
+        if(totalmillis - lastnpcsnapshot < servernpcsnapshotmillis) return;
+        lastnpcsnapshot = totalmillis;
+        loopv(clients)
+        {
+            clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->worldready) continue;
+            loopvj(servernpcs) if(clientknowsnpc(*ci, servernpcs[j]->id))
+            {
+                const servernpc &mob = *servernpcs[j];
+                packetbuf p(64);
+                putint(p, N_NPCSNAPSHOT); putint(p, int(mob.id)); putint(p, totalmillis);
+                putint(p, int(mob.o.x * DMF)); putint(p, int(mob.o.y * DMF)); putint(p, int(mob.o.z * DMF));
+                putint(p, int(mob.velocity.x * DNF)); putint(p, int(mob.velocity.y * DNF)); putint(p, int(mob.velocity.z * DNF));
+                putint(p, int(mob.yaw * 10.0f)); putint(p, servernpcstateflags(mob));
+                sendpacket(ci->clientnum, 0, p.finalize());
+            }
+        }
+    }
+
+    static void updateservernpcs()
+    {
+        const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
+                    existencedistance = servernpcmaxdist * GAMEUNITSPERMETER;
+        for(int i = servernpcs.length() - 1; i >= 0; --i)
+        {
+            servernpc &mob = *servernpcs[i];
+            bool exists = false, simulated = false;
+            for(int j = 0; j < clients.length(); ++j)
+            {
+                clientinfo *ci = clients[j];
+                if(!ci || !ci->connected || !ci->worldready || !ci->hasposition) continue;
+                const float distance = ci->o.dist(mob.o);
+                if(distance <= existencedistance) exists = true;
+                if(distance <= simulationdistance) simulated = true;
+            }
+            if(!exists || (mob.deathmillis && totalmillis - mob.deathmillis >= servernpcdeathtimeout))
+            {
+                removeservernpc(i);
+                continue;
+            }
+            mob.frozen = !simulated;
+            if(simulated) updateservernpc(mob);
+            else mob.velocity = vec(0, 0, 0);
+        }
+        for(int i = servercollisionchunks.length() - 1; i >= 0; --i)
+            if(totalmillis - servercollisionchunks[i]->lastused >= 5000) delete servercollisionchunks.remove(i);
+        updateservernpcinterest();
+        sendservernpcsnapshots();
+    }
+
     static void sendprivilege(int cn, int subject, int privilege);
     static void sendworldstate(clientinfo &ci, bool reset);
     static void sendcommandresult(clientinfo &ci, const char *message);
@@ -1640,6 +2190,7 @@ namespace server
     static void sendworldstate(clientinfo &ci, bool reset)
     {
         ci.worldready = false;
+        ci.knownnpcs.setsize(0);
         packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
         putint(p, N_WORLDSTATE);
         putint(p, serverworldseed);
@@ -1698,6 +2249,13 @@ namespace server
         copystring(smapname, serverworld);
         journalinitialized = false;
         if(!loadserveridentities()) serverworldready = false;
+        servernpcs.deletecontents();
+        servercollisionchunks.deletecontents();
+        delete serverworldgenerator;
+        serverworldgenerator = NULL;
+        nextnpcid = 1;
+        lastnpcsnapshot = 0;
+        if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
         worldclockmillis = SERVER_START_MILLIS;
         worldtimefrozen = false;
         lastworldtimesync = 0;
@@ -1722,6 +2280,7 @@ namespace server
                         ci->clientnum, ci->identitystate == IDENTITY_AWAITING_IDENTITY ? "awaiting identity selection" : "awaiting challenge response");
             if(ci->connected) sendf(-1, 1, "ri2x", N_CDIS, n, n);
             ci->connected = false;
+            ci->knownnpcs.setsize(0);
             ci->identitystate = IDENTITY_REJECTED;
             clearidentitychallenge(*ci);
         }
@@ -2699,6 +3258,43 @@ namespace server
         if(*args) *args++ = '\0';
         while(iscubespace(*args)) ++args;
 
+        if(cubecaseequal(command, "spawn"))
+        {
+            servernpc *mob = args[0] ? spawnservernpc(ci, args) : NULL;
+            if(!mob)
+            {
+                sendcommandresult(ci, args[0] ? "NPC spawn rejected: unknown type, invalid surface, obstructed space, or no line of sight"
+                                                : "usage: /spawn <NPC id>");
+                return;
+            }
+            updateservernpcinterest();
+            defformatstring(message, "spawned %s #%u", mob->definition->name, mob->id);
+            sendcommandresult(ci, message);
+            return;
+        }
+
+        if(cubecaseequal(command, "simulationmaxdist") || cubecaseequal(command, "npcmaxdist"))
+        {
+            int &setting = cubecaseequal(command, "simulationmaxdist") ? serversimulationmaxdist : servernpcmaxdist;
+            if(args[0])
+            {
+                char *end = NULL;
+                const long value = strtol(args, &end, 10);
+                while(end && iscubespace(*end)) ++end;
+                if(end == args || (end && *end) || value < 1 || value > (cubecaseequal(command, "simulationmaxdist") ? 1024 : 4096))
+                {
+                    sendcommandresult(ci, cubecaseequal(command, "simulationmaxdist") ? "usage: /simulationmaxdist <1-1024>" :
+                                                                                       "usage: /npcmaxdist <1-4096>");
+                    return;
+                }
+                setting = int(value);
+                updateservernpcinterest();
+            }
+            defformatstring(message, "%s: %d blocks (server authoritative)", command, setting);
+            sendcommandresult(ci, message);
+            return;
+        }
+
         if(cubecaseequal(command, "personaldrops") || cubecaseequal(command, "requireconfirmeditems"))
         {
             int &setting = cubecaseequal(command, "personaldrops") ? personaldrops : requireconfirmeditems;
@@ -3101,6 +3697,8 @@ namespace server
                 if(type != N_POS)
                 {
                     p.pad(p.remaining());
+                    if(type == N_NPCSPAWN || type == N_NPCDESPAWN || type == N_NPCSNAPSHOT || type == N_NPCEVENT)
+                        kickviolation(*ci, "forged server-authoritative NPC packet");
                     break;
                 }
 
@@ -3109,6 +3707,7 @@ namespace server
                 loopk(3) coords[k] = getint(p);
                 int physstate = p.get();
                 uint flags = getuint(p);
+                const uint helditem = flags >> 8;
                 int dir = p.get();
                 dir |= p.get()<<8;
                 const int yaw = dir%360, pitch = clamp(dir/360, 0, 180) - 90;
@@ -3133,7 +3732,7 @@ namespace server
                 vec nextposition(coords[0]/DMF, coords[1]/DMF, coords[2]/DMF);
                 int now = max(totalmillis, 1),
                     elapsed = ci->hasposition ? max(now - ci->lastpositionmillis, 1) : 0;
-                if(nextposition.z < 0 || nextposition.z > (1 << 13) ||
+                if(nextposition.z < 0 || nextposition.z > (1 << 13) || serverplayeroverlapsnpc(nextposition) ||
                    (ci->hasposition && nextposition.dist(ci->o) > 32.0f + elapsed * 0.5f))
                     continue;
 
@@ -3143,6 +3742,7 @@ namespace server
                 ci->o = nextposition;
                 ci->positionyaw = yaw;
                 ci->positionpitch = pitch;
+                ci->selectedcreative = servercreative() && helditem > 0 && helditem <= uint(numinventoryitems()) ? int(helditem - 1) : -1;
                 ci->hasposition = true;
                 ci->positiondirty = true;
                 ci->lastpositionmillis = now;
@@ -3428,6 +4028,14 @@ namespace server
                         handledroppickup(*ci, requestid, dropid, vec(coords[0] / DMF, coords[1] / DMF, coords[2] / DMF));
                     break;
                 }
+                case N_NPCATTACK:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    const uint requestid = uint(getint(p)), npcid = uint(getint(p));
+                    const int part = getint(p);
+                    if(ci && ci->connected && ci->worldready && !p.overread()) handleservernpcattack(*ci, requestid, npcid, part);
+                    break;
+                }
                 case N_EDITENT:
                 case N_EDITF: case N_EDITT: case N_EDITM: case N_FLIP: case N_COPY: case N_PASTE: case N_ROTATE: case N_REPLACE: case N_DELCUBE: case N_CALCLIGHT: case N_REMIP: case N_EDITVSLOT: case N_EDITSCATTER: case N_UNDO: case N_REDO: case N_EDITVAR:
                 {
@@ -3514,6 +4122,10 @@ namespace server
                 case N_DROPSETTINGS:
                 case N_DROPSPAWN:
                 case N_DROPDELETE:
+                case N_NPCSPAWN:
+                case N_NPCDESPAWN:
+                case N_NPCSNAPSHOT:
+                case N_NPCEVENT:
                 {
                     clientinfo *ci = getinfo(sender);
                     p.pad(p.remaining());
@@ -3616,6 +4228,7 @@ namespace server
     {
         if(!journalinitialized) return;
         updateserverfurnaces();
+        updateservernpcs();
         loopv(clients)
         {
             clientinfo *ci = clients[i];

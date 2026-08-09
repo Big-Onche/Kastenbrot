@@ -1,8 +1,6 @@
 #include "game.h"
 #include "world.h"
 
-#ifndef STANDALONE
-
 VARP(worldseed, 0, 1337, INT_MAX);
 
 FVAR(worldgeologyfrequency, 0.00001f, 0.0012f, 0.1f);
@@ -743,6 +741,7 @@ namespace game
     }
 }
 
+#ifndef STANDALONE
 ICOMMAND(worldloadseed, "i", (int *seed),
 {
     if(game::waitforserveredit())
@@ -752,5 +751,4 @@ ICOMMAND(worldloadseed, "i", (int *seed),
     }
     game::loadworldseed(*seed);
 });
-
 #endif

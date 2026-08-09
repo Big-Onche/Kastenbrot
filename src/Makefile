@@ -160,8 +160,10 @@ SERVER_OBJS= \
 	standalone/game/entities.o \
 	standalone/game/game.o \
 	standalone/game/mining.o \
+	standalone/game/npc.o \
 	standalone/game/recipes.o \
-	standalone/game/server.o
+	standalone/game/server.o \
+	standalone/game/world.o
 
 SERVER_PCH= standalone/shared/cube.h.gch standalone/engine/engine.h.gch standalone/game/game.h.gch
 

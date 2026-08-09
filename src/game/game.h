@@ -68,6 +68,7 @@ enum
     N_INVENTORYSTATE, N_INVENTORYACTION, N_CRAFTSTATE, N_CRAFTACTION, N_WORLDACTION, N_WORLDAUTH, N_ACTIONRESULT,
     N_BREAKSTATE, N_DROPSETTINGS, N_DROPSPAWN, N_DROPDELETE, N_DROPPICKUP,
     N_FURNACESTATE, N_FURNACEACTION,
+    N_NPCSPAWN, N_NPCDESPAWN, N_NPCSNAPSHOT, N_NPCEVENT, N_NPCATTACK,
     NUMMSG
 };
 
@@ -149,13 +150,62 @@ static const int msgsizes[] =
     N_INVENTORYSTATE, 0, N_INVENTORYACTION, 5, N_CRAFTSTATE, 0, N_CRAFTACTION, 7, N_WORLDACTION, 9, N_WORLDAUTH, 7,
     N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 10, N_DROPDELETE, 3, N_DROPPICKUP, 6,
     N_FURNACESTATE, 0, N_FURNACEACTION, 7,
+    N_NPCSPAWN, 0, N_NPCDESPAWN, 3, N_NPCSNAPSHOT, 11, N_NPCEVENT, 0, N_NPCATTACK, 4,
     -1
 };
 
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 20
+#define PROTOCOL_VERSION 21
+
+enum
+{
+    NPC_EVENT_DAMAGE = 0,
+    NPC_EVENT_DISMEMBER,
+    NPC_EVENT_DEATH,
+    NPC_EVENT_ATTACK,
+    NPC_EVENT_STATE
+};
+
+enum
+{
+    NPC_STATE_DEAD = 1<<0,
+    NPC_STATE_FROZEN = 1<<1,
+    NPC_STATE_ATTACKING = 1<<2,
+    NPC_STATE_CRAWLING = 1<<3
+};
+
+enum npcattitude
+{
+    NPC_AGGRESSIVE = 0,
+    NPC_NEUTRAL,
+    NPC_FRIENDLY,
+    NPC_SCARED
+};
+
+enum npcbehavior
+{
+    NPC_WANDERING = 0,
+    NPC_CHASE,
+    NPC_FLEE
+};
+
+struct npcdefinition
+{
+    string id, name, model;
+    int attitude, behavior, health, attackmillis;
+    float damage, speed, wanderradius, aggrodist, fleedist;
+
+    npcdefinition(const char *id = "")
+        : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), damage(1), speed(40), wanderradius(8), aggrodist(16),
+          fleedist(12)
+    {
+        copystring(this->id, id);
+        copystring(name, id);
+        model[0] = '\0';
+    }
+};
 
 static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &slotitem, int &slotcount, int button)
 {
@@ -342,6 +392,10 @@ namespace game
     extern bool connected, remote;
     extern gameent *player1;
     extern vector<gameent *> players, clients;
+    extern npcdefinition *findnpcdefinition(const char *id);
+    extern int numnpcdefinitions();
+    extern npcdefinition *getnpcdefinition(int index);
+    extern void loadnpcdefinitions();
 
     extern void changemap(const char *name, int mode);
     extern bool addmsg(int type, const char *fmt = NULL, ...);
@@ -383,6 +437,11 @@ namespace game
     extern void rendernpcs();
     extern void rendernpcdebug();
     extern bool attacknpc();
+    extern void receivenpcspawn(uint id, const char *definition, const vec &position, float yaw, float health, uint detachedparts, int stateflags);
+    extern void receivenpcdespawn(uint id);
+    extern void receivenpcsnapshot(uint id, int tick, const vec &position, const vec &velocity, float yaw, int stateflags);
+    extern void receivenpcevent(uint id, int event, int tick, float health, uint detachedparts, int part, const vec &position,
+                                const vec &impulse);
     extern int numnpcs();
     extern dynent *iternpc(int index);
     extern void getplayerhitboxes(gameent *d, vector<characterhitbox> &hitboxes);
@@ -407,6 +466,7 @@ namespace game
 namespace server
 {
     extern int msgsizelookup(int msg);
+    extern void resetservernpcs();
 }
 
 #endif

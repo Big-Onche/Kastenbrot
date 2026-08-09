@@ -5,37 +5,88 @@ extern int simulationmaxdist;
 
 namespace game
 {
-    enum npcattitude
-    {
-        NPC_AGGRESSIVE = 0,
-        NPC_NEUTRAL,
-        NPC_FRIENDLY,
-        NPC_SCARED
-    };
+    static vector<npcdefinition *> npcdefinitions;
 
-    enum npcbehavior
+    npcdefinition *findnpcdefinition(const char *id)
     {
-        NPC_WANDERING = 0,
-        NPC_CHASE,
-        NPC_FLEE
-    };
+        loopv(npcdefinitions) if(!cubecasecmp(npcdefinitions[i]->id, id)) return npcdefinitions[i];
+        return NULL;
+    }
 
-    struct npcdefinition
+    int numnpcdefinitions()
     {
-        string id, name, model;
-        int attitude, behavior, health, attackmillis;
-        float damage, speed, wanderradius, aggrodist, fleedist;
+        return npcdefinitions.length();
+    }
 
-        npcdefinition(const char *id = "")
-            : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), damage(1), speed(40), wanderradius(8),
-              aggrodist(16), fleedist(12)
+    npcdefinition *getnpcdefinition(int index)
+    {
+        return npcdefinitions.inrange(index) ? npcdefinitions[index] : NULL;
+    }
+
+    static int parseattitude(const char *name)
+    {
+        if(!cubecasecmp(name, "aggressive")) return NPC_AGGRESSIVE;
+        if(!cubecasecmp(name, "neutral")) return NPC_NEUTRAL;
+        if(!cubecasecmp(name, "friendly")) return NPC_FRIENDLY;
+        if(!cubecasecmp(name, "scared")) return NPC_SCARED;
+        return -1;
+    }
+
+    static int parsebehavior(const char *name)
+    {
+        if(!cubecasecmp(name, "wandering") || !cubecasecmp(name, "wander")) return NPC_WANDERING;
+        if(!cubecasecmp(name, "chase")) return NPC_CHASE;
+        if(!cubecasecmp(name, "flee")) return NPC_FLEE;
+        return -1;
+    }
+
+    static void clearnpcdefinitions()
+    {
+        server::resetservernpcs();
+#ifndef STANDALONE
+        resetnpcs();
+#endif
+        npcdefinitions.deletecontents();
+    }
+
+    COMMANDN(npcreset, clearnpcdefinitions, "");
+
+    ICOMMAND(npcdef, "sssssiffifff", (char *id, char *name, char *model, char *attitude, char *behavior, int *health, float *damage,
+                                      float *speed, int *attackmillis, float *wanderradius, float *aggrodist, float *fleedist),
+    {
+        const int parsedattitude = parseattitude(attitude);
+        const int parsedbehavior = parsebehavior(behavior);
+        if(!id[0] || !model[0] || parsedattitude < 0 || parsedbehavior < 0 || *health <= 0 || *damage < 0 || *speed <= 0 ||
+           *attackmillis <= 0 || *wanderradius < 0 || *aggrodist < 0 || *fleedist < 0)
         {
-            copystring(this->id, id);
-            copystring(name, id);
-            model[0] = '\0';
+            conoutf(CON_ERROR, "invalid NPC definition %s", id[0] ? id : "<empty>");
+            return;
         }
-    };
 
+        npcdefinition *definition = findnpcdefinition(id);
+        if(!definition) definition = npcdefinitions.add(new npcdefinition(id));
+        copystring(definition->name, name[0] ? name : id);
+        copystring(definition->model, model);
+        definition->attitude = parsedattitude;
+        definition->behavior = parsedbehavior;
+        definition->health = *health;
+        definition->damage = *damage;
+        definition->speed = *speed;
+        definition->attackmillis = *attackmillis;
+        definition->wanderradius = *wanderradius;
+        definition->aggrodist = *aggrodist;
+        definition->fleedist = *fleedist;
+    });
+
+    void loadnpcdefinitions()
+    {
+        clearnpcdefinitions();
+        if(!execfile("config/npcs.cfg", false)) conoutf(CON_ERROR, "could not load config/npcs.cfg");
+    }
+
+    ICOMMAND(npcload, "", (), loadnpcdefinitions());
+
+#ifndef STANDALONE
     struct npc : dynent
     {
         npcdefinition *definition;
@@ -43,8 +94,10 @@ namespace game
             renderlastmillis, staggeruntil, crawlstart, lastlimbhop, ragdollstart[6], ragdollend[6], partdetachedmillis[6], partlastblood[6];
         float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
         uint detachedparts;
-        bool frozen, wanderpaused;
-        vec spawn, destination;
+        bool frozen, wanderpaused, replicated;
+        int snapshotmillis, servertick, serverstateflags;
+        vec spawn, destination, serverposition, servervelocity;
+        float serveryaw;
         physent *target;
         vector<characterhitbox> hitboxes;
 
@@ -52,8 +105,9 @@ namespace game
             : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior), nextdecision(0),
               wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
               renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
-              totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), spawn(0, 0, 0), destination(0, 0, 0),
-              target(NULL)
+              totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), replicated(false), snapshotmillis(0),
+              servertick(0),
+              serverstateflags(0), spawn(0, 0, 0), destination(0, 0, 0), serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -125,10 +179,10 @@ namespace game
     static const char * const playerroot = "game/player";
     static const float HIP_HEIGHT = 11.25f;
     static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
-    static vector<npcdefinition *> npcdefinitions;
     static vector<npc *> npcs;
     static vector<severedlimb *> severedlimbs;
     static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0;
+    static uint nextnpcattackrequest = 1;
 
     VARP(npcmaxdist, 1, 256, 4096);
     VARP(npcdebrisduration, 1000, 20000, 120000);
@@ -154,70 +208,6 @@ namespace game
         return behavior >= 0 && behavior < int(sizeof(names) / sizeof(names[0])) ? names[behavior] : "Wandering";
     }
 
-    static int parseattitude(const char *name)
-    {
-        if(!cubecasecmp(name, "aggressive")) return NPC_AGGRESSIVE;
-        if(!cubecasecmp(name, "neutral")) return NPC_NEUTRAL;
-        if(!cubecasecmp(name, "friendly")) return NPC_FRIENDLY;
-        if(!cubecasecmp(name, "scared")) return NPC_SCARED;
-        return -1;
-    }
-
-    static int parsebehavior(const char *name)
-    {
-        if(!cubecasecmp(name, "wandering") || !cubecasecmp(name, "wander")) return NPC_WANDERING;
-        if(!cubecasecmp(name, "chase")) return NPC_CHASE;
-        if(!cubecasecmp(name, "flee")) return NPC_FLEE;
-        return -1;
-    }
-
-    static npcdefinition *findnpcdefinition(const char *id)
-    {
-        loopv(npcdefinitions) if(!cubecasecmp(npcdefinitions[i]->id, id)) return npcdefinitions[i];
-        return NULL;
-    }
-
-    static void clearnpcdefinitions()
-    {
-        resetnpcs();
-        npcdefinitions.deletecontents();
-    }
-
-    COMMANDN(npcreset, clearnpcdefinitions, "");
-
-    ICOMMAND(npcdef, "sssssiffifff", (char *id, char *name, char *model, char *attitude, char *behavior, int *health, float *damage,
-                                      float *speed, int *attackmillis, float *wanderradius, float *aggrodist, float *fleedist),
-    {
-        const int parsedattitude = parseattitude(attitude);
-        const int parsedbehavior = parsebehavior(behavior);
-        if(!id[0] || !model[0] || parsedattitude < 0 || parsedbehavior < 0 || *health <= 0 || *damage < 0 || *speed <= 0 ||
-           *attackmillis <= 0 || *wanderradius < 0 || *aggrodist < 0 || *fleedist < 0)
-        {
-            conoutf(CON_ERROR, "invalid NPC definition %s", id[0] ? id : "<empty>");
-            return;
-        }
-
-        npcdefinition *definition = findnpcdefinition(id);
-        if(!definition) definition = npcdefinitions.add(new npcdefinition(id));
-        copystring(definition->name, name[0] ? name : id);
-        copystring(definition->model, model);
-        definition->attitude = parsedattitude;
-        definition->behavior = parsedbehavior;
-        definition->health = *health;
-        definition->damage = *damage;
-        definition->speed = *speed;
-        definition->attackmillis = *attackmillis;
-        definition->wanderradius = *wanderradius;
-        definition->aggrodist = *aggrodist;
-        definition->fleedist = *fleedist;
-    });
-
-    ICOMMAND(npcload, "", (),
-    {
-        clearnpcdefinitions();
-        if(!execfile("config/npcs.cfg", false)) conoutf(CON_ERROR, "could not load config/npcs.cfg");
-    });
-
     ICOMMAND(debughitbox, "iN", (int *enabled, int *numargs),
     {
         debughitboxenabled = *numargs ? *enabled != 0 : !debughitboxenabled;
@@ -242,10 +232,10 @@ namespace game
 
     void preloadnpcs()
     {
-        loopv(npcdefinitions) loopj(NUM_NPC_PARTS)
+        loopi(numnpcdefinitions()) loopj(NUM_NPC_PARTS)
         {
             string path;
-            npcmodelpath(*npcdefinitions[i], j, path);
+            npcmodelpath(*getnpcdefinition(i), j, path);
             preloadmodel(path);
         }
     }
@@ -255,7 +245,14 @@ namespace game
         npcs.deletecontents();
         severedlimbs.deletecontents();
         nextnpcid = 1;
+        nextnpcattackrequest = 1;
         cleardynentcache();
+    }
+
+    static npc *findnpc(uint id)
+    {
+        loopv(npcs) if(npcs[i]->instanceid == int(id)) return npcs[i];
+        return NULL;
     }
 
     int numnpcs()
@@ -282,6 +279,8 @@ namespace game
             mob.spawn.y -= shifty;
             mob.destination.x -= shiftx;
             mob.destination.y -= shifty;
+            mob.serverposition.x -= shiftx;
+            mob.serverposition.y -= shifty;
             loopvj(mob.hitboxes)
             {
                 mob.hitboxes[j].center.x -= shiftx;
@@ -903,9 +902,96 @@ namespace game
         cleardynentcache();
     }
 
+    void receivenpcspawn(uint id, const char *definitionid, const vec &absoluteposition, float yaw, float health, uint detachedparts, int stateflags)
+    {
+        npcdefinition *definition = findnpcdefinition(definitionid);
+        if(!id || !definition) return;
+        vec position(absoluteposition);
+        if(waitforserveredit()) worldpositiontolocal(position);
+        npc *mob = findnpc(id);
+        if(!mob)
+        {
+            mob = new npc(definition, int(id));
+            mob->replicated = true;
+            npcs.add(mob);
+        }
+        mob->definition = definition;
+        mob->o = mob->serverposition = position;
+        mob->spawn = mob->destination = position;
+        mob->yaw = mob->serveryaw = yaw;
+        mob->totalhealth = max(health, 0.0f);
+        mob->snapshotmillis = lastmillis;
+        mob->serverstateflags = stateflags;
+        updatenpchitboxes(*mob);
+        const uint authorizedparts = detachedparts;
+        loopi(NUM_NPC_PARTS) if(i != HITBOX_TORSO && authorizedparts & (1U << i) && !(mob->detachedparts & (1U << i)))
+            detachnpcpart(*mob, i, mob->o, vec(0, 0, 0));
+        mob->detachedparts = authorizedparts;
+        if(stateflags & NPC_STATE_DEAD)
+        {
+            mob->totalhealth = 0;
+            ragdollnpc(*mob, mob->o, vec(0, 0, 0));
+        }
+        cleardynentcache();
+    }
+
+    void receivenpcdespawn(uint id)
+    {
+        loopv(npcs) if(npcs[i]->instanceid == int(id) && npcs[i]->replicated)
+        {
+            delete npcs.remove(i);
+            cleardynentcache();
+            return;
+        }
+    }
+
+    void receivenpcsnapshot(uint id, int tick, const vec &absoluteposition, const vec &velocity, float yaw, int stateflags)
+    {
+        npc *mob = findnpc(id);
+        if(!mob || !mob->replicated || tick <= mob->servertick) return;
+        vec position(absoluteposition);
+        if(waitforserveredit()) worldpositiontolocal(position);
+        mob->servertick = tick;
+        mob->snapshotmillis = lastmillis;
+        mob->serverposition = position;
+        mob->servervelocity = velocity;
+        mob->serveryaw = yaw;
+        mob->serverstateflags = stateflags;
+        mob->frozen = (stateflags & NPC_STATE_FROZEN) != 0;
+    }
+
+    void receivenpcevent(uint id, int event, int tick, float health, uint detachedparts, int part, const vec &absoluteposition, const vec &impulse)
+    {
+        npc *mob = findnpc(id);
+        if(!mob || !mob->replicated) return;
+        mob->servertick = max(mob->servertick, tick);
+        vec position(absoluteposition);
+        if(waitforserveredit()) worldpositiontolocal(position);
+        mob->totalhealth = max(health, 0.0f);
+        if(event == NPC_EVENT_DAMAGE)
+        {
+            spawnblood(position, false);
+            addnpcknockback(*mob, impulse, max(mob->definition->health - mob->totalhealth, 1.0f));
+        }
+        else if(event == NPC_EVENT_DISMEMBER)
+        {
+            if(part > HITBOX_TORSO && part < NUM_NPC_PARTS && !(mob->detachedparts & (1U << part)))
+                detachnpcpart(*mob, part, position, impulse);
+            mob->detachedparts = detachedparts;
+        }
+        else if(event == NPC_EVENT_DEATH && mob->state != CS_DEAD)
+        {
+            loopi(NUM_NPC_PARTS) if(i != HITBOX_TORSO && detachedparts & (1U << i) && !(mob->detachedparts & (1U << i)))
+                detachnpcpart(*mob, i, position, impulse);
+            mob->detachedparts = detachedparts;
+            spawnblood(position, false);
+            ragdollnpc(*mob, position, impulse);
+        }
+    }
+
     bool attacknpc()
     {
-        if(multiplayer(false) || editmode || (!m_creative && !m_survival) || !player1 || player1->state != CS_ALIVE || !camera1) return false;
+        if(editmode || (!m_creative && !m_survival) || !player1 || player1->state != CS_ALIVE || !camera1) return false;
 
         static const float attackreach = 5.0f * GAMEUNITSPERMETER;
         float worlddistance = raycube(camera1->o, camdir, attackreach, RAY_CLIPMAT | RAY_SKIPFIRST);
@@ -942,6 +1028,15 @@ namespace game
         if(!hitmob && !hitlimb) return false;
 
         const vec hitposition = vec(camera1->o).madd(camdir, hitdistance);
+        if(multiplayer(false))
+        {
+            if(hitmob && hitmob->replicated)
+            {
+                if(!nextnpcattackrequest) ++nextnpcattackrequest;
+                addmsg(N_NPCATTACK, "ri3", int(nextnpcattackrequest++), hitmob->instanceid, hitpart);
+            }
+            return hitmob != NULL;
+        }
         if(hitlimb)
         {
             const float damage = heldattackdamage();
@@ -1230,7 +1325,36 @@ namespace game
     {
         if(multiplayer(false))
         {
-            if(npcs.length() || severedlimbs.length()) resetnpcs();
+            bool removedlocal = false;
+            for(int i = npcs.length() - 1; i >= 0; --i) if(!npcs[i]->replicated)
+            {
+                delete npcs.remove(i);
+                removedlocal = true;
+            }
+            if(removedlocal) cleardynentcache();
+            loopv(npcs)
+            {
+                npc &mob = *npcs[i];
+                if(!mob.replicated) continue;
+                if(mob.state == CS_DEAD)
+                {
+                    moveragdoll(&mob);
+                    updatenpcbleeding(mob);
+                    continue;
+                }
+                const int age = clamp(lastmillis - mob.snapshotmillis, 0, 200);
+                vec target = vec(mob.serverposition).madd(mob.servervelocity, age / 1000.0f), correction = vec(target).sub(mob.o);
+                const float distance = correction.magnitude(), blend = distance > 96.0f ? 1.0f : clamp(curtime / 100.0f, 0.0f, 0.35f);
+                mob.o.madd(correction, blend);
+                float yawdelta = fmodf(mob.serveryaw - mob.yaw + 540.0f, 360.0f) - 180.0f;
+                mob.yaw = fmodf(mob.yaw + yawdelta * blend + 360.0f, 360.0f);
+                mob.vel = mob.servervelocity;
+                mob.falling = vec(0, 0, 0);
+                updatenpchitboxes(mob);
+                updatenpcbleeding(mob);
+                shownpcdebugtext(mob);
+            }
+            updateseveredlimbs();
             return;
         }
 
@@ -1418,8 +1542,9 @@ namespace game
     {
         if(multiplayer(false))
         {
-            conoutf(CON_ERROR, "NPCs are client-side and cannot be spawned in multiplayer");
-            return false;
+            defformatstring(command, "spawn %s", id ? id : "");
+            requestworldcommand(command);
+            return true;
         }
         npcdefinition *definition = findnpcdefinition(id);
         if(!definition)
@@ -1469,4 +1594,5 @@ namespace game
     }
 
     ICOMMAND(spawn, "s", (char *id), spawnnpc(id));
+#endif
 }
