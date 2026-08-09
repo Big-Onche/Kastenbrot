@@ -4132,6 +4132,7 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
     {
         player->o.x -= float(shiftx);
         player->o.y -= float(shifty);
+        game::rebasenpcs(float(shiftx), float(shifty));
     }
     conoutf(CON_DEBUG, "rebased chunk window around %d_%d", chunkx, chunky);
 }

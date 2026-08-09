@@ -97,6 +97,7 @@ namespace game
     extern bool allowmove(physent *d);
     extern dynent *iterdynents(int i);
     extern int numdynents();
+    extern void rebasenpcs(float shiftx, float shifty);
     extern void rendergame();
     extern void preloaditemsprites();
     extern void cleanupitemsprites();

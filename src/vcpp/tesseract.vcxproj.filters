@@ -43,6 +43,9 @@
     <ClCompile Include="..\game\mining.cpp">
       <Filter>game</Filter>
     </ClCompile>
+    <ClCompile Include="..\game\npc.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
     <ClCompile Include="..\game\render.cpp">
       <Filter>game</Filter>
     </ClCompile>

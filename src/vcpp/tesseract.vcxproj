@@ -1046,6 +1046,10 @@
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
+    <ClCompile Include="..\game\npc.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
+    </ClCompile>
     <ClCompile Include="..\game\render.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>

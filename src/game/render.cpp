@@ -676,6 +676,7 @@ namespace game
     {
         entities::renderentities();
         renderworlddrops();
+        rendernpcs();
         loopv(players) renderplayer(players[i], players[i] == player1);
     }
 

@@ -333,6 +333,9 @@ namespace game
     void gamedisconnect(bool cleanup)
     {
         connected = remote = false;
+#ifndef STANDALONE
+        resetnpcs();
+#endif
         predictedworldactions.deletecontents();
         resetworlddrops();
         resetfurnaces();
@@ -578,6 +581,9 @@ namespace game
         updateworldchunks();
         processnetworkedits();
         physicsframe();
+#ifndef STANDALONE
+        updatenpcs();
+#endif
         otherplayers();
         if(player1)
         {
@@ -745,6 +751,7 @@ namespace game
     void startmap(const char *name)
     {
 #ifndef STANDALONE
+        resetnpcs();
         resetwatersimulation();
         if(!pendingnetworkworld) resetworlddrops();
 #endif
@@ -775,6 +782,7 @@ namespace game
         entities::preloadentities();
 #ifndef STANDALONE
         preloadplayermodels();
+        preloadnpcs();
 #endif
     }
     float abovegameplayhud(int w, int h) { return 1.0f; }
@@ -2205,6 +2213,7 @@ namespace game
     void rendercreativetarget()
     {
 #ifndef STANDALONE
+        rendernpcdebug();
         if(survivalenabled())
         {
             creativetarget target;
@@ -2623,8 +2632,23 @@ namespace game
     bool canjump() { return true; }
     bool cancrouch() { return true; }
     bool allowmove(physent *d) { return true; }
-    dynent *iterdynents(int i) { return players.inrange(i) ? players[i] : NULL; }
-    int numdynents() { return players.length(); }
+    dynent *iterdynents(int i)
+    {
+        if(players.inrange(i)) return players[i];
+#ifndef STANDALONE
+        return iternpc(i - players.length());
+#else
+        return NULL;
+#endif
+    }
+    int numdynents()
+    {
+#ifndef STANDALONE
+        return players.length() + numnpcs();
+#else
+        return players.length();
+#endif
+    }
 
     int numanims() { return ANIM_GAMESPECIFIC; }
     void findanims(const char *pattern, vector<int> &anims) {}

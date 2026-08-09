@@ -118,6 +118,7 @@ CLIENT_OBJS= \
 	game/environment.o \
 	game/game.o \
 	game/mining.o \
+	game/npc.o \
 	game/recipes.o \
 	game/render.o \
 	game/server.o \

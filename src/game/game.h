@@ -291,6 +291,28 @@ struct gameent : dynent
     }
 };
 
+enum
+{
+    HITBOX_TORSO = 0,
+    HITBOX_HEAD,
+    HITBOX_LEFT_ARM,
+    HITBOX_RIGHT_ARM,
+    HITBOX_LEFT_LEG,
+    HITBOX_RIGHT_LEG,
+    NUM_HUMANOID_HITBOXES
+};
+
+struct characterhitbox
+{
+    vec center, radius;
+    int part;
+
+    characterhitbox(const vec &center = vec(0, 0, 0), const vec &radius = vec(0, 0, 0), int part = HITBOX_TORSO)
+        : center(center), radius(radius), part(part)
+    {
+    }
+};
+
 namespace entities
 {
     extern vector<extentity *> ents;
@@ -355,6 +377,14 @@ namespace game
 
 #ifndef STANDALONE
     extern void preloadplayermodels();
+    extern void preloadnpcs();
+    extern void resetnpcs();
+    extern void updatenpcs();
+    extern void rendernpcs();
+    extern void rendernpcdebug();
+    extern int numnpcs();
+    extern dynent *iternpc(int index);
+    extern void getplayerhitboxes(gameent *d, vector<characterhitbox> &hitboxes);
     extern bool heldtorchemitterposition(gameent *d, vec &position);
     extern void resetclientreceive();
     extern bool pendingnetworkworld, pendingnetworkreset, pendingnetworkfrozen,
