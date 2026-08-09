@@ -1102,21 +1102,32 @@ hasboundbox:
     addbatchedmodel(m, b, batchedmodels.length()-1);
 }
 
+void modeltagpositions(const char *mdl, const char * const *tags, vec *positions, bool *found, int numtags,const vec &o, float yaw, float pitch, float roll, float size, int anim)
+{
+    if(!tags || !positions || !found || numtags <= 0) return;
+    loopi(numtags)
+    {
+        positions[i] = vec(FLT_MAX, FLT_MAX, FLT_MAX);
+        found[i] = false;
+    }
+    model *m = loadmodel(mdl);
+    if(!m) return;
+
+    vector<modelattach> attachments;
+    loopi(numtags) if(tags[i] && tags[i][0])
+    {
+        attachments.add(modelattach(tags[i], &positions[i]));
+    }
+    attachments.add(modelattach());
+    m->render(anim | ANIM_NORENDER, 0, 0, o, yaw, pitch, roll, NULL, attachments.getbuf(), size);
+    loopi(numtags) found[i] = positions[i].x != FLT_MAX;
+}
+
 bool modeltagposition(const char *mdl, const char *tag, vec &position, const vec &o, float yaw, float pitch, float roll, float size, int anim)
 {
-    model *m = loadmodel(mdl);
-    if(!m || !tag || !tag[0]) return false;
-
-    vec tagposition(FLT_MAX, FLT_MAX, FLT_MAX);
-    modelattach attachments[] =
-    {
-        modelattach(tag, &tagposition),
-        modelattach()
-    };
-    m->render(anim | ANIM_NORENDER, 0, 0, o, yaw, pitch, roll, NULL, attachments, size);
-    if(tagposition.x == FLT_MAX) return false;
-    position = tagposition;
-    return true;
+    bool found;
+    modeltagpositions(mdl, &tag, &position, &found, 1, o, yaw, pitch, roll, size, anim);
+    return found;
 }
 
 void rendermodelwithskins(const char *mdl, int anim, const vec &o, float yaw, float pitch, float roll, int flags, dynent *d, const modelskinoverride *skins, int numskins, float size, const vec4 &color)

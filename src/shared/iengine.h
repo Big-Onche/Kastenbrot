@@ -589,10 +589,8 @@ struct modelattach
 };
 
 extern void rendermodel(const char *mdl, int anim, const vec &o, float yaw = 0, float pitch = 0, float roll = 0, int cull = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED, dynent *d = NULL, modelattach *a = NULL, int basetime = 0, int basetime2 = 0, float size = 1, const vec4 &color = vec4(1, 1, 1, 1));
-extern bool modeltagposition(const char *mdl, const char *tag, vec &position,
-                             const vec &o, float yaw = 0, float pitch = 0,
-                             float roll = 0, float size = 1,
-                             int anim = ANIM_MAPMODEL | ANIM_LOOP);
+extern void modeltagpositions(const char *mdl, const char * const *tags, vec *positions, bool *found, int numtags, const vec &o, float yaw = 0, float pitch = 0, float roll = 0, float size = 1, int anim = ANIM_MAPMODEL | ANIM_LOOP);
+extern bool modeltagposition(const char *mdl, const char *tag, vec &position, const vec &o, float yaw = 0, float pitch = 0, float roll = 0, float size = 1, int anim = ANIM_MAPMODEL | ANIM_LOOP);
 struct modelskinoverride
 {
     const char *mesh, *texture;

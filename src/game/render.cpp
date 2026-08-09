@@ -370,19 +370,27 @@ namespace game
         "game/player/leg/right"
     };
 
+    static const char * const playerparttags[NUM_PLAYER_PARTS] =
+    {
+        NULL,
+        "tag_head",
+        "tag_left_arm",
+        "tag_right_arm",
+        "tag_left_leg",
+        "tag_right_leg"
+    };
+
     static const char * const heldcubemodel = "game/heldcube";
     static const char * const worldheldcubemodel = "game/heldcube/world";
 
-    // The split meshes retain the coordinates of the original 30-unit model.
-    // Their configs recenter articulated pieces on these joint heights.
-    static const float HIP_HEIGHT = 11.25f, SHOULDER_HEIGHT = 22.5f;
-    static const float ARM_OFFSET = 5.625f, LEG_OFFSET = 1.875f;
+    // The torso is recentered on the hips; its tags define every articulated joint.
+    static const float HIP_HEIGHT = 11.25f;
     static const float MIN_GAIT_CADENCE = 0.65f, MAX_GAIT_CADENCE = 3.0f;
     static const float LEG_SWING = 32.0f, ARM_SWING = 28.0f;
     static const float LEG_STRAFE_SWING = 24.0f, ARM_STRAFE_SWING = 18.0f;
     static const float IDLE_HEAD_YAW = 65.0f, MOVING_HEAD_YAW = 75.0f;
     static const float IDLE_BODY_TURN_SPEED = 180.0f, MOVING_BODY_TURN_RESPONSE = 14.0f;
-    static const float CROUCH_HIP_DROP = 2.0f, CROUCH_HEAD_DROP = 0.75f;
+    static const float CROUCH_HIP_DROP = 2.0f;
     static const float CROUCH_TORSO_PITCH = -35.0f, CROUCH_ARM_PITCH = -15.0f, CROUCH_LEG_PITCH = 35.0f;
     static const float HUD_ARM_FORWARD = 6.0f, HUD_ARM_SIDE = 12.0f, HUD_ARM_DOWN = 8.0f;
     static const float HUD_ARM_IDLE_PITCH = -90.0f, HUD_ARM_ROLL = -3.0f;
@@ -404,6 +412,12 @@ namespace game
     static void renderpart(gameent *d, int part, const vec &origin, float yaw, float pitch, float roll, int flags)
     {
         rendermodel(playermodels[part], ANIM_MAPMODEL | ANIM_LOOP, origin, yaw, pitch, roll, flags, d);
+    }
+
+    static bool playerpartorigin(int part, vec &origin, const vec &torsoorigin, float torsoyaw, float torsopitch)
+    {
+        return part > PART_TORSO && part < NUM_PLAYER_PARTS &&
+               modeltagposition(playermodels[PART_TORSO], playerparttags[part], origin, torsoorigin, torsoyaw, torsopitch, 0);
     }
 
     static float movementamount(const gameent *d, float speed)
@@ -560,31 +574,32 @@ namespace game
         bool actionactive = actionpitch >= 0;
 
         vec feet = d->feetpos(bob);
-        vec hips = vec(feet).addz(HIP_HEIGHT - CROUCH_HIP_DROP * crouch);
-        vec shoulderoffset(0, 0, SHOULDER_HEIGHT - HIP_HEIGHT);
-        shoulderoffset.rotate_around_x(torsopitch * RAD).rotate_around_z(bodyyaw * RAD);
-        vec shoulders = vec(hips).add(shoulderoffset);
-        vec neck = vec(shoulders).addz(-CROUCH_HEAD_DROP * crouch);
-        vec lateral(1, 0, 0);
-        lateral.rotate_around_z(bodyyaw * RAD);
-        vec leftshoulder = vec(shoulders).madd(lateral, ARM_OFFSET);
-        vec rightshoulder = vec(shoulders).madd(lateral, -ARM_OFFSET);
-        vec lefthip = vec(hips).madd(lateral, LEG_OFFSET);
-        vec righthip = vec(hips).madd(lateral, -LEG_OFFSET);
+        vec torsoorigin = vec(feet).addz(HIP_HEIGHT - CROUCH_HIP_DROP * crouch), partorigins[NUM_PLAYER_PARTS];
+        bool parttagged[NUM_PLAYER_PARTS] = { false };
 
-        renderpart(d, PART_TORSO, hips, bodyyaw, torsopitch, 0, flags);
-        renderpart(d, PART_HEAD, neck, headyaw, clamp(d->pitch, -80.0f, 80.0f) + sinf(phase * 2.0f) * 1.5f * movement, 0, flags);
+        renderpart(d, PART_TORSO, torsoorigin, bodyyaw, torsopitch, 0, flags);
+        modeltagpositions(playermodels[PART_TORSO], &playerparttags[PART_HEAD], &partorigins[PART_HEAD], &parttagged[PART_HEAD], NUM_PLAYER_PARTS - PART_HEAD, torsoorigin, bodyyaw, torsopitch, 0);
+
+        if(parttagged[PART_HEAD])
+            renderpart(d, PART_HEAD, partorigins[PART_HEAD], headyaw, clamp(d->pitch, -80.0f, 80.0f) + sinf(phase * 2.0f) * 1.5f * movement, 0, flags);
+
         const int selected = heldcreativeitem(d);
-        const float rightarmpitch = armpitch + (selected >= 0 ? HELD_ARM_PITCH : 0) + (actionactive ? actionpitch : forwardstride * ARM_SWING), rightarmroll = actionactive ? 0 : strafestride * ARM_STRAFE_SWING;
-        renderpart(d, PART_LEFT_ARM, leftshoulder, bodyyaw, armpitch - forwardstride * ARM_SWING, -strafestride * ARM_STRAFE_SWING, flags);
-        renderpart(d, PART_RIGHT_ARM, rightshoulder, bodyyaw, rightarmpitch, rightarmroll, flags);
-        renderpart(d, PART_LEFT_LEG, lefthip, bodyyaw, legpitch + forwardstride * LEG_SWING, strafestride * LEG_STRAFE_SWING, flags);
-        renderpart(d, PART_RIGHT_LEG, righthip, bodyyaw, legpitch - forwardstride * LEG_SWING, -strafestride * LEG_STRAFE_SWING, flags);
+        const float rightarmpitch = armpitch + (selected >= 0 ? HELD_ARM_PITCH : 0) + (actionactive ? actionpitch : forwardstride * ARM_SWING),
+                    rightarmroll = actionactive ? 0 : strafestride * ARM_STRAFE_SWING;
 
-        if(selected >= 0)
+        if(parttagged[PART_LEFT_ARM])
+            renderpart(d, PART_LEFT_ARM, partorigins[PART_LEFT_ARM], bodyyaw, armpitch - forwardstride * ARM_SWING, -strafestride * ARM_STRAFE_SWING, flags);
+        if(parttagged[PART_RIGHT_ARM])
+            renderpart(d, PART_RIGHT_ARM, partorigins[PART_RIGHT_ARM], bodyyaw, rightarmpitch, rightarmroll, flags);
+        if(parttagged[PART_LEFT_LEG])
+            renderpart(d, PART_LEFT_LEG, partorigins[PART_LEFT_LEG], bodyyaw, legpitch + forwardstride * LEG_SWING, strafestride * LEG_STRAFE_SWING, flags);
+        if(parttagged[PART_RIGHT_LEG])
+            renderpart(d, PART_RIGHT_LEG, partorigins[PART_RIGHT_LEG], bodyyaw, legpitch - forwardstride * LEG_SWING, -strafestride * LEG_STRAFE_SWING, flags);
+
+        if(selected >= 0 && parttagged[PART_RIGHT_ARM])
         {
             vec hand;
-            if(modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", hand, rightshoulder, bodyyaw, rightarmpitch, rightarmroll))
+            if(modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", hand, partorigins[PART_RIGHT_ARM], bodyyaw, rightarmpitch, rightarmroll))
                 renderhelditem(d, selected, hand, bodyyaw, rightarmpitch + 270.0f, rightarmroll, flags, false);
         }
     }
@@ -719,12 +734,9 @@ namespace game
                     torsopitch = CROUCH_TORSO_PITCH * crouch,
                     actionpitch = playerarmactionpitch(d);
 
-        vec hips = d->feetpos(bob).addz(HIP_HEIGHT - CROUCH_HIP_DROP * crouch);
-        vec shoulderoffset(0, 0, SHOULDER_HEIGHT - HIP_HEIGHT);
-        shoulderoffset.rotate_around_x(torsopitch * RAD).rotate_around_z(bodyyaw * RAD);
-        vec lateral(1, 0, 0);
-        lateral.rotate_around_z(bodyyaw * RAD);
-        const vec shoulder = vec(hips).add(shoulderoffset).madd(lateral, -ARM_OFFSET);
+        const vec torsoorigin = d->feetpos(bob).addz(HIP_HEIGHT - CROUCH_HIP_DROP * crouch);
+        vec shoulder;
+        if(!playerpartorigin(PART_RIGHT_ARM, shoulder, torsoorigin, bodyyaw, torsopitch)) return false;
 
         const float armpitch = CROUCH_ARM_PITCH * crouch + HELD_ARM_PITCH + (actionpitch >= 0 ? actionpitch : forwardstride * ARM_SWING),
                     armroll = actionpitch >= 0 ? 0 : strafestride * ARM_STRAFE_SWING;
