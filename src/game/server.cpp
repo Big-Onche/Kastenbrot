@@ -2954,9 +2954,14 @@ namespace server
         loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready) sendfallblockspawn(clients[i]->clientnum, block);
     }
 
-    static bool serverfallingblockoriginactive(const ivec &origin)
+    static bool serverfallingblockbelow(const ivec &cell)
     {
-        loopv(serverfallingblocks) if(serverfallingblocks[i]->origin == origin) return true;
+        loopv(serverfallingblocks)
+        {
+            const serverfallingblock &block = *serverfallingblocks[i];
+            if(block.origin.x == cell.x && block.origin.y == cell.y && block.o.z < cell.z + SERVER_WORLD_BLOCK_SIZE / 2)
+                return true;
+        }
         return false;
     }
 
@@ -2995,7 +3000,7 @@ namespace server
 
     static bool startserverfallingblock(const ivec &cell, int item)
     {
-        if(serverfallingblockoriginactive(cell) || !acceptsystemworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, item)) return false;
+        if(!acceptsystemworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, item)) return false;
         serverfallingblock *block = new serverfallingblock;
         if(!nextfallblockid || nextfallblockid > uint(INT_MAX)) nextfallblockid = 1;
         block->id = nextfallblockid++;
@@ -3074,8 +3079,9 @@ namespace server
                 continue;
             }
             const int item = serverblockitem(cell), worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
-            if(item >= 0 && getworldcubefall(worldindex) && !serverblocksolid(ivec(cell).sub(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE))))
-                startserverfallingblock(cell, item);
+            if(item < 0 || !getworldcubefall(worldindex)) continue;
+            if(!serverblocksolid(ivec(cell).sub(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)))) startserverfallingblock(cell, item);
+            else if(serverfallingblockbelow(cell)) queueserverfallblockcheck(cell);
         }
         sendserverfallblocksnapshots();
     }

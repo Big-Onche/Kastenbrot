@@ -1738,9 +1738,14 @@ namespace game
         return NULL;
     }
 
-    static bool fallingblockoriginactive(const ivec &origin)
+    static bool localfallingblockbelow(const ivec &cell)
     {
-        loopv(fallingblocks) if(!fallingblocks[i]->replicated && fallingblocks[i]->origin == origin) return true;
+        loopv(fallingblocks)
+        {
+            const fallingblock &block = *fallingblocks[i];
+            if(!block.replicated && block.origin.x == cell.x && block.origin.y == cell.y && block.o.z < cell.z + CREATIVE_GRID / 2)
+                return true;
+        }
         return false;
     }
 
@@ -1787,7 +1792,7 @@ namespace game
 
     static bool startlocalfallingblock(const ivec &cell, int item)
     {
-        if(fallingblockoriginactive(cell) || !applyworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item)) return false;
+        if(!applyworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item)) return false;
         fallingblock *block = new fallingblock;
         if(!nextlocalfallblockid || nextlocalfallblockid > uint(INT_MAX)) nextlocalfallblockid = 1;
         block->id = 0x80000000U | nextlocalfallblockid++;
@@ -1875,7 +1880,9 @@ namespace game
                 continue;
             }
             const int worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
-            if(solid && item >= 0 && !belowsolid && getworldcubefall(worldindex)) startlocalfallingblock(cell, item);
+            if(!solid || item < 0 || !getworldcubefall(worldindex)) continue;
+            if(!belowsolid) startlocalfallingblock(cell, item);
+            else if(localfallingblockbelow(cell)) queuefallblockcheck(cell);
         }
     }
 
