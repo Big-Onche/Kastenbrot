@@ -1557,6 +1557,42 @@ namespace UI
 
     Texture *Image::lasttex = NULL;
 
+    struct GrayscaleImage : Image
+    {
+        Color color;
+
+        void setup(Texture *tex_, const Color &color_, float minw_ = 0, float minh_ = 0)
+        {
+            Image::setup(tex_, minw_, minh_);
+            color = color_;
+        }
+
+        static const char *typestr() { return "#GrayscaleImage"; }
+        const char *gettype() const { return typestr(); }
+
+        void startdraw()
+        {
+            lasttex = NULL;
+            Shader *shader = lookupshaderbyname("hudgrayscale");
+            (shader ? shader : hudshader)->set();
+            gle::defvertex(2);
+            gle::deftexcoord0();
+            gle::begin(GL_QUADS);
+        }
+
+        void draw(float sx, float sy)
+        {
+            changedraw(CHANGE_SHADER | CHANGE_COLOR);
+            color.init();
+            if(tex != notexture)
+            {
+                bindtex();
+                quads(sx, sy, w, h);
+            }
+            Object::draw(sx, sy);
+        }
+    };
+
     struct CroppedImage : Image
     {
         float cropx, cropy, cropw, croph;
@@ -3542,13 +3578,16 @@ namespace UI
         BUILD(KeyField, o, o->setup(var, *length, onchange, (*scale <= 0 ? 1 : *scale) * uitextscale), children));
 
     ICOMMAND(uiimage, "sffe", (char *texname, float *minw, float *minh, uint *children),
-        BUILD(Image, o, o->setup(textureload(texname, 3, true, false), *minw, *minh), children));
+        BUILD(Image, o, o->setup(textureload(texname, 3, true, false, true), *minw, *minh), children));
+
+    ICOMMAND(uigrayscaleimage, "siffe", (char *texname, int *color, float *minw, float *minh, uint *children),
+        BUILD(GrayscaleImage, o, o->setup(textureload(texname, 3, true, false, true), Color(*color), *minw, *minh), children));
 
     ICOMMAND(uiworldimage, "sffe", (char *texname, float *minw, float *minh, uint *children),
         BUILD(Image, o, o->setup(textureload(texname, 3, true, false, true), *minw, *minh), children));
 
     ICOMMAND(uistretchedimage, "sffe", (char *texname, float *minw, float *minh, uint *children),
-        BUILD(StretchedImage, o, o->setup(textureload(texname, 3, true, false), *minw, *minh), children));
+        BUILD(StretchedImage, o, o->setup(textureload(texname, 3, true, false, true), *minw, *minh), children));
 
     static inline float parsepixeloffset(const tagval *t, int size)
     {
@@ -3569,7 +3608,7 @@ namespace UI
 
     ICOMMAND(uicroppedimage, "sfftttte", (char *texname, float *minw, float *minh, tagval *cropx, tagval *cropy, tagval *cropw, tagval *croph, uint *children),
         BUILD(CroppedImage, o, {
-            Texture *tex = textureload(texname, 3, true, false);
+            Texture *tex = textureload(texname, 3, true, false, true);
             o->setup(tex, *minw, *minh,
                 parsepixeloffset(cropx, tex->xs), parsepixeloffset(cropy, tex->ys),
                 parsepixeloffset(cropw, tex->xs), parsepixeloffset(croph, tex->ys));
@@ -3577,7 +3616,7 @@ namespace UI
 
     ICOMMAND(uiborderedimage, "stfe", (char *texname, tagval *texborder, float *screenborder, uint *children),
         BUILD(BorderedImage, o, {
-            Texture *tex = textureload(texname, 3, true, false);
+            Texture *tex = textureload(texname, 3, true, false, true);
             o->setup(tex,
                 parsepixeloffset(texborder, tex->xs),
                 *screenborder);
@@ -3585,7 +3624,7 @@ namespace UI
 
     ICOMMAND(uitiledimage, "sffffe", (char *texname, float *tilew, float *tileh, float *minw, float *minh, uint *children),
         BUILD(TiledImage, o, {
-            Texture *tex = textureload(texname, 0, true, false);
+            Texture *tex = textureload(texname, 0, true, false, true);
             o->setup(tex, *minw, *minh, *tilew <= 0 ? 1 : *tilew, *tileh <= 0 ? 1 : *tileh);
         }, children));
 
