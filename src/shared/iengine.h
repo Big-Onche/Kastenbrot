@@ -251,6 +251,7 @@ extern bool editworldscatter(int type, const ivec &support, int orient, bool pla
 extern float rayent(const vec &o, const vec &ray, float radius, int mode,
                     int size, int &orient, int &ent);
 extern void renderboundingbox(const vec &center, const vec &radius);
+extern void renderorientedboundingbox(const vec &center, const vec &radius, float yaw, float pitch, float roll);
 extern void setbreakstain(int owner, uint requestid, const ivec &origin, int size, int stage);
 extern void clearbreakstain(int owner, uint requestid);
 

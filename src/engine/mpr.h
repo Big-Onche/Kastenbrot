@@ -56,15 +56,24 @@ namespace mpr
     struct EntOBB : Ent
     {
         matrix3 orient;
+        vec radius;
 
-        EntOBB(physent *ent) : Ent(ent)
+        EntOBB(physent *ent) : Ent(ent), radius(ent->obbradius.iszero() ? vec(ent->xradius, ent->yradius,
+                                                                            (ent->aboveeye + ent->eyeheight) / 2) : ent->obbradius)
         {
-            orient.setyaw(ent->yaw*RAD);
+            if(ent->obbradius.iszero()) orient.setyaw(ent->yaw * RAD);
+            else
+            {
+                orient.identity();
+                if(ent->roll) orient.rotate_around_y(sincosmod360(ent->roll));
+                if(ent->pitch) orient.rotate_around_x(sincosmod360(-ent->pitch));
+                if(ent->yaw) orient.rotate_around_z(sincosmod360(-ent->yaw));
+            }
         }
 
         vec contactface(const vec &wn, const vec &wdir) const
         {
-            vec n = orient.transform(wn).div(vec(ent->xradius, ent->yradius, (ent->aboveeye + ent->eyeheight)/2)),
+            vec n = orient.transform(wn).div(radius),
                 dir = orient.transform(wdir),
                 an(fabs(n.x), fabs(n.y), dir.z ? fabs(n.z) : 0),
                 fn(0, 0, 0);
@@ -80,9 +89,9 @@ namespace mpr
 
         vec localsupportpoint(const vec &ln) const
         {
-            return vec(ln.x > 0 ? ent->xradius : -ent->xradius,
-                       ln.y > 0 ? ent->yradius : -ent->yradius,
-                       ln.z > 0 ? ent->aboveeye : -ent->eyeheight);
+            return vec(ln.x > 0 ? radius.x : -radius.x,
+                       ln.y > 0 ? radius.y : -radius.y,
+                       ln.z > 0 ? radius.z : -radius.z);
         }
 
         vec supportpoint(const vec &n) const
@@ -99,12 +108,12 @@ namespace mpr
             return localsupportpoint(p).dot(p);
         }
 
-        float left() const { return supportcoordneg(orient.a) + ent->o.x; }
-        float right() const { return supportcoord(orient.a) + ent->o.x; }
-        float back() const { return supportcoordneg(orient.b) + ent->o.y; }
-        float front() const { return supportcoord(orient.b) + ent->o.y; }
-        float bottom() const { return ent->o.z - ent->eyeheight; }
-        float top() const { return ent->o.z + ent->aboveeye; }
+        float left() const { return supportpoint(vec(-1, 0, 0)).x; }
+        float right() const { return supportpoint(vec(1, 0, 0)).x; }
+        float back() const { return supportpoint(vec(0, -1, 0)).y; }
+        float front() const { return supportpoint(vec(0, 1, 0)).y; }
+        float bottom() const { return supportpoint(vec(0, 0, -1)).z; }
+        float top() const { return supportpoint(vec(0, 0, 1)).z; }
     };
 
     struct EntFuzzy : Ent
@@ -566,4 +575,3 @@ namespace mpr
         return false;
     }
 }
-

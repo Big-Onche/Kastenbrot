@@ -69,22 +69,28 @@ namespace game
     {
         physent body;
         string model;
-        vec angularvelocity;
-        float renderyaw, renderpitch, renderroll;
-        int part, lastupdate, sleepmillis;
+        vec angularvelocity, localradius, modelcenter;
+        float renderyaw, renderpitch, renderroll, settlepitch, settleroll;
+        int part, lastupdate, sleepmillis, settleaxis;
         bool sleeping;
 
         severedlimb(const char *model, int part)
-            : angularvelocity(0, 0, 0), renderyaw(0), renderpitch(0), renderroll(0), part(part), lastupdate(lastmillis), sleepmillis(0),
-              sleeping(false)
+            : angularvelocity(0, 0, 0), localradius(part == HITBOX_HEAD ? vec(4, 4, 4) : vec(2, 2, part >= HITBOX_LEFT_LEG ? 6 : 5)),
+              modelcenter(0, 0, part == HITBOX_HEAD ? localradius.z : -localradius.z), renderyaw(0), renderpitch(0), renderroll(0),
+              settlepitch(0), settleroll(0), part(part), lastupdate(lastmillis), sleepmillis(0), settleaxis(0), sleeping(false)
         {
             copystring(this->model, model);
+            ::model *geometry = loadmodel(model);
+            if(geometry) geometry->collisionbox(modelcenter, localradius);
             body.type = ENT_BOUNCE;
             body.state = CS_DEAD;
             body.collidetype = COLLIDE_OBB;
             body.yaw = body.pitch = body.roll = 0;
-            body.radius = body.xradius = body.yradius = part == HITBOX_HEAD ? 4.0f : 2.0f;
-            body.eyeheight = body.aboveeye = part == HITBOX_HEAD ? 4.0f : part >= HITBOX_LEFT_LEG ? 6.0f : 5.0f;
+            body.obbradius = localradius;
+            body.radius = max(localradius.x, localradius.y);
+            body.xradius = localradius.x;
+            body.yradius = localradius.y;
+            body.eyeheight = body.aboveeye = localradius.z;
         }
     };
 
@@ -117,6 +123,8 @@ namespace game
     static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0;
 
     VARP(npcmaxdist, 1, 256, 4096);
+    VARP(npcdebrisduration, 1000, 20000, 120000);
+    VARP(npcdebrissinktime, 250, 3000, 10000);
 
     static const char *attitudename(int attitude)
     {
@@ -345,7 +353,128 @@ namespace game
 
     static void spawnblood(const vec &position, bool detached)
     {
-        regular_particle_splash(PART_BLOOD, detached ? 9 : 3, detached ? 900 : 450, position, 0x60FFFF, detached ? 1.50f : 1.25f, detached ? 150 : 75, 2);
+        regular_particle_splash(PART_BLOOD, detached ? 9 : 3, detached ? 900 : 450, position, 0x60FFFF, detached ? 1.50f : 1.25f,
+                                detached ? 150 : 75, 2);
+    }
+
+    static matrix3 severedorientation(const severedlimb &limb)
+    {
+        matrix3 orient;
+        orient.identity();
+        if(limb.renderroll) orient.rotate_around_y(sincosmod360(limb.renderroll));
+        if(limb.renderpitch) orient.rotate_around_x(sincosmod360(-limb.renderpitch));
+        if(limb.renderyaw) orient.rotate_around_z(sincosmod360(-limb.renderyaw));
+        return orient;
+    }
+
+    static vec rotateseveredvector(const severedlimb &limb, const vec &value)
+    {
+        return severedorientation(limb).transposedtransform(value);
+    }
+
+    static void updateseveredcollision(severedlimb &limb)
+    {
+        const vec radius = severedorientation(limb).abstransposedtransform(limb.localradius);
+        limb.body.yaw = limb.renderyaw;
+        limb.body.pitch = limb.renderpitch;
+        limb.body.roll = limb.renderroll;
+        limb.body.xradius = radius.x;
+        limb.body.yradius = radius.y;
+        limb.body.radius = max(radius.x, radius.y);
+        limb.body.eyeheight = limb.body.aboveeye = radius.z;
+    }
+
+    static float angledifference(float target, float angle)
+    {
+        return fmodf(target - angle + 540.0f, 360.0f) - 180.0f;
+    }
+
+    static void beginseveredsettle(severedlimb &limb)
+    {
+        static const float orientations[][2] =
+        {
+            { 0, 90 }, { 0, 270 },
+            { 90, 0 }, { 270, 0 },
+            { 0, 0 }, { 180, 0 }
+        };
+        const float verticalradius[] =
+        {
+            limb.localradius.x, limb.localradius.x,
+            limb.localradius.y, limb.localradius.y,
+            limb.localradius.z, limb.localradius.z
+        };
+        const float lowestradius = min(limb.localradius.x, min(limb.localradius.y, limb.localradius.z));
+        int best = -1;
+        float bestdistance = 1e16f;
+        loopi(int(sizeof(orientations) / sizeof(orientations[0])))
+        {
+            if(verticalradius[i] > lowestradius + 0.01f) continue;
+            const float distance = fabsf(angledifference(orientations[i][0], limb.renderpitch)) +
+                                   fabsf(angledifference(orientations[i][1], limb.renderroll));
+            if(distance >= bestdistance) continue;
+            best = i;
+            bestdistance = distance;
+        }
+        limb.settleaxis = 1;
+        limb.settlepitch = orientations[max(best, 0)][0];
+        limb.settleroll = orientations[max(best, 0)][1];
+    }
+
+    static float turnangle(float angle, float target, float amount)
+    {
+        return fmodf(angle + clamp(angledifference(target, angle), -amount, amount) + 360.0f, 360.0f);
+    }
+
+    static bool raiseseveredclear(severedlimb &limb)
+    {
+        loopi(48)
+        {
+            if(!collide(&limb.body, vec(0, 0, 0), 0, false)) return true;
+            limb.body.o.z += 0.125f;
+        }
+        return !collide(&limb.body, vec(0, 0, 0), 0, false);
+    }
+
+    static bool settleseveredlimb(severedlimb &limb, int elapsed, float grounddistance)
+    {
+        if(!limb.settleaxis) beginseveredsettle(limb);
+
+        const float groundheight = limb.body.o.z - grounddistance, amount = 720.0f * elapsed / 1000.0f;
+        limb.renderpitch = turnangle(limb.renderpitch, limb.settlepitch, amount);
+        limb.renderroll = turnangle(limb.renderroll, limb.settleroll, amount);
+        updateseveredcollision(limb);
+        limb.body.o.z = groundheight + limb.body.eyeheight + 0.05f;
+        bool collisionclear = raiseseveredclear(limb);
+
+        const bool settled = fabsf(angledifference(limb.settlepitch, limb.renderpitch)) < 0.1f &&
+                             fabsf(angledifference(limb.settleroll, limb.renderroll)) < 0.1f;
+        if(settled)
+        {
+            limb.renderpitch = limb.settlepitch;
+            limb.renderroll = limb.settleroll;
+            updateseveredcollision(limb);
+            limb.body.o.z = groundheight + limb.body.eyeheight + 0.05f;
+            collisionclear = raiseseveredclear(limb);
+        }
+        limb.body.resetinterp();
+        return settled && collisionclear;
+    }
+
+    static bool severedlimbhasstableface(const severedlimb &limb)
+    {
+        const matrix3 orient = severedorientation(limb);
+        float cornerheights[8], lowest = 1e16f;
+        loopi(8)
+        {
+            const vec corner(i & 1 ? limb.localradius.x : -limb.localradius.x,
+                             i & 2 ? limb.localradius.y : -limb.localradius.y,
+                             i & 4 ? limb.localradius.z : -limb.localradius.z);
+            cornerheights[i] = orient.transposedtransform(corner).z;
+            lowest = min(lowest, cornerheights[i]);
+        }
+        int supportingcorners = 0;
+        loopi(8) if(cornerheights[i] - lowest < 0.05f) ++supportingcorners;
+        return supportingcorners >= 4;
     }
 
     static void detachnpcpart(npc &mob, int part)
@@ -357,17 +486,10 @@ namespace game
         string model;
         npcmodelpath(*mob.definition, part, model);
         severedlimb *limb = new severedlimb(model, part);
-        limb->body.o = hitbox->center;
-        loopi(16)
-        {
-            if(!collide(&limb->body, vec(0, 0, 0), 0, false)) break;
-            limb->body.o.z += 1.0f;
-        }
         limb->body.vel = vec(mob.vel).mul(0.35f).add(vec(camdir).mul(24.0f));
         limb->body.vel.x += rnd(25) - 12;
         limb->body.vel.y += rnd(25) - 12;
         limb->body.vel.z = max(limb->body.vel.z + 35.0f + rnd(26), 28.0f);
-        limb->body.resetinterp();
         limb->renderyaw = mob.yaw;
         const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
                     movement = clamp(gamespeed / max(mob.maxheight * 2.25f, 1.0f), 0.0f, 1.0f),
@@ -377,6 +499,14 @@ namespace game
         else if(part == HITBOX_LEFT_LEG) limb->renderpitch = stride * 32.0f;
         else if(part == HITBOX_RIGHT_LEG) limb->renderpitch = -stride * 32.0f;
         limb->angularvelocity = vec(rnd(241) - 120, rnd(241) - 120, rnd(361) - 180);
+        updateseveredcollision(*limb);
+        limb->body.o = hitboxtagposition(*hitbox).add(rotateseveredvector(*limb, limb->modelcenter));
+        loopi(16)
+        {
+            if(!collide(&limb->body, vec(0, 0, 0), 0, false)) break;
+            limb->body.o.z += 1.0f;
+        }
+        limb->body.resetinterp();
         severedlimbs.add(limb);
 
         spawnblood(hitboxtagposition(*hitbox), true);
@@ -602,27 +732,68 @@ namespace game
 
     static void updateseveredlimbs()
     {
-        loopv(severedlimbs)
+        for(int i = 0; i < severedlimbs.length();)
         {
             severedlimb &limb = *severedlimbs[i];
-            if(limb.sleeping) continue;
+            if(limb.sleeping)
+            {
+                if(lastmillis - limb.sleepmillis >= npcdebrisduration)
+                {
+                    delete severedlimbs[i];
+                    severedlimbs.remove(i);
+                    continue;
+                }
+                ++i;
+                continue;
+            }
 
             const int elapsed = clamp(lastmillis - limb.lastupdate, 0, 100);
             limb.lastupdate = lastmillis;
+            if(!limb.settleaxis)
+            {
+                const float oldyaw = limb.renderyaw, oldpitch = limb.renderpitch, oldroll = limb.renderroll;
+                limb.renderyaw = fmodf(limb.renderyaw + limb.angularvelocity.z * elapsed / 1000.0f + 360.0f, 360.0f);
+                limb.renderpitch = fmodf(limb.renderpitch + limb.angularvelocity.x * elapsed / 1000.0f + 360.0f, 360.0f);
+                limb.renderroll = fmodf(limb.renderroll + limb.angularvelocity.y * elapsed / 1000.0f + 360.0f, 360.0f);
+                updateseveredcollision(limb);
+                if(collide(&limb.body, vec(0, 0, 0), 0, false))
+                {
+                    limb.renderyaw = oldyaw;
+                    limb.renderpitch = oldpitch;
+                    limb.renderroll = oldroll;
+                    limb.angularvelocity.mul(-0.15f);
+                    updateseveredcollision(limb);
+                }
+            }
+            limb.body.resetinterp();
             bounce(&limb.body, 0.38f, 3.0f, 1.0f);
-            limb.renderyaw = fmodf(limb.renderyaw + limb.angularvelocity.z * elapsed / 1000.0f + 360.0f, 360.0f);
-            limb.renderpitch = fmodf(limb.renderpitch + limb.angularvelocity.x * elapsed / 1000.0f + 360.0f, 360.0f);
-            limb.renderroll = fmodf(limb.renderroll + limb.angularvelocity.y * elapsed / 1000.0f + 360.0f, 360.0f);
-            limb.angularvelocity.mul(powf(0.35f, elapsed / 1000.0f));
 
             const float groundreach = limb.body.eyeheight + 0.75f,
                         grounddistance = raycube(limb.body.o, vec(0, 0, -1), groundreach, RAY_CLIPMAT | RAY_SKIPFIRST);
-            if(limb.body.vel.squaredlen() <= 6.25f && grounddistance >= 0 && grounddistance < groundreach)
+            const bool grounded = grounddistance >= 0 && grounddistance < groundreach;
+            bool settled = false;
+            if(grounded)
+            {
+                const float friction = powf(0.025f, elapsed / 1000.0f);
+                limb.body.vel.x *= friction;
+                limb.body.vel.y *= friction;
+                limb.body.vel.z *= friction;
+                if(fabsf(limb.body.vel.z) < 1.0f) limb.body.vel.z = 0;
+                limb.angularvelocity.mul(powf(0.001f, elapsed / 1000.0f));
+                settled = settleseveredlimb(limb, elapsed, grounddistance);
+            }
+            else
+            {
+                limb.settleaxis = 0;
+                limb.angularvelocity.mul(powf(0.55f, elapsed / 1000.0f));
+            }
+            if(limb.body.vel.squaredlen() <= 6.25f && grounded && settled && severedlimbhasstableface(limb))
             {
                 if(!limb.sleepmillis) limb.sleepmillis = lastmillis;
-                else if(lastmillis - limb.sleepmillis >= 650)
+                else if(lastmillis - limb.sleepmillis >= 350)
                 {
                     limb.sleeping = true;
+                    limb.sleepmillis = lastmillis;
                     limb.body.vel = limb.body.falling = vec(0, 0, 0);
                     limb.body.newpos = limb.body.o;
                     limb.body.deltapos = vec(0, 0, 0);
@@ -630,6 +801,7 @@ namespace game
                 }
             }
             else limb.sleepmillis = 0;
+            ++i;
         }
     }
 
@@ -637,7 +809,7 @@ namespace game
     {
         if(multiplayer(false))
         {
-            if(npcs.length()) resetnpcs();
+            if(npcs.length() || severedlimbs.length()) resetnpcs();
             return;
         }
 
@@ -720,9 +892,13 @@ namespace game
 
     static void renderseveredlimb(const severedlimb &limb)
     {
-        vec offset(0, 0, limb.part == HITBOX_HEAD ? -limb.body.aboveeye : limb.body.eyeheight);
-        offset.rotate_around_x(limb.renderpitch * RAD).rotate_around_y(limb.renderroll * RAD).rotate_around_z(limb.renderyaw * RAD);
-        const vec origin = vec(limb.body.o).add(offset);
+        const int sinktime = min(npcdebrissinktime, npcdebrisduration), sinkstart = npcdebrisduration - sinktime;
+        const float sinkamount = limb.sleeping && sinktime > 0
+                               ? clamp((lastmillis - limb.sleepmillis - sinkstart) / float(sinktime), 0.0f, 1.0f)
+                               : 0.0f,
+                    smoothsink = sinkamount * sinkamount * (3.0f - 2.0f * sinkamount);
+        const vec offset = rotateseveredvector(limb, vec(limb.modelcenter).neg());
+        const vec origin = vec(limb.body.o).add(offset).addz(-smoothsink * (limb.localradius.z * 2.0f + 1.0f));
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
         rendermodel(limb.model, ANIM_MAPMODEL | ANIM_LOOP, origin, limb.renderyaw, limb.renderpitch, limb.renderroll, flags);
     }
@@ -743,9 +919,8 @@ namespace game
             loopvj(hitboxes) renderboundingbox(hitboxes[j].center, hitboxes[j].radius);
         }
         loopv(npcs) loopvj(npcs[i]->hitboxes) renderboundingbox(npcs[i]->hitboxes[j].center, npcs[i]->hitboxes[j].radius);
-        loopv(severedlimbs) renderboundingbox(severedlimbs[i]->body.o,
-                                              vec(severedlimbs[i]->body.xradius, severedlimbs[i]->body.yradius,
-                                                  severedlimbs[i]->body.eyeheight));
+        loopv(severedlimbs) renderorientedboundingbox(severedlimbs[i]->body.o, severedlimbs[i]->localradius, severedlimbs[i]->renderyaw,
+                                                      severedlimbs[i]->renderpitch, severedlimbs[i]->renderroll);
     }
 
     static bool spawnnpc(const char *id)

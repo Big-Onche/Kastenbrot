@@ -68,6 +68,7 @@ struct physent                                  // base entity type, can be affe
     float maxspeed;                             // cubes per second, 100 for player
     float radius, eyeheight, maxheight, aboveeye; // bounding box size
     float xradius, yradius, zmargin;
+    vec obbradius;                              // optional local half-extents for a fully rotated OBB
     vec floor;                                  // the normal of floor the dynent is on
 
     ushort timeinair;
@@ -83,7 +84,7 @@ struct physent                                  // base entity type, can be affe
     bool blocked;                               // used by physics to signal ai
 
     physent() : o(0, 0, 0), deltapos(0, 0, 0), newpos(0, 0, 0), yaw(0), pitch(0), roll(0), maxspeed(100),
-               radius(4.1f), eyeheight(28), maxheight(28), aboveeye(2), xradius(4.1f), yradius(4.1f), zmargin(0),
+               radius(4.1f), eyeheight(28), maxheight(28), aboveeye(2), xradius(4.1f), yradius(4.1f), zmargin(0), obbradius(0, 0, 0),
                state(CS_ALIVE), editstate(CS_ALIVE), type(ENT_PLAYER),
                collidetype(COLLIDE_ELLIPSE),
                blocked(false)

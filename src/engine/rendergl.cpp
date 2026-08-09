@@ -2427,12 +2427,16 @@ vec calcmodelpreviewpos(const vec &radius, float &yaw)
 
 FVARP(selectionoutlinewidth, 1.0f, 2.0f, 8.0f);
 
-void renderboundingbox(const vec &center, const vec &radius)
+void renderorientedboundingbox(const vec &center, const vec &radius, float yaw, float pitch, float roll)
 {
     // Keep the outline just off the selected surface to avoid depth fighting.
-    const vec expanded = vec(radius).add(0.05f),
-              bbmin = vec(center).sub(expanded),
-              bbmax = vec(center).add(expanded);
+    const vec expanded = vec(radius).add(0.05f);
+    matrix4x3 orient;
+    orient.identity();
+    orient.settranslation(center);
+    if(yaw) orient.rotate_around_z(yaw * RAD);
+    if(pitch) orient.rotate_around_x(pitch * RAD);
+    if(roll) orient.rotate_around_y(-roll * RAD);
 
     ldrnotextureshader->set();
     gle::colorub(90, 90, 90);
@@ -2441,16 +2445,21 @@ void renderboundingbox(const vec &center, const vec &radius)
     gle::begin(GL_LINES, 24);
     loopi(8) loopj(3) if(!(i & (1 << j)))
     {
-        vec start(i & 1 ? bbmax.x : bbmin.x,
-                  i & 2 ? bbmax.y : bbmin.y,
-                  i & 4 ? bbmax.z : bbmin.z);
+        vec start(i & 1 ? expanded.x : -expanded.x,
+                  i & 2 ? expanded.y : -expanded.y,
+                  i & 4 ? expanded.z : -expanded.z);
         vec end = start;
-        end[j] = bbmax[j];
-        gle::attrib(start);
-        gle::attrib(end);
+        end[j] = expanded[j];
+        gle::attrib(orient.transform(start));
+        gle::attrib(orient.transform(end));
     }
     xtraverts += gle::end();
     glLineWidth(1.0f);
+}
+
+void renderboundingbox(const vec &center, const vec &radius)
+{
+    renderorientedboundingbox(center, radius, 0, 0, 0);
 }
 
 int xtraverts, xtravertsva;
