@@ -157,6 +157,7 @@ extern const char *getinventoryitemid(int index);
 extern int getinventoryitemmaxstack(int index);
 extern const char *getinventoryitemtexture(int index);
 extern const char *getinventoryitemicon(int index);
+extern float getinventoryitemworldsize(int index);
 extern int getinventoryitemindex(const char *id);
 
 enum { FURNACE_INPUT_MAX = 4 };

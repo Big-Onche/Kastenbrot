@@ -283,8 +283,9 @@ struct inventoryitemdefinition
 {
     string id, name, texture, icon;
     int maxstack;
+    float worldsize;
 
-    inventoryitemdefinition() : maxstack(64)
+    inventoryitemdefinition() : maxstack(64), worldsize(1.0f)
     {
         id[0] = name[0] = texture[0] = icon[0] = '\0';
     }
@@ -506,6 +507,11 @@ const char *getinventoryitemicon(int index)
     return "";
 }
 
+float getinventoryitemworldsize(int index)
+{
+    return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->worldsize : 1.0f;
+}
+
 int getworlditemtype(int item)
 {
     loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == item) return WORLD_ITEM_CUBE;
@@ -651,7 +657,7 @@ void worldreset()
 
 COMMAND(worldreset, "");
 
-static void defineinventoryitem(const char *id, const char *name, int maxstack, const char *texture, const char *icon)
+static void defineinventoryitem(const char *id, const char *name, int maxstack, const char *texture, const char *icon, float worldsize)
 {
     if(!id[0] || !name[0] || maxstack <= 0)
     {
@@ -666,11 +672,13 @@ static void defineinventoryitem(const char *id, const char *name, int maxstack, 
     copystring(type->texture, texture ? texture : "");
     copystring(type->icon, icon ? icon : "");
     type->maxstack = maxstack;
+    type->worldsize = max(worldsize, 0.01f);
 }
 
-ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *texture, char *icon, int *numargs),
+ICOMMAND(inventoryitem, "ssissfN",
+         (char *id, char *name, int *maxstack, char *texture, char *icon, float *worldsize, int *numargs),
 {
-    defineinventoryitem(id, name, *maxstack, *numargs >= 4 ? texture : "", *numargs >= 5 ? icon : "");
+    defineinventoryitem(id, name, *maxstack, *numargs >= 4 ? texture : "", *numargs >= 5 ? icon : "", *numargs >= 6 ? *worldsize : 1.0f);
 });
 
 static void defineworldcube(const char *id, const char *itemid, const char *texture, float texsize, const char *side, const char *bottom, const char *bottomalternate, int numargs)
@@ -9529,10 +9537,12 @@ static void resetserverworlddefinitions()
 
 COMMANDN(worldreset, resetserverworlddefinitions, "");
 
-ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *texture, char *icon, int *numargs),
+ICOMMAND(inventoryitem, "ssissfN",
+         (char *id, char *name, int *maxstack, char *texture, char *icon, float *worldsize, int *numargs),
 {
     (void)texture;
     (void)icon;
+    (void)worldsize;
     (void)numargs;
     if(!id[0] || !name[0] || *maxstack <= 0)
     {
@@ -9714,6 +9724,8 @@ bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
 }
 
 const char *getinventoryitemtexture(int index) { return ""; }
+
+float getinventoryitemworldsize(int index) { return 1.0f; }
 
 int numworldcubes() { return serverworldcubes.length(); }
 

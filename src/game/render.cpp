@@ -628,7 +628,7 @@ namespace game
         const char *directtexture = type == WORLD_ITEM_NONE ? getinventoryitemtexture(drop.item) : "";
         if(directtexture[0])
         {
-            renderitemsprite(directtexture, position, yaw, 0, 0, flags, 0.4f);
+            renderitemsprite(directtexture, position, yaw, 0, 0, flags, 0.4f * getinventoryitemworldsize(drop.item));
         }
         else if(type == WORLD_ITEM_CUBE || type == WORLD_ITEM_NONE)
         {
@@ -772,7 +772,7 @@ namespace game
         const int type = getworlditemtype(selected), worldindex = getworlditemindex(selected);
         if(type == WORLD_ITEM_CUBE) renderheldcube(d, worldindex, pose, flags, hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE, hud);
         else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE) renderheldscatter(d, worldindex, pose, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE);
-        else if(type == WORLD_ITEM_NONE) renderitemsprite(getinventoryitemtexture(selected), pose.origin, pose.yaw, pose.pitch, pose.roll, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE, extrudedspritegriphoffset, extrudedspritegripvoffset);
+        else if(type == WORLD_ITEM_NONE) renderitemsprite(getinventoryitemtexture(selected), pose.origin, pose.yaw, pose.pitch, pose.roll, flags, (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * getinventoryitemworldsize(selected), extrudedspritegriphoffset, extrudedspritegripvoffset);
     }
 
     bool heldtorchemitterposition(gameent *d, vec &position)
