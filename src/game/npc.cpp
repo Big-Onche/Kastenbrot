@@ -348,16 +348,37 @@ namespace game
         pose.crawlprogress = smoothcrawl * smoothcrawl * (3.0f - 2.0f * smoothcrawl);
         pose.torsopitch = -90.0f * pose.crawlprogress;
         pose.headpitch = -30.0f * pose.crawlprogress;
-        pose.leftarmpitch = -stride * 28.0f;
-        pose.rightarmpitch = stride * 28.0f;
+        const bool zombiepose = !strcmp(mob.definition->id, "zombie") && legs > 0;
+        if(zombiepose)
+        {
+            pose.leftarmpitch = 80.0f - stride * 6.0f;
+            pose.rightarmpitch = 80.0f + stride * 6.0f;
+        }
+        else
+        {
+            pose.leftarmpitch = -stride * 28.0f;
+            pose.rightarmpitch = stride * 28.0f;
+        }
         pose.leftlegpitch = stride * 32.0f;
         pose.rightlegpitch = -stride * 32.0f;
         const int attackelapsed = lastmillis - mob.lastattack;
         if(attackelapsed >= 0 && attackelapsed < CREATIVE_ARM_CYCLE)
         {
-            const float progress = attackelapsed / float(CREATIVE_ARM_CYCLE), swing = sinf(progress * PI) * 75.0f;
-            pose.leftarmpitch += swing;
-            pose.rightarmpitch += swing;
+            const float progress = attackelapsed / float(CREATIVE_ARM_CYCLE);
+            if(zombiepose)
+            {
+                float lift = progress < 0.35f ? progress / 0.35f : (1.0f - progress) / 0.65f;
+                lift = clamp(lift, 0.0f, 1.0f);
+                lift = lift * lift * (3.0f - 2.0f * lift);
+                pose.leftarmpitch += (132.0f - pose.leftarmpitch) * lift;
+                pose.rightarmpitch += (132.0f - pose.rightarmpitch) * lift;
+            }
+            else
+            {
+                const float swing = sinf(progress * PI) * 75.0f;
+                pose.leftarmpitch += swing;
+                pose.rightarmpitch += swing;
+            }
         }
 
         float torsoheight = HIP_HEIGHT + fabsf(cosf(mob.renderstride)) * 0.45f * movement;
