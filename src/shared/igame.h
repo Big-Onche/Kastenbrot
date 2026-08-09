@@ -54,7 +54,7 @@ namespace game
     extern void resetminingdefinitions();
     extern void validateminingdefinitions();
     extern void loadsurvivalinventory(const int *items, const int *counts, const int *durabilities, int slots, int cursoritem = -1, int cursorcount = 0, int cursordurability = 0);
-    extern void savesurvivalinventory(stream *f);
+    extern bool savesurvivalinventory(stream *f);
     extern void resetfurnaces();
     extern bool savelocalfurnaces(const char *world);
     extern bool loadlocalfurnaces(const char *world);

@@ -889,12 +889,13 @@ namespace game
         resetsurvivalinventory();
         loopi(min(slots, int(SURVIVAL_USABLE_SLOTS)))
         {
-            if(items[i] < 0 || counts[i] <= 0) continue;
-            survivalitems[i] = items[i];
-            survivalcounts[i] = clamp(counts[i], 1, max(getinventoryitemmaxstack(items[i]), 1));
-            survivaldurabilities[i] = isinventorytool(items[i])
-                                    ? clamp(durabilities && durabilities[i] > 0 ? durabilities[i] : getinventorytoolmaxdurability(items[i]),
-                                            1, getinventorytoolmaxdurability(items[i])) : 0;
+            if(!items || !counts || items[i] < 0 || items[i] >= numinventoryitems() || counts[i] <= 0) continue;
+            const int item = items[i];
+            survivalitems[i] = item;
+            survivalcounts[i] = clamp(counts[i], 1, max(getinventoryitemmaxstack(item), 1));
+            survivaldurabilities[i] = isinventorytool(item)
+                                    ? clamp(durabilities && durabilities[i] > 0 ? durabilities[i] : getinventorytoolmaxdurability(item),
+                                            1, getinventorytoolmaxdurability(item)) : 0;
         }
         if(cursoritem >= 0 && cursoritem < numinventoryitems() && cursorcount > 0)
         {
@@ -1232,14 +1233,15 @@ namespace game
 #endif
     }
 
-    void savesurvivalinventory(stream *f)
+    bool savesurvivalinventory(stream *f)
     {
-        if(!f) return;
-        f->printf("game_mode %d\n", gamemode);
-        loopi(SURVIVAL_USABLE_SLOTS) if(survivalitems[i] >= 0 && survivalcounts[i] > 0)
-            f->printf("inventory %d %d %d %d\n", i, survivalitems[i], survivalcounts[i], survivaldurabilities[i]);
-        if(inventorycursoritem >= 0 && inventorycursorcount > 0)
-            f->printf("inventory_cursor %d %d %d\n", inventorycursoritem, inventorycursorcount, inventorycursordurability);
+        if(!f) return false;
+        bool ok = f->printf("game_mode %d\n", gamemode) > 0;
+        loopi(SURVIVAL_USABLE_SLOTS) if(ok && survivalitems[i] >= 0 && survivalcounts[i] > 0)
+            ok = f->printf("inventory %d %d %d %d\n", i, survivalitems[i], survivalcounts[i], survivaldurabilities[i]) > 0;
+        if(ok && inventorycursoritem >= 0 && inventorycursorcount > 0)
+            ok = f->printf("inventory_cursor %d %d %d\n", inventorycursoritem, inventorycursorcount, inventorycursordurability) > 0;
+        return ok;
     }
 
     static bool writefurnacestring(stream &file, const char *value)

@@ -7967,6 +7967,15 @@ static ullong currentworldparameterhash()
                               sizeof(settings));
 }
 
+static bool replaceworldmetadatafile(const char *temporary, const char *finalname)
+{
+#ifdef WIN32
+    return MoveFileEx(temporary, finalname, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return rename(temporary, finalname) == 0;
+#endif
+}
+
 static bool saveworldmetadata(int chunkx, int chunky)
 {
     if(activeworldmetadata.valid &&
@@ -7978,10 +7987,14 @@ static bool saveworldmetadata(int chunkx, int chunky)
         return false;
     }
     defformatstring(name, "media/map/%s/world.meta", worldfolder);
-    stream *f = openfile(path(name), "w");
+    defformatstring(tempname, "%s.tmp", name);
+    string finalpath, temppath;
+    copystring(finalpath, findfile(name, "wb"));
+    copystring(temppath, findfile(tempname, "wb"));
+    stream *f = openrawfile(tempname, "wb");
     if(!f)
     {
-        conoutf(CON_WARN, "could not write world metadata to %s", name);
+        conoutf(CON_WARN, "could not write temporary world metadata to %s", tempname);
         return false;
     }
     activeworldmetadata.seed = game::getworldseed();
@@ -7989,22 +8002,28 @@ static bool saveworldmetadata(int chunkx, int chunky)
     activeworldmetadata.parameterhash = currentworldparameterhash();
     activeworldmetadata.saveformatversion = WORLD_SAVE_FORMAT_VERSION;
     activeworldmetadata.gamemode = game::gamemode;
-    activeworldmetadata.valid = true;
-    f->printf("CUBECRAFT_WORLD 3\n");
-    f->printf("world_seed %d\n", activeworldmetadata.seed);
-    f->printf("worldgen_version %d\n", activeworldmetadata.worldgenversion);
-    f->printf("worldgen_parameter_hash " WORLD_ULL_FORMAT "\n",
-              activeworldmetadata.parameterhash);
-    f->printf("save_format_version %d\n", activeworldmetadata.saveformatversion);
-    game::savesurvivalinventory(f);
-    f->printf("entry %d %d\n", chunkx, chunky);
-    if(player)
+    bool ok = f->printf("CUBECRAFT_WORLD 3\n") > 0;
+    if(ok) ok = f->printf("world_seed %d\n", activeworldmetadata.seed) > 0;
+    if(ok) ok = f->printf("worldgen_version %d\n", activeworldmetadata.worldgenversion) > 0;
+    if(ok) ok = f->printf("worldgen_parameter_hash " WORLD_ULL_FORMAT "\n", activeworldmetadata.parameterhash) > 0;
+    if(ok) ok = f->printf("save_format_version %d\n", activeworldmetadata.saveformatversion) > 0;
+    if(ok) ok = game::savesurvivalinventory(f);
+    if(ok) ok = f->printf("entry %d %d\n", chunkx, chunky) > 0;
+    if(ok && player)
     {
         const double absolutex = double(worldfirstchunkx) * WORLD_CHUNK_SIZE + player->o.x,
                      absolutey = double(worldfirstchunky) * WORLD_CHUNK_SIZE + player->o.y;
-        f->printf("spawn %.17g %.17g %.9g %.9g %.9g\n", absolutex, absolutey, player->o.z, player->yaw, player->pitch);
+        ok = f->printf("spawn %.17g %.17g %.9g %.9g %.9g\n", absolutex, absolutey, player->o.z, player->yaw, player->pitch) > 0;
     }
+    if(ok) ok = f->flush();
     delete f;
+    if(!ok || !replaceworldmetadatafile(temppath, finalpath))
+    {
+        remove(temppath);
+        conoutf(CON_WARN, "could not atomically publish world metadata to %s", name);
+        return false;
+    }
+    activeworldmetadata.valid = true;
     return true;
 }
 
