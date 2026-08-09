@@ -2827,7 +2827,15 @@ namespace game
         result(getinventoryitemicon(*index));
     });
 
-    void gameplayhud(int w, int h) {}
+    void gameplayhud(int w, int h)
+    {
+#ifndef STANDALONE
+        if(!player1 || player1->state != CS_ALIVE) return;
+
+        const char *hotbar = m_survival ? "survival_hotbar" : m_creative ? "creative_hotbar" : NULL;
+        if(hotbar && !UI::uivisible(hotbar)) UI::showui(hotbar);
+#endif
+    }
     bool canjump() { return player1 && player1->state == CS_ALIVE; }
     bool cancrouch() { return player1 && player1->state == CS_ALIVE; }
     bool allowmove(physent *d) { return !d || d->state == CS_ALIVE || d->state == CS_EDITING; }
