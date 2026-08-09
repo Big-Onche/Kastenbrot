@@ -428,6 +428,22 @@ namespace server
                type == N_EDITSCATTER;
     }
 
+    static bool worldactionusessupport(int action)
+    {
+        // Packets identify the supporting face, while authoritative occupancy
+        // is keyed by the adjacent cell that is actually modified.
+        return action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_PLACE_SCATTER ||
+               action == WORLD_ACTION_PLACE_ITEM || action == WORLD_ACTION_BREAK_SCATTER_START;
+    }
+
+    static ivec worldactionstatecell(const ivec &target, int action, int orient)
+    {
+        ivec cell = target;
+        if(worldactionusessupport(action) && orient >= 0 && orient <= 5)
+            cell[orient >> 1] += orient&1 ? 16 : -16;
+        return cell;
+    }
+
     static void updateservereditmetadata(serveredit &edit)
     {
         edit.hasselection = false;
@@ -440,9 +456,7 @@ namespace server
             const int orient = getint(p), item = getint(p);
             if(!p.overread() && !p.remaining() && orient >= 0 && orient <= 5)
             {
-                if(action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_PLACE_ITEM)
-                    target[orient >> 1] += orient&1 ? 16 : -16;
-                setworldactionstate(target, action, orient, item);
+                setworldactionstate(worldactionstatecell(target, action, orient), action, orient, item);
             }
             return;
         }
@@ -1826,13 +1840,6 @@ namespace server
         return true;
     }
 
-    static ivec actionplacecell(const ivec &support, int orient)
-    {
-        ivec target = support;
-        target[orient >> 1] += orient&1 ? 16 : -16;
-        return target;
-    }
-
     static bool validactiontarget(const clientinfo &ci, const ivec &target, int orient, const char *&error)
     {
         if(orient < 0 || orient > 5 || target.x % 16 || target.y % 16 || target.z % 16 ||
@@ -1978,7 +1985,7 @@ namespace server
         correction.type = N_WORLDAUTH;
         int action = state.action;
         ivec target = state.target;
-        if(action == WORLD_ACTION_PLACE_CUBE)
+        if(worldactionusessupport(action))
             target[state.orient >> 1] += state.orient&1 ? -16 : 16;
         packetbuf payload(MAXTRANS);
         putint(payload, action);
@@ -1996,15 +2003,18 @@ namespace server
         if(action != WORLD_ACTION_PLACE_CUBE && action != WORLD_ACTION_PLACE_SCATTER && action != WORLD_ACTION_PLACE_ITEM)
             return rejectaction(ci, requestid, "invalid placement action", true, true);
         if(!validactiontarget(ci, support, orient, error)) return rejectaction(ci, requestid, error, true);
-        const bool voxelplacement = action == WORLD_ACTION_PLACE_CUBE;
-        const ivec occupied = voxelplacement ? actionplacecell(support, orient) : support;
-        if(voxelplacement && !validactiontarget(ci, occupied, orient, error)) return rejectaction(ci, requestid, error, true);
+        const ivec occupied = worldactionstatecell(support, action, orient);
+        if(!validactiontarget(ci, occupied, orient, error)) return rejectaction(ci, requestid, error, true);
         if(!actionrate(ci, true)) return rejectaction(ci, requestid, "excessive placement rate", true);
         if(action != WORLD_ACTION_PLACE_ITEM && playeroccupies(occupied)) return rejectaction(ci, requestid, "");
         serverworldaction *state = findworldaction(occupied, action);
+        serverworldaction *other = findworldaction(occupied, action == WORLD_ACTION_PLACE_CUBE
+                                                            ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_CUBE);
+        if(!state || (state->action != WORLD_ACTION_PLACE_CUBE && state->action != WORLD_ACTION_PLACE_SCATTER &&
+                      state->action != WORLD_ACTION_PLACE_ITEM))
+            state = other;
         if(state && (state->action == WORLD_ACTION_PLACE_CUBE || state->action == WORLD_ACTION_PLACE_SCATTER ||
-                     state->action == WORLD_ACTION_PLACE_ITEM) &&
-           !(action == WORLD_ACTION_PLACE_CUBE && state->action == WORLD_ACTION_PLACE_ITEM))
+                     state->action == WORLD_ACTION_PLACE_ITEM))
         {
             rejectaction(ci, requestid, "placement target is already occupied");
             sendworldcorrection(ci, *state);
@@ -2048,7 +2058,8 @@ namespace server
            (item < 0 && getworldscatterindexat(target, orient) < 0))
             return rejectaction(ci, requestid, "invalid destroyed item type", true, true);
         if(ci.breakactive) cancelbreak(ci);
-        serverworldaction *state = findworldaction(target, action);
+        const ivec occupied = worldactionstatecell(target, action, orient);
+        serverworldaction *state = findworldaction(occupied, action);
         if(state && (state->action == WORLD_ACTION_BREAK_CUBE_START || state->action == WORLD_ACTION_BREAK_SCATTER_START))
         {
             rejectaction(ci, requestid, "destruction target is already absent");
@@ -2146,7 +2157,8 @@ namespace server
             cancelbreak(ci);
             return rejectaction(ci, requestid, "held tool changed while breaking");
         }
-        serverworldaction *state = findworldaction(target, ci.breakaction);
+        const ivec occupied = worldactionstatecell(target, ci.breakaction, ci.breakorient);
+        serverworldaction *state = findworldaction(occupied, ci.breakaction);
         if(state && (state->action == WORLD_ACTION_BREAK_CUBE_START || state->action == WORLD_ACTION_BREAK_SCATTER_START))
         {
             cancelbreak(ci);
@@ -2177,7 +2189,7 @@ namespace server
             cancelbreak(ci);
             return rejectaction(ci, requestid, "server could not persist the destruction");
         }
-        setworldactionstate(target, action, ci.breakorient, item);
+        setworldactionstate(occupied, action, ci.breakorient, item);
         removeserverfurnace(target, &ci);
         if(!servercreative() && ci.breakdropeligible) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
         if(!servercreative() && ci.breaktoolitem >= 0)

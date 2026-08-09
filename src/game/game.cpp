@@ -116,6 +116,18 @@ namespace game
         return target;
     }
 
+    static bool applyworldscatteraction(int item, const ivec &support, int orient, bool place)
+    {
+        const int type = getworlditemindex(item);
+        if(type < 0) return false;
+        selinfo occupied;
+        worldactionselection(occupied, worldactionplacecell(support, orient), orient);
+        if(!occupied.validate() || !worldselectionready(occupied)) return false;
+        const int existing = getworldscatterindexat(support, orient);
+        if((place && existing == type) || (!place && existing < 0)) return true;
+        return editworldscatter(type, support, orient, place);
+    }
+
     static bool applyworldaction(int action, const ivec &absolutetarget, int orient, int item)
     {
         selinfo sel;
@@ -139,18 +151,16 @@ namespace game
                 return true;
             }
             case WORLD_ACTION_PLACE_SCATTER:
-                return getworlditemtype(item) == WORLD_ITEM_SCATTER && editworldscatter(getworlditemindex(item), target, orient, true);
+                return getworlditemtype(item) == WORLD_ITEM_SCATTER && applyworldscatteraction(item, target, orient, true);
             case WORLD_ACTION_PLACE_ITEM:
-            {
-                return getworlditemtype(item) == WORLD_ITEM_PLACEABLE && editworldscatter(getworlditemindex(item), target, orient, true);
-            }
+                return getworlditemtype(item) == WORLD_ITEM_PLACEABLE && applyworldscatteraction(item, target, orient, true);
             case WORLD_ACTION_BREAK_CUBE_START:
                 mpdelcube(sel, false);
                 waterterrainchanged(absolutetarget);
                 return true;
             case WORLD_ACTION_BREAK_SCATTER_START:
                 return (getworlditemtype(item) == WORLD_ITEM_SCATTER || getworlditemtype(item) == WORLD_ITEM_PLACEABLE) &&
-                       editworldscatter(getworlditemindex(item), target, orient, false);
+                       applyworldscatteraction(item, target, orient, false);
             default:
                 return false;
         }
@@ -167,16 +177,12 @@ namespace game
             mpdelcube(sel, false);
             waterterrainchanged(target);
         }
-        else if(prediction.action == WORLD_ACTION_PLACE_SCATTER)
+        else if(prediction.action == WORLD_ACTION_PLACE_SCATTER || prediction.action == WORLD_ACTION_PLACE_ITEM)
         {
             selinfo sel;
             worldactionselection(sel, prediction.target, prediction.orient);
             worldselectiontolocal(sel);
             editworldscatter(getworlditemindex(prediction.item), sel.o, prediction.orient, false);
-        }
-        else if(prediction.action == WORLD_ACTION_PLACE_ITEM)
-        {
-            editworldscatter(getworlditemindex(prediction.item), prediction.target, prediction.orient, false);
         }
         else if(prediction.action == WORLD_ACTION_BREAK_CUBE_START)
         {
@@ -188,11 +194,11 @@ namespace game
         }
         else if(prediction.action == WORLD_ACTION_BREAK_SCATTER_START)
         {
-            const int type = prediction.item >= 0 ? getworlditemtype(prediction.item) : WORLD_ITEM_NONE;
-            if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
-                applyworldaction(WORLD_ACTION_PLACE_SCATTER, prediction.target, prediction.orient, prediction.item);
-            else
-                editworldscatter(getworldscatterindexat(prediction.target, prediction.orient), prediction.target, prediction.orient, true);
+            selinfo sel;
+            worldactionselection(sel, prediction.target, prediction.orient);
+            worldselectiontolocal(sel);
+            const int type = prediction.item >= 0 ? getworlditemindex(prediction.item) : getworldscatterindexat(sel.o, prediction.orient);
+            if(type >= 0) editworldscatter(type, sel.o, prediction.orient, true);
         }
     }
 #endif
@@ -666,14 +672,10 @@ namespace game
         sendclientpacket(p.finalize(), 1);
     }
 
-    static void scatteredittrigger(int type, const ivec &support,
-                                   int orient, bool place)
+    static bool scatteredittrigger(int type, const ivec &support, int orient, bool place)
     {
         if(!waitforserveredit())
-        {
-            editworldscatter(type, support, orient, place);
-            return;
-        }
+            return editworldscatter(type, support, orient, place);
         selinfo sel;
         sel.o = support;
         sel.s = ivec(1, 1, 1);
@@ -688,6 +690,7 @@ namespace game
         putint(p, type);
         putint(p, place ? 1 : 0);
         sendclientpacket(p.finalize(), 1);
+        return true;
     }
 
     void vartrigger(ident *id)
@@ -1822,27 +1825,15 @@ namespace game
 
         const int selected = selectedcreativeblock(), type = getworlditemtype(selected), worldindex = getworlditemindex(selected);
         if(selected < 0) return;
-        if(type == WORLD_ITEM_PLACEABLE)
+        if(type == WORLD_ITEM_PLACEABLE || type == WORLD_ITEM_SCATTER)
         {
-            if(hit.orient == WORLD_ORIENT_BOTTOM || !editworldscatter(worldindex, hit.o, hit.orient, true)) return;
-            if(waitforserveredit()) predictworldaction(WORLD_ACTION_PLACE_ITEM, hit.o, hit.orient, selected, clampcreativehotbarslot());
-            player1->renderplacemillis = lastmillis;
-            player1->renderplacetoggle = !player1->renderplacetoggle;
-            return;
-        }
-        if(type == WORLD_ITEM_SCATTER)
-        {
-            if(hit.orient != WORLD_ORIENT_TOP) return;
-            if(!waitforserveredit())
-            {
-                scatteredittrigger(worldindex, hit.o, hit.orient, true);
-                if(m_survival) consumesurvivalitem();
-                player1->renderplacemillis = lastmillis;
-                player1->renderplacetoggle = !player1->renderplacetoggle;
+            if((type == WORLD_ITEM_PLACEABLE && hit.orient == WORLD_ORIENT_BOTTOM) ||
+               (type == WORLD_ITEM_SCATTER && hit.orient != WORLD_ORIENT_TOP))
                 return;
-            }
             if(!editworldscatter(worldindex, hit.o, hit.orient, true)) return;
-            predictworldaction(WORLD_ACTION_PLACE_SCATTER, hit.o, hit.orient, selected, clampcreativehotbarslot());
+            if(waitforserveredit())
+                predictworldaction(type == WORLD_ITEM_PLACEABLE ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_SCATTER,
+                                   hit.o, hit.orient, selected, clampcreativehotbarslot());
             if(m_survival) consumesurvivalitem();
             player1->renderplacemillis = lastmillis;
             player1->renderplacetoggle = !player1->renderplacetoggle;
@@ -1895,7 +1886,7 @@ namespace game
                 if(!waitforserveredit()) scatteredittrigger(type, support, mountorient, false);
                 else
                 {
-                    editworldscatter(type, support, mountorient, false);
+                    if(!editworldscatter(type, support, mountorient, false)) return;
                     predictworldaction(WORLD_ACTION_BREAK_SCATTER_START, support, mountorient, getworldscatteritem(type), -1);
                     sendworldaction(predictedworldactions.last()->requestid, WORLD_ACTION_BREAK_COMPLETE,
                                     support, mountorient, getworldscatteritem(type), -1);
@@ -2054,17 +2045,26 @@ namespace game
             }
             if(waitforserveredit())
             {
-                survivalbreakrequestid = newworldrequestid();
                 if(target.type == CREATIVE_TARGET_SCATTER)
                 {
                     int type, mountorient;
                     ivec support;
-                    if(getworldscatterentityedit(target.entity, type, support, mountorient))
-                        sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_SCATTER_START, support, mountorient, getworldscatteritem(type), -1);
+                    if(!getworldscatterentityedit(target.entity, type, support, mountorient))
+                    {
+                        survivalbreakactive = false;
+                        survivalbreakrequestid = 0;
+                        return;
+                    }
+                    survivalbreakrequestid = newworldrequestid();
+                    sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_SCATTER_START, support, mountorient,
+                                    getworldscatteritem(type), -1);
                 }
                 else
+                {
+                    survivalbreakrequestid = newworldrequestid();
                     sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_CUBE_START, target.cube.o, target.cube.orient,
                                     survivalblockitem(target), -1);
+                }
             }
             if(target.type == CREATIVE_TARGET_CUBE)
             {
@@ -2123,22 +2123,31 @@ namespace game
             if(getworldscatterentityedit(survivalbreaktarget.entity, type, support, mountorient))
             {
                 item = getworldscatteritem(type);
-                if(!waitforserveredit()) scatteredittrigger(type, support, mountorient, false);
+                bool removed = false;
+                if(!waitforserveredit()) removed = scatteredittrigger(type, support, mountorient, false);
                 else
                 {
-                    editworldscatter(type, support, mountorient, false);
-                    selinfo absolute;
-                    worldactionselection(absolute, support, mountorient);
-                    worldselectiontoabsolute(absolute);
-                    addpredictedworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_SCATTER_START, absolute.o, mountorient, item);
-                    sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_COMPLETE, support, mountorient, item, -1);
+                    removed = editworldscatter(type, support, mountorient, false);
+                    if(removed)
+                    {
+                        selinfo absolute;
+                        worldactionselection(absolute, support, mountorient);
+                        worldselectiontoabsolute(absolute);
+                        addpredictedworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_SCATTER_START, absolute.o, mountorient, item);
+                        sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_COMPLETE, support, mountorient, item, -1);
+                    }
+                    else sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_CANCEL, support, mountorient, item, -1);
                 }
-                selinfo dropselection;
-                worldactionselection(dropselection, support, mountorient);
-                if(waitforserveredit()) worldselectiontoabsolute(dropselection);
-                if(survivalbreakminingindex >= 0 && getworlddropeligible(survivalbreakminingtype, survivalbreakminingindex, survivalbreaktoolitem))
-                    predictsurvivaldrops(item, survivalbreakrequestid, dropselection.o, WORLD_ACTION_BREAK_SCATTER_START, mountorient);
-                broken = true;
+                if(removed)
+                {
+                    selinfo dropselection;
+                    worldactionselection(dropselection, support, mountorient);
+                    if(waitforserveredit()) worldselectiontoabsolute(dropselection);
+                    if(survivalbreakminingindex >= 0 &&
+                       getworlddropeligible(survivalbreakminingtype, survivalbreakminingindex, survivalbreaktoolitem))
+                        predictsurvivaldrops(item, survivalbreakrequestid, dropselection.o, WORLD_ACTION_BREAK_SCATTER_START, mountorient);
+                    broken = true;
+                }
             }
         }
         else
