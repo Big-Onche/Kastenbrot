@@ -40,7 +40,7 @@ namespace game
     {
         npcdefinition *definition;
         int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
-            renderlastmillis;
+            renderlastmillis, staggeruntil;
         float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
         uint detachedparts;
         bool frozen, wanderpaused;
@@ -51,8 +51,8 @@ namespace game
         npc(npcdefinition *definition, int instanceid)
             : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior), nextdecision(0),
               wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
-              renderlastmillis(-1), renderstride(0), totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false),
-              spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
+              renderlastmillis(-1), staggeruntil(0), renderstride(0), totalhealth(definition->health), detachedparts(0), frozen(false),
+              wanderpaused(false), spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -125,6 +125,9 @@ namespace game
     VARP(npcmaxdist, 1, 256, 4096);
     VARP(npcdebrisduration, 1000, 20000, 120000);
     VARP(npcdebrissinktime, 250, 3000, 10000);
+    FVAR(npclimbvelocitymultiplier, 0.0f, 8.0f, 10.0f);
+    FVAR(npclimbangularvelocitymultiplier, 0.0f, 6.0f, 10.0f);
+    FVAR(npclimbbounciness, 0.0f, 4.0f, 8.0f);
 
     static const char *attitudename(int attitude)
     {
@@ -384,6 +387,58 @@ namespace game
         limb.body.eyeheight = limb.body.aboveeye = radius.z;
     }
 
+    static vec strikeimpulse(const vec &direction, float damage)
+    {
+        vec impulse(direction);
+        if(impulse.iszero()) impulse = vec(0, 1, 0);
+        impulse.safenormalize();
+        impulse.z = clamp(impulse.z, -0.45f, 0.65f);
+        impulse.safenormalize();
+        return impulse.mul(16.0f + min(damage, 12.0f) * 3.0f);
+    }
+
+    static void addseveredimpulse(severedlimb &limb, const vec &hitposition, const vec &impulse)
+    {
+        const vec scaledimpulse = vec(impulse).mul(npclimbvelocitymultiplier);
+        limb.sleeping = false;
+        limb.sleepmillis = 0;
+        limb.settleaxis = 0;
+        limb.lastupdate = lastmillis;
+        limb.body.vel.add(scaledimpulse);
+        const float maximumvelocity = 120.0f * max(npclimbvelocitymultiplier, 1.0f);
+        if(limb.body.vel.magnitude() > maximumvelocity) limb.body.vel.rescale(maximumvelocity);
+
+        const matrix3 orient = severedorientation(limb);
+        const vec localoffset = orient.transform(vec(hitposition).sub(limb.body.o)), localimpulse = orient.transform(impulse);
+        vec angularimpulse;
+        angularimpulse.cross(localoffset, localimpulse);
+        const vec inertia(max((limb.localradius.y * limb.localradius.y + limb.localradius.z * limb.localradius.z) / 3.0f, 1.0f),
+                          max((limb.localradius.x * limb.localradius.x + limb.localradius.z * limb.localradius.z) / 3.0f, 1.0f),
+                          max((limb.localradius.x * limb.localradius.x + limb.localradius.y * limb.localradius.y) / 3.0f, 1.0f));
+        angularimpulse.div(inertia).mul(npclimbangularvelocitymultiplier / RAD);
+        const float maximumangularvelocity = 540.0f * max(npclimbangularvelocitymultiplier, 1.0f);
+        limb.angularvelocity.add(vec(angularimpulse.x, -angularimpulse.y, angularimpulse.z)).clamp(-maximumangularvelocity,
+                                                                                                  maximumangularvelocity);
+        limb.body.resetinterp();
+    }
+
+    static bool rayseveredlimb(const severedlimb &limb, const vec &origin, const vec &direction, float &distance)
+    {
+        const matrix3 orient = severedorientation(limb);
+        const vec localorigin = orient.transform(vec(origin).sub(limb.body.o)), localdirection = orient.transform(direction),
+                  minimum = vec(limb.localradius).neg(), size = vec(limb.localradius).mul(2.0f);
+        int hitface = -1;
+        return rayboxintersect(minimum, size, localorigin, localdirection, distance, hitface) && distance >= 0;
+    }
+
+    static void addnpcknockback(npc &mob, const vec &impulse, float damage)
+    {
+        mob.vel.add(impulse);
+        const float maximumspeed = max(mob.definition->speed * 2.0f, 72.0f);
+        if(mob.vel.magnitude() > maximumspeed) mob.vel.rescale(maximumspeed);
+        mob.staggeruntil = max(mob.staggeruntil, lastmillis + 140 + int(min(damage, 10.0f) * 18.0f));
+    }
+
     static float angledifference(float target, float angle)
     {
         return fmodf(target - angle + 540.0f, 360.0f) - 180.0f;
@@ -477,7 +532,7 @@ namespace game
         return supportingcorners >= 4;
     }
 
-    static void detachnpcpart(npc &mob, int part)
+    static void detachnpcpart(npc &mob, int part, const vec &hitposition, const vec &impulse)
     {
         if(part == HITBOX_TORSO || mob.detachedparts & (1U << part)) return;
         characterhitbox *hitbox = findnpchitbox(mob, part);
@@ -486,10 +541,6 @@ namespace game
         string model;
         npcmodelpath(*mob.definition, part, model);
         severedlimb *limb = new severedlimb(model, part);
-        limb->body.vel = vec(mob.vel).mul(0.35f).add(vec(camdir).mul(24.0f));
-        limb->body.vel.x += rnd(25) - 12;
-        limb->body.vel.y += rnd(25) - 12;
-        limb->body.vel.z = max(limb->body.vel.z + 35.0f + rnd(26), 28.0f);
         limb->renderyaw = mob.yaw;
         const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
                     movement = clamp(gamespeed / max(mob.maxheight * 2.25f, 1.0f), 0.0f, 1.0f),
@@ -498,7 +549,6 @@ namespace game
         else if(part == HITBOX_RIGHT_ARM) limb->renderpitch = stride * 28.0f;
         else if(part == HITBOX_LEFT_LEG) limb->renderpitch = stride * 32.0f;
         else if(part == HITBOX_RIGHT_LEG) limb->renderpitch = -stride * 32.0f;
-        limb->angularvelocity = vec(rnd(241) - 120, rnd(241) - 120, rnd(361) - 180);
         updateseveredcollision(*limb);
         limb->body.o = hitboxtagposition(*hitbox).add(rotateseveredvector(*limb, limb->modelcenter));
         loopi(16)
@@ -506,7 +556,10 @@ namespace game
             if(!collide(&limb->body, vec(0, 0, 0), 0, false)) break;
             limb->body.o.z += 1.0f;
         }
-        limb->body.resetinterp();
+        limb->body.vel = vec(mob.vel).mul(0.65f);
+        vec separation = vec(limb->body.o).sub(mob.o).safenormalize();
+        limb->body.vel.madd(separation, 6.0f);
+        addseveredimpulse(*limb, hitposition, vec(impulse).mul(1.25f));
         severedlimbs.add(limb);
 
         spawnblood(hitboxtagposition(*hitbox), true);
@@ -547,6 +600,7 @@ namespace game
         if(worlddistance < 0 || worlddistance > attackreach) worlddistance = attackreach;
 
         npc *hitmob = NULL;
+        severedlimb *hitlimb = NULL;
         int hitpart = HITBOX_TORSO;
         float hitdistance = worlddistance;
         loopv(npcs)
@@ -560,20 +614,40 @@ namespace game
                 int orient = -1;
                 if(!rayboxintersect(minimum, size, camera1->o, camdir, distance, orient) || distance < 0 || distance > hitdistance) continue;
                 hitmob = &mob;
+                hitlimb = NULL;
                 hitpart = hitbox.part;
                 hitdistance = distance;
             }
         }
-        if(!hitmob) return false;
+        loopv(severedlimbs)
+        {
+            float distance = hitdistance;
+            if(!rayseveredlimb(*severedlimbs[i], camera1->o, camdir, distance) || distance > hitdistance) continue;
+            hitmob = NULL;
+            hitlimb = severedlimbs[i];
+            hitdistance = distance;
+        }
+        if(!hitmob && !hitlimb) return false;
+
+        const vec hitposition = vec(camera1->o).madd(camdir, hitdistance);
+        if(hitlimb)
+        {
+            const float damage = heldattackdamage();
+            spawnblood(hitposition, false);
+            addseveredimpulse(*hitlimb, hitposition, strikeimpulse(camdir, damage).mul(1.1f));
+            return true;
+        }
 
         const float damage = heldattackdamage() * npcdamagemultiplier(hitpart);
-        spawnblood(vec(camera1->o).madd(camdir, hitdistance), false);
+        const vec impulse = strikeimpulse(camdir, damage);
+        spawnblood(hitposition, false);
         hitmob->totalhealth = max(hitmob->totalhealth - damage, 0.0f);
         if(hitpart != HITBOX_TORSO)
         {
             hitmob->parthealth[hitpart] = max(hitmob->parthealth[hitpart] - damage, 0.0f);
-            if(hitmob->parthealth[hitpart] <= 0) detachnpcpart(*hitmob, hitpart);
+            if(hitmob->parthealth[hitpart] <= 0) detachnpcpart(*hitmob, hitpart, hitposition, impulse);
         }
+        addnpcknockback(*hitmob, impulse, damage);
         if(hitmob->totalhealth <= 0) despawnnpc(hitmob);
         return true;
     }
@@ -674,6 +748,12 @@ namespace game
                           ? clamp(curtime, 0, 100)
                           : clamp(lastmillis - mob.lastmovementmillis, 0, 100);
         mob.lastmovementmillis = lastmillis;
+        if(lastmillis < mob.staggeruntil)
+        {
+            mob.stopmoving();
+            moveplayer(&mob, 10, true);
+            return;
+        }
         if(mob.behavior == NPC_WANDERING && mob.wanderpaused)
         {
             mob.stopmoving();
@@ -766,7 +846,7 @@ namespace game
                 }
             }
             limb.body.resetinterp();
-            bounce(&limb.body, 0.38f, 3.0f, 1.0f);
+            bounce(&limb.body, npclimbbounciness, 3.0f, 1.0f);
 
             const float groundreach = limb.body.eyeheight + 0.75f,
                         grounddistance = raycube(limb.body.o, vec(0, 0, -1), groundreach, RAY_CLIPMAT | RAY_SKIPFIRST);
