@@ -623,8 +623,27 @@ namespace UI
 
 // ragdoll
 
+struct ragdollrotconstraint
+{
+    int triangle[2];
+    float maxangle;
+
+    ragdollrotconstraint(int first = 0, int second = 0, float maxangle = 0) : maxangle(maxangle)
+    {
+        triangle[0] = first;
+        triangle[1] = second;
+    }
+};
+
 extern void moveragdoll(dynent *d);
 extern void cleanragdoll(dynent *d);
+extern bool createcustomragdoll(dynent *d, const vec *positions, const float *radii, int numverts, const int *links, int numlinks,
+                                const int *triangles, int numtriangles, const ragdollrotconstraint *rotconstraints, int numrotconstraints);
+extern bool getragdollvertex(const dynent *d, int index, vec &position);
+extern void pushragdollvertex(dynent *d, int index, const vec &velocity);
+extern void scaleragdollvelocity(dynent *d, float multiplier);
+extern void freezeragdoll(dynent *d);
+extern void translateragdoll(dynent *d, const vec &offset);
 
 // server
 #define MAXCLIENTS 128                 // DO NOT set this any higher

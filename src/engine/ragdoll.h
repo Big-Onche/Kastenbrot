@@ -134,12 +134,13 @@ struct ragdolldata
     int millis, collidemillis, collisions, floating, lastmove, unsticks;
     vec offset, center;
     float radius, timestep, scale;
+    bool ownskel;
     vert *verts;
     matrix3 *tris;
     matrix4x3 *animjoints;
     dualquat *reljoints;
 
-    ragdolldata(ragdollskel *skel, float scale = 1)
+    ragdolldata(ragdollskel *skel, float scale = 1, bool ownskel = false)
         : skel(skel),
           millis(lastmillis),
           collidemillis(0),
@@ -150,6 +151,7 @@ struct ragdolldata
           radius(0),
           timestep(0),
           scale(scale),
+          ownskel(ownskel),
           verts(new vert[skel->verts.length()]),
           tris(new matrix3[skel->tris.length()]),
           animjoints(!skel->animjoints || skel->joints.empty() ? NULL : new matrix4x3[skel->joints.length()]),
@@ -163,6 +165,7 @@ struct ragdolldata
         delete[] tris;
         if(animjoints) delete[] animjoints;
         if(reljoints) delete[] reljoints;
+        if(ownskel) delete skel;
     }
 
     void calcanimjoint(int i, const matrix4x3 &anim)
@@ -534,4 +537,3 @@ void cleanragdoll(dynent *d)
 {
     DELETEP(d->ragdoll);
 }
-

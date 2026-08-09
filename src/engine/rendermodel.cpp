@@ -37,6 +37,118 @@ static void addmodelskinoverrides(vector<activemodelskinoverride> &dest, const m
 #include "skelmodel.h"
 #include "hitzone.h"
 
+bool createcustomragdoll(dynent *d, const vec *positions, const float *radii, int numverts, const int *links, int numlinks,
+                         const int *triangles, int numtriangles, const ragdollrotconstraint *rotconstraints, int numrotconstraints)
+{
+    if(!d || !positions || !radii || numverts <= 0 || numlinks < 0 || numtriangles < 0 || numrotconstraints < 0 || (numlinks && !links) ||
+       (numtriangles && !triangles) || (numrotconstraints && !rotconstraints)) return false;
+    loopi(numtriangles) loopj(3) if(triangles[i * 3 + j] < 0 || triangles[i * 3 + j] >= numverts) return false;
+    loopi(numrotconstraints) loopj(2)
+        if(rotconstraints[i].triangle[j] < 0 || rotconstraints[i].triangle[j] >= numtriangles) return false;
+    if(d->ragdoll) cleanragdoll(d);
+
+    ragdollskel *skel = new ragdollskel;
+    loopi(numverts)
+    {
+        ragdollskel::vert &vert = skel->verts.add();
+        vert.pos = positions[i];
+        vert.radius = max(radii[i], 0.1f);
+        vert.weight = 0;
+    }
+    loopi(numlinks)
+    {
+        const int first = links[i * 2], second = links[i * 2 + 1];
+        if(first < 0 || first >= numverts || second < 0 || second >= numverts || first == second) continue;
+        ragdollskel::distlimit &limit = skel->distlimits.add();
+        limit.vert[0] = first;
+        limit.vert[1] = second;
+        const float distance = positions[first].dist(positions[second]);
+        limit.mindist = distance * 0.98f;
+        limit.maxdist = distance * 1.02f;
+    }
+    vector<matrix3> tribases;
+    bool validtriangles = true;
+    loopi(numtriangles)
+    {
+        ragdollskel::tri &triangle = skel->tris.add();
+        loopj(3) triangle.vert[j] = triangles[i * 3 + j];
+        const vec &first = positions[triangle.vert[0]], &second = positions[triangle.vert[1]], &third = positions[triangle.vert[2]];
+        matrix3 &basis = tribases.add();
+        basis.a = vec(second).sub(first);
+        basis.c.cross(basis.a, vec(third).sub(first));
+        if(basis.a.squaredlen() < 1e-8f || basis.c.squaredlen() < 1e-8f)
+        {
+            validtriangles = false;
+            break;
+        }
+        basis.a.normalize();
+        basis.c.normalize();
+        basis.b.cross(basis.c, basis.a);
+    }
+    if(validtriangles) loopi(numrotconstraints)
+    {
+        ragdollskel::rotlimit &limit = skel->rotlimits.add();
+        limit.tri[0] = rotconstraints[i].triangle[0];
+        limit.tri[1] = rotconstraints[i].triangle[1];
+        limit.maxangle = clamp(rotconstraints[i].maxangle, 0.0f, 180.0f) * RAD;
+        limit.maxtrace = 1.0f + 2.0f * cosf(limit.maxangle);
+        limit.middle.transposemul(tribases[limit.tri[0]], tribases[limit.tri[1]]);
+    }
+    else skel->tris.shrink(0);
+    skel->setup();
+
+    d->ragdoll = new ragdolldata(skel, 1.0f, true);
+    loopi(numverts) d->ragdoll->verts[i].pos = positions[i];
+    d->ragdoll->init(d);
+    return true;
+}
+
+bool getragdollvertex(const dynent *d, int index, vec &position)
+{
+    if(!d || !d->ragdoll || index < 0 || index >= d->ragdoll->skel->verts.length()) return false;
+    position = d->ragdoll->verts[index].pos;
+    return true;
+}
+
+void pushragdollvertex(dynent *d, int index, const vec &velocity)
+{
+    if(!d || !d->ragdoll || index < 0 || index >= d->ragdoll->skel->verts.length()) return;
+    d->ragdoll->verts[index].oldpos.sub(vec(velocity).mul(d->ragdoll->timestep));
+}
+
+void scaleragdollvelocity(dynent *d, float multiplier)
+{
+    if(!d || !d->ragdoll) return;
+    multiplier = max(multiplier, 0.0f);
+    loopv(d->ragdoll->skel->verts)
+    {
+        ragdolldata::vert &vert = d->ragdoll->verts[i];
+        vert.oldpos = vec(vert.pos).sub(vec(vert.pos).sub(vert.oldpos).mul(multiplier));
+    }
+}
+
+void freezeragdoll(dynent *d)
+{
+    if(!d || !d->ragdoll) return;
+    const int elapsed = max(lastmillis - d->ragdoll->lastmove, 0);
+    d->ragdoll->lastmove = lastmillis;
+    if(d->ragdoll->collidemillis) d->ragdoll->collidemillis += elapsed;
+}
+
+void translateragdoll(dynent *d, const vec &offset)
+{
+    if(!d || !d->ragdoll || offset.iszero()) return;
+    loopv(d->ragdoll->skel->verts)
+    {
+        ragdolldata::vert &vert = d->ragdoll->verts[i];
+        vert.pos.add(offset);
+        vert.oldpos.add(offset);
+        vert.undo.add(offset);
+        if(vert.weight) vert.newpos.madd(offset, vert.weight);
+    }
+    d->ragdoll->center.add(offset);
+}
+
 static model *(__cdecl *modeltypes[NUMMODELTYPES])(const char *);
 
 static int addmodeltype(int type, model *(__cdecl *loader)(const char *))

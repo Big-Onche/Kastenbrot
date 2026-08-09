@@ -40,7 +40,7 @@ namespace game
     {
         npcdefinition *definition;
         int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
-            renderlastmillis, staggeruntil;
+            renderlastmillis, staggeruntil, crawlstart, lastlimbhop, ragdollstart[6], ragdollend[6];
         float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
         uint detachedparts;
         bool frozen, wanderpaused;
@@ -51,8 +51,9 @@ namespace game
         npc(npcdefinition *definition, int instanceid)
             : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior), nextdecision(0),
               wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
-              renderlastmillis(-1), staggeruntil(0), renderstride(0), totalhealth(definition->health), detachedparts(0), frozen(false),
-              wanderpaused(false), spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
+              renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
+              totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), spawn(0, 0, 0), destination(0, 0, 0),
+              target(NULL)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -60,6 +61,7 @@ namespace game
             radius = xradius = yradius = 4.1f;
             maxheight = eyeheight = 28.0f;
             aboveeye = 2.0f;
+            loopi(6) ragdollstart[i] = ragdollend[i] = -1;
             parthealth[HITBOX_TORSO] = definition->health;
             loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
         }
@@ -117,6 +119,7 @@ namespace game
 
     static const char * const playerroot = "game/player";
     static const float HIP_HEIGHT = 11.25f;
+    static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
     static vector<npcdefinition *> npcdefinitions;
     static vector<npc *> npcs;
     static vector<severedlimb *> severedlimbs;
@@ -126,8 +129,12 @@ namespace game
     VARP(npcdebrisduration, 1000, 20000, 120000);
     VARP(npcdebrissinktime, 250, 3000, 10000);
     FVAR(npclimbvelocitymultiplier, 0.0f, 8.0f, 10.0f);
-    FVAR(npclimbangularvelocitymultiplier, 0.0f, 6.0f, 10.0f);
-    FVAR(npclimbbounciness, 0.0f, 4.0f, 8.0f);
+    FVAR(npclimbangularvelocitymultiplier, 0.0f, 4.0f, 10.0f);
+    FVAR(npclimbbounciness, 0.0f, 0.75f, 8.0f);
+    FVAR(npcragdollvelocitymultiplier, 0.0f, 2.5f, 10.0f);
+    FVARP(npcragdollheadmaxangle, 15.0f, 55.0f, 120.0f);
+    FVARP(npcragdollarmmaxangle, 30.0f, 95.0f, 160.0f);
+    FVARP(npcragdolllegmaxangle, 15.0f, 70.0f, 120.0f);
 
     static const char *attitudename(int attitude)
     {
@@ -257,6 +264,7 @@ namespace game
 
     void rebasenpcs(float shiftx, float shifty)
     {
+        const vec ragdolloffset(-shiftx, -shifty, 0);
         loopv(npcs)
         {
             npc &mob = *npcs[i];
@@ -273,6 +281,7 @@ namespace game
                 mob.hitboxes[j].center.x -= shiftx;
                 mob.hitboxes[j].center.y -= shifty;
             }
+            translateragdoll(&mob, ragdolloffset);
         }
         loopv(severedlimbs)
         {
@@ -283,6 +292,82 @@ namespace game
             limb.body.newpos.y -= shifty;
         }
         cleardynentcache();
+    }
+
+    static int npcremaininglegs(const npc &mob)
+    {
+        int legs = 2;
+        if(mob.detachedparts & (1U << HITBOX_LEFT_LEG)) --legs;
+        if(mob.detachedparts & (1U << HITBOX_RIGHT_LEG)) --legs;
+        return legs;
+    }
+
+    static matrix3 modelorientation(float yaw, float pitch, float roll)
+    {
+        matrix3 orient;
+        orient.identity();
+        if(roll) orient.rotate_around_y(sincosmod360(roll));
+        if(pitch) orient.rotate_around_x(sincosmod360(-pitch));
+        if(yaw) orient.rotate_around_z(sincosmod360(-yaw));
+        return orient;
+    }
+
+    static vec transformedmodelvector(const vec &value, float yaw, float pitch, float roll)
+    {
+        return modelorientation(yaw, pitch, roll).transposedtransform(value);
+    }
+
+    static vec transformedmodelradius(const vec &radius, float yaw, float pitch, float roll)
+    {
+        return modelorientation(yaw, pitch, roll).abstransposedtransform(radius);
+    }
+
+    struct npcpose
+    {
+        vec torsoorigin;
+        float torsopitch, torsoroll, headpitch, leftarmpitch, rightarmpitch, leftlegpitch, rightlegpitch, crawlprogress;
+
+        npcpose() : torsoorigin(0, 0, 0), torsopitch(0), torsoroll(0), headpitch(0), leftarmpitch(0), rightarmpitch(0), leftlegpitch(0),
+                    rightlegpitch(0), crawlprogress(0)
+        {
+        }
+    };
+
+    static void calcnpcpose(npc &mob, npcpose &pose)
+    {
+        const int legs = npcremaininglegs(mob);
+        const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
+                    movement = clamp(gamespeed / max(STANDING_HEIGHT * 2.25f, 1.0f), 0.0f, 1.0f),
+                    stride = sinf(mob.renderstride) * movement,
+                    smoothcrawl = legs ? 0.0f : clamp((lastmillis - mob.crawlstart) / 350.0f, 0.0f, 1.0f);
+        pose.crawlprogress = smoothcrawl * smoothcrawl * (3.0f - 2.0f * smoothcrawl);
+        pose.torsopitch = -90.0f * pose.crawlprogress;
+        pose.headpitch = -30.0f * pose.crawlprogress;
+        pose.leftarmpitch = -stride * 28.0f;
+        pose.rightarmpitch = stride * 28.0f;
+        pose.leftlegpitch = stride * 32.0f;
+        pose.rightlegpitch = -stride * 32.0f;
+
+        float torsoheight = HIP_HEIGHT + fabsf(cosf(mob.renderstride)) * 0.45f * movement;
+        if(legs == 1)
+        {
+            const bool leftmissing = (mob.detachedparts & (1U << HITBOX_LEFT_LEG)) != 0;
+            pose.torsoroll = (leftmissing ? -8.0f : 8.0f) * (0.65f + 0.35f * fabsf(sinf(mob.renderstride)));
+            torsoheight += fabsf(sinf(mob.renderstride)) * 0.9f * movement;
+            pose.leftlegpitch *= 0.75f;
+            pose.rightlegpitch *= 0.75f;
+        }
+        else if(!legs)
+        {
+            const float crawlstroke = sinf(mob.renderstride) * 35.0f * movement;
+            const float leftarmtarget = clamp(110.0f + crawlstroke, 90.0f, 140.0f),
+                        rightarmtarget = clamp(110.0f - crawlstroke, 90.0f, 140.0f);
+            torsoheight += (2.25f - torsoheight) * pose.crawlprogress;
+            torsoheight += fabsf(sinf(mob.renderstride * 2.0f)) * 0.3f * movement * pose.crawlprogress;
+            pose.leftarmpitch += (leftarmtarget - pose.leftarmpitch) * pose.crawlprogress;
+            pose.rightarmpitch += (rightarmtarget - pose.rightarmpitch) * pose.crawlprogress;
+        }
+        pose.torsoorigin = mob.feetpos(torsoheight);
     }
 
     static vec rotatedradius(const vec &radius, float yaw)
@@ -335,7 +420,40 @@ namespace game
 
     static void updatenpchitboxes(npc &mob)
     {
-        buildhumanoidhitboxes(&mob, mob.definition->model, mob.yaw, mob.hitboxes);
+        mob.hitboxes.setsize(0);
+        npcpose pose;
+        calcnpcpose(mob, pose);
+        string torso;
+        humanoidmodelpath(mob.definition->model, NPC_PART_TORSO, torso);
+        vec origins[NUM_NPC_PARTS];
+        bool found[NUM_NPC_PARTS] = { false };
+        modeltagpositions(torso, &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD], NUM_NPC_PARTS - NPC_PART_HEAD,
+                          pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
+
+        if(!found[NPC_PART_HEAD]) origins[NPC_PART_HEAD] = humanoidoffset(pose.torsoorigin, mob.yaw, 0, 0, 12);
+        if(!found[NPC_PART_LEFT_ARM]) origins[NPC_PART_LEFT_ARM] = humanoidoffset(pose.torsoorigin, mob.yaw, -6, 0, 10);
+        if(!found[NPC_PART_RIGHT_ARM]) origins[NPC_PART_RIGHT_ARM] = humanoidoffset(pose.torsoorigin, mob.yaw, 6, 0, 10);
+        if(!found[NPC_PART_LEFT_LEG]) origins[NPC_PART_LEFT_LEG] = humanoidoffset(pose.torsoorigin, mob.yaw, -2, 0, 0);
+        if(!found[NPC_PART_RIGHT_LEG]) origins[NPC_PART_RIGHT_LEG] = humanoidoffset(pose.torsoorigin, mob.yaw, 2, 0, 0);
+
+        mob.hitboxes.add(characterhitbox(vec(pose.torsoorigin).add(transformedmodelvector(vec(0, 0, 6), mob.yaw, pose.torsopitch,
+                                                                                          pose.torsoroll)),
+                                             transformedmodelradius(vec(4, 2, 6), mob.yaw, pose.torsopitch, pose.torsoroll), HITBOX_TORSO));
+        mob.hitboxes.add(characterhitbox(vec(origins[NPC_PART_HEAD]).add(transformedmodelvector(vec(0, 0, 4), mob.yaw, pose.headpitch,
+                                                                                                pose.torsoroll)),
+                                             transformedmodelradius(vec(4, 4, 4), mob.yaw, pose.headpitch, pose.torsoroll), HITBOX_HEAD));
+        mob.hitboxes.add(characterhitbox(vec(origins[NPC_PART_LEFT_ARM]).add(transformedmodelvector(vec(0, 0, -5), mob.yaw,
+                                                                                                    pose.leftarmpitch, pose.torsoroll)),
+                                             transformedmodelradius(vec(2, 2, 5), mob.yaw, pose.leftarmpitch, pose.torsoroll), HITBOX_LEFT_ARM));
+        mob.hitboxes.add(characterhitbox(vec(origins[NPC_PART_RIGHT_ARM]).add(transformedmodelvector(vec(0, 0, -5), mob.yaw,
+                                                                                                     pose.rightarmpitch, pose.torsoroll)),
+                                             transformedmodelradius(vec(2, 2, 5), mob.yaw, pose.rightarmpitch, pose.torsoroll), HITBOX_RIGHT_ARM));
+        mob.hitboxes.add(characterhitbox(vec(origins[NPC_PART_LEFT_LEG]).add(transformedmodelvector(vec(0, 0, -6), mob.yaw,
+                                                                                                    pose.leftlegpitch, pose.torsoroll)),
+                                             transformedmodelradius(vec(2, 2, 6), mob.yaw, pose.leftlegpitch, pose.torsoroll), HITBOX_LEFT_LEG));
+        mob.hitboxes.add(characterhitbox(vec(origins[NPC_PART_RIGHT_LEG]).add(transformedmodelvector(vec(0, 0, -6), mob.yaw,
+                                                                                                     pose.rightlegpitch, pose.torsoroll)),
+                                             transformedmodelradius(vec(2, 2, 6), mob.yaw, pose.rightlegpitch, pose.torsoroll), HITBOX_RIGHT_LEG));
         for(int i = mob.hitboxes.length() - 1; i >= 0; --i)
             if(mob.detachedparts & (1U << mob.hitboxes[i].part)) mob.hitboxes.remove(i);
     }
@@ -346,14 +464,6 @@ namespace game
         return NULL;
     }
 
-    static vec hitboxtagposition(const characterhitbox &hitbox)
-    {
-        vec position = hitbox.center;
-        if(hitbox.part == HITBOX_HEAD) position.z -= hitbox.radius.z;
-        else if(hitbox.part != HITBOX_TORSO) position.z += hitbox.radius.z;
-        return position;
-    }
-
     static void spawnblood(const vec &position, bool detached)
     {
         regular_particle_splash(PART_BLOOD, detached ? 9 : 3, detached ? 900 : 450, position, 0x60FFFF, detached ? 1.50f : 1.25f,
@@ -362,12 +472,7 @@ namespace game
 
     static matrix3 severedorientation(const severedlimb &limb)
     {
-        matrix3 orient;
-        orient.identity();
-        if(limb.renderroll) orient.rotate_around_y(sincosmod360(limb.renderroll));
-        if(limb.renderpitch) orient.rotate_around_x(sincosmod360(-limb.renderpitch));
-        if(limb.renderyaw) orient.rotate_around_z(sincosmod360(-limb.renderyaw));
-        return orient;
+        return modelorientation(limb.renderyaw, limb.renderpitch, limb.renderroll);
     }
 
     static vec rotateseveredvector(const severedlimb &limb, const vec &value)
@@ -532,6 +637,19 @@ namespace game
         return supportingcorners >= 4;
     }
 
+    static void beginnpccrawl(npc &mob)
+    {
+        if(mob.crawlstart) return;
+        const vec feet = mob.feetpos();
+        mob.crawlstart = lastmillis;
+        mob.maxheight = mob.eyeheight = CRAWLING_EYEHEIGHT;
+        mob.aboveeye = CRAWLING_ABOVEEYE;
+        mob.radius = mob.xradius = mob.yradius = 6.0f;
+        mob.o = vec(feet).addz(mob.eyeheight);
+        mob.newpos = mob.o;
+        mob.deltapos = vec(0, 0, 0);
+    }
+
     static void detachnpcpart(npc &mob, int part, const vec &hitposition, const vec &impulse)
     {
         if(part == HITBOX_TORSO || mob.detachedparts & (1U << part)) return;
@@ -541,16 +659,17 @@ namespace game
         string model;
         npcmodelpath(*mob.definition, part, model);
         severedlimb *limb = new severedlimb(model, part);
+        npcpose pose;
+        calcnpcpose(mob, pose);
         limb->renderyaw = mob.yaw;
-        const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
-                    movement = clamp(gamespeed / max(mob.maxheight * 2.25f, 1.0f), 0.0f, 1.0f),
-                    stride = sinf(mob.renderstride) * movement;
-        if(part == HITBOX_LEFT_ARM) limb->renderpitch = -stride * 28.0f;
-        else if(part == HITBOX_RIGHT_ARM) limb->renderpitch = stride * 28.0f;
-        else if(part == HITBOX_LEFT_LEG) limb->renderpitch = stride * 32.0f;
-        else if(part == HITBOX_RIGHT_LEG) limb->renderpitch = -stride * 32.0f;
+        limb->renderroll = pose.torsoroll;
+        if(part == HITBOX_HEAD) limb->renderpitch = pose.headpitch;
+        else if(part == HITBOX_LEFT_ARM) limb->renderpitch = pose.leftarmpitch;
+        else if(part == HITBOX_RIGHT_ARM) limb->renderpitch = pose.rightarmpitch;
+        else if(part == HITBOX_LEFT_LEG) limb->renderpitch = pose.leftlegpitch;
+        else if(part == HITBOX_RIGHT_LEG) limb->renderpitch = pose.rightlegpitch;
         updateseveredcollision(*limb);
-        limb->body.o = hitboxtagposition(*hitbox).add(rotateseveredvector(*limb, limb->modelcenter));
+        limb->body.o = hitbox->center;
         loopi(16)
         {
             if(!collide(&limb->body, vec(0, 0, 0), 0, false)) break;
@@ -562,8 +681,9 @@ namespace game
         addseveredimpulse(*limb, hitposition, vec(impulse).mul(1.25f));
         severedlimbs.add(limb);
 
-        spawnblood(hitboxtagposition(*hitbox), true);
+        spawnblood(vec(limb->body.o).add(rotateseveredvector(*limb, vec(limb->modelcenter).neg())), true);
         mob.detachedparts |= 1U << part;
+        if(!npcremaininglegs(mob)) beginnpccrawl(mob);
         updatenpchitboxes(mob);
     }
 
@@ -580,14 +700,137 @@ namespace game
         return item >= 0 && isinventorytool(item) ? getinventorytooldamage(item) : 1.0f;
     }
 
-    static void despawnnpc(npc *mob)
+    static void ragdollnpc(npc &mob, const vec &hitposition, const vec &impulse)
     {
-        if(!mob) return;
-        loopv(npcs) if(npcs[i]->target == mob) npcs[i]->target = NULL;
-        const int index = npcs.find(mob);
-        if(index < 0) return;
-        delete mob;
-        npcs.remove(index);
+        if(mob.state == CS_DEAD) return;
+
+        npcpose pose;
+        calcnpcpose(mob, pose);
+        string torso;
+        humanoidmodelpath(mob.definition->model, NPC_PART_TORSO, torso);
+        vec origins[NUM_NPC_PARTS];
+        bool found[NUM_NPC_PARTS] = { false };
+        modeltagpositions(torso, &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD], NUM_NPC_PARTS - NPC_PART_HEAD,
+                          pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
+
+        const vec fallbackoffsets[NUM_NPC_PARTS] =
+        {
+            vec(0, 0, 0), vec(0, 0, 12), vec(-6, 0, 10), vec(6, 0, 10), vec(-2, 0, 0), vec(2, 0, 0)
+        };
+        for(int i = NPC_PART_HEAD; i < NUM_NPC_PARTS; ++i) if(!found[i])
+            origins[i] = vec(pose.torsoorigin).add(transformedmodelvector(fallbackoffsets[i], mob.yaw, pose.torsopitch, pose.torsoroll));
+
+        vector<vec> positions;
+        vector<float> radii;
+        vector<int> links;
+        vector<int> triangles;
+        vector<ragdollrotconstraint> rotconstraints;
+        const auto addvertex = [&positions, &radii](const vec &position, float radius)
+        {
+            radii.add(radius);
+            positions.add(position);
+            return positions.length() - 1;
+        };
+        const auto addlink = [&links](int first, int second)
+        {
+            links.add(first);
+            links.add(second);
+        };
+        const auto addtriangle = [&triangles](int first, int second, int third)
+        {
+            triangles.add(first);
+            triangles.add(second);
+            triangles.add(third);
+            return triangles.length() / 3 - 1;
+        };
+        const auto addrotconstraint = [&rotconstraints](int bodytriangle, int parttriangle, float maxangle)
+        {
+            rotconstraints.add(ragdollrotconstraint(bodytriangle, parttriangle, maxangle));
+        };
+
+        loopi(NUM_NPC_PARTS) mob.ragdollstart[i] = mob.ragdollend[i] = -1;
+        const int pelvis = addvertex(pose.torsoorigin, 3.0f),
+                  neck = addvertex(origins[NPC_PART_HEAD], 2.5f),
+                  leftshoulder = addvertex(origins[NPC_PART_LEFT_ARM], 2.0f),
+                  rightshoulder = addvertex(origins[NPC_PART_RIGHT_ARM], 2.0f),
+                  lefthip = addvertex(origins[NPC_PART_LEFT_LEG], 2.0f),
+                  righthip = addvertex(origins[NPC_PART_RIGHT_LEG], 2.0f);
+        const int core[] = { pelvis, neck, leftshoulder, rightshoulder, lefthip, righthip };
+        loopi(int(sizeof(core) / sizeof(core[0]))) for(int j = i + 1; j < int(sizeof(core) / sizeof(core[0])); ++j)
+            addlink(core[i], core[j]);
+
+        mob.ragdollstart[NPC_PART_TORSO] = pelvis;
+        mob.ragdollend[NPC_PART_TORSO] = neck;
+        mob.ragdollstart[NPC_PART_HEAD] = neck;
+        mob.ragdollstart[NPC_PART_LEFT_ARM] = leftshoulder;
+        mob.ragdollstart[NPC_PART_RIGHT_ARM] = rightshoulder;
+        mob.ragdollstart[NPC_PART_LEFT_LEG] = lefthip;
+        mob.ragdollstart[NPC_PART_RIGHT_LEG] = righthip;
+
+        const float defaultendpoints[NUM_NPC_PARTS] = { 0, 8, -10, -10, -12, -12 };
+        const float defaultpartradii[NUM_NPC_PARTS] = { 0, 3.5f, 2, 2, 2, 2 };
+        for(int part = NPC_PART_HEAD; part < NUM_NPC_PARTS; ++part)
+        {
+            if(mob.detachedparts & (1U << part)) continue;
+            float pitch = pose.headpitch;
+            if(part == NPC_PART_LEFT_ARM) pitch = pose.leftarmpitch;
+            else if(part == NPC_PART_RIGHT_ARM) pitch = pose.rightarmpitch;
+            else if(part == NPC_PART_LEFT_LEG) pitch = pose.leftlegpitch;
+            else if(part == NPC_PART_RIGHT_LEG) pitch = pose.rightlegpitch;
+
+            float endpointoffset = defaultendpoints[part], partradius = defaultpartradii[part];
+            string partmodel;
+            npcmodelpath(*mob.definition, part, partmodel);
+            ::model *geometry = loadmodel(partmodel);
+            if(geometry)
+            {
+                vec center, radius;
+                geometry->collisionbox(center, radius);
+                endpointoffset = center.z + (part == NPC_PART_HEAD ? radius.z : -radius.z);
+                partradius = max(max(radius.x, radius.y), 0.5f);
+            }
+            const vec endpoint = vec(origins[part]).add(transformedmodelvector(vec(0, 0, endpointoffset), mob.yaw, pitch, pose.torsoroll));
+            mob.ragdollend[part] = addvertex(endpoint, partradius);
+            addlink(mob.ragdollstart[part], mob.ragdollend[part]);
+        }
+
+        if(mob.ragdollend[NPC_PART_HEAD] >= 0)
+            addrotconstraint(addtriangle(neck, rightshoulder, pelvis),
+                             addtriangle(neck, mob.ragdollend[NPC_PART_HEAD], rightshoulder), npcragdollheadmaxangle);
+        if(mob.ragdollend[NPC_PART_LEFT_ARM] >= 0)
+            addrotconstraint(addtriangle(leftshoulder, neck, pelvis),
+                             addtriangle(leftshoulder, mob.ragdollend[NPC_PART_LEFT_ARM], neck), npcragdollarmmaxangle);
+        if(mob.ragdollend[NPC_PART_RIGHT_ARM] >= 0)
+            addrotconstraint(addtriangle(rightshoulder, pelvis, neck),
+                             addtriangle(rightshoulder, neck, mob.ragdollend[NPC_PART_RIGHT_ARM]), npcragdollarmmaxangle);
+        if(mob.ragdollend[NPC_PART_LEFT_LEG] >= 0)
+            addrotconstraint(addtriangle(lefthip, leftshoulder, pelvis),
+                             addtriangle(lefthip, pelvis, mob.ragdollend[NPC_PART_LEFT_LEG]), npcragdolllegmaxangle);
+        if(mob.ragdollend[NPC_PART_RIGHT_LEG] >= 0)
+            addrotconstraint(addtriangle(righthip, pelvis, rightshoulder),
+                             addtriangle(righthip, mob.ragdollend[NPC_PART_RIGHT_LEG], pelvis), npcragdolllegmaxangle);
+
+        mob.state = CS_DEAD;
+        mob.collidetype = COLLIDE_NONE;
+        mob.stopmoving();
+        mob.target = NULL;
+        mob.hitboxes.setsize(0);
+        loopv(npcs) if(npcs[i]->target == &mob) npcs[i]->target = NULL;
+        if(createcustomragdoll(&mob, positions.getbuf(), radii.getbuf(), positions.length(), links.getbuf(), links.length() / 2,
+                               triangles.getbuf(), triangles.length() / 3, rotconstraints.getbuf(), rotconstraints.length()))
+        {
+            int nearest = 0;
+            float nearestdistance = positions[0].squaredist(hitposition);
+            loopi(positions.length())
+            {
+                const float distance = positions[i].squaredist(hitposition);
+                if(distance >= nearestdistance) continue;
+                nearest = i;
+                nearestdistance = distance;
+            }
+            pushragdollvertex(&mob, nearest, vec(impulse).mul(1.35f));
+            scaleragdollvelocity(&mob, npcragdollvelocitymultiplier);
+        }
         cleardynentcache();
     }
 
@@ -648,7 +891,7 @@ namespace game
             if(hitmob->parthealth[hitpart] <= 0) detachnpcpart(*hitmob, hitpart, hitposition, impulse);
         }
         addnpcknockback(*hitmob, impulse, damage);
-        if(hitmob->totalhealth <= 0) despawnnpc(hitmob);
+        if(hitmob->totalhealth <= 0) ragdollnpc(*hitmob, hitposition, impulse);
         return true;
     }
 
@@ -747,7 +990,9 @@ namespace game
         const int elapsed = mob.lastmovementmillis < 0 || lastmillis < mob.lastmovementmillis
                           ? clamp(curtime, 0, 100)
                           : clamp(lastmillis - mob.lastmovementmillis, 0, 100);
+        const int legs = npcremaininglegs(mob);
         mob.lastmovementmillis = lastmillis;
+        mob.maxspeed = mob.definition->speed * (legs == 1 ? 0.58f : !legs ? 0.34f : 1.0f);
         if(lastmillis < mob.staggeruntil)
         {
             mob.stopmoving();
@@ -784,7 +1029,17 @@ namespace game
 
         mob.move = 1;
         mob.strafe = 0;
-        if(mob.blocked && mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastjump >= 400)
+        if(legs == 1)
+        {
+            if(mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastlimbhop >= 480)
+            {
+                mob.vel.z = max(mob.vel.z, 62.0f);
+                mob.physstate = PHYS_FALL;
+                mob.lastlimbhop = lastmillis;
+            }
+            else if(mob.physstate >= PHYS_SLOPE) mob.move = 0;
+        }
+        else if(legs == 2 && mob.blocked && mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastjump >= 400)
         {
             mob.jumping = true;
             mob.lastjump = lastmillis;
@@ -804,7 +1059,10 @@ namespace game
             targetname = npcs[i]->definition->name;
             break;
         }
-        const char *activity = mob.frozen ? " / Frozen" : mob.behavior == NPC_WANDERING && mob.wanderpaused ? " / Paused" : "";
+        const int legs = npcremaininglegs(mob);
+        const char *activity = mob.state == CS_DEAD ? mob.frozen ? " / Ragdoll / Frozen" : " / Ragdoll" : mob.frozen ? " / Frozen" :
+                               !legs ? " / Crawling" : legs == 1 ? " / Hopping" :
+                               mob.behavior == NPC_WANDERING && mob.wanderpaused ? " / Paused" : "";
         defformatstring(text, "%s #%d\n%s / %s%s\nHP %.2f/%d  target: %s", mob.definition->name, mob.instanceid, attitudename(mob.attitude),
                         behaviorname(mob.behavior), activity, mob.totalhealth, mob.definition->health, targetname);
         particle_textcopy(mob.abovehead(), text, PART_TEXT, 150, 0xFFE28A, 1.5f, 0);
@@ -916,6 +1174,14 @@ namespace game
         {
             npc &mob = *npcs[i];
             mob.frozen = mob.o.squaredist(focus) > simulationdistance * simulationdistance;
+            if(mob.state == CS_DEAD)
+            {
+                if(mob.frozen) freezeragdoll(&mob);
+                else moveragdoll(&mob);
+                mob.hitboxes.setsize(0);
+                shownpcdebugtext(mob);
+                continue;
+            }
             if(mob.frozen)
             {
                 mob.stopmoving();
@@ -934,40 +1200,96 @@ namespace game
         updateseveredlimbs();
     }
 
+    static bool ragdollmodelangles(const npc &mob, int part, float &yaw, float &pitch, float &roll)
+    {
+        vec start, end, leftshoulder, rightshoulder;
+        if(!getragdollvertex(&mob, mob.ragdollstart[part], start) || !getragdollvertex(&mob, mob.ragdollend[part], end) ||
+           !getragdollvertex(&mob, mob.ragdollstart[NPC_PART_LEFT_ARM], leftshoulder) ||
+           !getragdollvertex(&mob, mob.ragdollstart[NPC_PART_RIGHT_ARM], rightshoulder)) return false;
+
+        vec z = vec(end).sub(start);
+        if(part >= NPC_PART_LEFT_ARM) z.neg();
+        if(z.squaredlen() < 1e-6f) return false;
+        z.normalize();
+        vec x = vec(rightshoulder).sub(leftshoulder);
+        x.msub(z, x.dot(z));
+        if(x.squaredlen() < 1e-6f)
+        {
+            x.cross(fabsf(z.z) < 0.9f ? vec(0, 0, 1) : vec(0, 1, 0), z);
+        }
+        x.normalize();
+        vec y;
+        y.cross(z, x).normalize();
+
+        pitch = asinf(clamp(y.z, -1.0f, 1.0f)) / RAD;
+        const float cp = cosf(pitch * RAD);
+        if(fabsf(cp) > 1e-4f)
+        {
+            yaw = atan2f(-y.x, y.y) / RAD;
+            roll = atan2f(x.z, z.z) / RAD;
+        }
+        else
+        {
+            yaw = y.z >= 0 ? atan2f(z.x, -z.y) / RAD : atan2f(-z.x, z.y) / RAD;
+            roll = 0;
+        }
+        yaw = fmodf(yaw + 360.0f, 360.0f);
+        return true;
+    }
+
+    static void rendernpcragdoll(npc &mob)
+    {
+        const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
+        loopi(NUM_NPC_PARTS)
+        {
+            if(i != NPC_PART_TORSO && mob.detachedparts & (1U << i)) continue;
+            vec origin;
+            float yaw, pitch, roll;
+            if(!getragdollvertex(&mob, mob.ragdollstart[i], origin) || !ragdollmodelangles(mob, i, yaw, pitch, roll)) continue;
+            string model;
+            npcmodelpath(*mob.definition, i, model);
+            rendermodel(model, ANIM_MAPMODEL | ANIM_LOOP, origin, yaw, pitch, roll, flags);
+        }
+    }
+
     static void rendernpc(npc &mob)
     {
         string models[NUM_NPC_PARTS];
         loopi(NUM_NPC_PARTS) npcmodelpath(*mob.definition, i, models[i]);
 
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
+        const int legs = npcremaininglegs(mob);
         const float speed = horizontalmeterspersecond(&mob),
                     gamespeed = speed * GAMEUNITSPERMETER,
-                    fullswingspeed = max(mob.maxheight * 2.25f, 1.0f),
-                    gaitcycletravel = max(mob.maxheight * 0.75f, 1.0f),
-                    movement = clamp(gamespeed / fullswingspeed, 0.0f, 1.0f);
+                    gaitcycletravel = legs == 1 ? 10.0f : !legs ? 7.0f : STANDING_HEIGHT * 0.75f;
         if(mob.renderlastmillis < 0 || lastmillis < mob.renderlastmillis) mob.renderlastmillis = lastmillis;
         const int elapsed = min(lastmillis - mob.renderlastmillis, 100);
         mob.renderlastmillis = lastmillis;
         if(gamespeed > 0.05f)
             mob.renderstride = fmodf(mob.renderstride + 2.0f * PI * gamespeed * elapsed / (1000.0f * gaitcycletravel), 2.0f * PI);
 
-        const float stride = sinf(mob.renderstride) * movement, legpitch = stride * 32.0f, armpitch = stride * 28.0f;
-        const vec torsoorigin = mob.feetpos(fabsf(cosf(mob.renderstride)) * 0.45f * movement).addz(HIP_HEIGHT);
+        npcpose pose;
+        calcnpcpose(mob, pose);
         vec origins[NUM_NPC_PARTS];
         bool found[NUM_NPC_PARTS] = { false };
-        rendermodel(models[NPC_PART_TORSO], ANIM_MAPMODEL | ANIM_LOOP, torsoorigin, mob.yaw, 0, 0, flags, &mob);
+        rendermodel(models[NPC_PART_TORSO], ANIM_MAPMODEL | ANIM_LOOP, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll, flags, &mob);
         modeltagpositions(models[NPC_PART_TORSO], &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD],
-                          NUM_NPC_PARTS - NPC_PART_HEAD, torsoorigin, mob.yaw, 0, 0);
+                          NUM_NPC_PARTS - NPC_PART_HEAD, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
         if(found[NPC_PART_HEAD] && !(mob.detachedparts & (1U << HITBOX_HEAD)))
-            rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw, 0, 0, flags, &mob);
+            rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw, pose.headpitch, pose.torsoroll, flags,
+                        &mob);
         if(found[NPC_PART_LEFT_ARM] && !(mob.detachedparts & (1U << HITBOX_LEFT_ARM)))
-            rendermodel(models[NPC_PART_LEFT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_ARM], mob.yaw, -armpitch, 0, flags, &mob);
+            rendermodel(models[NPC_PART_LEFT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_ARM], mob.yaw, pose.leftarmpitch,
+                        pose.torsoroll, flags, &mob);
         if(found[NPC_PART_RIGHT_ARM] && !(mob.detachedparts & (1U << HITBOX_RIGHT_ARM)))
-            rendermodel(models[NPC_PART_RIGHT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_RIGHT_ARM], mob.yaw, armpitch, 0, flags, &mob);
+            rendermodel(models[NPC_PART_RIGHT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_RIGHT_ARM], mob.yaw, pose.rightarmpitch,
+                        pose.torsoroll, flags, &mob);
         if(found[NPC_PART_LEFT_LEG] && !(mob.detachedparts & (1U << HITBOX_LEFT_LEG)))
-            rendermodel(models[NPC_PART_LEFT_LEG], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_LEG], mob.yaw, legpitch, 0, flags, &mob);
+            rendermodel(models[NPC_PART_LEFT_LEG], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_LEG], mob.yaw, pose.leftlegpitch,
+                        pose.torsoroll, flags, &mob);
         if(found[NPC_PART_RIGHT_LEG] && !(mob.detachedparts & (1U << HITBOX_RIGHT_LEG)))
-            rendermodel(models[NPC_PART_RIGHT_LEG], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_RIGHT_LEG], mob.yaw, -legpitch, 0, flags, &mob);
+            rendermodel(models[NPC_PART_RIGHT_LEG], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_RIGHT_LEG], mob.yaw, pose.rightlegpitch,
+                        pose.torsoroll, flags, &mob);
     }
 
     static void renderseveredlimb(const severedlimb &limb)
@@ -985,7 +1307,11 @@ namespace game
 
     void rendernpcs()
     {
-        loopv(npcs) rendernpc(*npcs[i]);
+        loopv(npcs)
+        {
+            if(npcs[i]->state == CS_DEAD && npcs[i]->ragdoll) rendernpcragdoll(*npcs[i]);
+            else rendernpc(*npcs[i]);
+        }
         loopv(severedlimbs) renderseveredlimb(*severedlimbs[i]);
     }
 
