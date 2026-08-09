@@ -1725,6 +1725,7 @@ namespace server
     {
         if(servercreative() || ci.dead || damage <= 0) return;
         ci.health = max(ci.health - damage, 0.0f);
+        ci.positiondirty = true;
         vec impulse = vec(ci.o).sub(source);
         if(impulse.squaredlen() > 1e-4f) impulse.normalize().mul(45.0f);
         if(ci.health <= 0)

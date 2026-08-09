@@ -194,6 +194,7 @@ struct worldchunkdiffstate
 struct worlddiffmetadata
 {
     int seed, worldgenversion, saveformatversion, gamemode, inventorycursoritem, inventorycursorcount, inventorycursordurability;
+    float playerhealth;
     int inventoryitems[game::SURVIVAL_USABLE_SLOTS],
         inventorycounts[game::SURVIVAL_USABLE_SLOTS], inventorydurabilities[game::SURVIVAL_USABLE_SLOTS];
     ullong parameterhash;
@@ -201,7 +202,8 @@ struct worlddiffmetadata
 
     worlddiffmetadata()
         : seed(0), worldgenversion(0), saveformatversion(0), gamemode(0),
-          inventorycursoritem(-1), inventorycursorcount(0), inventorycursordurability(0), parameterhash(0), valid(false)
+          inventorycursoritem(-1), inventorycursorcount(0), inventorycursordurability(0), playerhealth(game::PLAYER_MAX_HEALTH),
+          parameterhash(0), valid(false)
     {
         loopi(game::SURVIVAL_USABLE_SLOTS)
         {
@@ -8014,11 +8016,13 @@ static bool saveworldmetadata(int chunkx, int chunky)
     activeworldmetadata.parameterhash = currentworldparameterhash();
     activeworldmetadata.saveformatversion = WORLD_SAVE_FORMAT_VERSION;
     activeworldmetadata.gamemode = game::gamemode;
-    bool ok = f->printf("CUBECRAFT_WORLD 3\n") > 0;
+    activeworldmetadata.playerhealth = clamp(game::getlocalplayerhealth(), 0.0f, float(game::PLAYER_MAX_HEALTH));
+    bool ok = f->printf("CUBECRAFT_WORLD 4\n") > 0;
     if(ok) ok = f->printf("world_seed %d\n", activeworldmetadata.seed) > 0;
     if(ok) ok = f->printf("worldgen_version %d\n", activeworldmetadata.worldgenversion) > 0;
     if(ok) ok = f->printf("worldgen_parameter_hash " WORLD_ULL_FORMAT "\n", activeworldmetadata.parameterhash) > 0;
     if(ok) ok = f->printf("save_format_version %d\n", activeworldmetadata.saveformatversion) > 0;
+    if(ok) ok = f->printf("player_health %.9g\n", activeworldmetadata.playerhealth) > 0;
     if(ok) ok = game::savesurvivalinventory(f);
     if(ok) ok = f->printf("entry %d %d\n", chunkx, chunky) > 0;
     if(ok && player)
@@ -8057,6 +8061,7 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
         if(sscanf(line, "world_seed %d", &metadata.seed) == 1) continue;
         if(sscanf(line, "worldgen_version %d", &metadata.worldgenversion) == 1) continue;
         if(sscanf(line, "game_mode %d", &metadata.gamemode) == 1) continue;
+        if(sscanf(line, "player_health %f", &metadata.playerhealth) == 1) continue;
         if(sscanf(line, "inventory_cursor %d %d %d", &metadata.inventorycursoritem, &metadata.inventorycursorcount,
                   &metadata.inventorycursordurability) >= 2) continue;
         int inventoryslot, inventoryitem, inventorycount, inventorydurability = 0;
@@ -8101,7 +8106,7 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
     }
     delete f;
 
-    metadata.valid = metarevision == 3 && metadata.seed >= 0 &&
+    metadata.valid = metarevision >= 3 && metarevision <= 4 && metadata.seed >= 0 &&
                      metadata.worldgenversion > 0 && metadata.saveformatversion > 0;
     if(!metadata.valid)
     {
@@ -8124,6 +8129,8 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
         return false;
     }
     if(!game::validgamemode(metadata.gamemode)) metadata.gamemode = 0;
+    if(!(metadata.playerhealth >= 0 && metadata.playerhealth <= game::PLAYER_MAX_HEALTH))
+        metadata.playerhealth = game::PLAYER_MAX_HEALTH;
     return true;
 }
 
@@ -8458,6 +8465,7 @@ static void loadworldcommand(const char *requested)
     hasrequestedworldspawn = true;
     applyloadworlddefaults = true;
     game::changemap(entry, metadata.gamemode);
+    game::restorelocalplayerhealth(metadata.playerhealth);
     if(!game::loadlocalfurnaces(folder)) conoutf(CON_ERROR, "saved furnace data for world %s is corrupt", folder);
     applyloadworlddefaults = false;
     hasrequestedworldspawn = false;

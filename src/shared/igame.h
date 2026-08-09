@@ -30,7 +30,8 @@ namespace game
         SURVIVAL_INVENTORY_SLOTS = 9,
         SURVIVAL_USABLE_SLOTS = SURVIVAL_HOTBAR_SLOTS + SURVIVAL_INVENTORY_SLOTS,
         SURVIVAL_LOCKED_SLOTS = 18,
-        SURVIVAL_TOTAL_SLOTS = SURVIVAL_USABLE_SLOTS + SURVIVAL_LOCKED_SLOTS
+        SURVIVAL_TOTAL_SLOTS = SURVIVAL_USABLE_SLOTS + SURVIVAL_LOCKED_SLOTS,
+        PLAYER_MAX_HEALTH = 20
     };
 
     extern int gamemode;
@@ -55,6 +56,8 @@ namespace game
     extern void validateminingdefinitions();
     extern void loadsurvivalinventory(const int *items, const int *counts, const int *durabilities, int slots, int cursoritem = -1, int cursorcount = 0, int cursordurability = 0);
     extern bool savesurvivalinventory(stream *f);
+    extern float getlocalplayerhealth();
+    extern void restorelocalplayerhealth(float health);
     extern void resetfurnaces();
     extern bool savelocalfurnaces(const char *world);
     extern bool loadlocalfurnaces(const char *world);

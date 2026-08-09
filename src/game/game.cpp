@@ -1797,6 +1797,18 @@ namespace game
         setplayerdead(*player1, impulse);
     }
 
+    void restorelocalplayerhealth(float health)
+    {
+        if(!player1) return;
+        player1->health = clamp(health, 0.0f, float(PLAYER_MAX_HEALTH));
+        if(player1->health <= 0) setplayerdead(*player1, vec(0, 0, 0));
+    }
+
+    float getlocalplayerhealth()
+    {
+        return player1 ? player1->health : float(PLAYER_MAX_HEALTH);
+    }
+
     void receiveplayerstate(int clientnum, float health, int state, const vec &absoluteposition, const vec &impulse)
     {
         gameent *d = player1 && clientnum == player1->clientnum ? player1 : clients.inrange(clientnum) ? clients[clientnum] : NULL;

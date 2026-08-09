@@ -380,7 +380,6 @@ namespace game
     {
         CREATIVE_ARM_CYCLE = 300,
         SURVIVAL_BUILD_REACH = 4 * 16,
-        PLAYER_MAX_HEALTH = 20,
         NPC_ATTACK_REACH = 2 * 16
     };
 
@@ -420,6 +419,8 @@ namespace game
     extern int selectedcreativeblock();
     extern void wearselectedsurvivaltool();
     extern void damageplayer(float damage, const vec &source);
+    extern float getlocalplayerhealth();
+    extern void restorelocalplayerhealth(float health);
     extern void receiveplayerstate(int clientnum, float health, int state, const vec &position, const vec &impulse);
     extern void beginplayerragdoll(gameent *d, const vec &impulse);
     extern void clearplayerragdoll(gameent *d);
