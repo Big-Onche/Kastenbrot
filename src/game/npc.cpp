@@ -39,9 +39,10 @@ namespace game
     struct npc : dynent
     {
         npcdefinition *definition;
-        int instanceid, attitude, behavior, health, nextdecision, lastjump, lastattack, lastdebugtext, renderlastmillis;
+        int instanceid, attitude, behavior, health, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
+            renderlastmillis;
         float renderstride;
-        bool frozen;
+        bool frozen, wanderpaused;
         vec spawn, destination;
         physent *target;
         vector<characterhitbox> hitboxes;
@@ -49,8 +50,8 @@ namespace game
         npc(npcdefinition *definition, int instanceid)
             : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior),
               health(definition->health),
-              nextdecision(0), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000), renderlastmillis(-1), renderstride(0), frozen(false),
-              spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
+              nextdecision(0), wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
+              renderlastmillis(-1), renderstride(0), frozen(false), wanderpaused(false), spawn(0, 0, 0), destination(0, 0, 0), target(NULL)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -290,13 +291,25 @@ namespace game
         buildhumanoidhitboxes(&mob, mob.definition->model, mob.yaw, mob.hitboxes);
     }
 
+    static void beginwanderpause(npc &mob)
+    {
+        int duration = 600 + rnd(1801);
+        if(!rnd(5)) duration += 1000 + rnd(2501);
+        mob.wanderpaused = true;
+        mob.wanderpauseuntil = lastmillis + duration;
+        mob.nextdecision = 0;
+        mob.destination = mob.o;
+    }
+
     static void pickwanderdestination(npc &mob)
     {
         const float radius = mob.definition->wanderradius * GAMEUNITSPERMETER,
                     angle = rnd(36000) * RAD / 100.0f,
-                    distance = radius * sqrtf(rnd(10001) / 10000.0f);
+                    distance = radius * (0.25f + 0.75f * sqrtf(rnd(10001) / 10000.0f));
         mob.destination = vec(mob.spawn).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
-        mob.nextdecision = lastmillis + 1500 + rnd(3501);
+        mob.wanderpaused = false;
+        mob.wanderpauseuntil = 0;
+        mob.nextdecision = lastmillis + 8000 + rnd(6001);
     }
 
     static physent *nearestnpctarget(npc &mob, float radius)
@@ -328,6 +341,7 @@ namespace game
 
     static void updatebehavior(npc &mob)
     {
+        const int previousbehavior = mob.behavior;
         if(mob.attitude == NPC_AGGRESSIVE)
         {
             mob.target = nearestnpctarget(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
@@ -346,9 +360,15 @@ namespace game
 
         if(mob.behavior == NPC_WANDERING)
         {
+            if(previousbehavior != NPC_WANDERING) beginwanderpause(mob);
+            if(mob.wanderpaused)
+            {
+                if(lastmillis >= mob.wanderpauseuntil) pickwanderdestination(mob);
+                return;
+            }
             vec delta = vec(mob.destination).sub(mob.o);
             delta.z = 0;
-            if(mob.nextdecision <= lastmillis || delta.squaredlen() <= mob.radius * mob.radius) pickwanderdestination(mob);
+            if(mob.nextdecision <= lastmillis || delta.squaredlen() <= mob.radius * mob.radius) beginwanderpause(mob);
         }
         else if(mob.behavior == NPC_CHASE && mob.target) mob.destination = mob.target->feetpos();
         else if(mob.behavior == NPC_FLEE && mob.target)
@@ -363,16 +383,38 @@ namespace game
 
     static void walktowardsdestination(npc &mob)
     {
+        const int elapsed = mob.lastmovementmillis < 0 || lastmillis < mob.lastmovementmillis
+                          ? clamp(curtime, 0, 100)
+                          : clamp(lastmillis - mob.lastmovementmillis, 0, 100);
+        mob.lastmovementmillis = lastmillis;
+        if(mob.behavior == NPC_WANDERING && mob.wanderpaused)
+        {
+            mob.stopmoving();
+            moveplayer(&mob, 10, true);
+            return;
+        }
+
         vec direction = vec(mob.destination).sub(mob.o);
         direction.z = 0;
         const float stopdistance = max(mob.radius, 2.0f);
         if(direction.squaredlen() <= stopdistance * stopdistance)
         {
             mob.stopmoving();
+            moveplayer(&mob, 10, true);
             return;
         }
 
-        mob.yaw = fmodf(-atan2f(direction.x, direction.y) / RAD + 360.0f, 360.0f);
+        const float wantedyaw = fmodf(-atan2f(direction.x, direction.y) / RAD + 360.0f, 360.0f);
+        float turn = fmodf(wantedyaw - mob.yaw + 540.0f, 360.0f) - 180.0f;
+        const float maxturn = 180.0f * elapsed / 1000.0f;
+        mob.yaw = fmodf(mob.yaw + clamp(turn, -maxturn, maxturn) + 360.0f, 360.0f);
+        if(fabsf(turn) > 6.0f)
+        {
+            mob.stopmoving();
+            moveplayer(&mob, 10, true);
+            return;
+        }
+
         mob.move = 1;
         mob.strafe = 0;
         if(mob.blocked && mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastjump >= 400)
@@ -381,7 +423,7 @@ namespace game
             mob.lastjump = lastmillis;
         }
         moveplayer(&mob, 10, true);
-        if(mob.blocked && mob.behavior == NPC_WANDERING && lastmillis >= mob.nextdecision - 500) mob.nextdecision = lastmillis;
+        if(mob.blocked && mob.behavior == NPC_WANDERING) mob.nextdecision = min(mob.nextdecision, lastmillis + 1500);
     }
 
     static void shownpcdebugtext(npc &mob)
@@ -395,8 +437,9 @@ namespace game
             targetname = npcs[i]->definition->name;
             break;
         }
+        const char *activity = mob.frozen ? " / Frozen" : mob.behavior == NPC_WANDERING && mob.wanderpaused ? " / Paused" : "";
         defformatstring(text, "%s #%d\n%s / %s%s\nHP %d/%d  target: %s", mob.definition->name, mob.instanceid, attitudename(mob.attitude),
-                        behaviorname(mob.behavior), mob.frozen ? " / Frozen" : "", mob.health, mob.definition->health, targetname);
+                        behaviorname(mob.behavior), activity, mob.health, mob.definition->health, targetname);
         particle_textcopy(mob.abovehead(), text, PART_TEXT, 150, 0xFFE28A, 1.5f, 0);
     }
 
@@ -455,11 +498,15 @@ namespace game
 
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
         const float speed = horizontalmeterspersecond(&mob),
-                    movement = sqrtf(clamp(speed / max(mob.maxspeed / GAMEUNITSPERMETER, 0.01f), 0.0f, 1.0f));
+                    gamespeed = speed * GAMEUNITSPERMETER,
+                    fullswingspeed = max(mob.maxheight * 2.25f, 1.0f),
+                    gaitcycletravel = max(mob.maxheight * 0.75f, 1.0f),
+                    movement = clamp(gamespeed / fullswingspeed, 0.0f, 1.0f);
         if(mob.renderlastmillis < 0 || lastmillis < mob.renderlastmillis) mob.renderlastmillis = lastmillis;
         const int elapsed = min(lastmillis - mob.renderlastmillis, 100);
         mob.renderlastmillis = lastmillis;
-        if(speed > 0.05f) mob.renderstride = fmodf(mob.renderstride + 2.0f * PI * (0.65f + movement) * elapsed / 1000.0f, 2.0f * PI);
+        if(gamespeed > 0.05f)
+            mob.renderstride = fmodf(mob.renderstride + 2.0f * PI * gamespeed * elapsed / (1000.0f * gaitcycletravel), 2.0f * PI);
 
         const float stride = sinf(mob.renderstride) * movement, legpitch = stride * 32.0f, armpitch = stride * 28.0f;
         const vec torsoorigin = mob.feetpos(fabsf(cosf(mob.renderstride)) * 0.45f * movement).addz(HIP_HEIGHT);
@@ -543,7 +590,7 @@ namespace game
         ++nextnpcid;
         mob->spawn = mob->destination = mob->o;
         npcs.add(mob);
-        pickwanderdestination(*mob);
+        beginwanderpause(*mob);
         updatenpchitboxes(*mob);
         cleardynentcache();
         conoutf("spawned %s #%d", definition->name, mob->instanceid);
