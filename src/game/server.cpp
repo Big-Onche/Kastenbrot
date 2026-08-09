@@ -18,6 +18,7 @@ namespace server
         PLAYER_IDENTITY_VERSION = 1,
         PLAYER_IDENTITY_TIMEOUT = 15000,
         PLAYER_IDENTITY_MAX_RECORDS = 100000,
+        PLAYER_STATE_VERSION = 1,
         DROP_PICKUP_DELAY = 500
     };
 
@@ -47,6 +48,7 @@ namespace server
     VAR(identityduplicatepolicy, 0, 0, 1);
     VAR(creativemode, 0, 1, 1);
     VAR(inventorysaveinterval, 1, 15, 3600);
+    VAR(playerstatesaveinterval, 1, 15, 3600);
     VAR(buildreach, 16, 160, 1024);
     VAR(placementratelimit, 1, 12, 100);
     VAR(destructionratelimit, 1, 12, 100);
@@ -102,7 +104,7 @@ namespace server
 
     struct clientinfo
     {
-        int clientnum, privilege, lastpositionmillis, identitystate, identitykind,
+        int clientnum, privilege, lastpositionmillis, lastpositionsave, positionyaw, positionpitch, identitystate, identitykind,
             identitychallengemillis,
             identityfailures, identityfailurewindow, selectedslot, inventorycursoritem, inventorycursorcount, lastinventorysave,
             violations, violationwindow, actionwindow, placements, destructions,
@@ -110,19 +112,19 @@ namespace server
             breakduration, breaktoolitem, breaktoolslot, breaktooldurability;
         uint ip;
         uint lastrequestid, breakrequestid;
-        bool connected, local, worldready, hasposition, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen;
+        bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
         int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
             craftinggridsize, craftingstationitem, inventorycursordurability;
-        ivec breaktarget, craftingstationtarget, furnacetarget;
+        ivec positioncoords, breaktarget, craftingstationtarget, furnacetarget;
         vector<uchar> position;
         vec o;
         ENetPacket *getmap;
         void *identitychallenge;
         serveridentity *identity;
 
-        clientinfo() : clientnum(-1), privilege(PRIV_NONE), lastpositionmillis(0),
+        clientinfo() : clientnum(-1), privilege(PRIV_NONE), lastpositionmillis(0), lastpositionsave(0), positionyaw(0), positionpitch(0),
                        identitystate(IDENTITY_UNAUTHENTICATED), identitykind(IDENTITY_KIND_NONE),
                        identitychallengemillis(0),
                        identityfailures(0), identityfailurewindow(0),
@@ -134,10 +136,11 @@ namespace server
                        ip(0),
                        lastrequestid(0), breakrequestid(0),
                        connected(false), local(false),
-                       worldready(false), hasposition(false), inventoryloaded(false), inventorydirty(false),
+                       worldready(false), hasposition(false), positiondirty(false), inventoryloaded(false), inventorydirty(false),
                        breakactive(false), breakdropeligible(true), furnaceopen(false),
                        craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
-                       breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0), o(0, 0, 0), getmap(NULL),
+                       positioncoords(0, 0, 0), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0),
+                       o(0, 0, 0), getmap(NULL),
                        identitychallenge(NULL), identity(NULL)
         {
             name[0] = playerid[0] = pendingpublickey[0] = pendingname[0] = '\0';
@@ -797,6 +800,100 @@ namespace server
             ci.inventoryloaded = false;
             return false;
         }
+        return true;
+    }
+
+    static void playerstatename(char *name, size_t len, const char *playerid, const char *suffix = "")
+    {
+        string safe;
+        int n = 0;
+        for(const char *s = serverworld; *s && n < 64; ++s)
+            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
+        safe[n] = '\0';
+        if(!safe[0]) copystring(safe, "multiplayer");
+        snprintf(name, len, "config/server-player-states/%s_%08x_%u/%s.dat%s", safe, hthash(serverworld), uint(serverworldseed), playerid,
+                 suffix ? suffix : "");
+        path(name);
+    }
+
+    static bool saveplayerstate(clientinfo &ci, bool force = false)
+    {
+        if(!ci.hasposition || !ci.playerid[0] || (!force && !ci.positiondirty)) return true;
+        string relative, temporary, finalpath, temppath;
+        playerstatename(relative, sizeof(relative), ci.playerid);
+        playerstatename(temporary, sizeof(temporary), ci.playerid, ".tmp");
+        copystring(finalpath, findfile(relative, "wb"));
+        copystring(temppath, findfile(temporary, "wb"));
+        stream *file = openrawfile(temporary, "wb");
+        if(!file)
+        {
+            ci.lastpositionsave = max(totalmillis, 1);
+            return false;
+        }
+        bool ok = file->write("CCPS", 4) == 4 &&
+                  file->putlil<uint>(PLAYER_STATE_VERSION) &&
+                  writeserveridentitystring(*file, serverworld) &&
+                  file->putlil<uint>(uint(serverworldseed)) &&
+                  file->putlil<int>(ci.positioncoords.x) &&
+                  file->putlil<int>(ci.positioncoords.y) &&
+                  file->putlil<int>(ci.positioncoords.z) &&
+                  file->putlil<int>(ci.positionyaw) &&
+                  file->putlil<int>(ci.positionpitch);
+        delete file;
+        if(!ok || !replaceserveridentityfile(temppath, finalpath))
+        {
+            remove(temppath);
+            ci.lastpositionsave = max(totalmillis, 1);
+            return false;
+        }
+        ci.positiondirty = false;
+        ci.lastpositionsave = max(totalmillis, 1);
+        return true;
+    }
+
+    static bool loadplayerstate(clientinfo &ci)
+    {
+        ci.hasposition = ci.positiondirty = false;
+        ci.lastpositionsave = max(totalmillis, 1);
+        ci.positioncoords = ivec(0, 0, 0);
+        ci.positionyaw = ci.positionpitch = 0;
+        string relative;
+        playerstatename(relative, sizeof(relative), ci.playerid);
+        stream *file = openrawfile(relative, "rb");
+        if(!file) return true;
+
+        char magic[4], world[MAXSTRLEN] = "";
+        uint version = 0, seed = 0;
+        ivec position;
+        int yaw = 0, pitch = 0;
+        bool valid = file->read(magic, 4) == 4 && !memcmp(magic, "CCPS", 4) &&
+                     (version = file->getlil<uint>()) == PLAYER_STATE_VERSION &&
+                     readserveridentitystring(*file, world, sizeof(world)) &&
+                     (seed = file->getlil<uint>()) == uint(serverworldseed) &&
+                     !strcmp(world, serverworld) && file->size() - file->tell() == 5 * int(sizeof(int));
+        if(valid)
+        {
+            position.x = file->getlil<int>();
+            position.y = file->getlil<int>();
+            position.z = file->getlil<int>();
+            yaw = file->getlil<int>();
+            pitch = file->getlil<int>();
+            valid = position.z >= 0 && position.z <= int((1 << 13) * DMF) &&
+                    yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90 && file->tell() == file->size();
+        }
+        delete file;
+        if(!valid)
+        {
+            conoutf(CON_WARN, "ignoring corrupt or incompatible player state %s (version %u, seed %u)", relative, version, seed);
+            return false;
+        }
+
+        ci.positioncoords = position;
+        ci.o = vec(position.x/DMF, position.y/DMF, position.z/DMF);
+        ci.positionyaw = yaw;
+        ci.positionpitch = pitch;
+        ci.hasposition = true;
+        ci.lastpositionmillis = max(totalmillis, 1);
         return true;
     }
 
@@ -1493,6 +1590,7 @@ namespace server
             rejectidentity(ci, "server inventory data is corrupt; an administrator must repair it");
             return;
         }
+        loadplayerstate(ci);
         ci.identitystate = IDENTITY_AUTHENTICATED;
         ci.connected = true;
         const char *kind = ci.identitykind == IDENTITY_KIND_NEW ? "new player" : "returning player";
@@ -1555,6 +1653,13 @@ namespace server
         putint(p, serverwaterupdatespertick);
         putint(p, serverwatersimulationmaxdist);
         putint(p, clamp(int(serverwaterflowspeed * 1000.0f + 0.5f), 100, 20000));
+        const bool restoreposition = !reset && ci.hasposition;
+        putint(p, restoreposition ? 1 : 0);
+        putint(p, restoreposition ? ci.positioncoords.x : 0);
+        putint(p, restoreposition ? ci.positioncoords.y : 0);
+        putint(p, restoreposition ? ci.positioncoords.z : 0);
+        putint(p, restoreposition ? ci.positionyaw : 0);
+        putint(p, restoreposition ? ci.positionpitch : 0);
         sendpacket(ci.clientnum, 1, p.finalize());
         senddropsettings(ci.clientnum);
     }
@@ -1608,6 +1713,8 @@ namespace server
             ci->furnaceopen = false;
             if(ci->connected && !saveinventory(*ci, true))
                 conoutf(CON_ERROR, "could not save survival inventory for player ID %s on disconnect", ci->playerid);
+            if(ci->connected && !saveplayerstate(*ci, true))
+                conoutf(CON_ERROR, "could not save player position for player ID %s on disconnect", ci->playerid);
             if(!ci->connected &&
                (ci->identitystate == IDENTITY_AWAITING_IDENTITY ||
                 ci->identitystate == IDENTITY_AWAITING_RESPONSE))
@@ -3002,8 +3109,9 @@ namespace server
                 loopk(3) coords[k] = getint(p);
                 int physstate = p.get();
                 uint flags = getuint(p);
-                p.get();
-                p.get();
+                int dir = p.get();
+                dir |= p.get()<<8;
+                const int yaw = dir%360, pitch = clamp(dir/360, 0, 180) - 90;
                 p.get();
                 p.get();
                 if(flags&(1<<3)) p.get();
@@ -3031,8 +3139,12 @@ namespace server
 
                 ci->position.setsize(0);
                 ci->position.put(&p.buf[packetstart], p.length() - packetstart);
+                ci->positioncoords = ivec(coords[0], coords[1], coords[2]);
                 ci->o = nextposition;
+                ci->positionyaw = yaw;
+                ci->positionpitch = pitch;
                 ci->hasposition = true;
+                ci->positiondirty = true;
                 ci->lastpositionmillis = now;
                 if(ci->breakactive)
                 {
@@ -3518,6 +3630,9 @@ namespace server
             if(ci->inventorydirty && totalmillis - ci->lastinventorysave >= inventorysaveinterval * 1000 &&
                !saveinventory(*ci))
                 conoutf(CON_ERROR, "could not periodically save survival inventory for player ID %s", ci->playerid);
+            if(ci->positiondirty && totalmillis - ci->lastpositionsave >= playerstatesaveinterval * 1000 &&
+               !saveplayerstate(*ci))
+                conoutf(CON_ERROR, "could not periodically save player position for player ID %s", ci->playerid);
             if(ci->breakactive &&
                (!ci->hasposition ||
                 vec(ci->breaktarget.x + 8.0f, ci->breaktarget.y + 8.0f, ci->breaktarget.z + 8.0f).dist(ci->o) > buildreach ||

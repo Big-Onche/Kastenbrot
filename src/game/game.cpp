@@ -551,6 +551,7 @@ namespace game
             const bool frozen = pendingnetworkfrozen,
                        restoreposition = pendingnetworkrestoreposition;
             const vec savedposition = pendingnetworkposition;
+            const int savedyaw = pendingnetworkyaw, savedpitch = pendingnetworkpitch;
             pendingnetworkreset = pendingnetworkrestoreposition = false;
 
             // Keep the server lighting active for the entire network-world load.
@@ -563,6 +564,8 @@ namespace game
                 vec restored = savedposition;
                 worldpositiontolocal(restored);
                 player1->o = restored;
+                player1->yaw = savedyaw;
+                player1->pitch = savedpitch;
                 player1->resetinterp();
                 updateworldchunks(true);
             }

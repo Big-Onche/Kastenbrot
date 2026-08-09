@@ -33,7 +33,7 @@ namespace game
 
     bool pendingnetworkworld = false, pendingnetworkreset = false,
          pendingnetworkfrozen = false, pendingnetworkrestoreposition = false;
-    int pendingnetworkseed = 0, pendingnetworktime = 0;
+    int pendingnetworkseed = 0, pendingnetworktime = 0, pendingnetworkyaw = 0, pendingnetworkpitch = 0;
     vec pendingnetworkposition;
 
     void resetclientreceive()
@@ -590,12 +590,25 @@ namespace game
                 if(!m_valid(gamemode) || (!m_creative && !m_survival)) gamemode = STARTGAMEMODE;
                 const int breakmillis = getint(p), scatterbreakmillis = getint(p),
                           waterupdates = getint(p), waterdistance = getint(p), waterspeed = getint(p);
+                const bool serverrestoreposition = getint(p) != 0;
+                vec serverposition;
+                loopk(3) serverposition[k] = getint(p)/DMF;
+                const int serveryaw = getint(p), serverpitch = getint(p);
                 receiveserversettings(breakmillis, scatterbreakmillis, waterupdates, waterdistance, waterspeed);
-                pendingnetworkrestoreposition = pendingnetworkreset && player1;
-                if(pendingnetworkrestoreposition)
+                pendingnetworkrestoreposition = player1 && (pendingnetworkreset || serverrestoreposition);
+                if(pendingnetworkrestoreposition && pendingnetworkreset)
                 {
                     pendingnetworkposition = player1->o;
                     worldpositiontoabsolute(pendingnetworkposition);
+                    pendingnetworkyaw = int(player1->yaw);
+                    pendingnetworkpitch = int(player1->pitch);
+                }
+                else if(pendingnetworkrestoreposition)
+                {
+                    pendingnetworkposition = serverposition;
+                    pendingnetworkposition.z += player1->eyeheight;
+                    pendingnetworkyaw = clamp(serveryaw, 0, 359);
+                    pendingnetworkpitch = clamp(serverpitch, -90, 90);
                 }
                 pendingnetworkedits.deletecontents();
                 resetworlddrops();
