@@ -20,6 +20,7 @@ void cleanup()
     clearworldchunks();
     freeocta(worldroot);
     UI::cleanup();
+    game::cleanupitemsprites();
     extern void clear_command(); clear_command();
     extern void clear_console(); clear_console();
     extern void clear_models();  clear_models();
@@ -864,6 +865,7 @@ void resetgl()
     cleanupparticles();
     cleanupstains();
     cleanupsky();
+    game::cleanupitemsprites();
     cleanupmodels();
     cleanupprefabs();
     cleanuptextures();
@@ -896,6 +898,7 @@ void resetgl()
     initgbuffer();
     reloadshaders();
     reloadtextures();
+    game::preloaditemsprites();
     allchanged(true);
 }
 

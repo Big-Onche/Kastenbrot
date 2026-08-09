@@ -1,7 +1,354 @@
 #include "game.h"
+#include "../engine/engine.h"
 
 namespace game
 {
+    void reloaditemsprites();
+
+    VARF(extrudedspritealphathreshold, 0, 1, 255, reloaditemsprites());
+    FVARF(extrudedspritedepth, 0.05f, 1.5f, 8.0f, reloaditemsprites());
+    FVARF(extrudedspritesideshade, 0.0f, 0.72f, 1.0f, reloaditemsprites());
+    FVAR(extrudedspritegripvoffset, -8.0f, 0.0f, 8.0f);
+    FVAR(extrudedspritegriphoffset, -8.0f, 4.0f, 8.0f);
+
+    static const float EXTRUDED_SPRITE_HEIGHT = 18.0f;
+
+    struct itemspritevertex
+    {
+        vec pos;
+        hvec2 tc;
+        squat tangent;
+
+        itemspritevertex(const vec &pos, const vec2 &tc, const squat &tangent) : pos(pos), tc(tc), tangent(tangent) {}
+    };
+
+    struct itemspritemesh
+    {
+        char *source;
+        Texture *texture;
+        GLuint vbuf, ebuf;
+        int width, height, numvertices, faceindices, sideindices, alphathreshold;
+        float depth, radius;
+
+        itemspritemesh()
+            : source(NULL), texture(NULL), vbuf(0), ebuf(0), width(0), height(0), numvertices(0), faceindices(0), sideindices(0), alphathreshold(0),
+              depth(0), radius(0)
+        {
+        }
+
+        ~itemspritemesh()
+        {
+            DELETEA(source);
+            if(vbuf) glDeleteBuffers_(1, &vbuf);
+            if(ebuf) glDeleteBuffers_(1, &ebuf);
+        }
+    };
+
+    struct itemspriteinstance
+    {
+        itemspritemesh *mesh;
+        vec origin;
+        float yaw, pitch, roll, size, griphoffset, gripvoffset;
+        int flags;
+
+        itemspriteinstance(itemspritemesh *mesh, const vec &origin, float yaw, float pitch, float roll, float size, float griphoffset,
+                           float gripvoffset, int flags)
+            : mesh(mesh), origin(origin), yaw(yaw), pitch(pitch), roll(roll), size(size), griphoffset(griphoffset), gripvoffset(gripvoffset),
+              flags(flags)
+        {
+        }
+    };
+
+    static vector<itemspritemesh *> itemspritemeshes;
+    static vector<itemspriteinstance> itemspritebatches;
+
+    static squat itemspritetangent(const vec &normal)
+    {
+        vec tangent;
+        if(normal.x > 0) tangent = vec(0, 1, 0);
+        else if(normal.x < 0) tangent = vec(0, -1, 0);
+        else if(normal.y > 0) tangent = vec(-1, 0, 0);
+        else tangent = vec(1, 0, 0);
+
+        matrix3 basis;
+        basis.a = tangent;
+        basis.b.cross(normal, tangent);
+        basis.c = normal;
+        quat orientation(basis);
+        orientation.normalize();
+        return squat(orientation);
+    }
+
+    static void additemspritequad(vector<itemspritevertex> &vertices, vector<uint> &indices, const vec &a, const vec &b, const vec &c, const vec &d, const vec2 &atc, const vec2 &btc, const vec2 &ctc, const vec2 &dtc, const vec &normal)
+    {
+        const uint offset = vertices.length();
+        const squat tangent = itemspritetangent(normal);
+        vertices.add(itemspritevertex(a, atc, tangent));
+        vertices.add(itemspritevertex(b, btc, tangent));
+        vertices.add(itemspritevertex(c, ctc, tangent));
+        vertices.add(itemspritevertex(d, dtc, tangent));
+        indices.add(offset);
+        indices.add(offset + 1);
+        indices.add(offset + 2);
+        indices.add(offset);
+        indices.add(offset + 2);
+        indices.add(offset + 3);
+    }
+
+    static bool soliditemspritepixel(const ImageData &image, int x, int y, int threshold)
+    {
+        if(x < 0 || y < 0 || x >= image.w || y >= image.h) return false;
+        const uchar *pixel = image.data + y * image.pitch + x * image.bpp;
+        const int alpha = image.bpp >= 4 ? pixel[3] : image.bpp == 2 ? pixel[1] : 255;
+        return alpha > threshold;
+    }
+
+    static itemspritemesh *generateitemspritemesh(const char *source)
+    {
+        defformatstring(filename, "media/texture/%s", source);
+        ImageData image;
+        if(!loadimage(filename, image) || !image.data || image.w <= 0 || image.h <= 0)
+        {
+            conoutf(CON_ERROR, "could not load item sprite texture %s", filename);
+            return NULL;
+        }
+
+        Texture *texture = textureload(filename, 3, true, true, true);
+        if(!texture || texture == notexture) return NULL;
+
+        vector<itemspritevertex> vertices;
+        vector<uint> indices;
+        const float pixelsize = EXTRUDED_SPRITE_HEIGHT / image.h, halfdepth = extrudedspritedepth * 0.5f;
+        const int threshold = extrudedspritealphathreshold;
+        loop(y, image.h) loop(x, image.w) if(soliditemspritepixel(image, x, y, threshold))
+        {
+            const float y0 = (x - image.w * 0.5f) * pixelsize, y1 = y0 + pixelsize,
+                        z1 = (image.h * 0.5f - y) * pixelsize, z0 = z1 - pixelsize,
+                        u0 = x / float(image.w), u1 = (x + 1) / float(image.w),
+                        v0 = y / float(image.h), v1 = (y + 1) / float(image.h);
+            additemspritequad(vertices, indices, vec(halfdepth, y0, z0), vec(halfdepth, y1, z0), vec(halfdepth, y1, z1),
+                              vec(halfdepth, y0, z1), vec2(u0, v1), vec2(u1, v1), vec2(u1, v0), vec2(u0, v0), vec(1, 0, 0));
+            additemspritequad(vertices, indices, vec(-halfdepth, y1, z0), vec(-halfdepth, y0, z0), vec(-halfdepth, y0, z1),
+                              vec(-halfdepth, y1, z1), vec2(u1, v1), vec2(u0, v1), vec2(u0, v0), vec2(u1, v0), vec(-1, 0, 0));
+        }
+
+        const int faceindices = indices.length();
+        loop(y, image.h) loop(x, image.w) if(soliditemspritepixel(image, x, y, threshold))
+        {
+            const float y0 = (x - image.w * 0.5f) * pixelsize, y1 = y0 + pixelsize,
+                        z1 = (image.h * 0.5f - y) * pixelsize, z0 = z1 - pixelsize,
+                        u = (x + 0.5f) / image.w, v = (y + 0.5f) / image.h;
+            const vec2 tc(u, v);
+            if(!soliditemspritepixel(image, x - 1, y, threshold))
+                additemspritequad(vertices, indices, vec(-halfdepth, y0, z0), vec(halfdepth, y0, z0), vec(halfdepth, y0, z1), vec(-halfdepth, y0, z1), tc, tc, tc, tc, vec(0, -1, 0));
+            if(!soliditemspritepixel(image, x + 1, y, threshold))
+                additemspritequad(vertices, indices, vec(halfdepth, y1, z0), vec(-halfdepth, y1, z0), vec(-halfdepth, y1, z1), vec(halfdepth, y1, z1), tc, tc, tc, tc, vec(0, 1, 0));
+            if(!soliditemspritepixel(image, x, y - 1, threshold))
+                additemspritequad(vertices, indices, vec(-halfdepth, y0, z1), vec(halfdepth, y0, z1), vec(halfdepth, y1, z1), vec(-halfdepth, y1, z1), tc, tc, tc, tc, vec(0, 0, 1));
+            if(!soliditemspritepixel(image, x, y + 1, threshold))
+                additemspritequad(vertices, indices, vec(halfdepth, y0, z0), vec(-halfdepth, y0, z0), vec(-halfdepth, y1, z0), vec(halfdepth, y1, z0), tc, tc, tc, tc, vec(0, 0, -1));
+        }
+
+        itemspritemesh *mesh = new itemspritemesh;
+        mesh->source = newstring(source);
+        mesh->texture = texture;
+        mesh->width = image.w;
+        mesh->height = image.h;
+        mesh->numvertices = vertices.length();
+        mesh->faceindices = faceindices;
+        mesh->sideindices = indices.length() - faceindices;
+        mesh->alphathreshold = threshold;
+        mesh->depth = extrudedspritedepth;
+        const float halfwidth = image.w * pixelsize * 0.5f, halfheight = EXTRUDED_SPRITE_HEIGHT * 0.5f;
+        mesh->radius = sqrtf(halfwidth * halfwidth + halfheight * halfheight + halfdepth * halfdepth);
+        if(!vertices.empty() && !indices.empty())
+        {
+            glGenBuffers_(1, &mesh->vbuf);
+            glBindBuffer_(GL_ARRAY_BUFFER, mesh->vbuf);
+            glBufferData_(GL_ARRAY_BUFFER, vertices.length() * sizeof(itemspritevertex), vertices.getbuf(), GL_STATIC_DRAW);
+            glGenBuffers_(1, &mesh->ebuf);
+            glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, mesh->ebuf);
+            glBufferData_(GL_ELEMENT_ARRAY_BUFFER, indices.length() * sizeof(uint), indices.getbuf(), GL_STATIC_DRAW);
+            glBindBuffer_(GL_ARRAY_BUFFER, 0);
+            glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, 0);
+        }
+        return mesh;
+    }
+
+    static itemspritemesh *finditemspritemesh(const char *source)
+    {
+        if(!source || !source[0]) return NULL;
+        loopv(itemspritemeshes)
+        {
+            itemspritemesh *mesh = itemspritemeshes[i];
+            if(mesh->alphathreshold == extrudedspritealphathreshold && mesh->depth == extrudedspritedepth &&
+               !strcmp(mesh->source, source)) return mesh;
+        }
+        return NULL;
+    }
+
+    static itemspritemesh *loaditemspritemesh(const char *source)
+    {
+        itemspritemesh *mesh = finditemspritemesh(source);
+        if(mesh || !source || !source[0]) return mesh;
+        mesh = generateitemspritemesh(source);
+        if(mesh) itemspritemeshes.add(mesh);
+        return mesh;
+    }
+
+    void cleanupitemsprites()
+    {
+        itemspritebatches.shrink(0);
+        itemspritemeshes.deletecontents();
+    }
+
+    void preloaditemsprites()
+    {
+        loopi(numinventoryitems())
+        {
+            const char *source = getinventoryitemtexture(i);
+            if(source[0]) loaditemspritemesh(source);
+        }
+    }
+
+    void reloaditemsprites()
+    {
+        cleanupitemsprites();
+        preloaditemsprites();
+    }
+
+    COMMAND(reloaditemsprites, "");
+
+    void resetitemspritebatches()
+    {
+        itemspritebatches.shrink(0);
+    }
+
+    static matrix4 itemspriteworldmatrix(const itemspriteinstance &instance)
+    {
+        matrix4 world;
+        world.identity();
+        world.settranslation(instance.origin);
+        world.rotate_around_z(instance.yaw * RAD);
+        vec pitchaxis, localpitchaxis;
+        world.transformnormal(vec(1, 0, 0), pitchaxis);
+        if(instance.roll) world.rotate_around_y(-instance.roll * RAD);
+        if(instance.pitch)
+        {
+            world.transposedtransformnormal(pitchaxis, localpitchaxis);
+            world.rotate(instance.pitch * RAD, localpitchaxis);
+        }
+        world.translate(vec(0, instance.griphoffset, EXTRUDED_SPRITE_HEIGHT * 0.5f + instance.gripvoffset), instance.size);
+        world.scale(instance.size);
+        return world;
+    }
+
+    static void binditemspritemesh(const itemspritemesh &mesh, bool normals)
+    {
+        gle::bindvbo(mesh.vbuf);
+        gle::bindebo(mesh.ebuf);
+        gle::enablevertex();
+        gle::vertexpointer(sizeof(itemspritevertex), (const void *)offsetof(itemspritevertex, pos));
+        if(normals)
+        {
+            gle::enabletexcoord0();
+            gle::texcoord0pointer(sizeof(itemspritevertex), (const void *)offsetof(itemspritevertex, tc), GL_HALF_FLOAT);
+            gle::enabletangent();
+            gle::tangentpointer(sizeof(itemspritevertex), (const void *)offsetof(itemspritevertex, tangent), GL_SHORT);
+        }
+    }
+
+    static void unbinditemspritemesh(bool normals)
+    {
+        gle::clearebo();
+        gle::clearvbo();
+        gle::disablevertex();
+        if(normals)
+        {
+            gle::disabletexcoord0();
+            gle::disabletangent();
+        }
+    }
+
+    static void drawitemspriteinstance(const itemspriteinstance &instance, bool shadow)
+    {
+        itemspritemesh &mesh = *instance.mesh;
+        if(!mesh.vbuf || !mesh.ebuf || (!mesh.faceindices && !mesh.sideindices)) return;
+
+        matrix4 world = itemspriteworldmatrix(instance), modelmatrix;
+        if(shadowmapping > SM_REFLECT)
+        {
+            matrix4 shadowworld = world;
+            shadowworld.d.sub(vec4(shadoworigin, 0));
+            modelmatrix.mul(shadowmatrix, shadowworld);
+        }
+        else modelmatrix.mul(shadowmapping ? shadowmatrix : camprojmatrix, world);
+        GLOBALPARAM(modelmatrix, modelmatrix);
+
+        if(shadow && shadowmapping > SM_REFLECT)
+        {
+            Shader *shader = useshaderbyname("shadowmodel");
+            if(!shader) return;
+            shader->set();
+            binditemspritemesh(mesh, false);
+            glDrawRangeElements_(GL_TRIANGLES, 0, mesh.numvertices - 1, mesh.faceindices + mesh.sideindices, GL_UNSIGNED_INT, NULL);
+            unbinditemspritemesh(false);
+            return;
+        }
+
+        GLOBALPARAM(modelworld, matrix3(world));
+        Shader *shader = shadow ? generateshader("rsmmodel", "rsmmodelshader \"\"") : generateshader("model", "modelshader \"\"");
+        if(!shader) return;
+        shader->set();
+        LOCALPARAMF(texscroll, 0.0f, 0.0f);
+        LOCALPARAMF(fullbright, 1.0f, 0.0f);
+        LOCALPARAMF(maskscale, 0.0f, 0.0f, 0.0f);
+        glBindTexture(GL_TEXTURE_2D, mesh.texture->id);
+        binditemspritemesh(mesh, true);
+        if(mesh.faceindices)
+        {
+            LOCALPARAMF(colorscale, 1.0f, 1.0f, 1.0f, 1.0f);
+            glDrawRangeElements_(GL_TRIANGLES, 0, mesh.numvertices - 1, mesh.faceindices, GL_UNSIGNED_INT, NULL);
+        }
+        if(mesh.sideindices)
+        {
+            LOCALPARAMF(colorscale, extrudedspritesideshade, extrudedspritesideshade, extrudedspritesideshade, 1.0f);
+            glDrawRangeElements_(GL_TRIANGLES, 0, mesh.numvertices - 1, mesh.sideindices, GL_UNSIGNED_INT,
+                                 (const void *)(mesh.faceindices * sizeof(uint)));
+        }
+        unbinditemspritemesh(true);
+    }
+
+    void renderitemspritebatches()
+    {
+        enableaamask();
+        setaamask(true);
+        loopv(itemspritebatches) if(!(itemspritebatches[i].flags & MDL_ONLYSHADOW)) drawitemspriteinstance(itemspritebatches[i], false);
+        disableaamask();
+    }
+
+    void renderitemspriteshadows()
+    {
+        loopv(itemspritebatches) if(!(itemspritebatches[i].flags & MDL_NOSHADOW)) drawitemspriteinstance(itemspritebatches[i], true);
+    }
+
+    static void renderitemsprite(const char *source, const vec &origin, float yaw, float pitch, float roll, int flags, float size,
+                                 float griphoffset = 0, float gripvoffset = 0)
+    {
+        itemspritemesh *mesh = finditemspritemesh(source);
+        if(!mesh) return;
+        const itemspriteinstance instance(mesh, origin, yaw, pitch, roll, size, griphoffset, gripvoffset, flags);
+        if(flags & MDL_NOBATCH)
+        {
+            if(flags & MDL_ONLYSHADOW) return;
+            enableaamask();
+            setaamask(true);
+            drawitemspriteinstance(instance, false);
+            disableaamask();
+        }
+        else itemspritebatches.add(instance);
+    }
+
     enum
     {
         PART_TORSO = 0,
@@ -51,6 +398,7 @@ namespace game
         loopi(NUM_PLAYER_PARTS) preloadmodel(playermodels[i]);
         preloadmodel(heldcubemodel);
         preloadmodel(worldheldcubemodel);
+        preloaditemsprites();
     }
 
     static void renderpart(gameent *d, int part, const vec &origin, float yaw, float pitch, float roll, int flags)
@@ -277,10 +625,10 @@ namespace game
         const int type = getworlditemtype(drop.item), worldindex = getworlditemindex(drop.item);
         const float yaw = fmodf(lastmillis * 0.09f + float((drop.id ? drop.id : drop.sourcerequestid) % 360U), 360.0f);
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
-        const char *directmodel = type == WORLD_ITEM_NONE ? getinventoryitemmodel(drop.item) : "";
-        if(directmodel[0])
+        const char *directtexture = type == WORLD_ITEM_NONE ? getinventoryitemtexture(drop.item) : "";
+        if(directtexture[0])
         {
-            rendermodel(directmodel, ANIM_MAPMODEL | ANIM_LOOP, position, yaw, 0, 0, flags, NULL, NULL, 0, 0, 0.4f);
+            renderitemsprite(directtexture, position, yaw, 0, 0, flags, 0.4f);
         }
         else if(type == WORLD_ITEM_CUBE || type == WORLD_ITEM_NONE)
         {
@@ -422,12 +770,9 @@ namespace game
         pose.pitch = pitch;
         pose.roll = roll;
         const int type = getworlditemtype(selected), worldindex = getworlditemindex(selected);
-        if(type == WORLD_ITEM_CUBE)
-            renderheldcube(d, worldindex, pose, flags, hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE, hud);
-        else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
-            renderheldscatter(d, worldindex, pose, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE);
-        else if(type == WORLD_ITEM_NONE)
-            renderheldmodel(d, getinventoryitemmodel(selected), pose, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE);
+        if(type == WORLD_ITEM_CUBE) renderheldcube(d, worldindex, pose, flags, hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE, hud);
+        else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE) renderheldscatter(d, worldindex, pose, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE);
+        else if(type == WORLD_ITEM_NONE) renderitemsprite(getinventoryitemtexture(selected), pose.origin, pose.yaw, pose.pitch, pose.roll, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE, extrudedspritegriphoffset, extrudedspritegripvoffset);
     }
 
     bool heldtorchemitterposition(gameent *d, vec &position)

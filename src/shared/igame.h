@@ -98,6 +98,12 @@ namespace game
     extern dynent *iterdynents(int i);
     extern int numdynents();
     extern void rendergame();
+    extern void preloaditemsprites();
+    extern void cleanupitemsprites();
+    extern void reloaditemsprites();
+    extern void resetitemspritebatches();
+    extern void renderitemspritebatches();
+    extern void renderitemspriteshadows();
     extern void rendercreativetarget();
     extern void renderavatar();
     extern void renderplayerpreview(int model, int color, int team, int weap);

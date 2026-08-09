@@ -281,12 +281,12 @@ struct worldscatterdefinition
 
 struct inventoryitemdefinition
 {
-    string id, name, model, icon;
+    string id, name, texture, icon;
     int maxstack;
 
     inventoryitemdefinition() : maxstack(64)
     {
-        id[0] = name[0] = model[0] = icon[0] = '\0';
+        id[0] = name[0] = texture[0] = icon[0] = '\0';
     }
 };
 
@@ -478,9 +478,9 @@ int getinventoryitemmaxstack(int index)
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->maxstack : 0;
 }
 
-const char *getinventoryitemmodel(int index)
+const char *getinventoryitemtexture(int index)
 {
-    return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->model : "";
+    return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->texture : "";
 }
 
 const char *getinventoryitemicon(int index)
@@ -489,9 +489,9 @@ const char *getinventoryitemicon(int index)
     if(!inventoryitemdefinitions.inrange(index)) return "";
     const inventoryitemdefinition &item = *inventoryitemdefinitions[index];
     if(item.icon[0]) return item.icon;
-    if(item.model[0])
+    if(item.texture[0])
     {
-        formatstring(iconpath, "media/model/%s/diffuse.png", item.model);
+        formatstring(iconpath, "media/texture/%s", item.texture);
         return iconpath;
     }
     loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == index)
@@ -639,6 +639,7 @@ static inventoryitemdefinition *findinventoryitem(const char *id)
 
 void worldreset()
 {
+    game::cleanupitemsprites();
     game::resetminingdefinitions();
     worldcubedefinitions.deletecontents();
     worldscatterdefinitions.deletecontents();
@@ -650,7 +651,7 @@ void worldreset()
 
 COMMAND(worldreset, "");
 
-static void defineinventoryitem(const char *id, const char *name, int maxstack, const char *model, const char *icon)
+static void defineinventoryitem(const char *id, const char *name, int maxstack, const char *texture, const char *icon)
 {
     if(!id[0] || !name[0] || maxstack <= 0)
     {
@@ -662,14 +663,14 @@ static void defineinventoryitem(const char *id, const char *name, int maxstack, 
     if(!type) type = inventoryitemdefinitions.add(new inventoryitemdefinition);
     copystring(type->id, id);
     copystring(type->name, name);
-    copystring(type->model, model ? model : "");
+    copystring(type->texture, texture ? texture : "");
     copystring(type->icon, icon ? icon : "");
     type->maxstack = maxstack;
 }
 
-ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *model, char *icon, int *numargs),
+ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *texture, char *icon, int *numargs),
 {
-    defineinventoryitem(id, name, *maxstack, *numargs >= 4 ? model : "", *numargs >= 5 ? icon : "");
+    defineinventoryitem(id, name, *maxstack, *numargs >= 4 ? texture : "", *numargs >= 5 ? icon : "");
 });
 
 static void defineworldcube(const char *id, const char *itemid, const char *texture, float texsize, const char *side, const char *bottom, const char *bottomalternate, int numargs)
@@ -1073,6 +1074,7 @@ static bool loadworlddefinitions(bool assets = true)
     worldtulipscatter = getworldscatteridindex("tulip");
     worlddandelionscatter = getworldscatteridindex("dandelion");
     setworldleavesalpha(worldroot, leavesalpha != 0);
+    game::preloaditemsprites();
     conoutf(CON_DEBUG, "loaded %d inventory item, %d world cube, and %d world object definitions",
             inventoryitemdefinitions.length(), worldcubedefinitions.length(), worldscatterdefinitions.length());
     return true;
@@ -9527,9 +9529,9 @@ static void resetserverworlddefinitions()
 
 COMMANDN(worldreset, resetserverworlddefinitions, "");
 
-ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *model, char *icon, int *numargs),
+ICOMMAND(inventoryitem, "ssissN", (char *id, char *name, int *maxstack, char *texture, char *icon, int *numargs),
 {
-    (void)model;
+    (void)texture;
     (void)icon;
     (void)numargs;
     if(!id[0] || !name[0] || *maxstack <= 0)
@@ -9711,7 +9713,7 @@ bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
     return false;
 }
 
-const char *getinventoryitemmodel(int index) { return ""; }
+const char *getinventoryitemtexture(int index) { return ""; }
 
 int numworldcubes() { return serverworldcubes.length(); }
 

@@ -3330,6 +3330,7 @@ void reloadtex(char *name)
         *t = oldtex;
         conoutf(CON_ERROR, "failed to reload texture %s", name);
     }
+    else game::reloaditemsprites();
 }
 
 COMMAND(reloadtex, "s");

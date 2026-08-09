@@ -4350,6 +4350,7 @@ void renderradiancehints()
 
         renderrsmgeom(rhdyntex!=0);
         rendershadowmodelbatches(rhdynmm!=0);
+        game::renderitemspriteshadows();
 
         rh.renderslices();
 
@@ -4477,6 +4478,7 @@ void rendercsmshadowmaps()
 
         rendershadowmapworld();
         rendershadowmodelbatches();
+        game::renderitemspriteshadows();
     }
 
     if(shadowtransparent)
@@ -4658,6 +4660,7 @@ void rendershadowmaps(int offset = 0)
 
             if(mesh) rendershadowmesh(mesh); else rendershadowmapworld();
             rendershadowmodelbatches();
+            game::renderitemspriteshadows();
 
             if(shadowtransparent)
             {
@@ -4696,6 +4699,7 @@ void rendershadowmaps(int offset = 0)
 
                 if(mesh) rendershadowmesh(mesh); else rendershadowmapworld();
                 rendershadowmodelbatches();
+                game::renderitemspriteshadows();
             }
             if(shadowtransparent)
             {
@@ -5186,6 +5190,7 @@ void preparegbuffer(bool depthclear)
     if(depthclear) resetlights();
 
     resetmodelbatches();
+    game::resetitemspritebatches();
 }
 
 void rendergbuffer(bool depthclear)
@@ -5234,6 +5239,7 @@ void rendergbuffer(bool depthclear)
         {
             ZoneScopedN("Render/G-buffer/Model batches");
             rendermodelbatches();
+            game::renderitemspritebatches();
             GLERROR;
         }
         {
