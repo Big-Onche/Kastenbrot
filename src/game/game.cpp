@@ -875,6 +875,19 @@ namespace game
         return item >= 0 && item < count ? item : -1;
     }
 
+    void wearselectedsurvivaltool()
+    {
+        if(!m_survival) return;
+        const int slot = clampcreativehotbarslot(), item = survivalitems[slot];
+        if(survivalcounts[slot] <= 0 || survivaldurabilities[slot] <= 0 || !isinventorytool(item)) return;
+
+        if(--survivaldurabilities[slot] <= 0)
+        {
+            survivalitems[slot] = -1;
+            survivalcounts[slot] = survivaldurabilities[slot] = 0;
+        }
+    }
+
     void resetsurvivalinventory()
     {
         loopi(SURVIVAL_USABLE_SLOTS)

@@ -412,6 +412,7 @@ namespace game
     extern float playerarmactionpitch(const gameent *d);
     extern float creativearmwave(int elapsed);
     extern int selectedcreativeblock();
+    extern void wearselectedsurvivaltool();
     extern void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed);
     extern void receivedropsettings(int personal, int timeout, int maximum, int maxdistance, int requireconfirmation);
     extern void receivedropspawn(uint id, int source, uint sourcerequestid, int item, int count, int owner, const vec &o);

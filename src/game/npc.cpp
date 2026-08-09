@@ -1046,6 +1046,7 @@ namespace game
         }
 
         const float damage = heldattackdamage() * npcdamagemultiplier(hitpart);
+        wearselectedsurvivaltool();
         const vec impulse = strikeimpulse(camdir, damage);
         spawnblood(hitposition, false);
         hitmob->totalhealth = max(hitmob->totalhealth - damage, 0.0f);

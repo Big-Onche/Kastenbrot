@@ -1881,6 +1881,18 @@ namespace server
         if(ci.breakactive) cancelbreak(ci);
         ci.lastnpcattack = totalmillis;
         const float damage = basedamage * servernpcpartmultiplier(hitpart);
+        if(!servercreative() && equipped >= 0 && isinventorytool(equipped))
+        {
+            const int slot = ci.selectedslot;
+            ci.inventorydurabilities[slot] = max(ci.inventorydurabilities[slot] - 1, 0);
+            if(ci.inventorydurabilities[slot] <= 0)
+            {
+                ci.inventoryitems[slot] = -1;
+                ci.inventorycounts[slot] = ci.inventorydurabilities[slot] = 0;
+            }
+            markinventorydirty(ci);
+            sendinventory(ci);
+        }
         hit->health = max(hit->health - damage, 0.0f);
         bool detached = false;
         if(hitpart != HITBOX_TORSO)
