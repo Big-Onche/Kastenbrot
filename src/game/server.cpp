@@ -68,6 +68,7 @@ namespace server
     VAR(servernpcmaxdist, 1, 256, 4096);
     VAR(servernpcsnapshotmillis, 33, 100, 1000);
     VAR(servernpcdeathtimeout, 1000, 20000, 120000);
+    VAR(servernpcspawnmillis, 100, 500, 60000);
 #ifdef STANDALONE
     VAR(personaldrops, 0, 0, 1);
     VAR(droptimeout, 1, 300, 86400);
@@ -260,7 +261,7 @@ namespace server
     static vec servermapspawn;
     static int servermapspawnyaw = 0, servermapspawnpitch = 0;
     static uint nextnpcid = 1;
-    static int lastnpcsnapshot = 0;
+    static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0;
     static vector<serverdrop *> serverdrops;
     static vector<furnaceinstance *> serverfurnaces;
     static uint nextdropid = 1;
@@ -1657,6 +1658,97 @@ namespace server
         return float(top);
     }
 
+    static float serversunlightintensity()
+    {
+        static const float hours[] = { 0, 5, 6, 7, 8, 16, 17, 18, 19, 24 };
+        static const float intensities[] = { 0.06f, 0.05f, 0.30f, 0.75f, 1.0f, 1.0f, 0.75f, 0.28f, 0.05f, 0.06f };
+        const float hour = float(worldclockmillis) * 24.0f / SERVER_DAY_MILLIS;
+        loopi(int(sizeof(hours) / sizeof(hours[0])) - 1) if(hour <= hours[i + 1])
+        {
+            float blend = clamp((hour - hours[i]) / (hours[i + 1] - hours[i]), 0.0f, 1.0f);
+            blend = blend * blend * (3.0f - 2.0f * blend);
+            return intensities[i] + (intensities[i + 1] - intensities[i]) * blend;
+        }
+        return intensities[0];
+    }
+
+    static bool servercelldirectsky(const ivec &cell)
+    {
+        if(cell.x < 0 || cell.y < 0 || cell.x >= SERVER_WORLD_MAP_SIZE || cell.y >= SERVER_WORLD_MAP_SIZE || cell.z < 0 ||
+           cell.z >= SERVER_WORLD_MAP_SIZE || serverblocksolid(cell)) return false;
+        for(int z = cell.z + SERVER_WORLD_BLOCK_SIZE; z < SERVER_WORLD_MAP_SIZE; z += SERVER_WORLD_BLOCK_SIZE)
+            if(serverblocksolid(ivec(cell.x, cell.y, z))) return false;
+        return true;
+    }
+
+    static int serverskylightlevel(const vec &position)
+    {
+        struct skynode
+        {
+            ivec cell;
+            int distance;
+
+            skynode(const ivec &cell, int distance) : cell(cell), distance(distance) {}
+        };
+        static const ivec directions[] =
+        {
+            ivec(SERVER_WORLD_BLOCK_SIZE, 0, 0), ivec(-SERVER_WORLD_BLOCK_SIZE, 0, 0),
+            ivec(0, SERVER_WORLD_BLOCK_SIZE, 0), ivec(0, -SERVER_WORLD_BLOCK_SIZE, 0),
+            ivec(0, 0, SERVER_WORLD_BLOCK_SIZE), ivec(0, 0, -SERVER_WORLD_BLOCK_SIZE)
+        };
+        const ivec start = serverblockat(position);
+        if(serverblocksolid(start)) return 0;
+        vector<skynode> queue;
+        hashtable<ivec, int> visited(1 << 12);
+        queue.add(skynode(start, 0));
+        visited[start] = 0;
+        loopv(queue)
+        {
+            const skynode node = queue[i];
+            if(servercelldirectsky(node.cell)) return 16 - node.distance;
+            if(node.distance >= 15) continue;
+            loopj(int(sizeof(directions) / sizeof(directions[0])))
+            {
+                const ivec next = ivec(node.cell).add(directions[j]);
+                if(next.x < 0 || next.y < 0 || next.z < 0 || next.x >= SERVER_WORLD_MAP_SIZE || next.y >= SERVER_WORLD_MAP_SIZE ||
+                   next.z >= SERVER_WORLD_MAP_SIZE || visited.access(next) || serverblocksolid(next)) continue;
+                visited[next] = node.distance + 1;
+                queue.add(skynode(next, node.distance + 1));
+            }
+        }
+        return 0;
+    }
+
+    static int serverequippeditem(const clientinfo &ci)
+    {
+        if(servercreative()) return ci.selectedcreative;
+        return ci.selectedslot >= 0 && ci.selectedslot < SURVIVAL_HOTBAR_SLOTS && ci.inventorycounts[ci.selectedslot] > 0
+             ? ci.inventoryitems[ci.selectedslot] : -1;
+    }
+
+    static int serverlightlevel(const vec &position)
+    {
+        float level = serverskylightlevel(position) * serversunlightintensity();
+        loopv(serverworldactions)
+        {
+            const serverworldaction &state = *serverworldactions[i];
+            if(state.action != WORLD_ACTION_PLACE_ITEM) continue;
+            const float radius = getworlditemlightradius(state.item);
+            if(radius <= 0) continue;
+            const vec emitter(state.target.x + SERVER_WORLD_BLOCK_SIZE * 0.5f, state.target.y + SERVER_WORLD_BLOCK_SIZE * 0.5f,
+                              state.target.z + SERVER_WORLD_BLOCK_SIZE);
+            level = max(level, radius - emitter.dist(position) / SERVER_WORLD_BLOCK_SIZE);
+        }
+        loopv(clients)
+        {
+            const clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->worldready || !ci->hasposition || ci->dead) continue;
+            const float radius = getworlditemlightradius(serverequippeditem(*ci));
+            if(radius > 0) level = max(level, radius - vec(ci->o).addz(SERVER_PLAYER_EYE_HEIGHT).dist(position) / SERVER_WORLD_BLOCK_SIZE);
+        }
+        return clamp(int(floorf(level + 0.5f)), 0, 16);
+    }
+
     static void sendplayerstate(int cn, const clientinfo &subject, const vec &impulse = vec(0, 0, 0))
     {
         const vec position = vec(subject.o).addz(SERVER_PLAYER_EYE_HEIGHT);
@@ -1840,6 +1932,7 @@ namespace server
     {
         while(servernpcs.length()) removeservernpc(servernpcs.length() - 1);
         nextnpcid = 1;
+        lastnpcspawnattempt = 0;
     }
 
     static bool servernpcclearance(const vec &position, uint ignore = 0)
@@ -1889,6 +1982,66 @@ namespace server
         mob->pauseuntil = totalmillis + 600;
         servernpcs.add(mob);
         return mob;
+    }
+
+    static int livingserveraggressivenpcs()
+    {
+        int count = 0;
+        loopv(servernpcs) if(!servernpcs[i]->deathmillis && servernpcs[i]->definition->attitude == NPC_AGGRESSIVE) ++count;
+        return count;
+    }
+
+    static npcdefinition *serveraggressivenpcdefinition(uint seed)
+    {
+        int count = 0;
+        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->attitude == NPC_AGGRESSIVE) ++count;
+        if(!count) return NULL;
+        int selected = int(seed % uint(count));
+        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->attitude == NPC_AGGRESSIVE && selected-- == 0)
+            return game::getnpcdefinition(i);
+        return NULL;
+    }
+
+    static void tryspawnserveraggressivenpc()
+    {
+        if(servercreative() || totalmillis - lastnpcspawnattempt < servernpcspawnmillis) return;
+        lastnpcspawnattempt = totalmillis;
+        const int cap = serversimulationmaxdist / 2;
+        if(cap <= 0 || livingserveraggressivenpcs() >= cap || clients.empty()) return;
+
+        const uint seed = worlddrophash(uint(max(totalmillis, 1)) ^ nextnpcid * 0x9E3779B9U);
+        clientinfo *owner = NULL;
+        const int start = int(seed % uint(clients.length()));
+        loopi(clients.length())
+        {
+            clientinfo *candidate = clients[(start + i) % clients.length()];
+            if(candidate && candidate->connected && candidate->worldready && candidate->hasposition && !candidate->dead)
+            {
+                owner = candidate;
+                break;
+            }
+        }
+        if(!owner) return;
+        npcdefinition *definition = serveraggressivenpcdefinition(worlddrophash(seed ^ 0x85EBCA6BU));
+        if(!definition) return;
+
+        const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
+                    minimumdistance = min(16.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
+                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
+                    angle = float(seed % 36000U) * RAD / 100.0f;
+        vec position = vec(owner->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
+        if(position.x < 1 || position.y < 1 || position.x >= SERVER_WORLD_MAP_SIZE - 1 || position.y >= SERVER_WORLD_MAP_SIZE - 1) return;
+        position.z = servergroundheight(position.x, position.y) + 28.0f;
+        if(position.z < 28.0f || position.z >= SERVER_WORLD_MAP_SIZE || position.squaredist(owner->o) > simulationdistance * simulationdistance ||
+           !servernpcclearance(position)) return;
+        const int light = serverlightlevel(position);
+        if(light >= 3 || int(worlddrophash(seed ^ 0xC2B2AE35U) % 4U) >= 3 - light) return;
+
+        servernpc *mob = new servernpc(nextnpcid++, definition);
+        mob->o = mob->spawn = mob->destination = position;
+        mob->yaw = float(worlddrophash(seed ^ 0x27D4EB2FU) % 36000U) / 100.0f;
+        mob->pauseuntil = totalmillis + 600;
+        servernpcs.add(mob);
     }
 
     static bool serverraybox(const vec &origin, const vec &direction, const vec &minimum, const vec &maximum, float &distance)
@@ -2182,6 +2335,7 @@ namespace server
 
     static void updateservernpcs()
     {
+        tryspawnserveraggressivenpc();
         const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
                     existencedistance = servernpcmaxdist * GAMEUNITSPERMETER;
         for(int i = servernpcs.length() - 1; i >= 0; --i)
@@ -2379,6 +2533,7 @@ namespace server
         putint(p, serverwaterupdatespertick);
         putint(p, serverwatersimulationmaxdist);
         putint(p, clamp(int(serverwaterflowspeed * 1000.0f + 0.5f), 100, 20000));
+        putint(p, serversimulationmaxdist);
         const bool restoreposition = !reset && ci.hasposition;
         putint(p, restoreposition ? 1 : 0);
         putint(p, restoreposition ? ci.positioncoords.x : 0);
@@ -2437,6 +2592,7 @@ namespace server
         servermapspawnyaw = servermapspawnpitch = 0;
         nextnpcid = 1;
         lastnpcsnapshot = 0;
+        lastnpcspawnattempt = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
         worldclockmillis = SERVER_START_MILLIS;
         worldtimefrozen = false;

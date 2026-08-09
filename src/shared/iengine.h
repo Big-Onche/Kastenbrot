@@ -220,6 +220,7 @@ extern bool matchcraftrecipe(const int *items, const int *counts, int gridsize, 
                              int skill, int skilllevel, int requestedrecipe, craftmatch &match, int maxoutput = INT_MAX);
 extern int getworlditemtype(int item);
 extern int getworlditemindex(int item);
+extern float getworlditemlightradius(int item);
 extern int getworldobjectdropcount(int type, int index);
 extern bool getworldobjectdrop(int type, int index, int drop, int &item, int &mincount, int &maxcount, float &chance);
 extern bool worldcellacceptswater(const ivec &position);
@@ -374,6 +375,7 @@ extern void mpeditent(int i, const vec &o, int type, int attr1, int attr2, int a
 extern vec getselpos();
 extern int getworldsize();
 extern float getworldskyexposure(const vec &position);
+extern int getworldlightlevel(const vec &position);
 extern void updateworldchunks(bool force = false);
 extern int getmapversion();
 extern void renderentcone(const extentity &e, const vec &dir, float radius, float angle);

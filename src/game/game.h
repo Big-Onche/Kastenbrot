@@ -144,7 +144,7 @@ static const int msgsizes[] =
     N_DELCUBE, 14, N_CALCLIGHT, 1, N_REMIP, 1, N_EDITVSLOT, 16,
     N_UNDO, 0, N_REDO, 0, N_NEWMAP, 2, N_GETMAP, 1, N_SENDMAP, 0,
     N_CLIPBOARD, 0, N_EDITVAR, 0, N_EDITSCATTER, 16, N_EDITAUTHOR, 4,
-    N_WORLDSTATE, 18, N_WORLDREADY, 6, N_WORLDSYNC, 2, N_WORLDTIME, 3,
+    N_WORLDSTATE, 19, N_WORLDREADY, 6, N_WORLDSYNC, 2, N_WORLDTIME, 3,
     N_SETPRIVILEGE, 3, N_SETMASTER, 0, N_SERVERCOMMAND, 0,
     N_SERVERIDENTITY, 0, N_IDENTITYLOGIN, 0, N_IDENTITYREGISTER, 0, N_IDENTITYCHALLENGE, 0,
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
@@ -159,7 +159,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 22
+#define PROTOCOL_VERSION 23
 
 enum
 {
@@ -424,7 +424,8 @@ namespace game
     extern void receiveplayerstate(int clientnum, float health, int state, const vec &position, const vec &impulse);
     extern void beginplayerragdoll(gameent *d, const vec &impulse);
     extern void clearplayerragdoll(gameent *d);
-    extern void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed);
+    extern void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed, int npcsimulationdistance);
+    extern int getnpcsimulationmaxdist();
     extern void receivedropsettings(int personal, int timeout, int maximum, int maxdistance, int requireconfirmation);
     extern void receivedropspawn(uint id, int source, uint sourcerequestid, int item, int count, int durability, int owner, const vec &o);
     extern void receivedropdelete(uint id, int picker);

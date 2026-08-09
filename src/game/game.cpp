@@ -3,6 +3,7 @@
 #ifndef STANDALONE
 extern int mainmenu;
 extern int initing;
+extern int simulationmaxdist;
 #endif
 
 const gamemodeinfo gamemodes[3] =
@@ -344,7 +345,7 @@ namespace game
         resetfurnaces();
         nextworldrequestid = 1;
         resetsurvivalinventory();
-        receiveserversettings(5000, 250, 1024, 128, 4000);
+        receiveserversettings(5000, 250, 1024, 128, 4000, 128);
         resetwatersimulationsettings();
 #ifndef STANDALONE
         resetclientreceive();
@@ -1184,11 +1185,23 @@ namespace game
         return true;
     }
 
-    void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed)
+    static int authoritativenpcsimulationmaxdist = 128;
+
+    void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed, int npcsimulationdistance)
     {
         authoritativebreakmillis = clamp(breakmillis, 100, 60000);
         authoritativescatterbreakmillis = clamp(scatterbreakmillis, 50, 60000);
+        authoritativenpcsimulationmaxdist = clamp(npcsimulationdistance, 1, 1024);
         setwatersimulationsettings(waterupdates, waterdistance, waterspeed);
+    }
+
+    int getnpcsimulationmaxdist()
+    {
+#ifdef STANDALONE
+        return authoritativenpcsimulationmaxdist;
+#else
+        return multiplayer(false) ? authoritativenpcsimulationmaxdist : simulationmaxdist;
+#endif
     }
 
     void receiveactionresult(uint requestid, int result, const char *reason)

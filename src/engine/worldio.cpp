@@ -529,6 +529,12 @@ int getworlditemindex(int item)
     return -1;
 }
 
+float getworlditemlightradius(int item)
+{
+    loopv(worldscatterdefinitions) if(worldscatterdefinitions[i]->item == item) return worldscatterdefinitions[i]->lightradius;
+    return 0.0f;
+}
+
 static vector<worlddropdefinition> &worldobjectdrops(int type, int index)
 {
     static vector<worlddropdefinition> empty;
@@ -7981,6 +7987,27 @@ static ullong currentworldparameterhash()
                               sizeof(settings));
 }
 
+int getworldlightlevel(const vec &position)
+{
+    float level = clamp(getworldskyexposure(position) * sunlightscale * 16.0f, 0.0f, 16.0f);
+    const game::worldsettings settings;
+    loopv(worldchunks)
+    {
+        const worldchunk &chunk = worldchunks[i];
+        if(chunk.loading || !chunk.root || !worldchunkmounted(chunk)) continue;
+        loopvj(chunk.scatter)
+        {
+            const worldscatterinstance &scatter = chunk.scatter[j];
+            if(!isworldtorch(scatter.type) || !worldscattermounted(chunk, scatter)) continue;
+            vec flame;
+            if(!worldtorchflameposition(chunk, scatter, settings.grassmaxoffset, flame)) continue;
+            const float torchlevel = worldscatterdefinitions[scatter.type]->lightradius - flame.dist(position) / WORLD_BLOCK_SIZE;
+            level = max(level, torchlevel);
+        }
+    }
+    return clamp(int(floorf(level + 0.5f)), 0, 16);
+}
+
 static bool replaceworldmetadatafile(const char *temporary, const char *finalname)
 {
 #ifdef WIN32
@@ -9521,11 +9548,13 @@ struct serverworldobjectdefinition
 {
     string id, itemid;
     int item, type, furnaceinputslots, furnaceinputlimit;
+    float lightradius;
     vector<serverworlddropdefinition> drops;
     bool explicitdrops, scatter, placeable;
 
     serverworldobjectdefinition()
-        : item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), explicitdrops(false), scatter(false), placeable(false)
+        : item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), lightradius(0), explicitdrops(false), scatter(false),
+          placeable(false)
     {
         id[0] = itemid[0] = '\0';
     }
@@ -9626,10 +9655,10 @@ ICOMMAND(worldscatter, "sss", (char *id, char *itemid, char *model),
 ICOMMAND(worldplaceable, "sssfsN", (char *id, char *itemid, char *model, float *lightradius, char *lightcolor, int *numargs),
 {
     (void)model;
-    (void)lightradius;
     (void)lightcolor;
     (void)numargs;
     defineserverworldmodel(id, itemid, true);
+    if(serverworldobjectdefinition *object = findserverworldobject(serverworldobjects, id)) object->lightradius = max(*lightradius, 0.0f);
 });
 
 static void addserverworlddrop(const char *worldid, const char *itemid, int mincount, int maxcount, float chance)
@@ -9774,6 +9803,12 @@ int getworlditemindex(int item)
     loopv(serverworldcubes) if(serverworldcubes[i]->item == item) return i;
     loopv(serverworldobjects) if(serverworldobjects[i]->item == item) return i;
     return -1;
+}
+
+float getworlditemlightradius(int item)
+{
+    loopv(serverworldobjects) if(serverworldobjects[i]->item == item) return serverworldobjects[i]->lightradius;
+    return 0.0f;
 }
 
 static vector<serverworlddropdefinition> &getserverworlddrops(int type, int index)

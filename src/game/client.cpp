@@ -602,12 +602,12 @@ namespace game
                 gamemode = getint(p);
                 if(!m_valid(gamemode) || (!m_creative && !m_survival)) gamemode = STARTGAMEMODE;
                 const int breakmillis = getint(p), scatterbreakmillis = getint(p),
-                          waterupdates = getint(p), waterdistance = getint(p), waterspeed = getint(p);
+                          waterupdates = getint(p), waterdistance = getint(p), waterspeed = getint(p), npcsimulationdistance = getint(p);
                 const bool serverrestoreposition = getint(p) != 0;
                 vec serverposition;
                 loopk(3) serverposition[k] = getint(p)/DMF;
                 const int serveryaw = getint(p), serverpitch = getint(p);
-                receiveserversettings(breakmillis, scatterbreakmillis, waterupdates, waterdistance, waterspeed);
+                receiveserversettings(breakmillis, scatterbreakmillis, waterupdates, waterdistance, waterspeed, npcsimulationdistance);
                 pendingnetworkrestoreposition = player1 && (pendingnetworkreset || serverrestoreposition);
                 if(pendingnetworkrestoreposition && pendingnetworkreset)
                 {

@@ -1,8 +1,6 @@
 #include "game.h"
 #include "engine.h"
 
-extern int simulationmaxdist;
-
 namespace game
 {
     static vector<npcdefinition *> npcdefinitions;
@@ -181,10 +179,11 @@ namespace game
     static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
     static vector<npc *> npcs;
     static vector<severedlimb *> severedlimbs;
-    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0;
+    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastnpcspawnattempt = 0;
     static uint nextnpcattackrequest = 1;
 
     VARP(npcmaxdist, 1, 256, 4096);
+    VAR(npcspawnmillis, 100, 500, 60000);
     VARP(npcdebrisduration, 1000, 20000, 120000);
     VARP(npcdebrissinktime, 250, 3000, 10000);
     VAR(npcbleedduration, 0, 2000, 10000);
@@ -246,6 +245,7 @@ namespace game
         severedlimbs.deletecontents();
         nextnpcid = 1;
         nextnpcattackrequest = 1;
+        lastnpcspawnattempt = 0;
         cleardynentcache();
     }
 
@@ -259,6 +259,32 @@ namespace game
     {
         return npcs.length();
     }
+
+    static int playerlightlevel()
+    {
+        if(!player1) return 16;
+        int level = getworldlightlevel(player1->o);
+        const float radius = getworlditemlightradius(selectedcreativeblock());
+        if(radius > 0)
+        {
+            vec emitter = player1->o;
+            heldtorchemitterposition(player1, emitter);
+            level = max(level, clamp(int(floorf(radius - emitter.dist(player1->o) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
+        }
+        return level;
+    }
+
+    ICOMMAND(getdebugplayerlight, "", (), intret(playerlightlevel()));
+
+    ICOMMAND(getdebugnpcsinrange, "", (),
+    {
+        if(!player1) { intret(0); return; }
+        const float distance = getnpcsimulationmaxdist() * GAMEUNITSPERMETER;
+        const float distancesquared = distance * distance;
+        int count = 0;
+        loopv(npcs) if(npcs[i]->o.squaredist(player1->o) <= distancesquared) ++count;
+        intret(count);
+    });
 
     dynent *iternpc(int index)
     {
@@ -1366,6 +1392,73 @@ namespace game
         }
     }
 
+    static int livingaggressivenpcs()
+    {
+        int count = 0;
+        loopv(npcs) if(npcs[i]->state != CS_DEAD && npcs[i]->attitude == NPC_AGGRESSIVE) ++count;
+        return count;
+    }
+
+    static npcdefinition *aggressivenpcdefinition(uint seed)
+    {
+        int count = 0;
+        loopi(numnpcdefinitions()) if(getnpcdefinition(i)->attitude == NPC_AGGRESSIVE) ++count;
+        if(!count) return NULL;
+        int selected = int(seed % uint(count));
+        loopi(numnpcdefinitions()) if(getnpcdefinition(i)->attitude == NPC_AGGRESSIVE && selected-- == 0) return getnpcdefinition(i);
+        return NULL;
+    }
+
+    static void tryspawnlocalaggressivenpc()
+    {
+        if(!m_survival || editmode || !player1 || player1->state != CS_ALIVE || lastmillis - lastnpcspawnattempt < npcspawnmillis) return;
+        lastnpcspawnattempt = lastmillis;
+        const int simulationdistanceblocks = getnpcsimulationmaxdist(), cap = simulationdistanceblocks / 2;
+        if(cap <= 0 || livingaggressivenpcs() >= cap) return;
+
+        const uint seed = worlddrophash(uint(max(lastmillis, 1)) ^ uint(nextnpcid) * 0x9E3779B9U);
+        npcdefinition *definition = aggressivenpcdefinition(worlddrophash(seed ^ 0x85EBCA6BU));
+        if(!definition) return;
+        const float simulationdistance = simulationdistanceblocks * GAMEUNITSPERMETER,
+                    minimumdistance = min(16.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
+                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
+                    angle = float(seed % 36000U) * RAD / 100.0f;
+        vec position = vec(player1->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
+        const float worldlimit = float(getworldsize() - 1);
+        if(position.x < 1 || position.y < 1 || position.x >= worldlimit || position.y >= worldlimit) return;
+
+        vec probe(position.x, position.y, min(player1->o.z + 64.0f, worldlimit));
+        const float grounddistance = raycube(probe, vec(0, 0, -1), probe.z, RAY_CLIPMAT | RAY_POLY | RAY_SKIPFIRST);
+        if(grounddistance < 0 || grounddistance >= probe.z) return;
+        position.z = probe.z - grounddistance + 28.1f;
+        if(position.squaredist(player1->o) > simulationdistance * simulationdistance) return;
+
+        int light = getworldlightlevel(position);
+        const float heldradius = getworlditemlightradius(selectedcreativeblock());
+        if(heldradius > 0)
+        {
+            vec emitter = player1->o;
+            heldtorchemitterposition(player1, emitter);
+            light = max(light, clamp(int(floorf(heldradius - emitter.dist(position) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
+        }
+        if(light >= 3 || int(worlddrophash(seed ^ 0xC2B2AE35U) % 4U) >= 3 - light) return;
+
+        npc *mob = new npc(definition, nextnpcid);
+        mob->o = position;
+        mob->yaw = float(worlddrophash(seed ^ 0x27D4EB2FU) % 36000U) / 100.0f;
+        if(!entinmap(mob, true))
+        {
+            delete mob;
+            return;
+        }
+        ++nextnpcid;
+        mob->spawn = mob->destination = mob->o;
+        npcs.add(mob);
+        beginwanderpause(*mob);
+        updatenpchitboxes(*mob);
+        cleardynentcache();
+    }
+
     void updatenpcs()
     {
         if(multiplayer(false))
@@ -1421,7 +1514,9 @@ namespace game
         }
         if(removed) cleardynentcache();
 
-        const float simulationdistance = simulationmaxdist * GAMEUNITSPERMETER;
+        tryspawnlocalaggressivenpc();
+
+        const float simulationdistance = getnpcsimulationmaxdist() * GAMEUNITSPERMETER;
         loopv(npcs)
         {
             npc &mob = *npcs[i];
