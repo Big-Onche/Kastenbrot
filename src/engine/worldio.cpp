@@ -8413,11 +8413,11 @@ static void createworld(const char *requestedname)
     const char *existingmetadata = findfile(metadatafile, "rb");
     if(existingmetadata && fileexists(existingmetadata, "r"))
     {
-        conoutf(CON_ERROR,
-                "world %s already exists; use loadworld %s or choose a new name",
-                chosenfolder, chosenfolder);
+        conoutf(CON_ERROR, "world %s already exists; use loadworld %s or choose a new name", chosenfolder, chosenfolder);
         return;
     }
+
+    UI::hideui("new_world");
 
     // Snapshot the menu/console seed before loading or resetting anything.
     // The active seed belongs to the currently loaded world and must not be
