@@ -1,10 +1,9 @@
-// Kastenbrot clouds: flat single-layer renderer v1.3 (no Cube hashtable iteration macros)
-// Kastenbrot single-layer voxel clouds.
+// Kastenbrot clouds: flat single-layer renderer
 //
 // Deliberately simple: one deterministic 2D cloud mask extruded into a thin voxel slab.
-// No 3D noise, no cloud chunks, no pseudo raymarch. The cloud deck is one contiguous VBO
-// centered around the camera with a rebuild margin. Internal faces are never generated,
-// top/bottom and side faces are greedily merged, so geometry stays tiny even at long range.
+// The cloud deck is one contiguous VBO centered around the camera with a rebuild margin.
+// Internal faces are never generated, top/bottom and side faces are greedily merged
+// so geometry stays tiny even at long range.
 
 #include "engine.h"
 #ifdef SQRT3
@@ -33,7 +32,7 @@ extern float ambientscale, sunlightscale;
 extern vec sunlightdir;
 
 // general
-VARP(clouds, 0, 0, 1);
+VARP(clouds, 0, 1, 1);
 VARP(cloudcellsize, 16, 128, 256);
 VARP(clouddistance, 512, 16384, 32768);
 VARP(cloudrebuildmargin, 1, 8, 64);
@@ -47,13 +46,13 @@ VARP(cloudbaseheight, 0, 6144, 16384);
 VARP(cloudheight, 16, 128, 1024);
 FVARP(cloudscale, 0.00005f, 0.00090f, 0.05f);
 FVARP(cloudcoverage, 0.0f, 0.50f, 1.0f);
+FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
 
 // weather map
 FVARP(weatherscale, 0.00001f, 0.00010f, 0.01f);
 FVARP(weathercoverage, 0.0f, 0.52f, 1.0f);
 FVARP(cloudweatherinfluence, 0.0f, 0.30f, 1.0f);
 FVARP(weatherwindspeed, 0.0f, 0.20f, 16.0f);
-FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
 
 // wind
 FVARP(cloudwindspeed, 0.0f, 1.20f, 64.0f);
@@ -77,9 +76,12 @@ FVARP(cloudrenderscale, 0.25f, 0.75f, 1.0f);
 VARP(cloudblurradius, 0, 1, 4);
 FVARP(cloudblursigma, 0.25f, 0.85f, 4.0f);
 
-// CSM
+// dedicated projected cloud shadows
 VARP(cloudshadows, 0, 1, 1);
 VARP(cloudshadowdistance, 0, 4096, 16384);
+FVARP(cloudshadowalpha, 0.0f, 0.45f, 1.0f);
+VARP(cloudshadowmapsize, 64, 1024, 2048);
+FVARP(cloudshadowsoftness, 0.0f, 1.25f, 8.0f);
 
 // time-of-day colours
 CVARP(clouddaycolor, 0xFFFDFC);
@@ -614,6 +616,236 @@ namespace
         gle::end();
     }
 
+
+    // Dedicated cloud shadow mask.
+    // The mask is rendered in cloud-local XY space, so cloud wind/camera translation only changes the sampling transform and does not force a mask rerender every frame
+    static GLuint cloudshadowfbo[2] = { 0, 0 }, cloudshadowtex[2] = { 0, 0 };
+    static int cloudshadowrt = 0;
+    static int cloudshadowmasksettingsversion = -1, cloudshadowmaskweatherversion = -1;
+    static int cloudshadowmaskoriginx = INT_MIN, cloudshadowmaskoriginy = INT_MIN;
+    static int cloudshadowmaskmapsize = 0;
+    static float cloudshadowmasksoftness = -1.0f;
+
+    static void cleanupcloudshadowtarget()
+    {
+        if(cloudshadowfbo[0] || cloudshadowfbo[1]) glDeleteFramebuffers_(2, cloudshadowfbo);
+        if(cloudshadowtex[0] || cloudshadowtex[1]) glDeleteTextures(2, cloudshadowtex);
+        cloudshadowfbo[0] = cloudshadowfbo[1] = 0;
+        cloudshadowtex[0] = cloudshadowtex[1] = 0;
+        cloudshadowrt = 0;
+        cloudshadowmasksettingsversion = cloudshadowmaskweatherversion = -1;
+        cloudshadowmaskoriginx = cloudshadowmaskoriginy = INT_MIN;
+        cloudshadowmaskmapsize = 0;
+        cloudshadowmasksoftness = -1.0f;
+    }
+
+    static bool setupcloudshadowtarget()
+    {
+        const int size = clamp(cloudshadowmapsize, 64, 2048);
+        if(cloudshadowfbo[0] && cloudshadowfbo[1] && cloudshadowrt == size) return true;
+
+        cleanupcloudshadowtarget();
+        cloudshadowrt = size;
+
+        glGenFramebuffers_(2, cloudshadowfbo);
+        glGenTextures(2, cloudshadowtex);
+
+        for(int i = 0; i < 2; ++i)
+        {
+            glBindTexture(GL_TEXTURE_2D, cloudshadowtex[i]);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, cloudshadowrt, cloudshadowrt, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+            glBindFramebuffer_(GL_FRAMEBUFFER, cloudshadowfbo[i]);
+            glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, cloudshadowtex[i], 0);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+            if(glCheckFramebufferStatus_(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            {
+                glBindFramebuffer_(GL_FRAMEBUFFER, 0);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                cleanupcloudshadowtarget();
+                return false;
+            }
+        }
+
+        glBindFramebuffer_(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return true;
+    }
+
+    static void cloudshadowblurweights(float weights[5])
+    {
+        if(cloudshadowsoftness <= 0.0f)
+        {
+            weights[0] = 1.0f;
+            for(int i = 1; i < 5; ++i) weights[i] = 0.0f;
+            return;
+        }
+
+        const int radius = clamp(int(ceilf(cloudshadowsoftness)), 1, 4);
+        const float sigma = max(cloudshadowsoftness * 0.65f, 0.35f);
+        float total = 0.0f;
+
+        for(int i = 0; i < 5; ++i)
+        {
+            weights[i] = i > radius ? 0.0f : expf(-float(i * i) / (2.0f * sigma * sigma));
+            total += i ? weights[i] * 2.0f : weights[i];
+        }
+
+        if(total <= 0.0f) total = 1.0f;
+        for(int i = 0; i < 5; ++i) weights[i] /= total;
+    }
+
+    static void blurcloudshadowtarget()
+    {
+        if(cloudshadowsoftness <= 0.0f || !cloudshadowfbo[0] || !cloudshadowfbo[1]) return;
+
+        Shader *shader = lookupshaderbyname("cloudshadowblur");
+        if(!shader) return;
+
+        float weights[5];
+        cloudshadowblurweights(weights);
+
+        // Above 4.0, spread the fixed 9-tap kernel farther apart instead of adding
+        // more taps. This keeps the cost fixed while still allowing very soft shadows.
+        const float spread = max(cloudshadowsoftness / 4.0f, 1.0f);
+        const float texel = spread / max(float(cloudshadowrt), 1.0f);
+
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        shader->set();
+        LOCALPARAMF(cloudshadowblurweights0, weights[0], weights[1], weights[2], weights[3]);
+        LOCALPARAMF(cloudshadowblurweights1, weights[4], 0, 0, 0);
+
+        glBindFramebuffer_(GL_FRAMEBUFFER, cloudshadowfbo[1]);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glViewport(0, 0, cloudshadowrt, cloudshadowrt);
+        glBindTexture(GL_TEXTURE_2D, cloudshadowtex[0]);
+        LOCALPARAMF(cloudshadowblurdir, texel, 0, 0, 0);
+        drawcloudscreenquad();
+
+        glBindFramebuffer_(GL_FRAMEBUFFER, cloudshadowfbo[0]);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glBindTexture(GL_TEXTURE_2D, cloudshadowtex[1]);
+        LOCALPARAMF(cloudshadowblurdir, 0, texel, 0, 0);
+        drawcloudscreenquad();
+    }
+
+    static bool updatecloudshadowmask()
+    {
+        if(!cloudshadows || cloudshadowalpha <= 0.0f || !cloudstate.built || !cloudstate.vbo || !cloudstate.size) return false;
+        if(!setupcloudshadowtarget()) return false;
+
+        const bool stale =
+            cloudshadowmasksettingsversion != cloudstate.settingsversion ||
+            cloudshadowmaskweatherversion != cloudstate.weatherversion ||
+            cloudshadowmaskoriginx != cloudstate.originx ||
+            cloudshadowmaskoriginy != cloudstate.originy ||
+            cloudshadowmaskmapsize != cloudshadowmapsize ||
+            cloudshadowmasksoftness != cloudshadowsoftness;
+
+        if(!stale) return cloudshadowtex[0] != 0;
+
+        glBindFramebuffer_(GL_FRAMEBUFFER, cloudshadowfbo[0]);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        glViewport(0, 0, cloudshadowrt, cloudshadowrt);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        if(cloudstate.numverts > 0)
+        {
+            Shader *shader = lookupshaderbyname("cloudshadowmask");
+            if(!shader) return false;
+
+            shader->set();
+
+            const float span = max(cloudstate.size * float(cloudcellsize), 1.0f);
+            LOCALPARAMF(cloudshadowmaskparams, 1.0f / span, 1.0f / span, 0, 0);
+
+            enablecloudvertexformat(cloudstate);
+            glDrawArrays(GL_TRIANGLES, 0, cloudstate.numverts);
+            glde++;
+            disablecloudvertexformat();
+
+            blurcloudshadowtarget();
+        }
+
+        cloudshadowmasksettingsversion = cloudstate.settingsversion;
+        cloudshadowmaskweatherversion = cloudstate.weatherversion;
+        cloudshadowmaskoriginx = cloudstate.originx;
+        cloudshadowmaskoriginy = cloudstate.originy;
+        cloudshadowmaskmapsize = cloudshadowmapsize;
+        cloudshadowmasksoftness = cloudshadowsoftness;
+        return true;
+    }
+
+    static void drawcloudshadowoverlay(GLuint framebuffer, const GLint viewport[4])
+    {
+        if(!cloudshadows || cloudshadowalpha <= 0.0f || !cloudshadowdistance || !camera1) return;
+
+        const float direct = clamp((sunlightscale - 0.06f) / 0.34f, 0.0f, 1.0f);
+        if(direct <= 0.03f) return;
+        if(sunlightdir.z <= 0.01f) return;
+        if(!updatecloudshadowmask() || !cloudshadowtex[0]) return;
+
+        Shader *shader = lookupshaderbyname("cloudshadowoverlay");
+        if(!shader) return;
+
+        glBindFramebuffer_(GL_FRAMEBUFFER, framebuffer);
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+        // Multiplicative blend: the shader outputs 1.0 in lit pixels and a value
+        // below 1.0 under clouds. This leaves the existing opaque lighting intact
+        // except for the cloud attenuation.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+
+        shader->set();
+
+        const vec offset = cloudrenderoffset(cloudstate);
+        const float span = max(cloudstate.size * float(cloudcellsize), 1.0f);
+        LOCALPARAM(cloudshadoworigin, vec(offset.x, offset.y, float(cloudbaseheight)));
+        LOCALPARAM(cloudsundir, sunlightdir);
+        LOCALPARAM(camera, camera1->o);
+        LOCALPARAMF(cloudshadowparams, 1.0f / span, cloudshadowalpha * direct, float(cloudshadowdistance), 0.0f);
+
+        glActiveTexture_(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, cloudshadowtex[0]);
+
+        // Tesseract/Cube's standard g-buffer depth binding; cloudshadowoverlay uses
+        // the same gfetch/gdepthunpack path as the deferred/volumetric shaders.
+        glActiveTexture_(GL_TEXTURE3);
+        bindgdepth();
+        glActiveTexture_(GL_TEXTURE0);
+
+        drawcloudscreenquad();
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     static void cloudblurweights(float weights[5])
     {
         const int radius = clamp(cloudblurradius, 0, 4);
@@ -760,6 +992,9 @@ void renderclouds()
     glActiveTexture_(GL_TEXTURE0);
     int renderedverts = 0;
 
+    // project the low-resolution cloud shadow mask onto the already-lit opaque scene
+    drawcloudshadowoverlay(GLuint(oldfb), oldviewport);
+
     if(!cloudpostblur || cloudblurradius <= 0)
     {
         glBindFramebuffer_(GL_FRAMEBUFFER, GLuint(oldfb));
@@ -865,39 +1100,15 @@ void renderclouds()
 
 void rendercloudshadows(int split)
 {
-    if(!clouds || !cloudshadows || !cloudshadowdistance || !camera1) return;
-    const float direct = clamp((sunlightscale - 0.06f) / 0.34f, 0.0f, 1.0f);
-    if(direct <= 0.03f) return;
-
-    Shader *shader = lookupshaderbyname("cloudshadow");
-    if(!shader) return;
-    shader->set();
-
-    cloudlayer &layer = cloudstate;
-
-    vec center;
-    float radius;
-    if(!cloudlayerbounds(layer, center, radius, float(cloudshadowdistance))) return;
-
-    const vec offset = cloudrenderoffset(layer);
-    const float span = layer.size * cloudcellsize;
-    const int z0 = cloudbaseheight;
-    const int z1 = z0 + cloudheight;
-    const ivec bbmin(int(floorf(offset.x)), int(floorf(offset.y)), z0);
-    const ivec bbmax(int(ceilf(offset.x + span)), int(ceilf(offset.y + span)), z1);
-    if(!(calcbbcsmsplits(bbmin, bbmax) & (1 << split))) return;
-
-    enablecloudvertexformat(layer);
-    LOCALPARAM(cloudmeshoffset, offset);
-    glDrawArrays(GL_TRIANGLES, 0, layer.numverts);
-    glde++;
-    disablecloudvertexformat();
+    // cloud shadows no longer consume the main CSM; they use their own low-resolution projected mask in renderclouds()
+    (void)split;
 }
 
 void cleanupclouds()
 {
     clearcloudlayer(cloudstate);
     cleanupcloudtarget();
+    cleanupcloudshadowtarget();
     noiseseed = INT_MIN;
     currentsettingshash = 0;
     currentsettingsversion = currentweatherversion = 0;
