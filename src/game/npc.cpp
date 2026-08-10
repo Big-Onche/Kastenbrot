@@ -79,7 +79,7 @@ namespace game
     void loadnpcdefinitions()
     {
         clearnpcdefinitions();
-        if(!execfile("config/npcs.cfg", false)) conoutf(CON_ERROR, "could not load config/npcs.cfg");
+        if(!execfile("config/game/npcs.cfg", false)) conoutf(CON_ERROR, "could not load config/game/npcs.cfg");
     }
 
     ICOMMAND(npcload, "", (), loadnpcdefinitions());
