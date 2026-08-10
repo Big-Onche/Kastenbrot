@@ -61,6 +61,9 @@
     <ClCompile Include="..\engine\grass.cpp">
       <Filter>engine</Filter>
     </ClCompile>
+    <ClCompile Include="..\engine\cloud.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
     <ClCompile Include="..\engine\light.cpp">
       <Filter>engine</Filter>
     </ClCompile>

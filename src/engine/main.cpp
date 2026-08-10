@@ -865,6 +865,7 @@ void resetgl()
     cleanupparticles();
     cleanupstains();
     cleanupsky();
+    cleanupclouds();
     game::cleanupitemsprites();
     cleanupmodels();
     cleanupprefabs();

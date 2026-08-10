@@ -4479,6 +4479,7 @@ void rendercsmshadowmaps()
         rendershadowmapworld();
         rendershadowmodelbatches();
         game::renderitemspriteshadows();
+        rendercloudshadows(i);
     }
 
     if(shadowtransparent)

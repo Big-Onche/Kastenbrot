@@ -809,6 +809,12 @@ extern void generategrass();
 extern void rendergrass();
 extern void cleanupgrass();
 
+// cloud
+extern void updateclouds();
+extern void renderclouds();
+extern void rendercloudshadows(int split);
+extern void cleanupclouds();
+
 // blendmap
 extern int blendpaintmode;
 

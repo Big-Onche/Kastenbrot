@@ -2507,6 +2507,7 @@ void gl_drawview()
     {
         ZoneScopedN("Render/Visibility");
         visiblecubes();
+        updateclouds();
     }
 
     if(wireframe && editmode) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -2568,6 +2569,12 @@ void gl_drawview()
     {
         ZoneScopedN("Render/Deferred lighting");
         shadegbuffer();
+        GLERROR;
+    }
+
+    {
+        ZoneScopedN("Render/Clouds");
+        renderclouds();
         GLERROR;
     }
 

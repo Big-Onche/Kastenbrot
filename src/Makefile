@@ -81,6 +81,7 @@ CLIENT_OBJS= \
 	engine/bih.o \
 	engine/blend.o \
 	engine/client.o	\
+	engine/cloud.o \
 	engine/command.o \
 	engine/console.o \
 	engine/dynlight.o \
@@ -302,6 +303,11 @@ engine/client.o: shared/ents.h shared/command.h shared/glexts.h
 engine/client.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/client.o: engine/world.h engine/octa.h engine/light.h engine/texture.h
 engine/client.o: engine/bih.h engine/model.h
+engine/cloud.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
+engine/cloud.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
+engine/cloud.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
+engine/cloud.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
+engine/cloud.o: include/FastNoiseLite.h
 engine/command.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/command.o: shared/ents.h shared/command.h shared/glexts.h
 engine/command.o: shared/glemu.h shared/iengine.h shared/igame.h

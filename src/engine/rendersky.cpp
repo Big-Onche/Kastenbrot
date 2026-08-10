@@ -1,6 +1,6 @@
 #include "engine.h"
 
-Texture *sky[6] = { 0, 0, 0, 0, 0, 0 }, *clouds[6] = { 0, 0, 0, 0, 0, 0 };
+Texture *sky[6] = { 0, 0, 0, 0, 0, 0 }, *cloudboxtextures[6] = { 0, 0, 0, 0, 0, 0 };
 
 void loadsky(const char *basename, Texture *texs[6])
 {
@@ -59,7 +59,7 @@ FVARR(skyboxoverbrightmin, 0, 1, 16);
 FVARR(skyboxoverbrightthreshold, 0, 0.7f, 1);
 FVARR(spinsky, -720, 0, 720);
 VARR(yawsky, 0, 0, 360);
-SVARFR(cloudbox, "", { if(cloudbox[0]) loadsky(cloudbox, clouds); });
+SVARFR(cloudbox, "", { if(cloudbox[0]) loadsky(cloudbox, cloudboxtextures); });
 CVARR(cloudboxcolour, 0xFFFFFF);
 FVARR(cloudboxalpha, 0, 1, 1);
 FVARR(spinclouds, -720, 0, 720);
@@ -70,12 +70,12 @@ FVARR(cloudoffsetx, 0, 0, 1);
 FVARR(cloudoffsety, 0, 0, 1);
 FVARR(cloudscrollx, -16, 0, 16);
 FVARR(cloudscrolly, -16, 0, 16);
-FVARR(cloudscale, 0.001, 1, 64);
+FVARR(cloudlayerscale, 0.001, 1, 64);
 FVARR(spincloudlayer, -720, 0, 720);
 VARR(yawcloudlayer, 0, 0, 360);
-FVARR(cloudheight, -1, 0.2f, 1);
+FVARR(cloudlayerheight, -1, 0.2f, 1);
 FVARR(cloudfade, 0, 0.2f, 1);
-FVARR(cloudalpha, 0, 1, 1);
+FVARR(cloudlayeralpha, 0, 1, 1);
 VARR(cloudsubdiv, 4, 16, 64);
 CVARR(cloudcolour, 0xFFFFFF);
 
@@ -144,10 +144,10 @@ void drawenvbox(Texture **sky = NULL, float z1clip = 0.0f, float z2clip = 1.0f, 
 void drawenvoverlay(Texture *overlay = NULL, float tx = 0, float ty = 0)
 {
     int w = farplane/2;
-    float z = w*cloudheight, tsz = 0.5f*(1-cloudfade)/cloudscale, psz = w*(1-cloudfade);
+    float z = w*cloudlayerheight, tsz = 0.5f*(1-cloudfade)/cloudlayerscale, psz = w*(1-cloudfade);
     glBindTexture(GL_TEXTURE_2D, (overlay ? overlay : notexture)->id);
     vec color = cloudcolour.tocolor();
-    gle::color(color, cloudalpha);
+    gle::color(color, cloudlayeralpha);
     gle::defvertex();
     gle::deftexcoord0();
     gle::begin(GL_TRIANGLE_FAN);
@@ -159,7 +159,7 @@ void drawenvoverlay(Texture *overlay = NULL, float tx = 0, float ty = 0)
             gle::attribf(tx - p.x*tsz, ty + p.y*tsz);
     }
     xtraverts += gle::end();
-    float tsz2 = 0.5f/cloudscale;
+    float tsz2 = 0.5f/cloudlayerscale;
     gle::defvertex();
     gle::deftexcoord0();
     gle::defcolor(4);
@@ -170,7 +170,7 @@ void drawenvoverlay(Texture *overlay = NULL, float tx = 0, float ty = 0)
         p.rotate_around_z((-2.0f*M_PI*i)/cloudsubdiv);
         gle::attribf(p.x*psz, p.y*psz, z);
             gle::attribf(tx - p.x*tsz, ty + p.y*tsz);
-            gle::attrib(color, cloudalpha);
+            gle::attrib(color, cloudlayeralpha);
         gle::attribf(p.x*w, p.y*w, z);
             gle::attribf(tx - p.x*tsz2, ty + p.y*tsz2);
             gle::attrib(color, 0.0f);
@@ -557,12 +557,12 @@ void drawskybox(bool clear)
         skyprojmatrix.mul(projmatrix, skymatrix);
         LOCALPARAM(skymatrix, skyprojmatrix);
 
-        drawenvbox(clouds, cloudclip);
+        drawenvbox(cloudboxtextures, cloudclip);
 
         glDisable(GL_BLEND);
     }
 
-    if(cloudlayer[0] && cloudheight)
+    if(cloudlayer[0] && cloudlayerheight)
     {
         SETSHADER(skybox);
 
