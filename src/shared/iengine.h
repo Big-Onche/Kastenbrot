@@ -143,6 +143,9 @@ enum
     WORLD_ORIENT_BACK, WORLD_ORIENT_FRONT,
     WORLD_ORIENT_BOTTOM, WORLD_ORIENT_TOP
 };
+extern int numworlddefinitions();
+extern int getworlddefinitionindex(const char *id);
+extern const char *getworlddefinitionid(int index);
 extern int numworldcubes();
 extern void initworlddefinitions();
 extern void initserverworlddefinitions();

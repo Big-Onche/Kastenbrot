@@ -288,22 +288,34 @@ struct worlddropdefinition
     }
 };
 
-struct worldcubedefinition
+struct worlddefinition
 {
-    string id, itemid, texture, sidetexture, bottom, bottomtexture;
+    string id, name, texture, icon, cubetexture, sidetexture, bottom, bottomtexture, model, modelicon, lightcolor;
+    string preferredtool, tooltype;
     ullong persistentid;
-    float texsize;
-    int item, slot, sideslot, bottomslot, furnaceinputslots, furnaceinputlimit;
+    float worldsize, texsize, lightradius, hardness, toolspeed, tooldamage;
+    int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit;
+    int requiredtier, toolwear, tooltier, maxdurability;
     vector<worlddropdefinition> drops;
-    bool explicitdrops, errorfallback, fall;
+    bool hasitem, hascube, scatter, placeable, hasmining, hastool, hasfurnace;
+    bool itemstackset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
+    bool explicitdrops, errorfallback, fall, handbreakable, parsing;
 
-    worldcubedefinition()
-        : persistentid(0), texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), furnaceinputslots(0),
-          furnaceinputlimit(0), explicitdrops(false), errorfallback(false), fall(false)
+    worlddefinition(const char *id = "")
+        : persistentid(worldpersistentid(id)), worldsize(1.0f), texsize(1), lightradius(0), hardness(1.0f), toolspeed(1.0f), tooldamage(2.0f),
+          maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
+          furnaceinputlimit(0),
+          requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), hasitem(false), hascube(false), scatter(false), placeable(false),
+          hasmining(false), hastool(false), hasfurnace(false), itemstackset(false), scattermodelset(false), placeablemodelset(false),
+          hardnessset(false),
+          tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false), handbreakable(true), parsing(false)
     {
-        id[0] = itemid[0] = texture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = '\0';
+        copystring(this->id, id);
+        name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
+        lightcolor[0] = preferredtool[0] = tooltype[0] = '\0';
     }
 };
+
 
 struct worldgencubetextures
 {
@@ -317,39 +329,8 @@ struct worldgencubetextures
     }
 };
 
-struct worldscatterdefinition
-{
-    string id, itemid, model, icon, lightcolor;
-    ullong persistentid;
-    int item, mapmodel;
-    float lightradius;
-    bool scatter, placeable;
-    vector<worlddropdefinition> drops;
-    bool explicitdrops;
-
-    worldscatterdefinition()
-        : persistentid(0), item(-1), mapmodel(-1), lightradius(0), scatter(false), placeable(false), explicitdrops(false)
-    {
-        id[0] = itemid[0] = model[0] = icon[0] = lightcolor[0] = '\0';
-    }
-};
-
-struct inventoryitemdefinition
-{
-    string id, name, texture, icon;
-    ullong persistentid;
-    int maxstack;
-    float worldsize;
-
-    inventoryitemdefinition() : persistentid(0), maxstack(64), worldsize(1.0f)
-    {
-        id[0] = name[0] = texture[0] = icon[0] = '\0';
-    }
-};
-
-static vector<worldcubedefinition *> worldcubedefinitions;
-static vector<worldscatterdefinition *> worldscatterdefinitions;
-static vector<inventoryitemdefinition *> inventoryitemdefinitions;
+static vector<worlddefinition *> worlddefinitions;
+static vector<worlddefinition *> worldcubedefinitions, worldscatterdefinitions, inventoryitemdefinitions;
 static hashtable<worldpersistentkey, int> worldcubepersistentindexes(256), worldscatterpersistentindexes(256), inventoryitempersistentindexes(256);
 static hashtable<worldcubetexturekey, int> worldcubetextureindexes(256);
 static vector<worldgencubetextures> worldgentextures;
@@ -358,8 +339,11 @@ static int worldgrassscatter = -1, worldrosescatter = -1,
            worlderrorcube = -1, worlderrorobject = -1, worlderroritem = -1;
 static void updateleavesalpha();
 static void setworldleavesalpha(cube *root, bool enabled);
-static worldcubedefinition *findworldcube(const char *name);
-static inventoryitemdefinition *findinventoryitem(const char *id);
+static worlddefinition *findworldcube(const char *name);
+static worlddefinition *findinventoryitem(const char *id);
+static worlddefinition *currentworlddefinition = NULL;
+enum { WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL, WORLDDEF_FURNACE };
+static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
 
 int numworldcubes()
 {
@@ -388,7 +372,7 @@ int getworldcubefaceslot(int index, int orient)
 {
     index = validworldcubeindex(index);
     if(index < 0) return DEFAULT_GEOM;
-    const worldcubedefinition &type = *worldcubedefinitions[index];
+    const worlddefinition &type = *worldcubedefinitions[index];
     if(orient == WORLD_ORIENT_TOP) return type.slot;
     if(orient == WORLD_ORIENT_BOTTOM) return type.bottomslot;
     return type.sideslot;
@@ -398,13 +382,13 @@ int getworldcubeindex(int slot)
 {
     if(worldcubedefinitions.inrange(worlderrorcube))
     {
-        const worldcubedefinition &error = *worldcubedefinitions[worlderrorcube];
+        const worlddefinition &error = *worldcubedefinitions[worlderrorcube];
         if(error.slot == slot || error.sideslot == slot || error.bottomslot == slot) return worlderrorcube;
     }
     loopv(worldcubedefinitions)
     {
         if(i == worlderrorcube) continue;
-        const worldcubedefinition &type = *worldcubedefinitions[i];
+        const worlddefinition &type = *worldcubedefinitions[i];
         if(type.slot == slot || type.sideslot == slot || type.bottomslot == slot) return i;
     }
     return worldcubedefinitions.inrange(worlderrorcube) ? worlderrorcube : -1;
@@ -465,13 +449,13 @@ const char *getworldcubetexture(int index, int face)
     static string texturepath;
     index = validworldcubeindex(index);
     if(index < 0) return "";
-    worldcubedefinition &type = *worldcubedefinitions[index];
-    const char *texture = type.texture;
+    worlddefinition &type = *worldcubedefinitions[index];
+    const char *texture = type.cubetexture;
     if(face == WORLD_CUBE_SIDE && type.sidetexture[0]) texture = type.sidetexture;
     else if(face == WORLD_CUBE_BOTTOM)
         texture = type.bottomtexture[0] ? type.bottomtexture
                 : type.sidetexture[0] ? type.sidetexture
-                : type.texture;
+                : type.cubetexture;
     formatstring(texturepath, "media/texture/%s", texture);
     return texturepath;
 }
@@ -512,8 +496,8 @@ const char *getworldscattericon(int index)
     static string iconpath;
     index = validworldobjectindex(index);
     if(index < 0) return "";
-    const worldscatterdefinition &type = *worldscatterdefinitions[index];
-    if(type.icon[0]) return type.icon;
+    const worlddefinition &type = *worldscatterdefinitions[index];
+    if(type.modelicon[0]) return type.modelicon;
     formatstring(iconpath, "media/model/%s/diffuse.png", type.model);
     return iconpath;
 }
@@ -583,7 +567,7 @@ bool getworldcubefall(int index)
 
 int getinventoryitemindex(const char *id)
 {
-    inventoryitemdefinition *item = findinventoryitem(id);
+    worlddefinition *item = findinventoryitem(id);
     return item ? inventoryitemdefinitions.find(item) : -1;
 }
 
@@ -601,7 +585,7 @@ const char *getinventoryitemicon(int index)
 {
     static string iconpath;
     if(!inventoryitemdefinitions.inrange(index)) return "";
-    const inventoryitemdefinition &item = *inventoryitemdefinitions[index];
+    const worlddefinition &item = *inventoryitemdefinitions[index];
     if(item.icon[0]) return item.icon;
     if(item.texture[0])
     {
@@ -610,7 +594,7 @@ const char *getinventoryitemicon(int index)
     }
     loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == index)
     {
-        formatstring(iconpath, "media/texture/%s", worldcubedefinitions[i]->texture);
+        formatstring(iconpath, "media/texture/%s", worldcubedefinitions[i]->cubetexture);
         return iconpath;
     }
     loopv(worldscatterdefinitions) if(worldscatterdefinitions[i]->item == index)
@@ -724,7 +708,7 @@ static bool isworldleaftexture(const cube &c)
 {
     if(c.children || isempty(c)) return false;
     const int texture = c.texture[0];
-    worldcubedefinition *leaves = findworldcube("leaves"), *needles = findworldcube("needles");
+    worlddefinition *leaves = findworldcube("leaves"), *needles = findworldcube("needles");
     const bool foliage = (leaves && texture == leaves->slot) || (needles && texture == needles->slot);
     if(!foliage) return false;
     loopi(6) if(c.texture[i] != texture) return false;
@@ -736,13 +720,13 @@ bool isworldleafcube(const cube &c)
     return leavesalpha != 0 && isworldleaftexture(c);
 }
 
-static worldcubedefinition *findworldcube(const char *name)
+static worlddefinition *findworldcube(const char *name)
 {
     loopv(worldcubedefinitions) if(!cubecasecmp(worldcubedefinitions[i]->id, name)) return worldcubedefinitions[i];
     return NULL;
 }
 
-static worldscatterdefinition *findworldscatter(const char *name)
+static worlddefinition *findworldscatter(const char *name)
 {
     loopv(worldscatterdefinitions)
         if(!cubecasecmp(worldscatterdefinitions[i]->id, name))
@@ -752,23 +736,42 @@ static worldscatterdefinition *findworldscatter(const char *name)
 
 static int getworldscatteridindex(const char *id)
 {
-    worldscatterdefinition *type = findworldscatter(id);
+    worlddefinition *type = findworldscatter(id);
     return type ? worldscatterdefinitions.find(type) : worlderrorobject;
 }
 
-static inventoryitemdefinition *findinventoryitem(const char *id)
+static worlddefinition *findinventoryitem(const char *id)
 {
     loopv(inventoryitemdefinitions) if(!cubecasecmp(inventoryitemdefinitions[i]->id, id)) return inventoryitemdefinitions[i];
     return NULL;
 }
 
+static worlddefinition *findworlddefinition(const char *id)
+{
+    loopv(worlddefinitions) if(!cubecasecmp(worlddefinitions[i]->id, id)) return worlddefinitions[i];
+    return NULL;
+}
+
+int numworlddefinitions() { return worlddefinitions.length(); }
+
+int getworlddefinitionindex(const char *id)
+{
+    worlddefinition *definition = findworlddefinition(id);
+    return definition ? worlddefinitions.find(definition) : -1;
+}
+
+const char *getworlddefinitionid(int index)
+{
+    return worlddefinitions.inrange(index) ? worlddefinitions[index]->id : "";
+}
+
 void worldreset()
 {
     game::cleanupitemsprites();
-    game::resetminingdefinitions();
-    worldcubedefinitions.deletecontents();
-    worldscatterdefinitions.deletecontents();
-    inventoryitemdefinitions.deletecontents();
+    worlddefinitions.deletecontents();
+    worldcubedefinitions.shrink(0);
+    worldscatterdefinitions.shrink(0);
+    inventoryitemdefinitions.shrink(0);
     worldcubepersistentindexes.clear();
     worldscatterpersistentindexes.clear();
     inventoryitempersistentindexes.clear();
@@ -776,164 +779,371 @@ void worldreset()
     worldgentextures.shrink(0);
     worldgrassscatter = worldrosescatter = worldtulipscatter = worlddandelionscatter = -1;
     worlderrorcube = worlderrorobject = worlderroritem = -1;
+    currentworlddefinition = NULL;
+    currentworldcomponent = WORLDDEF_NONE;
+    worlddefinitionerrors = 0;
 }
 
 COMMAND(worldreset, "");
 
-static void defineinventoryitem(const char *id, const char *name, int maxstack, const char *texture, const char *icon, float worldsize)
+static void worlddefinitionerror(const char *message)
 {
-    if(!id[0] || !name[0] || maxstack <= 0)
-    {
-        conoutf(CON_ERROR, "inventoryitem requires an id, display name, and positive max stack");
-        return;
-    }
-
-    inventoryitemdefinition *type = findinventoryitem(id);
-    if(!type) type = inventoryitemdefinitions.add(new inventoryitemdefinition);
-    copystring(type->id, id);
-    type->persistentid = worldpersistentid(id);
-    copystring(type->name, name);
-    copystring(type->texture, texture ? texture : "");
-    copystring(type->icon, icon ? icon : "");
-    type->maxstack = maxstack;
-    type->worldsize = max(worldsize, 0.01f);
+    conoutf(CON_ERROR, "worlddef \"%s\": %s", currentworlddefinition ? currentworlddefinition->id : "<none>", message);
+    ++worlddefinitionerrors;
 }
 
-ICOMMAND(inventoryitem, "ssissfN",
-         (char *id, char *name, int *maxstack, char *texture, char *icon, float *worldsize, int *numargs),
+static const char *worlddefinitioncommand(const char *command, int component)
 {
-    defineinventoryitem(id, name, *maxstack, *numargs >= 4 ? texture : "", *numargs >= 5 ? icon : "", *numargs >= 6 ? *worldsize : 1.0f);
-});
+    if(component == WORLDDEF_NONE)
+    {
+        if(!strcmp(command, "item")) return "worlddef_item";
+        if(!strcmp(command, "cube")) return "worlddef_cube";
+        if(!strcmp(command, "scatter")) return "worlddef_scatter";
+        if(!strcmp(command, "placeable")) return "worlddef_placeable";
+        if(!strcmp(command, "mining")) return "worlddef_mining";
+        if(!strcmp(command, "tool")) return "worlddef_tool";
+        if(!strcmp(command, "furnace")) return "worlddef_furnace";
+        if(!strcmp(command, "drop")) return "worlddef_drop";
+    }
+    else if(component == WORLDDEF_ITEM)
+    {
+        if(!strcmp(command, "name")) return "worlddef_name";
+        if(!strcmp(command, "stack")) return "worlddef_stack";
+        if(!strcmp(command, "texture")) return "worlddef_itemtexture";
+        if(!strcmp(command, "icon")) return "worlddef_icon";
+        if(!strcmp(command, "model")) return "worlddef_itemtexture";
+        if(!strcmp(command, "scale")) return "worlddef_scale";
+    }
+    else if(component == WORLDDEF_CUBE)
+    {
+        if(!strcmp(command, "texture")) return "worlddef_cubetexture";
+        if(!strcmp(command, "side")) return "worlddef_side";
+        if(!strcmp(command, "bottom")) return "worlddef_bottom";
+        if(!strcmp(command, "texsize")) return "worlddef_texsize";
+        if(!strcmp(command, "falling")) return "worlddef_falling";
+    }
+    else if(component == WORLDDEF_SCATTER || component == WORLDDEF_PLACEABLE)
+    {
+        if(!strcmp(command, "model")) return "worlddef_model";
+        if(component == WORLDDEF_PLACEABLE && !strcmp(command, "light")) return "worlddef_light";
+        if(component == WORLDDEF_PLACEABLE && !strcmp(command, "lightcolor")) return "worlddef_lightcolor";
+    }
+    else if(component == WORLDDEF_MINING)
+    {
+        if(!strcmp(command, "hardness")) return "worlddef_hardness";
+        if(!strcmp(command, "tool")) return "worlddef_miningtool";
+        if(!strcmp(command, "tier")) return "worlddef_miningtier";
+        if(!strcmp(command, "wear")) return "worlddef_wear";
+        if(!strcmp(command, "handbreakable")) return "worlddef_handbreakable";
+    }
+    else if(component == WORLDDEF_TOOL)
+    {
+        if(!strcmp(command, "type")) return "worlddef_tooltype";
+        if(!strcmp(command, "tier")) return "worlddef_tooltier";
+        if(!strcmp(command, "speed")) return "worlddef_speed";
+        if(!strcmp(command, "durability")) return "worlddef_durability";
+        if(!strcmp(command, "damage")) return "worlddef_damage";
+    }
+    else if(component == WORLDDEF_FURNACE)
+    {
+        if(!strcmp(command, "slots")) return "worlddef_slots";
+        if(!strcmp(command, "capacity")) return "worlddef_capacity";
+    }
+    return NULL;
+}
 
-static void defineworldcube(const char *id, const char *itemid, const char *texture, float texsize, const char *side, const char *bottom, const char *bottomalternate, int numargs)
+static void executeworlddefinitionbody(const char *body, int component)
 {
+    vector<char> rewritten;
+    bool commandstart = true, quoted = false, comment = false;
+    int depth = 0;
+    for(const char *cursor = body; cursor && *cursor;)
+    {
+        if(comment)
+        {
+            const char c = *cursor++;
+            rewritten.add(c);
+            if(c == '\n') { comment = false; commandstart = true; }
+            continue;
+        }
+        if(quoted)
+        {
+            const char c = *cursor++;
+            rewritten.add(c);
+            if(c == '^' && *cursor) rewritten.add(*cursor++);
+            else if(c == '"') quoted = false;
+            continue;
+        }
+        if(cursor[0] == '/' && cursor[1] == '/')
+        {
+            rewritten.add(*cursor++);
+            rewritten.add(*cursor++);
+            comment = true;
+            continue;
+        }
+        if(*cursor == '"') { quoted = true; rewritten.add(*cursor++); continue; }
+        if(*cursor == '[') { ++depth; rewritten.add(*cursor++); continue; }
+        if(*cursor == ']') { if(depth > 0) --depth; rewritten.add(*cursor++); continue; }
+        if(depth == 0 && (*cursor == ';' || *cursor == '\n'))
+        {
+            commandstart = true;
+            rewritten.add(*cursor++);
+            continue;
+        }
+        if(depth == 0 && commandstart)
+        {
+            if(iscubespace(*cursor)) { rewritten.add(*cursor++); continue; }
+            const char *start = cursor;
+            while(*cursor && !iscubespace(*cursor) && *cursor != ';' && *cursor != '[' && *cursor != ']') ++cursor;
+            string command;
+            copystring(command, start, min(size_t(cursor - start + 1), sizeof(command)));
+            const char *replacement = worlddefinitioncommand(command, component);
+            if(!replacement)
+            {
+                defformatstring(message, "unknown %s command \"%s\"", component == WORLDDEF_NONE ? "worlddef" : "component", command);
+                worlddefinitionerror(message);
+                return;
+            }
+            while(*replacement) rewritten.add(*replacement++);
+            commandstart = false;
+            continue;
+        }
+        rewritten.add(*cursor++);
+    }
+    rewritten.add('\0');
+    execute(rewritten.getbuf());
+}
+
+static bool beginworldcomponent(int component, bool &present, const char *name)
+{
+    if(!currentworlddefinition || currentworldcomponent != WORLDDEF_NONE)
+    {
+        worlddefinitionerror("component blocks must be direct children of worlddef");
+        return false;
+    }
+    if(present)
+    {
+        defformatstring(message, "duplicate %s component", name);
+        worlddefinitionerror(message);
+        return false;
+    }
+    present = true;
+    currentworldcomponent = component;
+    return true;
+}
+
+static void endworldcomponent()
+{
+    currentworldcomponent = WORLDDEF_NONE;
+}
+
+ICOMMAND(worlddef, "sS", (char *id, char *body),
+{
+    if(currentworlddefinition)
+    {
+        worlddefinitionerror("nested worlddef blocks are not allowed");
+        return;
+    }
     if(!id[0])
     {
-        conoutf(CON_ERROR, "worldcube requires a world id");
+        conoutf(CON_ERROR, "worlddef requires a non-empty id");
+        ++worlddefinitionerrors;
         return;
     }
-
-    worldcubedefinition *type = findworldcube(id);
-    if(!type) type = worldcubedefinitions.add(new worldcubedefinition);
-    copystring(type->id, id);
-    type->persistentid = worldpersistentid(id);
-    copystring(type->itemid, itemid ? itemid : "");
-    copystring(type->texture, texture ? texture : "");
-    copystring(type->sidetexture, numargs >= 5 && side ? side : "");
-    copystring(type->bottom, numargs >= 6 && bottom ? bottom : numargs >= 7 && bottomalternate ? bottomalternate : "");
-    type->bottomtexture[0] = '\0';
-    type->texsize = texsize > 0 ? texsize : 16;
-}
-
-ICOMMAND(worldcube, "sssfsssN", (char *id, char *itemid, char *texture, float *texsize, char *side, char *bottom, char *bottomalternate, int *numargs),
-{
-    defineworldcube(id, itemid, texture, *texsize, side, bottom, bottomalternate, *numargs);
+    if(findworlddefinition(id))
+    {
+        conoutf(CON_ERROR, "duplicate worlddef id \"%s\"", id);
+        ++worlddefinitionerrors;
+        return;
+    }
+    currentworlddefinition = worlddefinitions.add(new worlddefinition(id));
+    currentworlddefinition->parsing = true;
+    executeworlddefinitionbody(body, WORLDDEF_NONE);
+    currentworlddefinition->parsing = false;
+    currentworlddefinition = NULL;
+    currentworldcomponent = WORLDDEF_NONE;
 });
 
-ICOMMAND(worldfall, "si", (char *id, int *enabled),
+ICOMMANDS("worlddef_item", "S", (char *body),
 {
-    worldcubedefinition *cube = findworldcube(id);
-    if(!cube || (*enabled != 0 && *enabled != 1))
-    {
-        conoutf(CON_ERROR, "worldfall requires a known world cube and either 0 or 1");
-        return;
-    }
-    cube->fall = *enabled != 0;
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_ITEM, currentworlddefinition->hasitem, "item")) return;
+    inventoryitemdefinitions.add(currentworlddefinition);
+    executeworlddefinitionbody(body, WORLDDEF_ITEM);
+    endworldcomponent();
 });
 
-ICOMMAND(worldfurnace, "sii", (char *id, int *inputslots, int *inputlimit),
+ICOMMANDS("worlddef_cube", "S", (char *body),
 {
-    worldcubedefinition *cube = findworldcube(id);
-    if(!cube || *inputslots < 1 || *inputslots > FURNACE_INPUT_MAX || *inputlimit < 1)
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_CUBE, currentworlddefinition->hascube, "cube")) return;
+    worldcubedefinitions.add(currentworlddefinition);
+    executeworlddefinitionbody(body, WORLDDEF_CUBE);
+    endworldcomponent();
+});
+
+ICOMMANDS("worlddef_scatter", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_SCATTER, currentworlddefinition->scatter, "scatter")) return;
+    if(worldscatterdefinitions.find(currentworlddefinition) < 0) worldscatterdefinitions.add(currentworlddefinition);
+    executeworlddefinitionbody(body, WORLDDEF_SCATTER);
+    endworldcomponent();
+});
+
+ICOMMANDS("worlddef_placeable", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_PLACEABLE, currentworlddefinition->placeable, "placeable")) return;
+    if(worldscatterdefinitions.find(currentworlddefinition) < 0) worldscatterdefinitions.add(currentworlddefinition);
+    executeworlddefinitionbody(body, WORLDDEF_PLACEABLE);
+    endworldcomponent();
+});
+
+ICOMMANDS("worlddef_mining", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_MINING, currentworlddefinition->hasmining, "mining")) return;
+    executeworlddefinitionbody(body, WORLDDEF_MINING);
+    endworldcomponent();
+});
+
+ICOMMANDS("worlddef_tool", "S", (char *body),
+{
+    if(!currentworlddefinition) return;
+    if(!beginworldcomponent(WORLDDEF_TOOL, currentworlddefinition->hastool, "tool")) return;
+    executeworlddefinitionbody(body, WORLDDEF_TOOL);
+    endworldcomponent();
+});
+
+ICOMMANDS("worlddef_furnace", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_FURNACE, currentworlddefinition->hasfurnace, "furnace")) return;
+    executeworlddefinitionbody(body, WORLDDEF_FURNACE);
+    endworldcomponent();
+});
+
+ICOMMANDS("worlddef_name", "s", (char *value), copystring(currentworlddefinition->name, value));
+ICOMMANDS("worlddef_stack", "i", (int *value), { currentworlddefinition->maxstack = *value; currentworlddefinition->itemstackset = true; });
+ICOMMANDS("worlddef_itemtexture", "s", (char *value), copystring(currentworlddefinition->texture, value));
+ICOMMANDS("worlddef_icon", "s", (char *value), copystring(currentworlddefinition->texture, value));
+ICOMMANDS("worlddef_scale", "f", (float *value), currentworlddefinition->worldsize = *value);
+ICOMMANDS("worlddef_cubetexture", "s", (char *value), copystring(currentworlddefinition->cubetexture, value));
+ICOMMANDS("worlddef_side", "s", (char *value), copystring(currentworlddefinition->sidetexture, value));
+ICOMMANDS("worlddef_bottom", "s", (char *value), copystring(currentworlddefinition->bottom, value));
+ICOMMANDS("worlddef_texsize", "f", (float *value), currentworlddefinition->texsize = *value);
+ICOMMANDS("worlddef_falling", "i", (int *value), currentworlddefinition->fall = *value != 0);
+ICOMMANDS("worlddef_model", "s", (char *value),
+{
+    copystring(currentworlddefinition->model, value);
+    if(currentworldcomponent == WORLDDEF_SCATTER) currentworlddefinition->scattermodelset = true;
+    else if(currentworldcomponent == WORLDDEF_PLACEABLE) currentworlddefinition->placeablemodelset = true;
+});
+ICOMMANDS("worlddef_light", "f", (float *value), currentworlddefinition->lightradius = *value);
+ICOMMANDS("worlddef_lightcolor", "s", (char *value), copystring(currentworlddefinition->lightcolor, value));
+ICOMMANDS("worlddef_hardness", "f", (float *value), { currentworlddefinition->hardness = *value; currentworlddefinition->hardnessset = true; });
+ICOMMANDS("worlddef_miningtool", "s", (char *value), copystring(currentworlddefinition->preferredtool, value));
+ICOMMANDS("worlddef_miningtier", "i", (int *value), currentworlddefinition->requiredtier = *value);
+ICOMMANDS("worlddef_wear", "i", (int *value), currentworlddefinition->toolwear = *value);
+ICOMMANDS("worlddef_handbreakable", "i", (int *value), currentworlddefinition->handbreakable = *value != 0);
+ICOMMANDS("worlddef_tooltype", "s", (char *value), copystring(currentworlddefinition->tooltype, value));
+ICOMMANDS("worlddef_tooltier", "i", (int *value), { currentworlddefinition->tooltier = *value; currentworlddefinition->tooltierset = true; });
+ICOMMANDS("worlddef_speed", "f", (float *value), { currentworlddefinition->toolspeed = *value; currentworlddefinition->toolspeedset = true; });
+ICOMMANDS("worlddef_durability", "i", (int *value), currentworlddefinition->maxdurability = *value);
+ICOMMANDS("worlddef_damage", "f", (float *value), currentworlddefinition->tooldamage = *value);
+ICOMMANDS("worlddef_slots", "i", (int *value), currentworlddefinition->furnaceinputslots = *value);
+ICOMMANDS("worlddef_capacity", "i", (int *value), currentworlddefinition->furnaceinputlimit = *value);
+
+ICOMMANDS("worlddef_drop", "siifN", (char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
+{
+    if(!currentworlddefinition || currentworldcomponent != WORLDDEF_NONE)
     {
-        conoutf(CON_ERROR, "worldfurnace requires a known world cube, 1-%d input slots, and a positive stack limit", FURNACE_INPUT_MAX);
+        worlddefinitionerror("drop must be a direct child of worlddef");
         return;
     }
-    cube->furnaceinputslots = *inputslots;
-    cube->furnaceinputlimit = *inputlimit;
+    worlddropdefinition &drop = currentworlddefinition->drops.add();
+    copystring(drop.itemid, itemid ? itemid : "");
+    drop.item = -2;
+    drop.mincount = *mincount;
+    drop.maxcount = *maxcount;
+    drop.chance = *numargs >= 4 ? *chance : 1.0f;
+    currentworlddefinition->explicitdrops = true;
 });
 
 bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
 {
-    loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == item && worldcubedefinitions[i]->furnaceinputslots > 0)
+    if(inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->hasfurnace)
     {
-        inputslots = worldcubedefinitions[i]->furnaceinputslots;
-        inputlimit = worldcubedefinitions[i]->furnaceinputlimit;
+        inputslots = inventoryitemdefinitions[item]->furnaceinputslots;
+        inputlimit = inventoryitemdefinitions[item]->furnaceinputlimit;
         return true;
     }
     inputslots = inputlimit = 0;
     return false;
 }
 
-static void defineworldscatter(const char *id, const char *itemid, const char *model, bool placeable, float lightradius = 0, const char *lightcolor = "")
+static worlddefinition *getworldobjectdefinition(int type, int index)
 {
-    if(!id[0])
-    {
-        conoutf(CON_ERROR, "world object requires a world id");
-        return;
-    }
-    worldscatterdefinition *type = findworldscatter(id);
-    if(!type) type = worldscatterdefinitions.add(new worldscatterdefinition);
-    copystring(type->id, id);
-    type->persistentid = worldpersistentid(id);
-    copystring(type->itemid, itemid ? itemid : "");
-    copystring(type->model, model ? model : "");
-    type->icon[0] = '\0';
-    if(placeable)
-    {
-        type->placeable = true;
-        type->lightradius = max(lightradius, 0.0f);
-    }
-    else type->scatter = true;
-    copystring(type->lightcolor, lightcolor ? lightcolor : "");
+    if(type == WORLD_ITEM_CUBE) return worldcubedefinitions.inrange(index) ? worldcubedefinitions[index] : NULL;
+    if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
+        return worldscatterdefinitions.inrange(index) ? worldscatterdefinitions[index] : NULL;
+    return NULL;
 }
 
-ICOMMAND(worldscatter, "sss", (char *id, char *itemid, char *model),
+bool isinventorytool(int index)
 {
-    defineworldscatter(id, itemid, model, false);
-});
-
-ICOMMAND(worldplaceable, "sssfsN", (char *id, char *itemid, char *model, float *lightradius, char *lightcolor, int *numargs),
-{
-    defineworldscatter(id, itemid, model, true, *lightradius, *numargs >= 5 && lightcolor ? lightcolor : "");
-});
-
-static bool addworlddrop(const char *worldid, const char *itemid, int mincount, int maxcount, float chance)
-{
-    worlddropdefinition drop;
-    worldcubedefinition *cube = findworldcube(worldid);
-    worldscatterdefinition *scatter = findworldscatter(worldid);
-    if(!cube && !scatter)
-    {
-        conoutf(CON_ERROR, "worlddrop references unknown world object %s", worldid);
-        return false;
-    }
-    copystring(drop.itemid, itemid ? itemid : "");
-    if(!itemid[0] || !cubecasecmp(itemid, "false")) drop.item = -1;
-    else if(!cubecasecmp(itemid, "self")) drop.item = -2;
-    else drop.item = -2;
-    drop.mincount = max(mincount, 0);
-    drop.maxcount = max(maxcount, drop.mincount);
-    drop.chance = clamp(chance, 0.0f, 1.0f);
-    if(cube)
-    {
-        if(!cube->explicitdrops) cube->drops.shrink(0);
-        cube->explicitdrops = true;
-        cube->drops.add(drop);
-    }
-    else
-    {
-        if(!scatter->explicitdrops) scatter->drops.shrink(0);
-        scatter->explicitdrops = true;
-        scatter->drops.add(drop);
-    }
-    return true;
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->hastool;
 }
 
-ICOMMAND(worlddrop, "ssiifN", (char *worldid, char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
+const char *getinventorytooltype(int index)
 {
-    addworlddrop(worldid, itemid, *mincount, *maxcount, *numargs >= 5 ? *chance : 1.0f);
-});
+    return isinventorytool(index) ? inventoryitemdefinitions[index]->tooltype : "";
+}
+
+int getinventorytooltier(int index)
+{
+    return isinventorytool(index) ? inventoryitemdefinitions[index]->tooltier : 0;
+}
+
+float getinventorytoolspeed(int index)
+{
+    return isinventorytool(index) ? inventoryitemdefinitions[index]->toolspeed : 1.0f;
+}
+
+int getinventorytoolmaxdurability(int index)
+{
+    return isinventorytool(index) ? inventoryitemdefinitions[index]->maxdurability : 0;
+}
+
+float getinventorytooldamage(int index)
+{
+    return isinventorytool(index) ? inventoryitemdefinitions[index]->tooldamage : 1.0f;
+}
+
+float getworldobjecthardness(int type, int index)
+{
+    worlddefinition *definition = getworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? max(definition->hardness, 0.01f) : 1.0f;
+}
+
+const char *getworldobjectpreferredtool(int type, int index)
+{
+    worlddefinition *definition = getworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? definition->preferredtool : "";
+}
+
+int getworldobjectrequiredtier(int type, int index)
+{
+    worlddefinition *definition = getworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? definition->requiredtier : 0;
+}
+
+int getworldobjecttoolwear(int type, int index)
+{
+    worlddefinition *definition = getworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? definition->toolwear : 1;
+}
+
+bool isworldobjecthandbreakable(int type, int index)
+{
+    worlddefinition *definition = getworldobjectdefinition(type, index);
+    return !definition || !definition->hasmining || definition->handbreakable;
+}
 
 static int loadworldtextureslot(const char *path, float texsize, bool alpha)
 {
@@ -954,33 +1164,25 @@ static bool canloadworldtexture(const char *path)
 
 static void validateworlderrorfallback(bool assets)
 {
-    inventoryitemdefinition *item = findinventoryitem("error");
-    worldcubedefinition *cube = findworldcube("error");
-    worldscatterdefinition *object = findworldscatter("error");
-    if(!item) fatal("world startup failed: config/world.cfg must define inventoryitem \"error\"");
-    if(!cube) fatal("world startup failed: config/world.cfg must define worldcube \"error\"");
-    if(!object || !object->scatter || !object->placeable)
-        fatal("world startup failed: config/world.cfg must define both worldscatter and worldplaceable \"error\"");
-    if(cubecasecmp(cube->itemid, "error"))
-        fatal("world startup failed: worldcube \"error\" must reference inventory item \"error\"");
-    if(cubecasecmp(object->itemid, "error"))
-        fatal("world startup failed: error model definitions must reference inventory item \"error\"");
-    worlderroritem = inventoryitemdefinitions.find(item);
-    worlderrorcube = worldcubedefinitions.find(cube);
-    worlderrorobject = worldscatterdefinitions.find(object);
+    worlddefinition *error = findworlddefinition("error");
+    if(!error || !error->hasitem || !error->hascube || !error->scatter || !error->placeable)
+        fatal("world startup failed: worlddef \"error\" must contain item, cube, scatter, and placeable components");
+    worlderroritem = inventoryitemdefinitions.find(error);
+    worlderrorcube = worldcubedefinitions.find(error);
+    worlderrorobject = worldscatterdefinitions.find(error);
     if(!assets) return;
 
-    if(!canloadworldtexture(cube->texture))
-        fatal("world startup failed: error cube texture media/texture/%s could not be loaded", cube->texture);
-    if(cube->sidetexture[0] && !canloadworldtexture(cube->sidetexture))
-        fatal("world startup failed: error cube side texture media/texture/%s could not be loaded", cube->sidetexture);
-    if(cube->bottom[0] && !findworldcube(cube->bottom) && !canloadworldtexture(cube->bottom))
-        fatal("world startup failed: error cube bottom texture media/texture/%s could not be loaded", cube->bottom);
+    if(!canloadworldtexture(error->cubetexture))
+        fatal("world startup failed: error cube texture media/texture/%s could not be loaded", error->cubetexture);
+    if(error->sidetexture[0] && !canloadworldtexture(error->sidetexture))
+        fatal("world startup failed: error cube side texture media/texture/%s could not be loaded", error->sidetexture);
+    if(error->bottom[0] && !findworldcube(error->bottom) && !canloadworldtexture(error->bottom))
+        fatal("world startup failed: error cube bottom texture media/texture/%s could not be loaded", error->bottom);
 
-    object->mapmodel = registermapmodelpath(object->model);
-    if(object->mapmodel < 0 || !loadmapmodel(object->mapmodel))
-        fatal("world startup failed: error model media/model/%s could not be loaded", object->model);
-    defformatstring(modeltexture, "media/model/%s/diffuse.png", object->model);
+    error->mapmodel = registermapmodelpath(error->model);
+    if(error->mapmodel < 0 || !loadmapmodel(error->mapmodel))
+        fatal("world startup failed: error model media/model/%s could not be loaded", error->model);
+    defformatstring(modeltexture, "media/model/%s/diffuse.png", error->model);
     if(textureload(modeltexture, 3, true, false) == notexture)
         fatal("world startup failed: error model texture %s could not be loaded", modeltexture);
 }
@@ -1008,12 +1210,12 @@ static bool findworldscatterimage(const char *model, const char *basename, strin
     return false;
 }
 
-static void resolveworldscattericon(worldscatterdefinition &type)
+static void resolveworldscattericon(worlddefinition &type)
 {
-    type.icon[0] = '\0';
-    if(findworldscatterimage(type.model, "logo", type.icon)) return;
-    if(findworldscatterimage(type.model, "diffuse", type.icon)) return;
-    formatstring(type.icon, "media/model/%s/diffuse.png", type.model);
+    type.modelicon[0] = '\0';
+    if(findworldscatterimage(type.model, "logo", type.modelicon)) return;
+    if(findworldscatterimage(type.model, "diffuse", type.modelicon)) return;
+    formatstring(type.modelicon, "media/model/%s/diffuse.png", type.model);
 }
 
 static bool buildworldpersistentindexes()
@@ -1024,7 +1226,7 @@ static bool buildworldpersistentindexes()
     inventoryitempersistentindexes.clear();
     loopv(worldcubedefinitions)
     {
-        worldcubedefinition &definition = *worldcubedefinitions[i];
+        worlddefinition &definition = *worldcubedefinitions[i];
         int *previous = worldcubepersistentindexes.access(worldpersistentkey(definition.persistentid));
         if(previous && cubecasecmp(worldcubedefinitions[*previous]->id, definition.id))
         {
@@ -1036,7 +1238,7 @@ static bool buildworldpersistentindexes()
     }
     loopv(worldscatterdefinitions)
     {
-        worldscatterdefinition &definition = *worldscatterdefinitions[i];
+        worlddefinition &definition = *worldscatterdefinitions[i];
         int *previous = worldscatterpersistentindexes.access(worldpersistentkey(definition.persistentid));
         if(previous && cubecasecmp(worldscatterdefinitions[*previous]->id, definition.id))
         {
@@ -1048,7 +1250,7 @@ static bool buildworldpersistentindexes()
     }
     loopv(inventoryitemdefinitions)
     {
-        inventoryitemdefinition &definition = *inventoryitemdefinitions[i];
+        worlddefinition &definition = *inventoryitemdefinitions[i];
         int *previous = inventoryitempersistentindexes.access(worldpersistentkey(definition.persistentid));
         if(previous && cubecasecmp(inventoryitemdefinitions[*previous]->id, definition.id))
         {
@@ -1067,7 +1269,7 @@ static bool buildworldcubetextureindexes()
     worldcubetextureindexes.clear();
     loopv(worldcubedefinitions)
     {
-        const worldcubedefinition &definition = *worldcubedefinitions[i];
+        const worlddefinition &definition = *worldcubedefinitions[i];
         const worldcubetexturekey key(definition.slot, definition.sideslot, definition.bottomslot);
         int *previous = worldcubetextureindexes.access(key);
         if(previous)
@@ -1090,76 +1292,82 @@ static bool loadworlddefinitions(bool assets = true)
         return false;
     }
 
-    if(!buildworldpersistentindexes()) return false;
+    loopv(worlddefinitions)
+    {
+        worlddefinition &definition = *worlddefinitions[i];
+        definition.item = definition.hasitem ? inventoryitemdefinitions.find(&definition) : -1;
+        if(definition.hasitem && (!definition.name[0] || !definition.itemstackset || definition.maxstack <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": item requires name and a positive stack", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hascube && (!definition.cubetexture[0] || definition.texsize <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": cube requires texture and a positive texsize", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if((definition.scatter && (!definition.scattermodelset || !definition.model[0])) ||
+           (definition.placeable && (!definition.placeablemodelset || !definition.model[0])))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": scatter/placeable requires model", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hasmining && (!definition.hardnessset || definition.hardness <= 0 || definition.requiredtier < 0 || definition.toolwear < 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": mining requires positive hardness and non-negative tier/wear", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.preferredtool[0] && cubecasecmp(definition.preferredtool, "pickaxe") && cubecasecmp(definition.preferredtool, "axe") &&
+           cubecasecmp(definition.preferredtool, "shovel") && cubecasecmp(definition.preferredtool, "sword"))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": unknown mining tool type \"%s\"", definition.id, definition.preferredtool);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hastool && (!definition.hasitem || !definition.tooltype[0] || !definition.tooltierset || definition.tooltier < 0 ||
+           !definition.toolspeedset || definition.toolspeed <= 0 ||
+           definition.maxdurability <= 0 || definition.tooldamage <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": tool requires item, type, non-negative tier, positive speed, durability, and damage", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hastool && cubecasecmp(definition.tooltype, "pickaxe") && cubecasecmp(definition.tooltype, "axe") &&
+           cubecasecmp(definition.tooltype, "shovel") && cubecasecmp(definition.tooltype, "sword"))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": unknown tool type \"%s\"", definition.id, definition.tooltype);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hasfurnace && (!definition.hascube || definition.furnaceinputslots < 1 || definition.furnaceinputslots > FURNACE_INPUT_MAX ||
+           definition.furnaceinputlimit < 1))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": furnace requires cube, 1-%d slots, and positive capacity", definition.id, FURNACE_INPUT_MAX);
+            ++worlddefinitionerrors;
+        }
+        loopv(definition.drops)
+        {
+            worlddropdefinition &drop = definition.drops[i];
+            if(!drop.itemid[0] || !cubecasecmp(drop.itemid, "false"))
+            {
+                if(drop.mincount < 0 || drop.maxcount < drop.mincount || drop.chance < 0 || drop.chance > 1)
+                {
+                    conoutf(CON_ERROR, "worlddef \"%s\": invalid drop quantity", definition.id);
+                    ++worlddefinitionerrors;
+                }
+                drop.item = -1;
+                continue;
+            }
+            worlddefinition *target = !cubecasecmp(drop.itemid, "self") ? &definition : findworlddefinition(drop.itemid);
+            if(!target || !target->hasitem || drop.mincount < 0 || drop.maxcount < drop.mincount || drop.chance < 0 || drop.chance > 1)
+            {
+                conoutf(CON_ERROR, "worlddef \"%s\": invalid drop target or quantity for \"%s\"", definition.id, drop.itemid);
+                ++worlddefinitionerrors;
+                continue;
+            }
+            drop.item = inventoryitemdefinitions.find(target);
+        }
+    }
+    if(worlddefinitionerrors || !buildworldpersistentindexes()) return false;
     validateworlderrorfallback(assets);
-
-    loopv(worldcubedefinitions)
-    {
-        worldcubedefinition &type = *worldcubedefinitions[i];
-        inventoryitemdefinition *item = type.itemid[0] ? findinventoryitem(type.itemid) : NULL;
-        type.item = item ? inventoryitemdefinitions.find(item) : -1;
-        if(type.itemid[0] && type.item < 0)
-        {
-            conoutf(CON_ERROR, "world cube %s references unknown inventory item %s; using error item", type.id, type.itemid);
-            copystring(type.itemid, "error");
-            type.item = worlderroritem;
-        }
-    }
-    loopv(worldscatterdefinitions)
-    {
-        worldscatterdefinition &type = *worldscatterdefinitions[i];
-        inventoryitemdefinition *item = type.itemid[0] ? findinventoryitem(type.itemid) : NULL;
-        type.item = item ? inventoryitemdefinitions.find(item) : -1;
-        if(type.itemid[0] && type.item < 0)
-        {
-            conoutf(CON_ERROR, "world object %s references unknown inventory item %s; using error item", type.id, type.itemid);
-            copystring(type.itemid, "error");
-            type.item = worlderroritem;
-        }
-    }
-    loopv(worldcubedefinitions)
-    {
-        worldcubedefinition &type = *worldcubedefinitions[i];
-        loopv(type.drops) if(type.drops[i].item == -2)
-        {
-            if(!cubecasecmp(type.drops[i].itemid, "self")) type.drops[i].item = type.item;
-            else
-            {
-                inventoryitemdefinition *item = findinventoryitem(type.drops[i].itemid);
-                if(!item)
-                {
-                    conoutf(CON_ERROR, "worlddrop for %s references unknown inventory item %s; using error item",
-                            type.id, type.drops[i].itemid);
-                    type.drops[i].item = worlderroritem;
-                    continue;
-                }
-                type.drops[i].item = inventoryitemdefinitions.find(item);
-            }
-        }
-    }
-    loopv(worldscatterdefinitions)
-    {
-        worldscatterdefinition &type = *worldscatterdefinitions[i];
-        loopv(type.drops) if(type.drops[i].item == -2)
-        {
-            if(!cubecasecmp(type.drops[i].itemid, "self")) type.drops[i].item = type.item;
-            else
-            {
-                inventoryitemdefinition *item = findinventoryitem(type.drops[i].itemid);
-                if(!item)
-                {
-                    conoutf(CON_ERROR, "worlddrop for %s references unknown inventory item %s; using error item",
-                            type.id, type.drops[i].itemid);
-                    type.drops[i].item = worlderroritem;
-                    continue;
-                }
-                type.drops[i].item = inventoryitemdefinitions.find(item);
-            }
-        }
-    }
-
-    game::validateminingdefinitions();
-    reloadrecipes(true);
+    if(!reloadrecipes(true)) return false;
 
     if(!assets)
     {
@@ -1169,23 +1377,23 @@ static bool loadworlddefinitions(bool assets = true)
     }
 
     execute("texturereset; texsky; setshader stdworld");
-    worldcubedefinition &errorcube = *worldcubedefinitions[worlderrorcube];
-    errorcube.slot = loadworldtextureslot(errorcube.texture, errorcube.texsize, false);
+    worlddefinition &errorcube = *worldcubedefinitions[worlderrorcube];
+    errorcube.slot = loadworldtextureslot(errorcube.cubetexture, errorcube.texsize, false);
     errorcube.sideslot = errorcube.sidetexture[0]
                        ? loadworldtextureslot(errorcube.sidetexture, errorcube.texsize, false)
                        : errorcube.slot;
     loopv(worldcubedefinitions)
     {
         if(i == worlderrorcube) continue;
-        worldcubedefinition &type = *worldcubedefinitions[i];
+        worlddefinition &type = *worldcubedefinitions[i];
         type.errorfallback = false;
         const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles");
-        if(canloadworldtexture(type.texture)) type.slot = loadworldtextureslot(type.texture, type.texsize, alpha);
+        if(canloadworldtexture(type.cubetexture)) type.slot = loadworldtextureslot(type.cubetexture, type.texsize, alpha);
         else
         {
-            conoutf(CON_ERROR, "world cube %s could not load texture %s; using error cube", type.id, type.texture);
+            conoutf(CON_ERROR, "world cube %s could not load texture %s; using error cube", type.id, type.cubetexture);
             type.errorfallback = true;
-            copystring(type.texture, errorcube.texture);
+            copystring(type.cubetexture, errorcube.cubetexture);
             type.slot = errorcube.slot;
         }
         if(!type.sidetexture[0]) type.sideslot = type.slot;
@@ -1194,15 +1402,15 @@ static bool loadworlddefinitions(bool assets = true)
         {
             conoutf(CON_ERROR, "world cube %s could not load side texture %s; using error cube", type.id, type.sidetexture);
             type.errorfallback = true;
-            copystring(type.sidetexture, errorcube.sidetexture[0] ? errorcube.sidetexture : errorcube.texture);
+            copystring(type.sidetexture, errorcube.sidetexture[0] ? errorcube.sidetexture : errorcube.cubetexture);
             type.sideslot = errorcube.sideslot;
         }
     }
-    worldcubedefinition *errorbottomtype = errorcube.bottom[0] ? findworldcube(errorcube.bottom) : NULL;
+    worlddefinition *errorbottomtype = errorcube.bottom[0] ? findworldcube(errorcube.bottom) : NULL;
     if(errorbottomtype)
     {
         errorcube.bottomslot = errorbottomtype->slot;
-        copystring(errorcube.bottomtexture, errorbottomtype->texture);
+        copystring(errorcube.bottomtexture, errorbottomtype->cubetexture);
     }
     else if(errorcube.bottom[0])
     {
@@ -1212,17 +1420,17 @@ static bool loadworlddefinitions(bool assets = true)
     else
     {
         errorcube.bottomslot = errorcube.sideslot;
-        copystring(errorcube.bottomtexture, errorcube.sidetexture[0] ? errorcube.sidetexture : errorcube.texture);
+        copystring(errorcube.bottomtexture, errorcube.sidetexture[0] ? errorcube.sidetexture : errorcube.cubetexture);
     }
     loopv(worldcubedefinitions)
     {
         if(i == worlderrorcube) continue;
-        worldcubedefinition &type = *worldcubedefinitions[i];
-        worldcubedefinition *bottomtype = type.bottom[0] ? findworldcube(type.bottom) : NULL;
+        worlddefinition &type = *worldcubedefinitions[i];
+        worlddefinition *bottomtype = type.bottom[0] ? findworldcube(type.bottom) : NULL;
         if(bottomtype)
         {
             type.bottomslot = bottomtype->slot;
-            copystring(type.bottomtexture, bottomtype->texture);
+            copystring(type.bottomtexture, bottomtype->cubetexture);
         }
         else if(type.bottom[0])
         {
@@ -1237,20 +1445,20 @@ static bool loadworlddefinitions(bool assets = true)
                 conoutf(CON_ERROR, "world cube %s could not load bottom texture %s; using error cube", type.id, type.bottom);
                 type.errorfallback = true;
                 type.bottomslot = errorcube.sideslot;
-                copystring(type.bottomtexture, errorcube.sidetexture[0] ? errorcube.sidetexture : errorcube.texture);
+                copystring(type.bottomtexture, errorcube.sidetexture[0] ? errorcube.sidetexture : errorcube.cubetexture);
             }
         }
         else
         {
             type.bottomslot = type.sideslot;
-            copystring(type.bottomtexture, type.sidetexture[0] ? type.sidetexture : type.texture);
+            copystring(type.bottomtexture, type.sidetexture[0] ? type.sidetexture : type.cubetexture);
         }
     }
     loopv(worldcubedefinitions)
     {
-        worldcubedefinition &type = *worldcubedefinitions[i];
+        worlddefinition &type = *worldcubedefinitions[i];
         if(!type.errorfallback) continue;
-        copystring(type.texture, errorcube.texture);
+        copystring(type.cubetexture, errorcube.cubetexture);
         copystring(type.sidetexture, errorcube.sidetexture);
         copystring(type.bottomtexture, errorcube.bottomtexture);
         type.slot = errorcube.slot;
@@ -1262,12 +1470,12 @@ static bool loadworlddefinitions(bool assets = true)
 
     loopv(worldcubedefinitions)
     {
-        const worldcubedefinition &type = *worldcubedefinitions[i];
+        const worlddefinition &type = *worldcubedefinitions[i];
         worldgentextures.add(worldgencubetextures(type.id, type.slot, type.sideslot, type.bottomslot));
     }
     loopv(worldscatterdefinitions)
     {
-        worldscatterdefinition &type = *worldscatterdefinitions[i];
+        worlddefinition &type = *worldscatterdefinitions[i];
         if(i == worlderrorobject)
         {
             resolveworldscattericon(type);
@@ -1282,7 +1490,7 @@ static bool loadworlddefinitions(bool assets = true)
         }
         resolveworldscattericon(type);
     }
-    worldgrassscatter = getworldscatteridindex("grass");
+    worldgrassscatter = getworldscatteridindex("grass_scatter");
     worldrosescatter = getworldscatteridindex("rose");
     worldtulipscatter = getworldscatteridindex("tulip");
     worlddandelionscatter = getworldscatteridindex("dandelion");
@@ -1520,7 +1728,7 @@ static void setworldleavesalpha(cube *root, bool enabled, int leaveslot, int nee
 
 static void setworldleavesalpha(cube *root, bool enabled)
 {
-    worldcubedefinition *leaves = findworldcube("leaves"), *needles = findworldcube("needles");
+    worlddefinition *leaves = findworldcube("leaves"), *needles = findworldcube("needles");
     if(!root || (!leaves && !needles)) return;
     setworldleavesalpha(root, enabled, leaves ? leaves->slot : -1, needles ? needles->slot : -1);
 }
@@ -4768,7 +4976,7 @@ struct worldgencontext
 
     bool iscanceled() const { return cancelled && SDL_AtomicGet(cancelled); }
 
-    int worldcube(const char *id) const
+    int cubetype(const char *id) const
     {
         return cubeids.access(id, errorcube);
     }
@@ -5238,34 +5446,34 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
 
     if(z >= max(surface, watertop)) return WORLD_TERRAIN_EMPTY;
     if(surface < watertop && z >= surface && z + size <= watertop) return WORLD_TERRAIN_WATER;
-    if(z + size <= dirtbottom) return ctx.worldcube("stone");
+    if(z + size <= dirtbottom) return ctx.cubetype("stone");
     if(cliff)
     {
         // Every exposed stair of the cliff belongs to the rock face. Normal
         // surface rules resume immediately behind this band, producing a grassy
         // plateau without grass caps scattered down the vertical wall.
-        if(z >= dirtbottom && z + size <= surface) return ctx.worldcube("stone");
+        if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("stone");
         return WORLD_TERRAIN_MIXED;
     }
     if(rock)
     {
-        if(biome == game::WORLD_BIOME_SNOW && z >= grassbottom && z + size <= surface) return ctx.worldcube("snow");
-        if(z >= dirtbottom && z + size <= surface) return ctx.worldcube("stone");
+        if(biome == game::WORLD_BIOME_SNOW && z >= grassbottom && z + size <= surface) return ctx.cubetype("snow");
+        if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("stone");
         return WORLD_TERRAIN_MIXED;
     }
     if(beach || biome == game::WORLD_BIOME_DESERT)
     {
-        if(z >= dirtbottom && z + size <= surface) return ctx.worldcube("sand");
+        if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("sand");
         return WORLD_TERRAIN_MIXED;
     }
     if(biome == game::WORLD_BIOME_OCEAN)
     {
-        if(z >= dirtbottom && z + size <= surface) return ctx.worldcube("dirt");
+        if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("dirt");
         return WORLD_TERRAIN_MIXED;
     }
-    if(z >= dirtbottom && z + size <= grassbottom) return ctx.worldcube("dirt");
-    if(biome == game::WORLD_BIOME_SNOW && z >= grassbottom && z + size <= surface) return ctx.worldcube("snow");
-    if(z >= grassbottom && z + size <= surface) return ctx.worldcube("grass");
+    if(z >= dirtbottom && z + size <= grassbottom) return ctx.cubetype("dirt");
+    if(biome == game::WORLD_BIOME_SNOW && z >= grassbottom && z + size <= surface) return ctx.cubetype("snow");
+    if(z >= grassbottom && z + size <= surface) return ctx.cubetype("grass");
     return WORLD_TERRAIN_MIXED;
 }
 
@@ -5279,7 +5487,7 @@ static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int
                                          worldcoast(ctx, localx, localy),
                                          worldcliff(ctx, localx, localy),
                                          worldrock(ctx, localx, localy));
-    return type == ctx.worldcube("grass") || type == ctx.worldcube("dirt");
+    return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt");
 }
 
 static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
@@ -5647,7 +5855,7 @@ static void generateworldscatter(cube *root, int chunkx, int chunky, const game:
                           (worlddandelionscatter >= 0 &&
                            settings.dandelionweight > 0));
     if(!grass && !flowers) return;
-    worldcubedefinition *surface = findworldcube("grass");
+    worlddefinition *surface = findworldcube("grass");
     if(!surface && worldcubedefinitions.inrange(worlderrorcube)) surface = worldcubedefinitions[worlderrorcube];
     worldgrasscollectcontext ctx(chunkx, chunky, settings, scatter);
     loopi(8)
@@ -5746,7 +5954,7 @@ static bool worldtorchflameposition(const worldchunk &chunk, const worldscatteri
     return worldscatterdefinitions.inrange(scatter.type) && modeltagposition(worldscatterdefinitions[scatter.type]->model, "tag_emitter", flame, position, yaw, pitch, roll);
 }
 
-static vec worldplacelightcolor(const worldscatterdefinition &type)
+static vec worldplacelightcolor(const worlddefinition &type)
 {
     if(!type.lightcolor[0]) return vec(1.0f, 0.58f, 0.24f);
     char *end = NULL;
@@ -5881,7 +6089,7 @@ void addworldtorchlights()
             if(distancesquared > maxdistancesquared) continue;
             const float distance = sqrtf(distancesquared);
             const int flags = distance <= fullshadowdistance ? 0 : distance <= dynshadowdistance ? L_NODYNSHADOW : L_NOSHADOW;
-            const worldscatterdefinition &type = *worldscatterdefinitions[scatter.type];
+            const worlddefinition &type = *worldscatterdefinitions[scatter.type];
             adddynlight(flame, type.lightradius * WORLD_BLOCK_SIZE, worldplacelightcolor(type), 0, 0, flags | DL_NODIST);
         }
     }
@@ -7068,7 +7276,7 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
 {
     const long long chunkstartx = (long long)chunkx * WORLD_CHUNK_BLOCKS,
                     chunkstarty = (long long)chunky * WORLD_CHUNK_BLOCKS;
-    const int stonecube = ctx.worldcube("stone"),
+    const int stonecube = ctx.cubetype("stone"),
               stonetexture = ctx.cubetextures.inrange(stonecube) ? ctx.cubetextures[stonecube].side : -1;
 
     if(stonetexture < 0) return true;
@@ -7076,7 +7284,7 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
     loopi(int(sizeof(worldores) / sizeof(worldores[0])))
     {
         const worldoredefinition &ore = worldores[i];
-        const int orecube = ctx.worldcube(ore.id),
+        const int orecube = ctx.cubetype(ore.id),
                   radius = worldoreveinradius(ore), cellsize = max(ore.cellsize, 1);
         if(!ctx.cubetextures.inrange(orecube)) continue;
 
@@ -7178,8 +7386,8 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
                 addworldregulartree(wood, leaves, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height, candidates[i].shape);
         }
         ZoneValue(wood.length() + pinewood.length() + leaves.length() + needles.length());
-        const int leafcube = ctx.worldcube("leaves"), needlescube = ctx.worldcube("needles"),
-                  woodcube = ctx.worldcube("wood"), pinewoodcube = ctx.worldcube("dark_wood"),
+        const int leafcube = ctx.cubetype("leaves"), needlescube = ctx.cubetype("needles"),
+                  woodcube = ctx.cubetype("wood"), pinewoodcube = ctx.cubetype("dark_wood"),
                   leaftexture = ctx.cubetextures[leafcube].top, needlestexture = ctx.cubetextures[needlescube].top;
         loopv(leaves)
         {
@@ -7628,7 +7836,7 @@ static bool deserializeworlddiffnode(worldchunkreader &reader, worlddiffnode &no
     {
         if(!palette.blocks.inrange(paletteindex)) return false;
         node.block = palette.blocks[paletteindex];
-        const worldcubedefinition &definition = *worldcubedefinitions[validworldcubeindex(node.block)];
+        const worlddefinition &definition = *worldcubedefinitions[validworldcubeindex(node.block)];
         loopi(6) node.texture[i] = definition.sideslot;
         node.texture[O_TOP] = definition.slot;
         node.texture[O_BOTTOM] = definition.bottomslot;
@@ -9831,18 +10039,6 @@ COMMAND(writecollideobj, "s");
 
 #else
 
-struct serverinventoryitemdefinition
-{
-    string id;
-    ullong persistentid;
-    int maxstack;
-
-    serverinventoryitemdefinition() : persistentid(0), maxstack(64)
-    {
-        id[0] = '\0';
-    }
-};
-
 struct serverworlddropdefinition
 {
     string itemid;
@@ -9854,158 +10050,365 @@ struct serverworlddropdefinition
 
 struct serverworldobjectdefinition
 {
-    string id, itemid;
+    string id, name, preferredtool, tooltype;
     ullong persistentid;
-    int item, type, furnaceinputslots, furnaceinputlimit;
-    float lightradius;
+    int maxstack, item, type, furnaceinputslots, furnaceinputlimit, requiredtier, toolwear, tooltier, maxdurability;
+    float lightradius, hardness, toolspeed, tooldamage;
     vector<serverworlddropdefinition> drops;
-    bool explicitdrops, scatter, placeable, fall;
+    bool hasitem, hascube, cubetextureset, scattermodelset, placeablemodelset, itemstackset, hardnessset, tooltierset, toolspeedset;
+    bool explicitdrops, scatter, placeable, fall, hasmining, hastool, hasfurnace, handbreakable;
 
-    serverworldobjectdefinition()
-        : persistentid(0), item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), lightradius(0), explicitdrops(false),
-          scatter(false), placeable(false), fall(false)
+    serverworldobjectdefinition(const char *id = "")
+        : persistentid(worldpersistentid(id)), maxstack(64), item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0),
+          requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), lightradius(0), hardness(1.0f), toolspeed(1.0f), tooldamage(2.0f),
+          hasitem(false), hascube(false),
+          cubetextureset(false), scattermodelset(false), placeablemodelset(false), itemstackset(false), hardnessset(false), tooltierset(false),
+          toolspeedset(false), explicitdrops(false), scatter(false), placeable(false), fall(false), hasmining(false), hastool(false),
+          hasfurnace(false),
+          handbreakable(true)
     {
-        id[0] = itemid[0] = '\0';
+        copystring(this->id, id);
+        name[0] = preferredtool[0] = tooltype[0] = '\0';
     }
 };
 
-static vector<serverinventoryitemdefinition *> serverinventoryitems;
+static vector<serverworldobjectdefinition *> serverworlddefinitions;
+static vector<serverworldobjectdefinition *> serverinventoryitems;
 static vector<serverworldobjectdefinition *> serverworldcubes, serverworldobjects;
 static hashtable<worldpersistentkey, int> serveritempersistentindexes(256), servercubepersistentindexes(256), serverobjectpersistentindexes(256);
 static int servererroritem = -1, servererrorcube = -1, servererrorobject = -1;
+static serverworldobjectdefinition *currentserverworlddefinition = NULL;
+enum { WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL, WORLDDEF_FURNACE };
+static int currentserverworldcomponent = WORLDDEF_NONE, serverworlddefinitionerrors = 0;
 
-static serverinventoryitemdefinition *findserverinventoryitem(const char *id)
+static serverworldobjectdefinition *findserverinventoryitem(const char *id)
 {
     loopv(serverinventoryitems) if(!cubecasecmp(serverinventoryitems[i]->id, id)) return serverinventoryitems[i];
     return NULL;
 }
 
-static serverworldobjectdefinition *findserverworldobject(vector<serverworldobjectdefinition *> &definitions, const char *id)
+static serverworldobjectdefinition *findserverworlddefinition(const char *id)
 {
-    loopv(definitions) if(!cubecasecmp(definitions[i]->id, id)) return definitions[i];
+    loopv(serverworlddefinitions) if(!cubecasecmp(serverworlddefinitions[i]->id, id)) return serverworlddefinitions[i];
     return NULL;
+}
+
+int numworlddefinitions() { return serverworlddefinitions.length(); }
+
+int getworlddefinitionindex(const char *id)
+{
+    serverworldobjectdefinition *definition = findserverworlddefinition(id);
+    return definition ? serverworlddefinitions.find(definition) : -1;
+}
+
+const char *getworlddefinitionid(int index)
+{
+    return serverworlddefinitions.inrange(index) ? serverworlddefinitions[index]->id : "";
 }
 
 static void resetserverworlddefinitions()
 {
-    game::resetminingdefinitions();
-    serverinventoryitems.deletecontents();
-    serverworldcubes.deletecontents();
-    serverworldobjects.deletecontents();
+    serverworlddefinitions.deletecontents();
+    serverinventoryitems.shrink(0);
+    serverworldcubes.shrink(0);
+    serverworldobjects.shrink(0);
     serveritempersistentindexes.clear();
     servercubepersistentindexes.clear();
     serverobjectpersistentindexes.clear();
     servererroritem = servererrorcube = servererrorobject = -1;
+    currentserverworlddefinition = NULL;
+    currentserverworldcomponent = WORLDDEF_NONE;
+    serverworlddefinitionerrors = 0;
 }
 
 COMMANDN(worldreset, resetserverworlddefinitions, "");
 
-ICOMMAND(inventoryitem, "ssissfN",
-         (char *id, char *name, int *maxstack, char *texture, char *icon, float *worldsize, int *numargs),
+static void serverworlddefinitionerror(const char *message)
 {
-    (void)texture;
-    (void)icon;
-    (void)worldsize;
-    (void)numargs;
-    if(!id[0] || !name[0] || *maxstack <= 0)
-    {
-        conoutf(CON_ERROR, "inventoryitem requires an id, display name, and positive max stack");
-        return;
-    }
-    serverinventoryitemdefinition *item = findserverinventoryitem(id);
-    if(!item) item = serverinventoryitems.add(new serverinventoryitemdefinition);
-    copystring(item->id, id);
-    item->persistentid = worldpersistentid(id);
-    item->maxstack = *maxstack;
-});
-
-ICOMMAND(worldcube, "sssfsssN",
-         (char *id, char *itemid, char *texture, float *texsize, char *side, char *bottom, char *bottomalternate, int *numargs),
-{
-    (void)texture;
-    (void)texsize;
-    (void)side;
-    (void)bottom;
-    (void)bottomalternate;
-    (void)numargs;
-    if(!id[0]) return;
-    serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, id);
-    if(!cube) cube = serverworldcubes.add(new serverworldobjectdefinition);
-    copystring(cube->id, id);
-    cube->persistentid = worldpersistentid(id);
-    copystring(cube->itemid, itemid ? itemid : "");
-    cube->type = WORLD_ITEM_CUBE;
-});
-
-ICOMMAND(worldfall, "si", (char *id, int *enabled),
-{
-    serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, id);
-    if(!cube || (*enabled != 0 && *enabled != 1))
-    {
-        conoutf(CON_ERROR, "worldfall requires a known world cube and either 0 or 1");
-        return;
-    }
-    cube->fall = *enabled != 0;
-});
-
-ICOMMAND(worldfurnace, "sii", (char *id, int *inputslots, int *inputlimit),
-{
-    serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, id);
-    if(!cube || *inputslots < 1 || *inputslots > FURNACE_INPUT_MAX || *inputlimit < 1)
-    {
-        conoutf(CON_ERROR, "worldfurnace requires a known world cube, 1-%d input slots, and a positive stack limit", FURNACE_INPUT_MAX);
-        return;
-    }
-    cube->furnaceinputslots = *inputslots;
-    cube->furnaceinputlimit = *inputlimit;
-});
-
-static void defineserverworldmodel(const char *id, const char *itemid, bool placeable)
-{
-    if(!id[0]) return;
-    serverworldobjectdefinition *object = findserverworldobject(serverworldobjects, id);
-    if(!object) object = serverworldobjects.add(new serverworldobjectdefinition);
-    copystring(object->id, id);
-    object->persistentid = worldpersistentid(id);
-    copystring(object->itemid, itemid ? itemid : "");
-    if(placeable) object->placeable = true;
-    else object->scatter = true;
-    object->type = object->placeable ? WORLD_ITEM_PLACEABLE : WORLD_ITEM_SCATTER;
+    conoutf(CON_ERROR, "worlddef \"%s\": %s", currentserverworlddefinition ? currentserverworlddefinition->id : "<none>", message);
+    ++serverworlddefinitionerrors;
 }
 
-ICOMMAND(worldscatter, "sss", (char *id, char *itemid, char *model),
+static const char *serverworlddefinitioncommand(const char *command, int component)
 {
-    (void)model;
-    defineserverworldmodel(id, itemid, false);
+    if(component == WORLDDEF_NONE)
+    {
+        if(!strcmp(command, "item")) return "worlddef_item";
+        if(!strcmp(command, "cube")) return "worlddef_cube";
+        if(!strcmp(command, "scatter")) return "worlddef_scatter";
+        if(!strcmp(command, "placeable")) return "worlddef_placeable";
+        if(!strcmp(command, "mining")) return "worlddef_mining";
+        if(!strcmp(command, "tool")) return "worlddef_tool";
+        if(!strcmp(command, "furnace")) return "worlddef_furnace";
+        if(!strcmp(command, "drop")) return "worlddef_drop";
+    }
+    else if(component == WORLDDEF_ITEM)
+    {
+        if(!strcmp(command, "name")) return "worlddef_name";
+        if(!strcmp(command, "stack")) return "worlddef_stack";
+        if(!strcmp(command, "texture") || !strcmp(command, "model")) return "worlddef_itemtexture";
+        if(!strcmp(command, "icon")) return "worlddef_icon";
+        if(!strcmp(command, "scale")) return "worlddef_scale";
+    }
+    else if(component == WORLDDEF_CUBE)
+    {
+        if(!strcmp(command, "texture")) return "worlddef_cubetexture";
+        if(!strcmp(command, "side")) return "worlddef_side";
+        if(!strcmp(command, "bottom")) return "worlddef_bottom";
+        if(!strcmp(command, "texsize")) return "worlddef_texsize";
+        if(!strcmp(command, "falling")) return "worlddef_falling";
+    }
+    else if(component == WORLDDEF_SCATTER || component == WORLDDEF_PLACEABLE)
+    {
+        if(!strcmp(command, "model")) return "worlddef_model";
+        if(component == WORLDDEF_PLACEABLE && !strcmp(command, "light")) return "worlddef_light";
+        if(component == WORLDDEF_PLACEABLE && !strcmp(command, "lightcolor")) return "worlddef_lightcolor";
+    }
+    else if(component == WORLDDEF_MINING)
+    {
+        if(!strcmp(command, "hardness")) return "worlddef_hardness";
+        if(!strcmp(command, "tool")) return "worlddef_miningtool";
+        if(!strcmp(command, "tier")) return "worlddef_miningtier";
+        if(!strcmp(command, "wear")) return "worlddef_wear";
+        if(!strcmp(command, "handbreakable")) return "worlddef_handbreakable";
+    }
+    else if(component == WORLDDEF_TOOL)
+    {
+        if(!strcmp(command, "type")) return "worlddef_tooltype";
+        if(!strcmp(command, "tier")) return "worlddef_tooltier";
+        if(!strcmp(command, "speed")) return "worlddef_speed";
+        if(!strcmp(command, "durability")) return "worlddef_durability";
+        if(!strcmp(command, "damage")) return "worlddef_damage";
+    }
+    else if(component == WORLDDEF_FURNACE)
+    {
+        if(!strcmp(command, "slots")) return "worlddef_slots";
+        if(!strcmp(command, "capacity")) return "worlddef_capacity";
+    }
+    return NULL;
+}
+
+static void executeserverworlddefinitionbody(const char *body, int component)
+{
+    vector<char> rewritten;
+    bool commandstart = true, quoted = false, comment = false;
+    int depth = 0;
+    for(const char *cursor = body; cursor && *cursor;)
+    {
+        if(comment)
+        {
+            const char c = *cursor++;
+            rewritten.add(c);
+            if(c == '\n') { comment = false; commandstart = true; }
+            continue;
+        }
+        if(quoted)
+        {
+            const char c = *cursor++;
+            rewritten.add(c);
+            if(c == '^' && *cursor) rewritten.add(*cursor++);
+            else if(c == '"') quoted = false;
+            continue;
+        }
+        if(cursor[0] == '/' && cursor[1] == '/')
+        {
+            rewritten.add(*cursor++);
+            rewritten.add(*cursor++);
+            comment = true;
+            continue;
+        }
+        if(*cursor == '"') { quoted = true; rewritten.add(*cursor++); continue; }
+        if(*cursor == '[') { ++depth; rewritten.add(*cursor++); continue; }
+        if(*cursor == ']') { if(depth > 0) --depth; rewritten.add(*cursor++); continue; }
+        if(depth == 0 && (*cursor == ';' || *cursor == '\n'))
+        {
+            commandstart = true;
+            rewritten.add(*cursor++);
+            continue;
+        }
+        if(depth == 0 && commandstart)
+        {
+            if(iscubespace(*cursor)) { rewritten.add(*cursor++); continue; }
+            const char *start = cursor;
+            while(*cursor && !iscubespace(*cursor) && *cursor != ';' && *cursor != '[' && *cursor != ']') ++cursor;
+            string command;
+            copystring(command, start, min(size_t(cursor - start + 1), sizeof(command)));
+            const char *replacement = serverworlddefinitioncommand(command, component);
+            if(!replacement)
+            {
+                defformatstring(message, "unknown %s command \"%s\"", component == WORLDDEF_NONE ? "worlddef" : "component", command);
+                serverworlddefinitionerror(message);
+                return;
+            }
+            while(*replacement) rewritten.add(*replacement++);
+            commandstart = false;
+            continue;
+        }
+        rewritten.add(*cursor++);
+    }
+    rewritten.add('\0');
+    execute(rewritten.getbuf());
+}
+
+static bool beginserverworldcomponent(int component, bool &present, const char *name)
+{
+    if(!currentserverworlddefinition || currentserverworldcomponent != WORLDDEF_NONE)
+    {
+        serverworlddefinitionerror("component blocks must be direct children of worlddef");
+        return false;
+    }
+    if(present)
+    {
+        defformatstring(message, "duplicate %s component", name);
+        serverworlddefinitionerror(message);
+        return false;
+    }
+    present = true;
+    currentserverworldcomponent = component;
+    return true;
+}
+
+static void endserverworldcomponent()
+{
+    currentserverworldcomponent = WORLDDEF_NONE;
+}
+
+ICOMMAND(worlddef, "sS", (char *id, char *body),
+{
+    if(currentserverworlddefinition)
+    {
+        serverworlddefinitionerror("nested worlddef blocks are not allowed");
+        return;
+    }
+    if(!id[0] || findserverworlddefinition(id))
+    {
+        conoutf(CON_ERROR, "duplicate or empty worlddef id \"%s\"", id);
+        ++serverworlddefinitionerrors;
+        return;
+    }
+    currentserverworlddefinition = serverworlddefinitions.add(new serverworldobjectdefinition(id));
+    executeserverworlddefinitionbody(body, WORLDDEF_NONE);
+    currentserverworlddefinition = NULL;
+    currentserverworldcomponent = WORLDDEF_NONE;
 });
 
-ICOMMAND(worldplaceable, "sssfsN", (char *id, char *itemid, char *model, float *lightradius, char *lightcolor, int *numargs),
+ICOMMANDS("worlddef_item", "S", (char *body),
 {
-    (void)model;
-    (void)lightcolor;
-    (void)numargs;
-    defineserverworldmodel(id, itemid, true);
-    if(serverworldobjectdefinition *object = findserverworldobject(serverworldobjects, id)) object->lightradius = max(*lightradius, 0.0f);
+    if(!currentserverworlddefinition || !beginserverworldcomponent(WORLDDEF_ITEM, currentserverworlddefinition->hasitem, "item")) return;
+    serverinventoryitems.add(currentserverworlddefinition);
+    executeserverworlddefinitionbody(body, WORLDDEF_ITEM);
+    endserverworldcomponent();
 });
 
-static void addserverworlddrop(const char *worldid, const char *itemid, int mincount, int maxcount, float chance)
+ICOMMANDS("worlddef_cube", "S", (char *body),
 {
-    serverworldobjectdefinition *object = findserverworldobject(serverworldcubes, worldid);
-    if(!object) object = findserverworldobject(serverworldobjects, worldid);
-    if(!object) return;
-    if(!object->explicitdrops) object->drops.shrink(0);
-    object->explicitdrops = true;
-    serverworlddropdefinition &drop = object->drops.add();
+    if(!currentserverworlddefinition || !beginserverworldcomponent(WORLDDEF_CUBE, currentserverworlddefinition->hascube, "cube")) return;
+    currentserverworlddefinition->type = WORLD_ITEM_CUBE;
+    serverworldcubes.add(currentserverworlddefinition);
+    executeserverworlddefinitionbody(body, WORLDDEF_CUBE);
+    endserverworldcomponent();
+});
+
+ICOMMANDS("worlddef_scatter", "S", (char *body),
+{
+    if(!currentserverworlddefinition || !beginserverworldcomponent(WORLDDEF_SCATTER, currentserverworlddefinition->scatter, "scatter")) return;
+    if(serverworldobjects.find(currentserverworlddefinition) < 0) serverworldobjects.add(currentserverworlddefinition);
+    currentserverworlddefinition->type = WORLD_ITEM_SCATTER;
+    executeserverworlddefinitionbody(body, WORLDDEF_SCATTER);
+    endserverworldcomponent();
+});
+
+ICOMMANDS("worlddef_placeable", "S", (char *body),
+{
+    if(!currentserverworlddefinition || !beginserverworldcomponent(WORLDDEF_PLACEABLE, currentserverworlddefinition->placeable, "placeable")) return;
+    if(serverworldobjects.find(currentserverworlddefinition) < 0) serverworldobjects.add(currentserverworlddefinition);
+    currentserverworlddefinition->type = WORLD_ITEM_PLACEABLE;
+    executeserverworlddefinitionbody(body, WORLDDEF_PLACEABLE);
+    endserverworldcomponent();
+});
+
+ICOMMANDS("worlddef_mining", "S", (char *body),
+{
+    if(!currentserverworlddefinition || !beginserverworldcomponent(WORLDDEF_MINING, currentserverworlddefinition->hasmining, "mining")) return;
+    executeserverworlddefinitionbody(body, WORLDDEF_MINING);
+    endserverworldcomponent();
+});
+
+ICOMMANDS("worlddef_tool", "S", (char *body),
+{
+    if(!currentserverworlddefinition) return;
+    if(!beginserverworldcomponent(WORLDDEF_TOOL, currentserverworlddefinition->hastool, "tool")) return;
+    executeserverworlddefinitionbody(body, WORLDDEF_TOOL);
+    endserverworldcomponent();
+});
+
+ICOMMANDS("worlddef_furnace", "S", (char *body),
+{
+    if(!currentserverworlddefinition || !beginserverworldcomponent(WORLDDEF_FURNACE, currentserverworlddefinition->hasfurnace, "furnace")) return;
+    executeserverworlddefinitionbody(body, WORLDDEF_FURNACE);
+    endserverworldcomponent();
+});
+
+ICOMMANDS("worlddef_name", "s", (char *value), copystring(currentserverworlddefinition->name, value));
+ICOMMANDS("worlddef_stack", "i", (int *value),
+{
+    currentserverworlddefinition->maxstack = *value;
+    currentserverworlddefinition->itemstackset = true;
+});
+ICOMMANDS("worlddef_itemtexture", "s", (char *value), {});
+ICOMMANDS("worlddef_icon", "s", (char *value), {});
+ICOMMANDS("worlddef_scale", "f", (float *value), {});
+ICOMMANDS("worlddef_cubetexture", "s", (char *value), currentserverworlddefinition->cubetextureset = value && value[0]);
+ICOMMANDS("worlddef_side", "s", (char *value), {});
+ICOMMANDS("worlddef_bottom", "s", (char *value), {});
+ICOMMANDS("worlddef_texsize", "f", (float *value), {});
+ICOMMANDS("worlddef_falling", "i", (int *value), currentserverworlddefinition->fall = *value != 0);
+ICOMMANDS("worlddef_model", "s", (char *value),
+{
+    if(currentserverworldcomponent == WORLDDEF_SCATTER) currentserverworlddefinition->scattermodelset = value && value[0];
+    else if(currentserverworldcomponent == WORLDDEF_PLACEABLE) currentserverworlddefinition->placeablemodelset = value && value[0];
+});
+ICOMMANDS("worlddef_light", "f", (float *value), currentserverworlddefinition->lightradius = *value);
+ICOMMANDS("worlddef_lightcolor", "s", (char *value), {});
+ICOMMANDS("worlddef_hardness", "f", (float *value),
+{
+    currentserverworlddefinition->hardness = *value;
+    currentserverworlddefinition->hardnessset = true;
+});
+ICOMMANDS("worlddef_miningtool", "s", (char *value), copystring(currentserverworlddefinition->preferredtool, value));
+ICOMMANDS("worlddef_miningtier", "i", (int *value), currentserverworlddefinition->requiredtier = *value);
+ICOMMANDS("worlddef_wear", "i", (int *value), currentserverworlddefinition->toolwear = *value);
+ICOMMANDS("worlddef_handbreakable", "i", (int *value), currentserverworlddefinition->handbreakable = *value != 0);
+ICOMMANDS("worlddef_tooltype", "s", (char *value), copystring(currentserverworlddefinition->tooltype, value));
+ICOMMANDS("worlddef_tooltier", "i", (int *value),
+{
+    currentserverworlddefinition->tooltier = *value;
+    currentserverworlddefinition->tooltierset = true;
+});
+ICOMMANDS("worlddef_speed", "f", (float *value),
+{
+    currentserverworlddefinition->toolspeed = *value;
+    currentserverworlddefinition->toolspeedset = true;
+});
+ICOMMANDS("worlddef_durability", "i", (int *value), currentserverworlddefinition->maxdurability = *value);
+ICOMMANDS("worlddef_damage", "f", (float *value), currentserverworlddefinition->tooldamage = *value);
+ICOMMANDS("worlddef_slots", "i", (int *value), currentserverworlddefinition->furnaceinputslots = *value);
+ICOMMANDS("worlddef_capacity", "i", (int *value), currentserverworlddefinition->furnaceinputlimit = *value);
+
+ICOMMANDS("worlddef_drop", "siifN", (char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
+{
+    if(!currentserverworlddefinition || currentserverworldcomponent != WORLDDEF_NONE)
+    {
+        serverworlddefinitionerror("drop must be a direct child of worlddef");
+        return;
+    }
+    serverworlddropdefinition &drop = currentserverworlddefinition->drops.add();
     copystring(drop.itemid, itemid ? itemid : "");
-    drop.item = !itemid[0] || !cubecasecmp(itemid, "false") ? -1 : -2;
-    drop.mincount = max(mincount, 0);
-    drop.maxcount = max(maxcount, drop.mincount);
-    drop.chance = clamp(chance, 0.0f, 1.0f);
-}
-
-ICOMMAND(worlddrop, "ssiifN", (char *worldid, char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
-{
-    addserverworlddrop(worldid, itemid, *mincount, *maxcount, *numargs >= 5 ? *chance : 1.0f);
+    drop.item = -2;
+    drop.mincount = *mincount;
+    drop.maxcount = *maxcount;
+    drop.chance = *numargs >= 4 ? *chance : 1.0f;
+    currentserverworlddefinition->explicitdrops = true;
 });
 
 static bool buildserverpersistentindexes()
@@ -10016,7 +10419,7 @@ static bool buildserverpersistentindexes()
     serverobjectpersistentindexes.clear();
     loopv(serverinventoryitems)
     {
-        serverinventoryitemdefinition &definition = *serverinventoryitems[i];
+        serverworldobjectdefinition &definition = *serverinventoryitems[i];
         int *previous = serveritempersistentindexes.access(worldpersistentkey(definition.persistentid));
         if(previous && cubecasecmp(serverinventoryitems[*previous]->id, definition.id))
         {
@@ -10048,48 +10451,85 @@ static bool buildserverpersistentindexes()
 
 static void resolveserverworlddefinitions()
 {
-    if(!buildserverpersistentindexes()) fatal("server startup failed: config/world.cfg contains persistent ID collisions");
-    serverinventoryitemdefinition *erroritem = findserverinventoryitem("error");
-    serverworldobjectdefinition *errorcube = findserverworldobject(serverworldcubes, "error"),
-                                *errorobject = findserverworldobject(serverworldobjects, "error");
-    if(!erroritem) fatal("server startup failed: config/world.cfg must define inventoryitem \"error\"");
-    if(!errorcube) fatal("server startup failed: config/world.cfg must define worldcube \"error\"");
-    if(!errorobject || !errorobject->scatter || !errorobject->placeable)
-        fatal("server startup failed: config/world.cfg must define both worldscatter and worldplaceable \"error\"");
-    servererroritem = serverinventoryitems.find(erroritem);
-    servererrorcube = serverworldcubes.find(errorcube);
-    servererrorobject = serverworldobjects.find(errorobject);
-
-    loopv(serverworldcubes)
+    loopv(serverworlddefinitions)
     {
-        serverworldobjectdefinition &object = *serverworldcubes[i];
-        serverinventoryitemdefinition *item = object.itemid[0] ? findserverinventoryitem(object.itemid) : NULL;
-        object.item = item ? serverinventoryitems.find(item) : object.itemid[0] ? servererroritem : -1;
-    }
-    loopv(serverworldobjects)
-    {
-        serverworldobjectdefinition &object = *serverworldobjects[i];
-        serverinventoryitemdefinition *item = object.itemid[0] ? findserverinventoryitem(object.itemid) : NULL;
-        object.item = item ? serverinventoryitems.find(item) : object.itemid[0] ? servererroritem : -1;
-    }
-    loopk(2)
-    {
-        vector<serverworldobjectdefinition *> &definitions = k ? serverworldobjects : serverworldcubes;
-        loopv(definitions)
+        serverworldobjectdefinition &definition = *serverworlddefinitions[i];
+        definition.item = definition.hasitem ? serverinventoryitems.find(&definition) : -1;
+        if(definition.hasitem && (!definition.name[0] || !definition.itemstackset || definition.maxstack <= 0))
         {
-            serverworldobjectdefinition &object = *definitions[i];
-            loopvj(object.drops) if(object.drops[j].item == -2)
+            conoutf(CON_ERROR, "worlddef \"%s\": item requires name and a positive stack", definition.id);
+            ++serverworlddefinitionerrors;
+        }
+        if(definition.hascube && !definition.cubetextureset)
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": cube requires texture", definition.id);
+            ++serverworlddefinitionerrors;
+        }
+        if((definition.scatter && !definition.scattermodelset) || (definition.placeable && !definition.placeablemodelset))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": scatter/placeable requires model", definition.id);
+            ++serverworlddefinitionerrors;
+        }
+        if(definition.hasmining && (!definition.hardnessset || definition.hardness <= 0 || definition.requiredtier < 0 || definition.toolwear < 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": mining requires positive hardness and non-negative tier/wear", definition.id);
+            ++serverworlddefinitionerrors;
+        }
+        if(definition.preferredtool[0] && cubecasecmp(definition.preferredtool, "pickaxe") && cubecasecmp(definition.preferredtool, "axe") &&
+           cubecasecmp(definition.preferredtool, "shovel") && cubecasecmp(definition.preferredtool, "sword"))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": unknown mining tool type \"%s\"", definition.id, definition.preferredtool);
+            ++serverworlddefinitionerrors;
+        }
+        if(definition.hastool && (!definition.hasitem || !definition.tooltype[0] || !definition.tooltierset || definition.tooltier < 0 ||
+           !definition.toolspeedset || definition.toolspeed <= 0 ||
+           definition.maxdurability <= 0 || definition.tooldamage <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": tool requires item, type, non-negative tier, positive speed, durability, and damage", definition.id);
+            ++serverworlddefinitionerrors;
+        }
+        if(definition.hastool && cubecasecmp(definition.tooltype, "pickaxe") && cubecasecmp(definition.tooltype, "axe") &&
+           cubecasecmp(definition.tooltype, "shovel") && cubecasecmp(definition.tooltype, "sword"))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": unknown tool type \"%s\"", definition.id, definition.tooltype);
+            ++serverworlddefinitionerrors;
+        }
+        if(definition.hasfurnace && (!definition.hascube || definition.furnaceinputslots < 1 || definition.furnaceinputslots > FURNACE_INPUT_MAX ||
+           definition.furnaceinputlimit < 1))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": furnace requires cube, 1-%d slots, and positive capacity", definition.id, FURNACE_INPUT_MAX);
+            ++serverworlddefinitionerrors;
+        }
+        loopv(definition.drops)
+        {
+            serverworlddropdefinition &drop = definition.drops[i];
+            if(!drop.itemid[0] || !cubecasecmp(drop.itemid, "false"))
             {
-                if(!cubecasecmp(object.drops[j].itemid, "self")) object.drops[j].item = object.item;
-                else
+                if(drop.mincount < 0 || drop.maxcount < drop.mincount || drop.chance < 0 || drop.chance > 1)
                 {
-                    serverinventoryitemdefinition *item = findserverinventoryitem(object.drops[j].itemid);
-                    object.drops[j].item = item ? serverinventoryitems.find(item) : servererroritem;
+                    conoutf(CON_ERROR, "worlddef \"%s\": invalid drop quantity", definition.id);
+                    ++serverworlddefinitionerrors;
                 }
+                drop.item = -1;
+                continue;
             }
+            serverworldobjectdefinition *target = !cubecasecmp(drop.itemid, "self") ? &definition : findserverworlddefinition(drop.itemid);
+            if(!target || !target->hasitem || drop.mincount < 0 || drop.maxcount < drop.mincount || drop.chance < 0 || drop.chance > 1)
+            {
+                conoutf(CON_ERROR, "worlddef \"%s\": invalid drop target or quantity for \"%s\"", definition.id, drop.itemid);
+                ++serverworlddefinitionerrors;
+                continue;
+            }
+            drop.item = serverinventoryitems.find(target);
         }
     }
-    game::validateminingdefinitions();
+    if(serverworlddefinitionerrors || !buildserverpersistentindexes()) fatal("server startup failed: invalid world definitions");
+    serverworldobjectdefinition *error = findserverworlddefinition("error");
+    if(!error || !error->hasitem || !error->hascube || !error->scatter || !error->placeable)
+        fatal("server startup failed: worlddef \"error\" must contain item, cube, scatter, and placeable components");
+    servererroritem = serverinventoryitems.find(error);
+    servererrorcube = serverworldcubes.find(error);
+    servererrorobject = serverworldobjects.find(error);
 }
 
 void initserverworlddefinitions()
@@ -10097,7 +10537,7 @@ void initserverworlddefinitions()
     resetserverworlddefinitions();
     if(!execfile("config/world.cfg", false)) fatal("server startup failed: could not load config/world.cfg");
     resolveserverworlddefinitions();
-    reloadrecipes(true);
+    if(!reloadrecipes(true)) fatal("server startup failed: invalid recipes");
     conoutf("loaded %d inventory item, %d world cube, and %d world object server definitions",
             serverinventoryitems.length(), serverworldcubes.length(), serverworldobjects.length());
 }
@@ -10132,7 +10572,7 @@ int getinventoryitempersistentindex(ullong id, bool warn)
 
 int getinventoryitemindex(const char *id)
 {
-    serverinventoryitemdefinition *item = findserverinventoryitem(id);
+    serverworldobjectdefinition *item = findserverinventoryitem(id);
     return item ? serverinventoryitems.find(item) : -1;
 }
 
@@ -10143,14 +10583,58 @@ int getinventoryitemmaxstack(int index)
 
 bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
 {
-    loopv(serverworldcubes) if(serverworldcubes[i]->item == item && serverworldcubes[i]->furnaceinputslots > 0)
+    if(serverinventoryitems.inrange(item) && serverinventoryitems[item]->hasfurnace)
     {
-        inputslots = serverworldcubes[i]->furnaceinputslots;
-        inputlimit = serverworldcubes[i]->furnaceinputlimit;
+        inputslots = serverinventoryitems[item]->furnaceinputslots;
+        inputlimit = serverinventoryitems[item]->furnaceinputlimit;
         return true;
     }
     inputslots = inputlimit = 0;
     return false;
+}
+
+bool isinventorytool(int index) { return serverinventoryitems.inrange(index) && serverinventoryitems[index]->hastool; }
+const char *getinventorytooltype(int index) { return isinventorytool(index) ? serverinventoryitems[index]->tooltype : ""; }
+int getinventorytooltier(int index) { return isinventorytool(index) ? serverinventoryitems[index]->tooltier : 0; }
+float getinventorytoolspeed(int index) { return isinventorytool(index) ? serverinventoryitems[index]->toolspeed : 1.0f; }
+int getinventorytoolmaxdurability(int index) { return isinventorytool(index) ? serverinventoryitems[index]->maxdurability : 0; }
+float getinventorytooldamage(int index) { return isinventorytool(index) ? serverinventoryitems[index]->tooldamage : 1.0f; }
+
+static serverworldobjectdefinition *getserverworldobjectdefinition(int type, int index)
+{
+    if(type == WORLD_ITEM_CUBE) return serverworldcubes.inrange(index) ? serverworldcubes[index] : NULL;
+    if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE) return serverworldobjects.inrange(index) ? serverworldobjects[index] : NULL;
+    return NULL;
+}
+
+float getworldobjecthardness(int type, int index)
+{
+    serverworldobjectdefinition *definition = getserverworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? max(definition->hardness, 0.01f) : 1.0f;
+}
+
+const char *getworldobjectpreferredtool(int type, int index)
+{
+    serverworldobjectdefinition *definition = getserverworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? definition->preferredtool : "";
+}
+
+int getworldobjectrequiredtier(int type, int index)
+{
+    serverworldobjectdefinition *definition = getserverworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? definition->requiredtier : 0;
+}
+
+int getworldobjecttoolwear(int type, int index)
+{
+    serverworldobjectdefinition *definition = getserverworldobjectdefinition(type, index);
+    return definition && definition->hasmining ? definition->toolwear : 1;
+}
+
+bool isworldobjecthandbreakable(int type, int index)
+{
+    serverworldobjectdefinition *definition = getserverworldobjectdefinition(type, index);
+    return !definition || !definition->hasmining || definition->handbreakable;
 }
 
 const char *getinventoryitemtexture(int index) { return ""; }
