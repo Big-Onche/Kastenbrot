@@ -58,17 +58,17 @@ FVARP(weatherwindspeed, 0.0f, 0.20f, 16.0f);
 FVARP(cloudwindspeed, 0.0f, 1.20f, 64.0f);
 FVARP(cloudwindangle, 0.0f, 18.0f, 360.0f);
 
-// lighting: defaults intentionally minimize hard cube-face shading
-FVARP(cloudambient, 0.0f, 0.82f, 4.0f);
-FVARP(cloudsunlight, 0.0f, 0.78f, 4.0f);
-FVARP(cloudlightwrap, 0.0f, 0.62f, 1.0f);
-FVARP(cloudfacecontrast, 0.0f, 0.24f, 1.0f);
-FVARP(cloudrounding, 0.0f, 0.42f, 1.0f);
-FVARP(cloudrimlight, 0.0f, 0.08f, 1.0f);
-FVARP(cloudundersidedarkness, 0.0f, 0.12f, 0.75f);
+// lighting: rounded side shading keeps the voxel silhouette while avoiding flat, uniformly lit slabs
+FVARP(cloudambient, 0.0f, 0.72f, 4.0f);
+FVARP(cloudsunlight, 0.0f, 0.92f, 4.0f);
+FVARP(cloudlightwrap, 0.0f, 0.55f, 1.0f);
+FVARP(cloudfacecontrast, 0.0f, 0.46f, 1.0f);
+FVARP(cloudrounding, 0.0f, 0.72f, 1.0f);
+FVARP(cloudrimlight, 0.0f, 0.16f, 1.0f);
+FVARP(cloudundersidedarkness, 0.0f, 0.30f, 0.75f);
 
 // opacity
-FVARP(cloudalpha, 0.0f, 0.75f, 1.0f);
+FVARP(cloudalpha, 0.0f, 1.0f, 1.0f);
 
 //post blur
 VARP(cloudpostblur, 0, 0, 1);
@@ -102,14 +102,25 @@ namespace
         bvec4 normal;
     };
 
+    struct cloudface
+    {
+        vec center;
+        float depth;
+        int firstvert;
+
+        cloudface() : center(0, 0, 0), depth(0.0f), firstvert(0) {}
+        cloudface(const vec &center, int firstvert) : center(center), depth(0.0f), firstvert(firstvert) {}
+    };
+
     struct cloudlayer
     {
-        GLuint vbo;
+        vector<cloudface> faces;
+        GLuint vbo, ebo;
         int numverts, originx, originy, size, centerx, centery, settingsversion, weatherversion;
         bool built;
 
         cloudlayer()
-            : vbo(0), numverts(0), originx(0), originy(0), size(0), centerx(INT_MIN), centery(INT_MIN),
+            : vbo(0), ebo(0), numverts(0), originx(0), originy(0), size(0), centerx(INT_MIN), centery(INT_MIN),
               settingsversion(0), weatherversion(0), built(false)
         {
         }
@@ -415,7 +426,9 @@ namespace
     static void clearcloudlayer(cloudlayer &layer)
     {
         if(layer.vbo) glDeleteBuffers_(1, &layer.vbo);
-        layer.vbo = 0;
+        if(layer.ebo) glDeleteBuffers_(1, &layer.ebo);
+        layer.vbo = layer.ebo = 0;
+        layer.faces.shrink(0);
         layer.numverts = 0;
         layer.size = 0;
         layer.built = false;
@@ -447,11 +460,22 @@ namespace
 
         vector<cloudvert> verts;
         meshcloudlayer(mask, verts);
+        ASSERT(verts.length() % 6 == 0);
 
         if(!layer.vbo) glGenBuffers_(1, &layer.vbo);
+        if(!layer.ebo) glGenBuffers_(1, &layer.ebo);
         gle::bindvbo(layer.vbo);
         glBufferData_(GL_ARRAY_BUFFER, verts.length() * sizeof(cloudvert), verts.empty() ? NULL : verts.getbuf(), GL_STATIC_DRAW);
         gle::clearvbo();
+
+        layer.faces.shrink(0);
+        layer.faces.growbuf(verts.length() / 6);
+        for(int firstvert = 0; firstvert < verts.length(); firstvert += 6)
+        {
+            vec center = vec(verts[firstvert].pos).add(verts[firstvert + 1].pos).add(verts[firstvert + 2].pos)
+                                                    .add(verts[firstvert + 5].pos).mul(0.25f);
+            layer.faces.add(cloudface(center, firstvert));
+        }
 
         layer.numverts = verts.length();
         layer.originx = originx;
@@ -500,7 +524,33 @@ namespace
     {
         gle::disablevertex();
         gle::disablenormal();
+        gle::clearebo();
         gle::clearvbo();
+    }
+
+    static bool sortcloudfaces(const cloudface &a, const cloudface &b)
+    {
+        return a.depth > b.depth;
+    }
+
+    static void updatecloudfaceorder(cloudlayer &layer)
+    {
+        const vec offset = cloudrenderoffset(layer);
+        loopv(layer.faces)
+        {
+            const vec worldcenter = vec(layer.faces[i].center).add(offset);
+            layer.faces[i].depth = vec(worldcenter).sub(camera1->o).dot(camdir);
+        }
+        layer.faces.sort(sortcloudfaces);
+
+        static vector<GLuint> indices;
+        indices.shrink(0);
+        indices.growbuf(layer.numverts);
+        loopv(layer.faces) loopk(6) indices.add(GLuint(layer.faces[i].firstvert + k));
+
+        gle::bindebo(layer.ebo);
+        glBufferData_(GL_ELEMENT_ARRAY_BUFFER, indices.length() * sizeof(GLuint), indices.empty() ? NULL : indices.getbuf(), GL_STREAM_DRAW);
+        gle::clearebo();
     }
 
     static void setclouduniforms(Shader *shader)
@@ -519,10 +569,11 @@ namespace
         LOCALPARAM(cloudnighttint, cloudnightcolor.tocolor());
         LOCALPARAMF(cloudlighting, cloudambient, cloudsunlight, cloudundersidedarkness, 0.0f);
         LOCALPARAMF(cloudappearance, cloudlightwrap, cloudfacecontrast, cloudrounding, cloudrimlight);
+        LOCALPARAMF(cloudgeometry, float(cloudbaseheight), 1.0f / max(float(cloudheight), 1.0f), 0.0f, 0.0f);
         LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudalpha);
     }
 
-    static int drawcloudgeometry()
+    static int drawcloudgeometry(bool sorted = false)
     {
         Shader *shader = lookupshaderbyname("cloud");
         if(!shader || !camera1) return 0;
@@ -532,14 +583,42 @@ namespace
         if(!cloudlayerbounds(cloudstate, center, radius, float(clouddistance))) return 0;
         if(isvisiblesphere(radius, center) == VFC_NOT_VISIBLE) return 0;
 
+        if(sorted) updatecloudfaceorder(cloudstate);
+
         setclouduniforms(shader);
         enablecloudvertexformat(cloudstate);
         LOCALPARAM(cloudmeshoffset, cloudrenderoffset(cloudstate));
-        glDrawArrays(GL_TRIANGLES, 0, cloudstate.numverts);
+        if(sorted)
+        {
+            gle::bindebo(cloudstate.ebo);
+            glDrawElements(GL_TRIANGLES, cloudstate.numverts, GL_UNSIGNED_INT, 0);
+        }
+        else glDrawArrays(GL_TRIANGLES, 0, cloudstate.numverts);
         glde++;
         const int renderedverts = cloudstate.numverts;
         disablecloudvertexformat();
         return renderedverts;
+    }
+
+    static int drawcloudsurface(GLenum depthfunc)
+    {
+        if(cloudalpha <= 0.0f) return 0;
+
+        glDepthFunc(depthfunc);
+
+        if(cloudalpha >= 0.999f)
+        {
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            return drawcloudgeometry();
+        }
+
+        // Alpha blending is order-dependent. The mesh consists of independently merged quads, so render them back-to-front and leave the scene
+        // depth unchanged rather than relying on a repeated depth-equality pass, which produces cracks at T-junctions between unequal quads.
+        glDepthMask(GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        return drawcloudgeometry(true);
     }
 
     // optional post-process target
@@ -1004,20 +1083,11 @@ void renderclouds()
         glDisable(GL_POLYGON_OFFSET_FILL);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LEQUAL);
-        glDepthMask(GL_FALSE);
         glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
-        glFrontFace(GL_CCW);
+        glFrontFace(GL_CW);
 
-        if(cloudalpha < 0.999f)
-        {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        }
-        else glDisable(GL_BLEND);
-
-        renderedverts = drawcloudgeometry();
+        renderedverts = drawcloudsurface(GL_LEQUAL);
     }
     else
     {
@@ -1039,15 +1109,11 @@ void renderclouds()
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
             glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
-            glFrontFace(GL_CCW);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            glFrontFace(GL_CW);
 
-            renderedverts = drawcloudgeometry();
+            renderedverts = drawcloudsurface(GL_LESS);
             if(renderedverts)
             {
                 blurcloudtarget();
@@ -1065,14 +1131,10 @@ void renderclouds()
             glBindFramebuffer_(GL_FRAMEBUFFER, GLuint(oldfb));
             glViewport(oldviewport[0], oldviewport[1], oldviewport[2], oldviewport[3]);
             glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LEQUAL);
-            glDepthMask(GL_FALSE);
             glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
-            glFrontFace(GL_CCW);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            renderedverts = drawcloudgeometry();
+            glFrontFace(GL_CW);
+            renderedverts = drawcloudsurface(GL_LEQUAL);
         }
     }
 
