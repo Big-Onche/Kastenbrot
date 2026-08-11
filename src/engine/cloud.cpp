@@ -48,7 +48,7 @@ VARP(cloudsmoothfill, 0, 5, 8);
 
 // main cloud deck
 VARP(cloudbaseheight, 0, 6144, 16384);
-VARP(cloudheight, 16, 128, 1024);
+VARP(cloudheight, 16, 192, 1024);
 FVARP(clouddome, 0.0f, 0.07f, 2.0f);
 FVARP(cloudscale, 0.00005f, 0.00090f, 0.05f);
 FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
@@ -72,8 +72,8 @@ FVARP(cloudundersidedarkness, 0.0f, 0.17f, 0.75f);
 
 // fixed-cost interior depth and sunlight visibility sampling
 FVARP(cloudraymarchdepth, 0.25f, 1.5f, 8.0f);
-VARP(cloudraymarchsteps, 1, 8, 32);
-VARP(cloudsunmarchsteps, 2, 16, 16);
+VARP(cloudraymarchsteps, 1, 8, 16);
+VARP(cloudsunmarchsteps, 2, 8, 16);
 FVARP(cloudselfshadow, 0.0f, 0.5f, 1.0f);
 
 // finite-distance atmospheric extinction and in-scattering; driven by the same physical controls as the sky atmosphere
