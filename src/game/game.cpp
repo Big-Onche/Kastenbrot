@@ -719,7 +719,7 @@ namespace game
         packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
         putint(p, N_EDITSCATTER);
         putsel(p, sel);
-        putint(p, type);
+        putpersistentid(p, getworldscatterpersistentid(type));
         putint(p, place ? 1 : 0);
         sendclientpacket(p.finalize(), 1);
         return true;
@@ -866,7 +866,14 @@ namespace game
         selinfo selection;
         worldactionselection(selection, localtarget, orient);
         if(waitforserveredit()) worldselectiontoabsolute(selection);
-        addmsg(N_WORLDACTION, "ri8", int(requestid), action, selection.o.x, selection.o.y, selection.o.z, orient, item, slot);
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_WORLDACTION);
+        putint(p, int(requestid)); putint(p, action);
+        putint(p, selection.o.x); putint(p, selection.o.y); putint(p, selection.o.z);
+        putint(p, orient);
+        putpersistentid(p, getinventoryitempersistentid(item));
+        putint(p, slot);
+        sendclientpacket(p.finalize(), 1);
     }
 
     static void addpredictedworldaction(uint requestid, int action, const ivec &absolutetarget, int orient, int item)
@@ -1308,9 +1315,11 @@ namespace game
         if(!f) return false;
         bool ok = f->printf("game_mode %d\n", gamemode) > 0;
         loopi(SURVIVAL_USABLE_SLOTS) if(ok && survivalitems[i] >= 0 && survivalcounts[i] > 0)
-            ok = f->printf("inventory %d %d %d %d\n", i, survivalitems[i], survivalcounts[i], survivaldurabilities[i]) > 0;
+            ok = f->printf("inventory %d " PERSISTENT_ULL_FORMAT " %d %d\n", i, getinventoryitempersistentid(survivalitems[i]),
+                           survivalcounts[i], survivaldurabilities[i]) > 0;
         if(ok && inventorycursoritem >= 0 && inventorycursorcount > 0)
-            ok = f->printf("inventory_cursor %d %d %d\n", inventorycursoritem, inventorycursorcount, inventorycursordurability) > 0;
+            ok = f->printf("inventory_cursor " PERSISTENT_ULL_FORMAT " %d %d\n", getinventoryitempersistentid(inventorycursoritem),
+                           inventorycursorcount, inventorycursordurability) > 0;
         return ok;
     }
 

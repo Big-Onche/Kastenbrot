@@ -12,6 +12,56 @@
 #define WORLD_ULL_FORMAT "%llu"
 #endif
 
+// Stable content identity uses lowercase ASCII because world definition text IDs
+// have always been compared case-insensitively. This is fixed FNV-1a, not a
+// library hash whose result may vary between implementations or launches.
+static ullong worldpersistentid(const char *id)
+{
+    ullong hash = 14695981039346656037ULL;
+    if(!id) return hash;
+    for(const uchar *p = (const uchar *)id; *p; ++p)
+    {
+        const uchar c = *p >= 'A' && *p <= 'Z' ? *p + ('a' - 'A') : *p;
+        hash ^= c;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+#ifndef STANDALONE
+static bool parseworldpersistentid(const char *text, ullong &id)
+{
+    if(!text || !text[0]) return false;
+    char *end = NULL;
+    errno = 0;
+    id = strtoull(text, &end, 10);
+    return end && !*end && errno != ERANGE;
+}
+#endif
+
+struct worldpersistentkey
+{
+    ullong id;
+    worldpersistentkey(ullong id = 0) : id(id) {}
+};
+
+static inline uint hthash(const worldpersistentkey &key) { return uint(key.id) ^ uint(key.id >> 32); }
+static inline bool htcmp(const worldpersistentkey &a, const worldpersistentkey &b) { return a.id == b.id; }
+
+#ifndef STANDALONE
+struct worldcubetexturekey
+{
+    ushort top, side, bottom;
+    worldcubetexturekey(ushort top = 0, ushort side = 0, ushort bottom = 0) : top(top), side(side), bottom(bottom) {}
+};
+
+static inline uint hthash(const worldcubetexturekey &key) { return uint(key.top) ^ (uint(key.side) << 11) ^ (uint(key.bottom) << 22); }
+static inline bool htcmp(const worldcubetexturekey &a, const worldcubetexturekey &b)
+{
+    return a.top == b.top && a.side == b.side && a.bottom == b.bottom;
+}
+#endif
+
 void validmapname(char *dst, const char *src, const char *prefix = NULL, const char *alt = "untitled", size_t maxlen = 100)
 {
     if(prefix) while(*prefix) *dst++ = *prefix++;
@@ -112,7 +162,7 @@ enum
 
 enum
 {
-    WORLD_SAVE_FORMAT_VERSION = 1,
+    WORLD_SAVE_FORMAT_VERSION = 2,
     WORLDGEN_VERSION = 8,
     WORLD_DIFF_Z = 0,
     WORLD_DIFF_FRAME_MAX = 64 << 20,
@@ -146,8 +196,9 @@ struct worlddiffnode
     int x, y, z, size;
     uchar edges[12];
     ushort texture[6], material;
+    int block;
 
-    worlddiffnode() : x(0), y(0), z(0), size(0), material(MAT_AIR)
+    worlddiffnode() : x(0), y(0), z(0), size(0), material(MAT_AIR), block(-1)
     {
         memset(edges, 0, sizeof(edges));
         loopi(6) texture[i] = DEFAULT_GEOM;
@@ -240,13 +291,14 @@ struct worlddropdefinition
 struct worldcubedefinition
 {
     string id, itemid, texture, sidetexture, bottom, bottomtexture;
+    ullong persistentid;
     float texsize;
     int item, slot, sideslot, bottomslot, furnaceinputslots, furnaceinputlimit;
     vector<worlddropdefinition> drops;
     bool explicitdrops, errorfallback, fall;
 
     worldcubedefinition()
-        : texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), furnaceinputslots(0),
+        : persistentid(0), texsize(1), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), furnaceinputslots(0),
           furnaceinputlimit(0), explicitdrops(false), errorfallback(false), fall(false)
     {
         id[0] = itemid[0] = texture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = '\0';
@@ -268,6 +320,7 @@ struct worldgencubetextures
 struct worldscatterdefinition
 {
     string id, itemid, model, icon, lightcolor;
+    ullong persistentid;
     int item, mapmodel;
     float lightradius;
     bool scatter, placeable;
@@ -275,7 +328,7 @@ struct worldscatterdefinition
     bool explicitdrops;
 
     worldscatterdefinition()
-        : item(-1), mapmodel(-1), lightradius(0), scatter(false), placeable(false), explicitdrops(false)
+        : persistentid(0), item(-1), mapmodel(-1), lightradius(0), scatter(false), placeable(false), explicitdrops(false)
     {
         id[0] = itemid[0] = model[0] = icon[0] = lightcolor[0] = '\0';
     }
@@ -284,10 +337,11 @@ struct worldscatterdefinition
 struct inventoryitemdefinition
 {
     string id, name, texture, icon;
+    ullong persistentid;
     int maxstack;
     float worldsize;
 
-    inventoryitemdefinition() : maxstack(64), worldsize(1.0f)
+    inventoryitemdefinition() : persistentid(0), maxstack(64), worldsize(1.0f)
     {
         id[0] = name[0] = texture[0] = icon[0] = '\0';
     }
@@ -296,6 +350,8 @@ struct inventoryitemdefinition
 static vector<worldcubedefinition *> worldcubedefinitions;
 static vector<worldscatterdefinition *> worldscatterdefinitions;
 static vector<inventoryitemdefinition *> inventoryitemdefinitions;
+static hashtable<worldpersistentkey, int> worldcubepersistentindexes(256), worldscatterpersistentindexes(256), inventoryitempersistentindexes(256);
+static hashtable<worldcubetexturekey, int> worldcubetextureindexes(256);
 static vector<worldgencubetextures> worldgentextures;
 static int worldgrassscatter = -1, worldrosescatter = -1,
            worldtulipscatter = -1, worlddandelionscatter = -1,
@@ -362,6 +418,20 @@ int getworldcubeindexat(const ivec &position, int orient)
     return getworldcubeindex(c.texture[clamp(orient, 0, 5)]);
 }
 
+ullong getworldcubepersistentid(int index)
+{
+    index = validworldcubeindex(index);
+    return index >= 0 ? worldcubedefinitions[index]->persistentid : 0;
+}
+
+int getworldcubepersistentindex(ullong id, bool warn)
+{
+    int *index = worldcubepersistentindexes.access(worldpersistentkey(id));
+    if(index) return *index;
+    if(warn) conoutf(CON_WARN, "unknown persistent world cube ID " WORLD_ULL_FORMAT "; using error cube", id);
+    return validworldcubeindex(worlderrorcube);
+}
+
 int getworldcubetextureslotat(const ivec &position, int orient)
 {
     ivec origin;
@@ -415,6 +485,20 @@ const char *getworldscattername(int index)
 {
     index = validworldobjectindex(index);
     return index >= 0 ? worldscatterdefinitions[index]->id : "";
+}
+
+ullong getworldscatterpersistentid(int index)
+{
+    index = validworldobjectindex(index);
+    return index >= 0 ? worldscatterdefinitions[index]->persistentid : 0;
+}
+
+int getworldscatterpersistentindex(ullong id, bool warn)
+{
+    int *index = worldscatterpersistentindexes.access(worldpersistentkey(id));
+    if(index) return *index;
+    if(warn) conoutf(CON_WARN, "unknown persistent world object ID " WORLD_ULL_FORMAT "; using error object", id);
+    return validworldobjectindex(worlderrorobject);
 }
 
 const char *getworldscattermodel(int index)
@@ -476,6 +560,19 @@ const char *getinventoryitemname(int index)
 const char *getinventoryitemid(int index)
 {
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->id : "";
+}
+
+ullong getinventoryitempersistentid(int index)
+{
+    return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->persistentid : 0;
+}
+
+int getinventoryitempersistentindex(ullong id, bool warn)
+{
+    int *index = inventoryitempersistentindexes.access(worldpersistentkey(id));
+    if(index) return *index;
+    if(warn) conoutf(CON_WARN, "unknown persistent inventory item ID " WORLD_ULL_FORMAT "; using error item", id);
+    return inventoryitemdefinitions.inrange(worlderroritem) ? worlderroritem : -1;
 }
 
 bool getworldcubefall(int index)
@@ -672,6 +769,10 @@ void worldreset()
     worldcubedefinitions.deletecontents();
     worldscatterdefinitions.deletecontents();
     inventoryitemdefinitions.deletecontents();
+    worldcubepersistentindexes.clear();
+    worldscatterpersistentindexes.clear();
+    inventoryitempersistentindexes.clear();
+    worldcubetextureindexes.clear();
     worldgentextures.shrink(0);
     worldgrassscatter = worldrosescatter = worldtulipscatter = worlddandelionscatter = -1;
     worlderrorcube = worlderrorobject = worlderroritem = -1;
@@ -690,6 +791,7 @@ static void defineinventoryitem(const char *id, const char *name, int maxstack, 
     inventoryitemdefinition *type = findinventoryitem(id);
     if(!type) type = inventoryitemdefinitions.add(new inventoryitemdefinition);
     copystring(type->id, id);
+    type->persistentid = worldpersistentid(id);
     copystring(type->name, name);
     copystring(type->texture, texture ? texture : "");
     copystring(type->icon, icon ? icon : "");
@@ -714,6 +816,7 @@ static void defineworldcube(const char *id, const char *itemid, const char *text
     worldcubedefinition *type = findworldcube(id);
     if(!type) type = worldcubedefinitions.add(new worldcubedefinition);
     copystring(type->id, id);
+    type->persistentid = worldpersistentid(id);
     copystring(type->itemid, itemid ? itemid : "");
     copystring(type->texture, texture ? texture : "");
     copystring(type->sidetexture, numargs >= 5 && side ? side : "");
@@ -772,6 +875,7 @@ static void defineworldscatter(const char *id, const char *itemid, const char *m
     worldscatterdefinition *type = findworldscatter(id);
     if(!type) type = worldscatterdefinitions.add(new worldscatterdefinition);
     copystring(type->id, id);
+    type->persistentid = worldpersistentid(id);
     copystring(type->itemid, itemid ? itemid : "");
     copystring(type->model, model ? model : "");
     type->icon[0] = '\0';
@@ -912,6 +1016,71 @@ static void resolveworldscattericon(worldscatterdefinition &type)
     formatstring(type.icon, "media/model/%s/diffuse.png", type.model);
 }
 
+static bool buildworldpersistentindexes()
+{
+    bool valid = true;
+    worldcubepersistentindexes.clear();
+    worldscatterpersistentindexes.clear();
+    inventoryitempersistentindexes.clear();
+    loopv(worldcubedefinitions)
+    {
+        worldcubedefinition &definition = *worldcubedefinitions[i];
+        int *previous = worldcubepersistentindexes.access(worldpersistentkey(definition.persistentid));
+        if(previous && cubecasecmp(worldcubedefinitions[*previous]->id, definition.id))
+        {
+            conoutf(CON_ERROR, "persistent world cube ID collision " WORLD_ULL_FORMAT " between \"%s\" and \"%s\"",
+                    definition.persistentid, worldcubedefinitions[*previous]->id, definition.id);
+            valid = false;
+        }
+        else worldcubepersistentindexes.access(worldpersistentkey(definition.persistentid), i);
+    }
+    loopv(worldscatterdefinitions)
+    {
+        worldscatterdefinition &definition = *worldscatterdefinitions[i];
+        int *previous = worldscatterpersistentindexes.access(worldpersistentkey(definition.persistentid));
+        if(previous && cubecasecmp(worldscatterdefinitions[*previous]->id, definition.id))
+        {
+            conoutf(CON_ERROR, "persistent world object ID collision " WORLD_ULL_FORMAT " between \"%s\" and \"%s\"",
+                    definition.persistentid, worldscatterdefinitions[*previous]->id, definition.id);
+            valid = false;
+        }
+        else worldscatterpersistentindexes.access(worldpersistentkey(definition.persistentid), i);
+    }
+    loopv(inventoryitemdefinitions)
+    {
+        inventoryitemdefinition &definition = *inventoryitemdefinitions[i];
+        int *previous = inventoryitempersistentindexes.access(worldpersistentkey(definition.persistentid));
+        if(previous && cubecasecmp(inventoryitemdefinitions[*previous]->id, definition.id))
+        {
+            conoutf(CON_ERROR, "persistent inventory item ID collision " WORLD_ULL_FORMAT " between \"%s\" and \"%s\"",
+                    definition.persistentid, inventoryitemdefinitions[*previous]->id, definition.id);
+            valid = false;
+        }
+        else inventoryitempersistentindexes.access(worldpersistentkey(definition.persistentid), i);
+    }
+    return valid;
+}
+
+static bool buildworldcubetextureindexes()
+{
+    bool valid = true;
+    worldcubetextureindexes.clear();
+    loopv(worldcubedefinitions)
+    {
+        const worldcubedefinition &definition = *worldcubedefinitions[i];
+        const worldcubetexturekey key(definition.slot, definition.sideslot, definition.bottomslot);
+        int *previous = worldcubetextureindexes.access(key);
+        if(previous)
+        {
+            conoutf(CON_ERROR, "world cubes \"%s\" and \"%s\" have indistinguishable runtime textures; persistent identity would be ambiguous",
+                    worldcubedefinitions[*previous]->id, definition.id);
+            valid = false;
+        }
+        else worldcubetextureindexes.access(key, i);
+    }
+    return valid;
+}
+
 static bool loadworlddefinitions(bool assets = true)
 {
     worldreset();
@@ -921,6 +1090,7 @@ static bool loadworlddefinitions(bool assets = true)
         return false;
     }
 
+    if(!buildworldpersistentindexes()) return false;
     validateworlderrorfallback(assets);
 
     loopv(worldcubedefinitions)
@@ -1087,6 +1257,8 @@ static bool loadworlddefinitions(bool assets = true)
         type.sideslot = errorcube.sideslot;
         type.bottomslot = errorcube.bottomslot;
     }
+
+    if(!buildworldcubetextureindexes()) return false;
 
     loopv(worldcubedefinitions)
     {
@@ -1932,6 +2104,13 @@ static bool sameworldscatterlist(const vector<worldscatterinstance> &a, const ve
     return true;
 }
 
+static int getworldcubebytextures(const ushort *textures)
+{
+    loopi(4) if(textures[i] != textures[0]) return -1;
+    int *index = worldcubetextureindexes.access(worldcubetexturekey(textures[O_TOP], textures[0], textures[O_BOTTOM]));
+    return index ? *index : -1;
+}
+
 static void copyworlddiffnode(const cube &c, const ivec &o, int size, const ivec &chunkorigin, worlddiffnode &node)
 {
     node.x = o.x - chunkorigin.x;
@@ -1941,6 +2120,7 @@ static void copyworlddiffnode(const cube &c, const ivec &o, int size, const ivec
     memcpy(node.edges, c.edges, sizeof(node.edges));
     memcpy(node.texture, c.texture, sizeof(node.texture));
     node.material = c.material;
+    node.block = getworldcubebytextures(c.texture);
 }
 
 static void captureworlddiffnodes(const cube &c, const ivec &o, int size, const ivec &bbmin, const ivec &bbmax, const ivec &chunkorigin, vector<worlddiffnode> &nodes)
@@ -2209,14 +2389,39 @@ static uint worlddiffchecksum(const uchar *data, int length)
     return hash;
 }
 
-static void serializeworlddiffnode(vector<uchar> &out, const worlddiffnode &node)
+struct worldblockpalette
+{
+    vector<int> blocks;
+
+    int find(int block) const
+    {
+        loopv(blocks) if(blocks[i] == block) return i;
+        return -1;
+    }
+
+    int add(int block)
+    {
+        if(block < 0) return -1;
+        int index = find(block);
+        if(index >= 0) return index;
+        if(blocks.length() >= 0xFFFF) return -1;
+        blocks.add(block);
+        return blocks.length() - 1;
+    }
+};
+
+static void serializeworlddiffnode(vector<uchar> &out, const worlddiffnode &node, const worldblockpalette &palette)
 {
     worlddiffput32(out, uint(node.x));
     worlddiffput32(out, uint(node.y));
     worlddiffput32(out, uint(node.z));
     worlddiffput32(out, uint(node.size));
     worlddiffputbytes(out, node.edges, sizeof(node.edges));
-    loopi(6)
+    const int paletteindex = palette.find(node.block);
+    const ushort encoded = paletteindex >= 0 ? ushort(paletteindex) : 0xFFFF;
+    out.add(uchar(encoded));
+    out.add(uchar(encoded >> 8));
+    if(encoded == 0xFFFF) loopi(6)
     {
         out.add(uchar(node.texture[i]));
         out.add(uchar(node.texture[i] >> 8));
@@ -2227,15 +2432,14 @@ static void serializeworlddiffnode(vector<uchar> &out, const worlddiffnode &node
 
 static void serializeworldscatterinstance(vector<uchar> &out, const worldscatterinstance &scatter)
 {
-    const uint encodedtype = uint(scatter.type & 0xFFFF) |
-                             (uint((scatter.orient + 1) & 0x7) << 16);
     worlddiffput32(out, uint(scatter.x));
     worlddiffput32(out, uint(scatter.y));
     worlddiffput32(out, uint(scatter.z));
-    worlddiffput32(out, encodedtype);
+    worlddiffput64(out, getworldscatterpersistentid(scatter.type));
+    worlddiffput32(out, uint(scatter.orient));
 }
 
-static void serializeworldeditrecord(vector<uchar> &out, const worldeditrecord &record)
+static void serializeworldeditrecord(vector<uchar> &out, const worldeditrecord &record, const worldblockpalette &palette)
 {
     vector<uchar> body;
     worlddiffput32(body, uint(record.chunkx));
@@ -2256,9 +2460,9 @@ static void serializeworldeditrecord(vector<uchar> &out, const worldeditrecord &
     worlddiffput32(body, uint(record.selection.corner));
     loopi(4) worlddiffput32(body, uint(record.args[i]));
     worlddiffput32(body, uint(record.before.length()));
-    loopv(record.before) serializeworlddiffnode(body, record.before[i]);
+    loopv(record.before) serializeworlddiffnode(body, record.before[i], palette);
     worlddiffput32(body, uint(record.after.length()));
-    loopv(record.after) serializeworlddiffnode(body, record.after[i]);
+    loopv(record.after) serializeworlddiffnode(body, record.after[i], palette);
     worlddiffput32(body, uint(record.scatterbefore.length()));
     loopv(record.scatterbefore) serializeworldscatterinstance(body, record.scatterbefore[i]);
     worlddiffput32(body, uint(record.scatterafter.length()));
@@ -2271,6 +2475,12 @@ static void serializeworldeditrecord(vector<uchar> &out, const worldeditrecord &
 static void makeworlddiffframe(vector<uchar> &frame, uchar type, int chunkx, int chunky, const vector<worldeditrecord *> &records, ullong expectedhash = 0)
 {
     vector<uchar> payload;
+    worldblockpalette palette;
+    loopv(records)
+    {
+        loopvj(records[i]->before) palette.add(records[i]->before[j].block);
+        loopvj(records[i]->after) palette.add(records[i]->after[j].block);
+    }
     payload.add(type);
     worlddiffput32(payload, WORLD_SAVE_FORMAT_VERSION);
     worlddiffput32(payload, WORLDGEN_VERSION);
@@ -2278,8 +2488,10 @@ static void makeworlddiffframe(vector<uchar> &frame, uchar type, int chunkx, int
     worlddiffput32(payload, uint(chunky));
     worlddiffput32(payload, WORLD_DIFF_Z);
     worlddiffput64(payload, expectedhash);
+    worlddiffput32(payload, uint(palette.blocks.length()));
+    loopv(palette.blocks) worlddiffput64(payload, getworldcubepersistentid(palette.blocks[i]));
     worlddiffput32(payload, uint(records.length()));
-    loopv(records) serializeworldeditrecord(payload, *records[i]);
+    loopv(records) serializeworldeditrecord(payload, *records[i], palette);
 
     worlddiffputbytes(frame, "CDF1", 4);
     worlddiffput32(frame, uint(payload.length()));
@@ -7288,6 +7500,19 @@ struct worldchunkreader
     int remaining() const { return int(end - pos); }
 };
 
+static bool deserializeworldblockpalette(worldchunkreader &reader, worldblockpalette &palette)
+{
+    uint count;
+    if(!reader.readuint(count) || count > 0xFFFF || count > uint(reader.remaining() / 8)) return false;
+    loopi(count)
+    {
+        ullong persistentid;
+        if(!reader.readullong(persistentid)) return false;
+        palette.blocks.add(getworldcubepersistentindex(persistentid));
+    }
+    return true;
+}
+
 static void subdivideworlddiffcube(cube &c, bool prepared, int &families)
 {
     if(c.children) return;
@@ -7380,7 +7605,7 @@ static void applyworlddiffnode(cube *root, const worlddiffnode &node,
     c->ext = NULL;
 }
 
-static bool deserializeworlddiffnode(worldchunkreader &reader, worlddiffnode &node)
+static bool deserializeworlddiffnode(worldchunkreader &reader, worlddiffnode &node, const worldblockpalette &palette)
 {
     uint value;
     if(!reader.readuint(value)) return false;
@@ -7392,7 +7617,22 @@ static bool deserializeworlddiffnode(worldchunkreader &reader, worlddiffnode &no
     if(!reader.readuint(value)) return false;
     node.size = int(value);
     if(!reader.read(node.edges, sizeof(node.edges))) return false;
-    loopi(6) if(!reader.readushort(node.texture[i])) return false;
+    ushort paletteindex;
+    if(!reader.readushort(paletteindex)) return false;
+    if(paletteindex == 0xFFFF)
+    {
+        node.block = -1;
+        loopi(6) if(!reader.readushort(node.texture[i])) return false;
+    }
+    else
+    {
+        if(!palette.blocks.inrange(paletteindex)) return false;
+        node.block = palette.blocks[paletteindex];
+        const worldcubedefinition &definition = *worldcubedefinitions[validworldcubeindex(node.block)];
+        loopi(6) node.texture[i] = definition.sideslot;
+        node.texture[O_TOP] = definition.slot;
+        node.texture[O_BOTTOM] = definition.bottomslot;
+    }
     return reader.readushort(node.material);
 }
 
@@ -7400,17 +7640,16 @@ static bool deserializeworldscatterinstance(worldchunkreader &reader,
                                             worldscatterinstance &scatter)
 {
     uint value;
+    ullong persistentid;
     if(!reader.readuint(value)) return false;
     scatter.x = int(value);
     if(!reader.readuint(value)) return false;
     scatter.y = int(value);
     if(!reader.readuint(value)) return false;
     scatter.z = int(value);
-    if(!reader.readuint(value)) return false;
-    // Legacy records stored only the type and were always mounted on top.
-    const int encodedorient = int((value >> 16) & 0x7);
-    scatter.orient = encodedorient ? encodedorient - 1 : O_TOP;
-    scatter.type = int(value & 0xFFFF);
+    if(!reader.readullong(persistentid) || !reader.readuint(value)) return false;
+    scatter.type = getworldscatterpersistentindex(persistentid);
+    scatter.orient = int(value);
     scatter.rendertransformvalid = false;
     return scatter.x >= 0 && scatter.x < WORLD_CHUNK_SIZE &&
            scatter.y >= 0 && scatter.y < WORLD_CHUNK_SIZE &&
@@ -7420,7 +7659,7 @@ static bool deserializeworldscatterinstance(worldchunkreader &reader,
            scatter.orient >= O_LEFT && scatter.orient <= O_TOP;
 }
 
-static bool deserializeworldeditrecord(worldchunkreader &reader, worldeditrecord &record)
+static bool deserializeworldeditrecord(worldchunkreader &reader, worldeditrecord &record, const worldblockpalette &palette)
 {
     uint length, checksum;
     if(!reader.readuint(length) || !reader.readuint(checksum) ||
@@ -7466,17 +7705,15 @@ static bool deserializeworldeditrecord(worldchunkreader &reader, worldeditrecord
         if(!body.readuint(value)) return false;
         record.args[i] = int(value);
     }
-    if(!body.readuint(count) || count > uint(body.remaining() / 42)) return false;
-    loopi(count) if(!deserializeworlddiffnode(body, record.before.add())) return false;
-    if(!body.readuint(count) || count > uint(body.remaining() / 42)) return false;
-    loopi(count) if(!deserializeworlddiffnode(body, record.after.add())) return false;
-    // Records written before persistent scatter support end after cube state.
-    if(!body.remaining()) return true;
-    if(!body.readuint(count) || count > uint(body.remaining() / 16)) return false;
+    if(!body.readuint(count) || count > uint(body.remaining() / 32)) return false;
+    loopi(count) if(!deserializeworlddiffnode(body, record.before.add(), palette)) return false;
+    if(!body.readuint(count) || count > uint(body.remaining() / 32)) return false;
+    loopi(count) if(!deserializeworlddiffnode(body, record.after.add(), palette)) return false;
+    if(!body.readuint(count) || count > uint(body.remaining() / 24)) return false;
     loopi(count)
         if(!deserializeworldscatterinstance(body, record.scatterbefore.add()))
             return false;
-    if(!body.readuint(count) || count > uint(body.remaining() / 16)) return false;
+    if(!body.readuint(count) || count > uint(body.remaining() / 24)) return false;
     loopi(count)
         if(!deserializeworldscatterinstance(body, record.scatterafter.add()))
             return false;
@@ -7506,6 +7743,16 @@ static ullong hashworlddiffbytes(ullong hash, const void *data, int length)
     return hash;
 }
 
+static ullong hashworlddiff64(ullong hash, ullong value)
+{
+    loopi(8)
+    {
+        const uchar byte = uchar(value >> (i * 8));
+        hash = hashworlddiffbytes(hash, &byte, 1);
+    }
+    return hash;
+}
+
 static ullong hashworlddiffcube(const cube &c, ullong hash)
 {
     uchar children = c.children ? 1 : 0;
@@ -7516,7 +7763,11 @@ static ullong hashworlddiffcube(const cube &c, ullong hash)
         return hash;
     }
     hash = hashworlddiffbytes(hash, c.edges, sizeof(c.edges));
-    hash = hashworlddiffbytes(hash, c.texture, sizeof(c.texture));
+    const int block = getworldcubebytextures(c.texture);
+    const uchar rawtextures = block < 0 ? 1 : 0;
+    hash = hashworlddiffbytes(hash, &rawtextures, sizeof(rawtextures));
+    if(block >= 0) hash = hashworlddiff64(hash, getworldcubepersistentid(block));
+    else hash = hashworlddiffbytes(hash, c.texture, sizeof(c.texture));
     return hashworlddiffbytes(hash, &c.material, sizeof(c.material));
 }
 
@@ -7626,14 +7877,23 @@ static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename,
         }
         worldchunkreader payload(payloadbytes, length);
         uchar type;
-        uint saveversion, genversion, chunkx, chunky, chunkz, count;
+        uint saveversion = 0, genversion, chunkx, chunky, chunkz, count;
         ullong framehash;
+        worldblockpalette palette;
         if(!payload.readbyte(type) || !payload.readuint(saveversion) ||
            !payload.readuint(genversion) || !payload.readuint(chunkx) ||
-           !payload.readuint(chunky) || !payload.readuint(chunkz) ||
-           !payload.readullong(framehash) ||
-           !payload.readuint(count) ||
-           saveversion != WORLD_SAVE_FORMAT_VERSION ||
+           !payload.readuint(chunky) || !payload.readuint(chunkz) || !payload.readullong(framehash))
+        {
+            valid = false;
+            continue;
+        }
+        if(saveversion != WORLD_SAVE_FORMAT_VERSION)
+        {
+            conoutf(CON_ERROR, "chunk diff %s uses unsupported save format version %u", filename, saveversion);
+            valid = false;
+            continue;
+        }
+        if(!deserializeworldblockpalette(payload, palette) || !payload.readuint(count) ||
            genversion != WORLDGEN_VERSION || int(chunkx) != x || int(chunky) != y ||
            int(chunkz) != WORLD_DIFF_Z || (type != 1 && type != 2) ||
            count > 1000000U)
@@ -7646,7 +7906,7 @@ static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename,
         loopi(count)
         {
             worldeditrecord record;
-            if(!deserializeworldeditrecord(payload, record) ||
+            if(!deserializeworldeditrecord(payload, record, palette) ||
                record.chunkx != x || record.chunky != y ||
                record.chunkz != WORLD_DIFF_Z || record.revision <= revision)
             {
@@ -7808,23 +8068,27 @@ static void loadworldauditlog()
         if(worlddiffchecksum(payloadbytes, framelength) != framechecksum) continue;
         worldchunkreader payload(payloadbytes, framelength);
         uchar type;
-        uint saveversion, genversion, chunkx, chunky, chunkz, count;
+        uint saveversion = 0, genversion, chunkx, chunky, chunkz, count;
         ullong ignoredhash;
+        worldblockpalette palette;
         if(!payload.readbyte(type) || !payload.readuint(saveversion) ||
            !payload.readuint(genversion) || !payload.readuint(chunkx) ||
-           !payload.readuint(chunky) || !payload.readuint(chunkz) ||
-           !payload.readullong(ignoredhash) ||
-           !payload.readuint(count) || type != 2 ||
-           saveversion != WORLD_SAVE_FORMAT_VERSION ||
-           genversion != WORLDGEN_VERSION || int(chunkz) != WORLD_DIFF_Z ||
-           count > 1000000U)
+           !payload.readuint(chunky) || !payload.readuint(chunkz) || !payload.readullong(ignoredhash))
+            continue;
+        if(saveversion != WORLD_SAVE_FORMAT_VERSION)
+        {
+            conoutf(CON_ERROR, "world audit uses unsupported save format version %u", saveversion);
+            continue;
+        }
+        if(!deserializeworldblockpalette(payload, palette) || !payload.readuint(count) || type != 2 ||
+           genversion != WORLDGEN_VERSION || int(chunkz) != WORLD_DIFF_Z || count > 1000000U)
             continue;
         worldchunkdiffstate *state =
             findworldchunkdiffstate(int(chunkx), int(chunky), true);
         loopi(count)
         {
             worldeditrecord *record = new worldeditrecord;
-            if(!deserializeworldeditrecord(payload, *record))
+            if(!deserializeworldeditrecord(payload, *record, palette))
             {
                 delete record;
                 break;
@@ -8074,7 +8338,7 @@ static bool saveworldmetadata(int chunkx, int chunky)
     activeworldmetadata.saveformatversion = WORLD_SAVE_FORMAT_VERSION;
     activeworldmetadata.gamemode = game::gamemode;
     activeworldmetadata.playerhealth = clamp(game::getlocalplayerhealth(), 0.0f, float(game::PLAYER_MAX_HEALTH));
-    bool ok = f->printf("CUBECRAFT_WORLD 4\n") > 0;
+    bool ok = f->printf("CUBECRAFT_WORLD 5\n") > 0;
     if(ok) ok = f->printf("world_seed %d\n", activeworldmetadata.seed) > 0;
     if(ok) ok = f->printf("worldgen_version %d\n", activeworldmetadata.worldgenversion) > 0;
     if(ok) ok = f->printf("worldgen_parameter_hash " WORLD_ULL_FORMAT "\n", activeworldmetadata.parameterhash) > 0;
@@ -8117,18 +8381,30 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
         if(sscanf(line, "CUBECRAFT_WORLD %d", &metarevision) == 1) continue;
         if(sscanf(line, "world_seed %d", &metadata.seed) == 1) continue;
         if(sscanf(line, "worldgen_version %d", &metadata.worldgenversion) == 1) continue;
+        if(sscanf(line, "save_format_version %d", &metadata.saveformatversion) == 1)
+        {
+            if(metadata.saveformatversion != WORLD_SAVE_FORMAT_VERSION) break;
+            continue;
+        }
         if(sscanf(line, "game_mode %d", &metadata.gamemode) == 1) continue;
         if(sscanf(line, "player_health %f", &metadata.playerhealth) == 1) continue;
-        if(sscanf(line, "inventory_cursor %d %d %d", &metadata.inventorycursoritem, &metadata.inventorycursorcount,
-                  &metadata.inventorycursordurability) >= 2) continue;
-        int inventoryslot, inventoryitem, inventorycount, inventorydurability = 0;
-        if(sscanf(line, "inventory %d %d %d %d",
-                  &inventoryslot, &inventoryitem, &inventorycount, &inventorydurability) >= 3)
+        ullong inventoryid;
+        char inventoryidtext[32];
+        if(sscanf(line, "inventory_cursor %31s %d %d", inventoryidtext, &metadata.inventorycursorcount,
+                  &metadata.inventorycursordurability) >= 2)
         {
+            if(!parseworldpersistentid(inventoryidtext, inventoryid)) continue;
+            metadata.inventorycursoritem = getinventoryitempersistentindex(inventoryid);
+            continue;
+        }
+        int inventoryslot, inventorycount, inventorydurability = 0;
+        if(sscanf(line, "inventory %d %31s %d %d", &inventoryslot, inventoryidtext, &inventorycount, &inventorydurability) >= 3)
+        {
+            if(!parseworldpersistentid(inventoryidtext, inventoryid)) continue;
             if(inventoryslot >= 0 && inventoryslot < game::SURVIVAL_USABLE_SLOTS &&
-               inventoryitem >= 0 && inventorycount > 0)
+               inventorycount > 0)
             {
-                metadata.inventoryitems[inventoryslot] = inventoryitem;
+                metadata.inventoryitems[inventoryslot] = getinventoryitempersistentindex(inventoryid);
                 metadata.inventorycounts[inventoryslot] = inventorycount;
                 metadata.inventorydurabilities[inventoryslot] = inventorydurability;
             }
@@ -8141,7 +8417,6 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
             metadata.parameterhash = strtoull(line + sizeof(hashprefix) - 1, &end, 10);
             if(end != line + sizeof(hashprefix) - 1) continue;
         }
-        if(sscanf(line, "save_format_version %d", &metadata.saveformatversion) == 1) continue;
         if(sscanf(line, "entry %d %d", &x, &y) == 2)
         {
             chunkx = x;
@@ -8163,7 +8438,7 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
     }
     delete f;
 
-    metadata.valid = metarevision >= 3 && metarevision <= 4 && metadata.seed >= 0 &&
+    metadata.valid = metarevision >= 3 && metarevision <= 5 && metadata.seed >= 0 &&
                      metadata.worldgenversion > 0 && metadata.saveformatversion > 0;
     if(!metadata.valid)
     {
@@ -8172,17 +8447,17 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
                 folder);
         return false;
     }
+    if(metadata.saveformatversion != WORLD_SAVE_FORMAT_VERSION)
+    {
+        conoutf(CON_ERROR, "world %s uses unsupported save format version %d",
+                folder, metadata.saveformatversion);
+        return false;
+    }
     if(metadata.worldgenversion != WORLDGEN_VERSION)
     {
         conoutf(CON_ERROR,
                 "world %s requires worldgen version %d, but this build provides version %d",
                 folder, metadata.worldgenversion, WORLDGEN_VERSION);
-        return false;
-    }
-    if(metadata.saveformatversion != WORLD_SAVE_FORMAT_VERSION)
-    {
-        conoutf(CON_ERROR, "world %s uses unsupported save format version %d",
-                folder, metadata.saveformatversion);
         return false;
     }
     if(!game::validgamemode(metadata.gamemode)) metadata.gamemode = 0;
@@ -9557,9 +9832,10 @@ COMMAND(writecollideobj, "s");
 struct serverinventoryitemdefinition
 {
     string id;
+    ullong persistentid;
     int maxstack;
 
-    serverinventoryitemdefinition() : maxstack(64)
+    serverinventoryitemdefinition() : persistentid(0), maxstack(64)
     {
         id[0] = '\0';
     }
@@ -9577,14 +9853,15 @@ struct serverworlddropdefinition
 struct serverworldobjectdefinition
 {
     string id, itemid;
+    ullong persistentid;
     int item, type, furnaceinputslots, furnaceinputlimit;
     float lightradius;
     vector<serverworlddropdefinition> drops;
     bool explicitdrops, scatter, placeable, fall;
 
     serverworldobjectdefinition()
-        : item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), lightradius(0), explicitdrops(false), scatter(false),
-          placeable(false), fall(false)
+        : persistentid(0), item(-1), type(WORLD_ITEM_NONE), furnaceinputslots(0), furnaceinputlimit(0), lightradius(0), explicitdrops(false),
+          scatter(false), placeable(false), fall(false)
     {
         id[0] = itemid[0] = '\0';
     }
@@ -9592,7 +9869,8 @@ struct serverworldobjectdefinition
 
 static vector<serverinventoryitemdefinition *> serverinventoryitems;
 static vector<serverworldobjectdefinition *> serverworldcubes, serverworldobjects;
-static int servererroritem = -1, servererrorobject = -1;
+static hashtable<worldpersistentkey, int> serveritempersistentindexes(256), servercubepersistentindexes(256), serverobjectpersistentindexes(256);
+static int servererroritem = -1, servererrorcube = -1, servererrorobject = -1;
 
 static serverinventoryitemdefinition *findserverinventoryitem(const char *id)
 {
@@ -9612,7 +9890,10 @@ static void resetserverworlddefinitions()
     serverinventoryitems.deletecontents();
     serverworldcubes.deletecontents();
     serverworldobjects.deletecontents();
-    servererroritem = servererrorobject = -1;
+    serveritempersistentindexes.clear();
+    servercubepersistentindexes.clear();
+    serverobjectpersistentindexes.clear();
+    servererroritem = servererrorcube = servererrorobject = -1;
 }
 
 COMMANDN(worldreset, resetserverworlddefinitions, "");
@@ -9632,6 +9913,7 @@ ICOMMAND(inventoryitem, "ssissfN",
     serverinventoryitemdefinition *item = findserverinventoryitem(id);
     if(!item) item = serverinventoryitems.add(new serverinventoryitemdefinition);
     copystring(item->id, id);
+    item->persistentid = worldpersistentid(id);
     item->maxstack = *maxstack;
 });
 
@@ -9648,6 +9930,7 @@ ICOMMAND(worldcube, "sssfsssN",
     serverworldobjectdefinition *cube = findserverworldobject(serverworldcubes, id);
     if(!cube) cube = serverworldcubes.add(new serverworldobjectdefinition);
     copystring(cube->id, id);
+    cube->persistentid = worldpersistentid(id);
     copystring(cube->itemid, itemid ? itemid : "");
     cube->type = WORLD_ITEM_CUBE;
 });
@@ -9681,6 +9964,7 @@ static void defineserverworldmodel(const char *id, const char *itemid, bool plac
     serverworldobjectdefinition *object = findserverworldobject(serverworldobjects, id);
     if(!object) object = serverworldobjects.add(new serverworldobjectdefinition);
     copystring(object->id, id);
+    object->persistentid = worldpersistentid(id);
     copystring(object->itemid, itemid ? itemid : "");
     if(placeable) object->placeable = true;
     else object->scatter = true;
@@ -9722,8 +10006,47 @@ ICOMMAND(worlddrop, "ssiifN", (char *worldid, char *itemid, int *mincount, int *
     addserverworlddrop(worldid, itemid, *mincount, *maxcount, *numargs >= 5 ? *chance : 1.0f);
 });
 
+static bool buildserverpersistentindexes()
+{
+    bool valid = true;
+    serveritempersistentindexes.clear();
+    servercubepersistentindexes.clear();
+    serverobjectpersistentindexes.clear();
+    loopv(serverinventoryitems)
+    {
+        serverinventoryitemdefinition &definition = *serverinventoryitems[i];
+        int *previous = serveritempersistentindexes.access(worldpersistentkey(definition.persistentid));
+        if(previous && cubecasecmp(serverinventoryitems[*previous]->id, definition.id))
+        {
+            conoutf(CON_ERROR, "persistent inventory item ID collision " WORLD_ULL_FORMAT " between \"%s\" and \"%s\"",
+                    definition.persistentid, serverinventoryitems[*previous]->id, definition.id);
+            valid = false;
+        }
+        else serveritempersistentindexes.access(worldpersistentkey(definition.persistentid), i);
+    }
+    loopk(2)
+    {
+        vector<serverworldobjectdefinition *> &definitions = k ? serverworldobjects : serverworldcubes;
+        hashtable<worldpersistentkey, int> &indexes = k ? serverobjectpersistentindexes : servercubepersistentindexes;
+        loopv(definitions)
+        {
+            serverworldobjectdefinition &definition = *definitions[i];
+            int *previous = indexes.access(worldpersistentkey(definition.persistentid));
+            if(previous && cubecasecmp(definitions[*previous]->id, definition.id))
+            {
+                conoutf(CON_ERROR, "persistent world %s ID collision " WORLD_ULL_FORMAT " between \"%s\" and \"%s\"",
+                        k ? "object" : "cube", definition.persistentid, definitions[*previous]->id, definition.id);
+                valid = false;
+            }
+            else indexes.access(worldpersistentkey(definition.persistentid), i);
+        }
+    }
+    return valid;
+}
+
 static void resolveserverworlddefinitions()
 {
+    if(!buildserverpersistentindexes()) fatal("server startup failed: config/world.cfg contains persistent ID collisions");
     serverinventoryitemdefinition *erroritem = findserverinventoryitem("error");
     serverworldobjectdefinition *errorcube = findserverworldobject(serverworldcubes, "error"),
                                 *errorobject = findserverworldobject(serverworldobjects, "error");
@@ -9732,6 +10055,7 @@ static void resolveserverworlddefinitions()
     if(!errorobject || !errorobject->scatter || !errorobject->placeable)
         fatal("server startup failed: config/world.cfg must define both worldscatter and worldplaceable \"error\"");
     servererroritem = serverinventoryitems.find(erroritem);
+    servererrorcube = serverworldcubes.find(errorcube);
     servererrorobject = serverworldobjects.find(errorobject);
 
     loopv(serverworldcubes)
@@ -9791,6 +10115,19 @@ const char *getinventoryitemid(int index)
     return serverinventoryitems.inrange(index) ? serverinventoryitems[index]->id : "";
 }
 
+ullong getinventoryitempersistentid(int index)
+{
+    return serverinventoryitems.inrange(index) ? serverinventoryitems[index]->persistentid : 0;
+}
+
+int getinventoryitempersistentindex(ullong id, bool warn)
+{
+    int *index = serveritempersistentindexes.access(worldpersistentkey(id));
+    if(index) return *index;
+    if(warn) conoutf(CON_WARN, "unknown persistent inventory item ID " WORLD_ULL_FORMAT "; using error item", id);
+    return serverinventoryitems.inrange(servererroritem) ? servererroritem : -1;
+}
+
 int getinventoryitemindex(const char *id)
 {
     serverinventoryitemdefinition *item = findserverinventoryitem(id);
@@ -9835,11 +10172,39 @@ const char *getworldcubename(int index)
     return serverworldcubes.inrange(index) ? serverworldcubes[index]->id : "";
 }
 
+ullong getworldcubepersistentid(int index)
+{
+    return serverworldcubes.inrange(index) ? serverworldcubes[index]->persistentid
+         : serverworldcubes.inrange(servererrorcube) ? serverworldcubes[servererrorcube]->persistentid : 0;
+}
+
+int getworldcubepersistentindex(ullong id, bool warn)
+{
+    int *index = servercubepersistentindexes.access(worldpersistentkey(id));
+    if(index) return *index;
+    if(warn) conoutf(CON_WARN, "unknown persistent world cube ID " WORLD_ULL_FORMAT "; using error cube", id);
+    return serverworldcubes.inrange(servererrorcube) ? servererrorcube : -1;
+}
+
 int numworldscatters() { return serverworldobjects.length(); }
 
 const char *getworldscattername(int index)
 {
     return serverworldobjects.inrange(index) ? serverworldobjects[index]->id : "";
+}
+
+ullong getworldscatterpersistentid(int index)
+{
+    return serverworldobjects.inrange(index) ? serverworldobjects[index]->persistentid
+         : serverworldobjects.inrange(servererrorobject) ? serverworldobjects[servererrorobject]->persistentid : 0;
+}
+
+int getworldscatterpersistentindex(ullong id, bool warn)
+{
+    int *index = serverobjectpersistentindexes.access(worldpersistentkey(id));
+    if(index) return *index;
+    if(warn) conoutf(CON_WARN, "unknown persistent world object ID " WORLD_ULL_FORMAT "; using error object", id);
+    return serverworldobjects.inrange(servererrorobject) ? servererrorobject : -1;
 }
 
 int getworlditemtype(int item)

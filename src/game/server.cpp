@@ -1,4 +1,5 @@
 #include "game.h"
+#include <errno.h>
 #include "world.h"
 
 namespace server
@@ -537,7 +538,9 @@ namespace server
             const int action = getint(p);
             ivec target;
             target.x = getint(p); target.y = getint(p); target.z = getint(p);
-            const int orient = getint(p), item = getint(p);
+            const int orient = getint(p);
+            const ullong itemid = getpersistentid(p);
+            const int item = itemid ? getinventoryitempersistentindex(itemid) : -1;
             if(!p.overread() && !p.remaining() && orient >= 0 && orient <= 5)
             {
                 setworldactionstate(worldactionstatecell(target, action, orient), action, orient, item);
@@ -764,6 +767,15 @@ namespace server
         ci.inventorydirty = false;
     }
 
+    static bool parsepersistentid(const char *text, ullong &id)
+    {
+        if(!text || !text[0]) return false;
+        char *end = NULL;
+        errno = 0;
+        id = strtoull(text, &end, 10);
+        return end && !*end && errno != ERANGE;
+    }
+
     static bool saveinventory(clientinfo &ci, bool force = false)
     {
         if(servercreative() || !ci.inventoryloaded || !ci.playerid[0] || (!force && !ci.inventorydirty)) return true;
@@ -774,13 +786,18 @@ namespace server
         copystring(temppath, findfile(temporary, "wb"));
         stream *file = openrawfile(temporary, "wb");
         if(!file) return false;
-        bool ok = file->printf("survival_inventory 4\nselected %d\ncursor %d %d %d\ncrafting %d %d %d %d %d\n", ci.selectedslot,
-                               ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability, ci.craftinggridsize,
-                               ci.craftingstationitem, ci.craftingstationtarget.x, ci.craftingstationtarget.y, ci.craftingstationtarget.z) > 0;
+        bool ok = file->printf("survival_inventory 5\nselected %d\ncursor " PERSISTENT_ULL_FORMAT " %d %d\ncrafting %d "
+                               PERSISTENT_ULL_FORMAT " %d %d %d\n", ci.selectedslot,
+                               getinventoryitempersistentid(ci.inventorycursoritem), ci.inventorycursorcount,
+                               ci.inventorycursordurability, ci.craftinggridsize,
+                               getinventoryitempersistentid(ci.craftingstationitem), ci.craftingstationtarget.x,
+                               ci.craftingstationtarget.y, ci.craftingstationtarget.z) > 0;
         loopi(SURVIVAL_USABLE_SLOTS) if(ok)
-            ok = file->printf("slot %d %d %d %d\n", i, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i]) > 0;
+            ok = file->printf("slot %d " PERSISTENT_ULL_FORMAT " %d %d\n", i, getinventoryitempersistentid(ci.inventoryitems[i]),
+                              ci.inventorycounts[i], ci.inventorydurabilities[i]) > 0;
         loopi(CRAFT_GRID_MAX) if(ok)
-            ok = file->printf("craftslot %d %d %d %d\n", i, ci.craftingitems[i], ci.craftingcounts[i], ci.craftingdurabilities[i]) > 0;
+            ok = file->printf("craftslot %d " PERSISTENT_ULL_FORMAT " %d %d\n", i, getinventoryitempersistentid(ci.craftingitems[i]),
+                              ci.craftingcounts[i], ci.craftingdurabilities[i]) > 0;
         delete file;
         if(!ok || !replaceserveridentityfile(temppath, finalpath))
         {
@@ -803,14 +820,17 @@ namespace server
         stream *file = openrawfile(relative, "rb");
         if(!file) return true;
         bool versionseen = false, valid = true;
+        int inventoryversion = 0;
         bool slotsseen[SURVIVAL_USABLE_SLOTS] = { false }, craftslotsseen[CRAFT_GRID_MAX] = { false };
         string line;
         while(file->getline(line, sizeof(line)))
         {
-            int version, selected, slot, item, count, durability = INT_MAX;
-            if(sscanf(line, "survival_inventory %d", &version) == 1)
+            int selected, slot, item, count, durability = INT_MAX;
+            ullong persistentid;
+            char persistenttext[32];
+            if(sscanf(line, "survival_inventory %d", &inventoryversion) == 1)
             {
-                if(versionseen || version < 1 || version > 4) valid = false;
+                if(versionseen || inventoryversion != 5) valid = false;
                 versionseen = true;
             }
             else if(sscanf(line, "selected %d", &selected) == 1)
@@ -818,29 +838,33 @@ namespace server
                 if(selected < 0 || selected >= SURVIVAL_HOTBAR_SLOTS) valid = false;
                 else ci.selectedslot = selected;
             }
-            else if(sscanf(line, "cursor %d %d %d", &item, &count, &durability) >= 2)
+            else if(sscanf(line, "cursor %31s %d %d", persistenttext, &count, &durability) >= 2)
             {
-                if(count < 0 || (item >= 0 && count > getinventoryitemmaxstack(item)) || (count == 0 && item != -1) ||
+                if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
+                item = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
+                if(count < 0 || (count == 0 && item != -1) ||
                    (count > 0 && (item < 0 || item >= numinventoryitems()))) valid = false;
                 else
                 {
                     ci.inventorycursoritem = item;
-                    ci.inventorycursorcount = count;
+                    ci.inventorycursorcount = count > 0 ? clamp(count, 1, max(getinventoryitemmaxstack(item), 1)) : 0;
                     ci.inventorycursordurability = count > 0 && isinventorytool(item)
                                                    ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
                 }
             }
-            else if(sscanf(line, "slot %d %d %d %d", &slot, &item, &count, &durability) >= 3)
+            else if(sscanf(line, "slot %d %31s %d %d", &slot, persistenttext, &count, &durability) >= 3)
             {
+                if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
+                item = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
                 if(slot < 0 || slot >= SURVIVAL_USABLE_SLOTS || slotsseen[slot] ||
-                   count < 0 || (item >= 0 && count > getinventoryitemmaxstack(item)) || (count == 0 && item != -1) ||
+                   count < 0 || (count == 0 && item != -1) ||
                    (count > 0 && (item < 0 || item >= numinventoryitems())))
                     valid = false;
                 else
                 {
                     slotsseen[slot] = true;
                     ci.inventoryitems[slot] = item;
-                    ci.inventorycounts[slot] = count;
+                    ci.inventorycounts[slot] = count > 0 ? clamp(count, 1, max(getinventoryitemmaxstack(item), 1)) : 0;
                     ci.inventorydurabilities[slot] = count > 0 && isinventorytool(item)
                                                      ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
                 }
@@ -848,8 +872,10 @@ namespace server
             else
             {
                 int gridsize, stationitem, x, y, z;
-                if(sscanf(line, "crafting %d %d %d %d %d", &gridsize, &stationitem, &x, &y, &z) == 5)
+                if(sscanf(line, "crafting %d %31s %d %d %d", &gridsize, persistenttext, &x, &y, &z) == 5)
                 {
+                    if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
+                    stationitem = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
                     if((gridsize != 2 && gridsize != 3) || stationitem >= numinventoryitems()) valid = false;
                     else
                     {
@@ -858,16 +884,17 @@ namespace server
                         ci.craftingstationtarget = ivec(x, y, z);
                     }
                 }
-                else if(sscanf(line, "craftslot %d %d %d %d", &slot, &item, &count, &durability) >= 3)
+                else if(sscanf(line, "craftslot %d %31s %d %d", &slot, persistenttext, &count, &durability) >= 3)
                 {
-                    if(slot < 0 || slot >= CRAFT_GRID_MAX || craftslotsseen[slot] || count < 0 ||
-                       (item >= 0 && count > getinventoryitemmaxstack(item)) || (count == 0 && item != -1) ||
+                    if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
+                    item = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
+                    if(slot < 0 || slot >= CRAFT_GRID_MAX || craftslotsseen[slot] || count < 0 || (count == 0 && item != -1) ||
                        (count > 0 && (item < 0 || item >= numinventoryitems()))) valid = false;
                     else
                     {
                         craftslotsseen[slot] = true;
                         ci.craftingitems[slot] = item;
-                        ci.craftingcounts[slot] = count;
+                        ci.craftingcounts[slot] = count > 0 ? clamp(count, 1, max(getinventoryitemmaxstack(item), 1)) : 0;
                         ci.craftingdurabilities[slot] = count > 0 && isinventorytool(item)
                                                       ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
                     }
@@ -879,7 +906,9 @@ namespace server
         delete file;
         if(!versionseen || !valid)
         {
-            conoutf(CON_ERROR, "survival inventory for player ID %s is corrupt", ci.playerid);
+            if(versionseen && inventoryversion != 5)
+                conoutf(CON_ERROR, "survival inventory for player ID %s uses unsupported format version %d", ci.playerid, inventoryversion);
+            else conoutf(CON_ERROR, "survival inventory for player ID %s is corrupt", ci.playerid);
             clearinventory(ci);
             ci.inventoryloaded = false;
             return false;
@@ -1145,12 +1174,12 @@ namespace server
         putint(p, N_INVENTORYSTATE);
         putint(p, SURVIVAL_USABLE_SLOTS);
         putint(p, ci.selectedslot);
-        putint(p, ci.inventorycursoritem);
+        putpersistentid(p, getinventoryitempersistentid(ci.inventorycursoritem));
         putint(p, ci.inventorycursorcount);
         putint(p, ci.inventorycursordurability);
         loopi(SURVIVAL_USABLE_SLOTS)
         {
-            putint(p, ci.inventoryitems[i]);
+            putpersistentid(p, getinventoryitempersistentid(ci.inventoryitems[i]));
             putint(p, ci.inventorycounts[i]);
             putint(p, ci.inventorydurabilities[i]);
         }
@@ -1182,13 +1211,13 @@ namespace server
         putint(p, N_CRAFTSTATE);
         putint(p, CRAFT_GRID_MAX);
         putint(p, ci.craftinggridsize);
-        putint(p, ci.craftingstationitem);
+        putpersistentid(p, getinventoryitempersistentid(ci.craftingstationitem));
         putint(p, match.recipe);
-        putint(p, match.outputitem);
+        putpersistentid(p, getinventoryitempersistentid(match.outputitem));
         putint(p, match.outputcount);
         loopi(CRAFT_GRID_MAX)
         {
-            putint(p, ci.craftingitems[i]);
+            putpersistentid(p, getinventoryitempersistentid(ci.craftingitems[i]));
             putint(p, ci.craftingcounts[i]);
             putint(p, ci.craftingdurabilities[i]);
         }
@@ -1229,18 +1258,18 @@ namespace server
         putint(p, N_FURNACESTATE);
         putint(p, open ? 1 : 0);
         putint(p, furnace.target.x); putint(p, furnace.target.y); putint(p, furnace.target.z);
-        putint(p, furnace.worlditem); putint(p, furnace.inputslots); putint(p, furnace.inputlimit);
+        putpersistentid(p, getinventoryitempersistentid(furnace.worlditem)); putint(p, furnace.inputslots); putint(p, furnace.inputlimit);
         putint(p, furnace.activerecipe); putint(p, furnace.progress); putint(p, furnace.heat); putint(p, furnace.heatcapacity);
         putint(p, furnace.baking ? 1 : 0);
         putint(p, furnaceiscooking(furnace) ? 1 : 0);
         loopi(FURNACE_INPUT_MAX)
         {
-            putint(p, furnace.inputitems[i]);
+            putpersistentid(p, getinventoryitempersistentid(furnace.inputitems[i]));
             putint(p, furnace.inputcounts[i]);
             putint(p, furnace.inputdurabilities[i]);
         }
-        putint(p, furnace.fuelitem); putint(p, furnace.fuelcount); putint(p, furnace.fueldurability);
-        putint(p, furnace.outputitem); putint(p, furnace.outputcount); putint(p, furnace.outputdurability);
+        putpersistentid(p, getinventoryitempersistentid(furnace.fuelitem)); putint(p, furnace.fuelcount); putint(p, furnace.fueldurability);
+        putpersistentid(p, getinventoryitempersistentid(furnace.outputitem)); putint(p, furnace.outputcount); putint(p, furnace.outputdurability);
         sendpacket(ci.clientnum, 1, p.finalize());
     }
 
@@ -1479,8 +1508,12 @@ namespace server
     static void senddropspawn(int cn, const serverdrop &drop)
     {
         clientinfo *owner = dropowner(drop);
-        sendf(cn, 1, "ri9i2", N_DROPSPAWN, int(drop.id), drop.source, int(drop.sourcerequestid), drop.item, drop.count, drop.durability,
-              owner ? owner->clientnum : drop.ownerid[0] ? -2 : -1, int(drop.o.x), int(drop.o.y), int(drop.o.z));
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_DROPSPAWN); putint(p, int(drop.id)); putint(p, drop.source); putint(p, int(drop.sourcerequestid));
+        putpersistentid(p, getinventoryitempersistentid(drop.item));
+        putint(p, drop.count); putint(p, drop.durability); putint(p, owner ? owner->clientnum : drop.ownerid[0] ? -2 : -1);
+        putint(p, int(drop.o.x)); putint(p, int(drop.o.y)); putint(p, int(drop.o.z));
+        sendpacket(cn, 1, p.finalize());
     }
 
     static void broadcastdropspawn(const serverdrop &drop)
@@ -2885,9 +2918,11 @@ namespace server
                 p.pad(extra);
                 break;
             case N_EDITSCATTER:
-                arg1 = getint(p);
+            {
+                const ullong scatterid = getpersistentid(p);
+                arg1 = getworldscatterpersistentindex(scatterid);
                 arg2 = getint(p);
-                if(arg1 < 0 || arg1 > 255 || (arg2 != 0 && arg2 != 1) ||
+                if(arg1 < 0 || (arg2 != 0 && arg2 != 1) ||
                    sel.grid != 16 || sel.s != ivec(1, 1, 1) ||
                    sel.orient == WORLD_ORIENT_BOTTOM)
                 {
@@ -2895,6 +2930,7 @@ namespace server
                     return false;
                 }
                 break;
+            }
             default:
                 error = "unsupported world edit";
                 return false;
@@ -2961,7 +2997,7 @@ namespace server
         putint(payload, action);
         putint(payload, target.x); putint(payload, target.y); putint(payload, target.z);
         putint(payload, orient);
-        putint(payload, item);
+        putpersistentid(payload, getinventoryitempersistentid(item));
         edit->payload.put(payload.buf, payload.length());
         if(!acceptededit(edit)) return false;
         setworldactionstate(cell, action, orient, item);
@@ -2970,8 +3006,12 @@ namespace server
 
     static void sendfallblockspawn(int cn, const serverfallingblock &block)
     {
-        sendf(cn, 1, "ri7", N_FALLBLOCKSPAWN, int(block.id), block.item, int(block.o.x * DMF), int(block.o.y * DMF), int(block.o.z * DMF),
-              int(block.velocity * DNF));
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_FALLBLOCKSPAWN); putint(p, int(block.id));
+        putpersistentid(p, getinventoryitempersistentid(block.item));
+        putint(p, int(block.o.x * DMF)); putint(p, int(block.o.y * DMF)); putint(p, int(block.o.z * DMF));
+        putint(p, int(block.velocity * DNF));
+        sendpacket(cn, 1, p.finalize());
     }
 
     static void broadcastfallblockspawn(const serverfallingblock &block)
@@ -3262,7 +3302,7 @@ namespace server
         putint(payload, action);
         putint(payload, target.x); putint(payload, target.y); putint(payload, target.z);
         putint(payload, orient);
-        putint(payload, item);
+        putpersistentid(payload, getinventoryitempersistentid(item));
         edit->payload.put(payload.buf, payload.length());
         return acceptededit(edit);
     }
@@ -3281,7 +3321,7 @@ namespace server
         putint(payload, action);
         putint(payload, target.x); putint(payload, target.y); putint(payload, target.z);
         putint(payload, state.orient);
-        putint(payload, state.item);
+        putpersistentid(payload, getinventoryitempersistentid(state.item));
         correction.payload.put(payload.buf, payload.length());
         sendserveredit(ci.clientnum, correction);
     }
@@ -4637,7 +4677,10 @@ namespace server
                     const int action = getint(p);
                     ivec target;
                     target.x = getint(p); target.y = getint(p); target.z = getint(p);
-                    const int orient = getint(p), item = getint(p), slot = getint(p);
+                    const int orient = getint(p);
+                    const ullong itemid = getpersistentid(p);
+                    const int item = itemid ? getinventoryitempersistentindex(itemid) : -1,
+                              slot = getint(p);
                     if(ci && ci->connected && ci->worldready && !ci->dead && !p.overread())
                         handleworldaction(*ci, requestid, action, target, orient, item, slot);
                     else if(ci && ci->connected && ci->dead)

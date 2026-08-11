@@ -696,7 +696,9 @@ namespace game
                 const uint id = uint(getint(p));
                 const int source = getint(p);
                 const uint sourcerequestid = uint(getint(p));
-                const int item = getint(p), count = getint(p), durability = getint(p), owner = getint(p),
+                const ullong itemid = getpersistentid(p);
+                const int item = itemid ? getinventoryitempersistentindex(itemid) : -1,
+                          count = getint(p), durability = getint(p), owner = getint(p),
                           x = getint(p), y = getint(p), z = getint(p);
                 if(!p.overread()) receivedropspawn(id, source, sourcerequestid, item, count, durability, owner,
                                                   vec(float(x), float(y), float(z)));
@@ -712,7 +714,9 @@ namespace game
             case N_FALLBLOCKSPAWN:
             {
                 const uint id = uint(getint(p));
-                const int item = getint(p), x = getint(p), y = getint(p), z = getint(p);
+                const ullong itemid = getpersistentid(p);
+                const int item = itemid ? getinventoryitempersistentindex(itemid) : -1,
+                          x = getint(p), y = getint(p), z = getint(p);
                 const float velocity = getint(p) / DNF;
                 if(!p.overread()) receivefallblockspawn(id, item, vec(x / DMF, y / DMF, z / DMF), velocity);
                 break;
@@ -826,8 +830,12 @@ namespace game
                 switch(type)
                 {
                     case N_WORLDAUTH:
-                        loopi(6) edit->args[i] = getint(p);
+                    {
+                        loopi(5) edit->args[i] = getint(p);
+                        const ullong itemid = getpersistentid(p);
+                        edit->args[5] = itemid ? getinventoryitempersistentindex(itemid) : -1;
                         break;
+                    }
                     case N_EDITF:
                         edit->args[0] = getint(p);
                         edit->args[1] = getint(p);
@@ -868,9 +876,12 @@ namespace game
                     }
                     case N_DELCUBE: break;
                     case N_EDITSCATTER:
-                        edit->args[0] = getint(p);
+                    {
+                        const ullong scatterid = getpersistentid(p);
+                        edit->args[0] = getworldscatterpersistentindex(scatterid);
                         edit->args[1] = getint(p);
                         break;
+                    }
                     case N_EDITVSLOT:
                     {
                         edit->args[0] = getint(p);
@@ -894,7 +905,10 @@ namespace game
             }
             case N_INVENTORYSTATE:
             {
-                const int slots = getint(p), selected = getint(p), cursoritem = getint(p), cursorcount = getint(p), cursordurability = getint(p);
+                const int slots = getint(p), selected = getint(p);
+                const ullong cursorid = getpersistentid(p);
+                const int cursoritem = cursorid ? getinventoryitempersistentindex(cursorid) : -1,
+                          cursorcount = getint(p), cursordurability = getint(p);
                 if(slots != SURVIVAL_USABLE_SLOTS)
                 {
                     conoutf(CON_ERROR, "server sent an invalid survival inventory");
@@ -910,7 +924,9 @@ namespace game
                 }
                 loopi(max(slots, 0))
                 {
-                    const int item = getint(p), count = getint(p), durability = getint(p);
+                    const ullong itemid = getpersistentid(p);
+                    const int item = itemid ? getinventoryitempersistentindex(itemid) : -1,
+                              count = getint(p), durability = getint(p);
                     if(i < SURVIVAL_USABLE_SLOTS)
                     {
                         items[i] = item;
@@ -924,8 +940,13 @@ namespace game
             }
             case N_CRAFTSTATE:
             {
-                const int slots = getint(p), gridsize = getint(p), stationitem = getint(p), recipe = getint(p),
-                          outputitem = getint(p), outputcount = getint(p);
+                const int slots = getint(p), gridsize = getint(p);
+                const ullong stationid = getpersistentid(p);
+                const int stationitem = stationid ? getinventoryitempersistentindex(stationid) : -1,
+                          recipe = getint(p);
+                const ullong outputid = getpersistentid(p);
+                const int outputitem = outputid ? getinventoryitempersistentindex(outputid) : -1,
+                          outputcount = getint(p);
                 if(slots != CRAFT_GRID_MAX || (gridsize != 2 && gridsize != 3))
                 {
                     conoutf(CON_ERROR, "server sent an invalid crafting grid");
@@ -935,7 +956,8 @@ namespace game
                 int items[CRAFT_GRID_MAX], counts[CRAFT_GRID_MAX], durabilities[CRAFT_GRID_MAX];
                 loopi(CRAFT_GRID_MAX)
                 {
-                    items[i] = getint(p);
+                    const ullong itemid = getpersistentid(p);
+                    items[i] = itemid ? getinventoryitempersistentindex(itemid) : -1;
                     counts[i] = getint(p);
                     durabilities[i] = getint(p);
                     if(counts[i] <= 0) { items[i] = -1; counts[i] = durabilities[i] = 0; }
@@ -949,7 +971,9 @@ namespace game
                 const bool open = getint(p) != 0;
                 ivec target;
                 target.x = getint(p); target.y = getint(p); target.z = getint(p);
-                const int worlditem = getint(p), inputslots = getint(p), inputlimit = getint(p), activerecipe = getint(p),
+                const ullong worlditemid = getpersistentid(p);
+                const int worlditem = worlditemid ? getinventoryitempersistentindex(worlditemid) : -1,
+                          inputslots = getint(p), inputlimit = getint(p), activerecipe = getint(p),
                           progress = getint(p), heat = getint(p), heatcapacity = getint(p);
                 const bool baking = getint(p) != 0;
                 const bool cooking = getint(p) != 0;
@@ -967,7 +991,8 @@ namespace game
                 furnace.baking = baking;
                 loopi(FURNACE_INPUT_MAX)
                 {
-                    furnace.inputitems[i] = getint(p);
+                    const ullong itemid = getpersistentid(p);
+                    furnace.inputitems[i] = itemid ? getinventoryitempersistentindex(itemid) : -1;
                     furnace.inputcounts[i] = getint(p);
                     furnace.inputdurabilities[i] = getint(p);
                     if(furnace.inputcounts[i] <= 0)
@@ -976,8 +1001,12 @@ namespace game
                         furnace.inputcounts[i] = furnace.inputdurabilities[i] = 0;
                     }
                 }
-                furnace.fuelitem = getint(p); furnace.fuelcount = getint(p); furnace.fueldurability = getint(p);
-                furnace.outputitem = getint(p); furnace.outputcount = getint(p); furnace.outputdurability = getint(p);
+                const ullong fuelid = getpersistentid(p);
+                furnace.fuelitem = fuelid ? getinventoryitempersistentindex(fuelid) : -1;
+                furnace.fuelcount = getint(p); furnace.fueldurability = getint(p);
+                const ullong outputid = getpersistentid(p);
+                furnace.outputitem = outputid ? getinventoryitempersistentindex(outputid) : -1;
+                furnace.outputcount = getint(p); furnace.outputdurability = getint(p);
                 if(furnace.fuelcount <= 0) { furnace.fuelitem = -1; furnace.fuelcount = furnace.fueldurability = 0; }
                 if(furnace.outputcount <= 0) { furnace.outputitem = -1; furnace.outputcount = furnace.outputdurability = 0; }
                 if(!p.overread()) receivefurnacestate(furnace, open, cooking);

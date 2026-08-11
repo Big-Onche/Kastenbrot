@@ -123,6 +123,18 @@ extern bool mpeditvslot(int delta, int allfaces, selinfo &sel, ucharbuf &buf);
 extern void mpcalclight(bool local);
 
 // Data-driven inventory items and world objects registered in config/world.cfg.
+#ifdef WIN32
+#define PERSISTENT_ULL_FORMAT "%I64u"
+#else
+#define PERSISTENT_ULL_FORMAT "%llu"
+#endif
+inline void putpersistentid(packetbuf &buffer, ullong id) { loopi(8) buffer.put(uchar(id >> (i * 8))); }
+inline ullong getpersistentid(ucharbuf &buffer)
+{
+    ullong id = 0;
+    loopi(8) id |= ullong(buffer.get()) << (i * 8);
+    return id;
+}
 enum { WORLD_CUBE_TOP = 0, WORLD_CUBE_SIDE, WORLD_CUBE_BOTTOM };
 enum { WORLD_ITEM_NONE = 0, WORLD_ITEM_CUBE, WORLD_ITEM_SCATTER, WORLD_ITEM_PLACEABLE };
 enum
@@ -138,6 +150,8 @@ extern int getworldcubeslot(int index);
 extern int getworldcubefaceslot(int index, int orient);
 extern int getworldcubeindex(int slot);
 extern int getworldcubeindexat(const ivec &position, int orient);
+extern ullong getworldcubepersistentid(int index);
+extern int getworldcubepersistentindex(ullong id, bool warn = true);
 extern int getworldcubetextureslotat(const ivec &position, int orient);
 extern bool isworldcubesolidat(const ivec &position);
 extern const char *getworldcubename(int index);
@@ -146,6 +160,8 @@ extern bool getworldcubefall(int index);
 extern const char *getworldcubetexture(int index, int face = WORLD_CUBE_TOP);
 extern int numworldscatters();
 extern const char *getworldscattername(int index);
+extern ullong getworldscatterpersistentid(int index);
+extern int getworldscatterpersistentindex(ullong id, bool warn = true);
 extern const char *getworldscattermodel(int index);
 extern const char *getworldscattericon(int index);
 extern int getworldscatteritem(int index);
@@ -157,6 +173,8 @@ extern bool isworldtorch(int index);
 extern int numinventoryitems();
 extern const char *getinventoryitemname(int index);
 extern const char *getinventoryitemid(int index);
+extern ullong getinventoryitempersistentid(int index);
+extern int getinventoryitempersistentindex(ullong id, bool warn = true);
 extern int getinventoryitemmaxstack(int index);
 extern const char *getinventoryitemtexture(int index);
 extern const char *getinventoryitemicon(int index);
