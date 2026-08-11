@@ -222,6 +222,8 @@
 		<Unit filename="../game/recipes.cpp" />
 		<Unit filename="../game/render.cpp" />
 		<Unit filename="../game/server.cpp" />
+		<Unit filename="../game/weather.cpp" />
+		<Unit filename="../game/weather.h" />
 		<Unit filename="../game/world.cpp" />
 		<Unit filename="../game/world.h" />
 		<Unit filename="../include/tracy/public/TracyClient.cpp">

@@ -436,6 +436,7 @@
     <ClInclude Include="..\shared\tools.h" />
     <ClInclude Include="..\game\game.h" />
     <ClInclude Include="..\game\mining.h" />
+    <ClInclude Include="..\game\weather.h" />
     <ClInclude Include="..\game\world.h" />
   </ItemGroup>
   <ItemGroup>
@@ -1065,6 +1066,10 @@
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
     <ClCompile Include="..\game\render.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
+    </ClCompile>
+    <ClCompile Include="..\game\weather.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>

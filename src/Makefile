@@ -123,6 +123,7 @@ CLIENT_OBJS= \
 	game/recipes.o \
 	game/render.o \
 	game/server.o \
+	game/weather.o \
 	game/world.o
 
 ifeq ($(TRACY),1)
@@ -307,7 +308,7 @@ engine/cloud.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/cloud.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/cloud.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/cloud.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
-engine/cloud.o: include/FastNoiseLite.h
+engine/cloud.o: game/weather.h include/FastNoiseLite.h
 engine/command.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/command.o: shared/ents.h shared/command.h shared/glexts.h
 engine/command.o: shared/glemu.h shared/iengine.h shared/igame.h
@@ -487,6 +488,9 @@ game/render.o: shared/iengine.h shared/igame.h
 game/server.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/server.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/server.o: shared/iengine.h shared/igame.h
+game/weather.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
+game/weather.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
+game/weather.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
 game/world.o: game/game.h game/world.h shared/cube.h shared/tools.h shared/geom.h
 game/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/world.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h

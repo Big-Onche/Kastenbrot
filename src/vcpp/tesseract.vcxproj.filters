@@ -49,6 +49,9 @@
     <ClCompile Include="..\game\render.cpp">
       <Filter>game</Filter>
     </ClCompile>
+    <ClCompile Include="..\game\weather.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
     <ClCompile Include="..\game\world.cpp">
       <Filter>game</Filter>
     </ClCompile>
@@ -196,6 +199,9 @@
       <Filter>game</Filter>
     </ClInclude>
     <ClInclude Include="..\game\mining.h">
+      <Filter>game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\game\weather.h">
       <Filter>game</Filter>
     </ClInclude>
     <ClInclude Include="..\game\world.h">

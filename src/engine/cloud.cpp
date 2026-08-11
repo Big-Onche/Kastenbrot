@@ -6,6 +6,7 @@
 // so geometry stays tiny even at long range.
 
 #include "engine.h"
+#include "weather.h"
 #ifdef SQRT3
 #pragma push_macro("SQRT3")
 #undef SQRT3
@@ -38,7 +39,7 @@ extern bvec atmosunlight;
 // general
 VARP(clouds, 0, 1, 1);
 VARP(cloudcellsize, 16, 128, 256);
-VARP(clouddistance, 512, 16384, 32768);
+VARP(clouddistance, 512, 32768, 32768);
 VARP(cloudrebuildmargin, 1, 8, 64);
 VARP(cloudupdateinterval, 1000, 60000, 600000);
 VARP(cloudsmoothpasses, 0, 2, 4);
@@ -50,13 +51,9 @@ VARP(cloudbaseheight, 0, 6144, 16384);
 VARP(cloudheight, 16, 128, 1024);
 FVARP(clouddome, 0.0f, 0.07f, 2.0f);
 FVARP(cloudscale, 0.00005f, 0.00090f, 0.05f);
-FVARP(cloudcoverage, 0.0f, 0.50f, 1.0f);
 FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
 
-// weather map
-FVARP(weatherscale, 0.00001f, 0.00010f, 0.01f);
-FVARP(weathercoverage, 0.0f, 0.52f, 1.0f);
-FVARP(cloudweatherinfluence, 0.0f, 0.30f, 1.0f);
+// weather movement; coverage generation lives in game/weather.cpp
 FVARP(weatherwindspeed, 0.0f, 0.20f, 16.0f);
 
 // wind
@@ -167,8 +164,8 @@ namespace
     };
 
     static cloudlayer cloudstate;
-    static FastNoiseLite weathernoise, cloudnoise;
-    static int noiseseed = INT_MIN, currentsettingsversion = 0, currentweatherversion = 0, lastcloudframe = -1;
+    static FastNoiseLite cloudnoise;
+    static int noiseseed = INT_MIN, currentsettingsversion = 0, currentweathersettingsversion = 0, currentweatherversion = 0, lastcloudframe = -1;
     static uint currentsettingshash = 0;
     static vec cloudwind(0, 0, 0), weatherwind(0, 0, 0), cloudworldorigin(0, 0, 0);
     static GLuint cloudscenefbo = 0, cloudscenetex = 0;
@@ -214,10 +211,6 @@ namespace
         addhash(hash, uint(cloudheight));
         addhash(hash, hashfloat(clouddome));
         addhash(hash, hashfloat(cloudscale));
-        addhash(hash, hashfloat(cloudcoverage));
-        addhash(hash, hashfloat(weatherscale));
-        addhash(hash, hashfloat(weathercoverage));
-        addhash(hash, hashfloat(cloudweatherinfluence));
         addhash(hash, hashfloat(weatherwindspeed));
         addhash(hash, hashfloat(cloudwindangle));
         return hash;
@@ -227,13 +220,6 @@ namespace
     {
         noiseseed = seed;
 
-        weathernoise.SetSeed(int(mixhash(uint(seed) ^ 0xA341316CU)));
-        weathernoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
-        weathernoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-        weathernoise.SetFractalOctaves(3);
-        weathernoise.SetFractalGain(0.48f);
-        weathernoise.SetFrequency(weatherscale);
-
         cloudnoise.SetSeed(int(mixhash(uint(seed) ^ 0xC8013EA4U)));
         cloudnoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
         cloudnoise.SetFractalType(FastNoiseLite::FractalType_FBm);
@@ -242,19 +228,10 @@ namespace
         cloudnoise.SetFrequency(cloudscale);
     }
 
-    static float sampleweatheractual(float x, float y)
-    {
-        const float weather = 0.5f + 0.5f * weathernoise.GetNoise(x - weatherwind.x, y - weatherwind.y);
-        return clamp(weather + (weathercoverage - 0.5f) * 0.8f, 0.0f, 1.0f);
-    }
-
-    static bool rawcloudcell(float cloudspacex, float cloudspacey, float weather)
+    static bool rawcloudcell(float cloudspacex, float cloudspacey, float cloudcoverage)
     {
         const float shape = 0.5f + 0.5f * cloudnoise.GetNoise(cloudspacex, cloudspacey);
-
-        // High coverage lowers the threshold. Weather shifts it smoothly over very large regions, giving clear sky in one place and overcast sky elsewhere.
-        float threshold = 0.82f + cloudspacing - cloudcoverage * 0.45f - (weather - 0.5f) * cloudweatherinfluence;
-        threshold = clamp(threshold, 0.28f, 0.88f);
+        const float threshold = clamp(1.0f - cloudcoverage + cloudspacing, 0.0f, 1.0f);
         return shape > threshold;
     }
 
@@ -481,8 +458,8 @@ namespace
             const float cloudspacey = (originy + y + 0.5f) * cloudcellsize;
             const float actualx = cloudspacex + cloudwind.x;
             const float actualy = cloudspacey + cloudwind.y;
-            const float weather = sampleweatheractual(actualx, actualy);
-            mask.cell(x, y) = rawcloudcell(cloudspacex, cloudspacey, weather) ? CLOUD_FAIR : CLOUD_EMPTY;
+            const float cloudcoverage = game::weather::samplecoverage(actualx - weatherwind.x, actualy - weatherwind.y);
+            mask.cell(x, y) = rawcloudcell(cloudspacex, cloudspacey, cloudcoverage) ? CLOUD_FAIR : CLOUD_EMPTY;
         }
 
         smoothcloudmask(mask);
@@ -1132,10 +1109,13 @@ void updateclouds()
     lastcloudframe = lastmillis;
 
     const int seed = game::getworldseed();
+    game::weather::update(seed);
     const uint settingshash = cloudsettingshash(seed);
-    if(settingshash != currentsettingshash || seed != noiseseed)
+    const int weathersettingsversion = game::weather::getsettingsversion();
+    if(settingshash != currentsettingshash || seed != noiseseed || weathersettingsversion != currentweathersettingsversion)
     {
         currentsettingshash = settingshash;
+        currentweathersettingsversion = weathersettingsversion;
         ++currentsettingsversion;
         setupcloudnoise(seed);
         cloudstate.built = false;
@@ -1325,7 +1305,8 @@ void cleanupclouds()
     cleanupcloudtarget();
     cleanupcloudshadowtarget();
     noiseseed = INT_MIN;
+    game::weather::reset();
     currentsettingshash = 0;
-    currentsettingsversion = currentweatherversion = 0;
+    currentsettingsversion = currentweathersettingsversion = currentweatherversion = 0;
     lastcloudframe = -1;
 }
