@@ -4885,8 +4885,10 @@ FVAR(refractdepth, 1e-3f, 16, 1e3f);
 
 int transparentlayer = 0;
 
-void rendertransparent()
+void rendertransparent(bool liquidlast)
 {
+    GLOBALPARAMF(underwaterfog, liquidlast ? 1.0f : 0.0f);
+
     int hasalphavas = findalphavas();
     int hasmats = findmaterials();
     bool hasmodels = transmdlsx1 < transmdlsx2 && transmdlsy1 < transmdlsy2;
@@ -4951,8 +4953,11 @@ void rendertransparent()
     uint tiles[LIGHTTILE_MAXH];
     float allsx1 = 1, allsy1 = 1, allsx2 = -1, allsy2 = -1, sx1, sy1, sx2, sy2;
 
-    loop(layer, 4)
+    loop(renderlayer, 4)
     {
+        // Above a liquid, its surface is normally behind nearby transparent geometry. Below it, the surface is in front of geometry seen through
+        // the liquid and must render last so its depth does not reject that geometry before the surface can composite over it.
+        int layer = liquidlast ? (renderlayer + 1) % 4 : renderlayer;
         switch(layer)
         {
         case 0:

@@ -2304,7 +2304,7 @@ void drawcubemap(int size, const vec &o, float yaw, float pitch, const cubemapsi
             setfog(fogmat, fogbelow, clamp(fogbelow, 0.0f, 1.0f), abovemat);
         }
 
-        rendertransparent();
+        rendertransparent(fogmat != MAT_AIR);
         GLERROR;
     }
 
@@ -2584,7 +2584,7 @@ void gl_drawview()
 
     {
         ZoneScopedN("Render/Transparency");
-        rendertransparent();
+        rendertransparent(fogmat != MAT_AIR);
         GLERROR;
     }
 
