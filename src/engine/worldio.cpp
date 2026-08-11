@@ -8283,7 +8283,9 @@ static ullong currentworldparameterhash()
 
 int getworldlightlevel(const vec &position)
 {
-    float level = clamp(getworldskyexposure(position) * sunlightscale * 16.0f, 0.0f, 16.0f);
+    const float skyexposure = getworldskyexposure(position),
+                ambientlevel = (ambient.r * 0.2126f + ambient.g * 0.7152f + ambient.b * 0.0722f) * ambientscale * (16.0f / 255.0f);
+    float level = clamp(skyexposure * (sunlightscale * 16.0f + ambientlevel), 0.0f, 16.0f);
     const game::worldsettings settings;
     loopv(worldchunks)
     {
