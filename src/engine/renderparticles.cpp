@@ -159,6 +159,7 @@ struct partvert
 
 #define COLLIDERADIUS 8.0f
 #define COLLIDEERROR 1.0f
+static const float PRECIPITATIONNOCOLLIDE = -1e16f;
 
 struct partrenderer
 {
@@ -222,6 +223,13 @@ struct partrenderer
                 float t = ts;
                 o.add(vec(d).mul(t/5000.0f));
                 o.z -= t*t/(2.0f * 5000.0f * p->gravity);
+            }
+            // Distant precipitation skips collision rays, so cull only those rain particles when they enter a liquid volume. Nearby rain must
+            // reach its ray-computed collision height below so it can emit a splash.
+            if(type&PT_RAIN && p->val <= PRECIPITATIONNOCOLLIDE && isliquid(lookupmaterial(o)&MATF_VOLUME))
+            {
+                blend = 0;
+                return;
             }
             if(type&PT_COLLIDE && o.z < p->val && step)
             {
@@ -1324,12 +1332,12 @@ void particle_precipitation(int type, const vec &origin, const vec &velocity, in
     if(!(parts[type]->type & PT_COLLIDE)) return;
     if(!collide)
     {
-        part->val = -1e16f;
+        part->val = PRECIPITATIONNOCOLLIDE;
         return;
     }
 
     const float raydistance = parts[type]->stain >= 0 ? COLLIDERADIUS : max(origin.z, 0.0f);
-    part->val = origin.z - raycube(origin, vec(0, 0, -1), raydistance, RAY_CLIPMAT) + (parts[type]->stain >= 0 ? COLLIDEERROR : 0);
+    part->val = origin.z - raycube(origin, vec(0, 0, -1), raydistance, RAY_CLIPMAT | RAY_LIQUIDMAT) + (parts[type]->stain >= 0 ? COLLIDEERROR : 0);
 }
 
 void particle_blockchips(int texture, const vec &p, const vec &normal, int num)
