@@ -2153,7 +2153,7 @@ namespace server
         if(position.z < 28.0f || position.z >= SERVER_WORLD_MAP_SIZE || position.squaredist(owner->o) > simulationdistance * simulationdistance ||
            !servernpcclearance(position)) return;
         const int light = serverlightlevel(position);
-        if(light >= 3 || int(worlddrophash(seed ^ 0xC2B2AE35U) % 4U) >= 3 - light) return;
+        if(light > 3) return;
 
         servernpc *mob = new servernpc(nextnpcid++, definition);
         mob->o = mob->spawn = mob->destination = position;

@@ -1441,7 +1441,7 @@ namespace game
             heldtorchemitterposition(player1, emitter);
             light = max(light, clamp(int(floorf(heldradius - emitter.dist(position) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
         }
-        if(light >= 3 || int(worlddrophash(seed ^ 0xC2B2AE35U) % 4U) >= 3 - light) return;
+        if(light > 3) return;
 
         npc *mob = new npc(definition, nextnpcid);
         mob->o = position;
