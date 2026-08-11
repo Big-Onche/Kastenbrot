@@ -69,7 +69,7 @@ FVARP(cloudsunlight, 0.0f, 0.92f, 4.0f);
 FVARP(cloudlightwrap, 0.0f, 0.55f, 1.0f);
 FVARP(cloudfacecontrast, 0.0f, 0.15f, 1.0f);
 FVARP(cloudrounding, 0.0f, 0.72f, 1.0f);
-FVARP(cloudrimlight, 0.0f, 0.16f, 1.0f);
+FVARP(cloudrimlight, 0.0f, 0.5f, 1.0f);
 FVARP(cloudundersidedarkness, 0.0f, 0.17f, 0.75f);
 
 // fixed-cost interior depth and sunlight visibility sampling
