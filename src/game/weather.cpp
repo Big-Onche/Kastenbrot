@@ -49,6 +49,9 @@ FVAR(weatherprecipitationradius, 16.0f, 512.0f, 1024.0f);
 FVAR(weatherprecipitationspawnheight, 16.0f, 256.0f, 512.0f);
 FVARP(weatherprecipitationcollisionradius, 0.0f, 256.0f, 512.0f);
 VARP(weatherprecipitationmaxspawn, 1, 64, 512);
+// Let overcast establish before precipitation begins, then fade rain and snow in farther inside the weather system.
+FVAR(weatherprecipitationovercastinset, 0.0f, 0.02f, 0.25f);
+FVAR(weatherprecipitationtransition, 0.001f, 0.04f, 0.25f);
 
 FVAR(weatherprecipitationwind, 0.0f, 5.0f, 500.0f);
 FVAR(weatherprecipitationsnowdrift, 0.0f, 5.0f, 100.0f);
@@ -283,6 +286,17 @@ namespace game
             return smoothstep(overcastthreshold - halfwidth, overcastthreshold + halfwidth, value);
         }
 
+        static float samplecurrentprecipitation(float x, float y)
+        {
+            currentweatherposition(x, y);
+            const float value = sampleweather(x, y);
+            const float fairthreshold = clamp(weatherfairthreshold, weatherclearthreshold, 1.0f);
+            const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
+            const float start = clamp(overcastthreshold + weatherprecipitationovercastinset, overcastthreshold, 1.0f);
+            const float end = clamp(start + weatherprecipitationtransition, start, 1.0f);
+            return smoothstep(start, end, value);
+        }
+
         void addparticles()
         {
             if(!weatherprecipitation || mainmenu || !camera1 || !player1 || curtime <= 0)
@@ -296,7 +310,7 @@ namespace game
             absolute.z -= player1->eyeheight;
             const float playerheight = worldpositionheight(absolute.z);
             worldpositiontoabsolute(absolute);
-            const float intensity = samplecurrentovercast(absolute.x, absolute.y) * clamp(getworldskyexposure(camera1->o), 0.0f, 1.0f);
+            const float intensity = samplecurrentprecipitation(absolute.x, absolute.y) * clamp(getworldskyexposure(camera1->o), 0.0f, 1.0f);
             if(intensity <= 1e-3f)
             {
                 rainbudget = snowbudget = 0.0f;
@@ -323,6 +337,10 @@ namespace game
                 const float angle = rndscale(2.0f * M_PI);
                 vec origin(camera1->o.x + cosf(angle) * distance, camera1->o.y + sinf(angle) * distance,
                            camera1->o.z + weatherprecipitationspawnheight * (1.0f + 0.25f * rndscale(1.0f)));
+                vec weatherorigin(origin);
+                worldpositiontoabsolute(weatherorigin);
+                if(rndscale(1.0f) >= samplecurrentprecipitation(weatherorigin.x, weatherorigin.y)) continue;
+
                 const bool snow = i >= raincount;
                 vec velocity(wind);
 
