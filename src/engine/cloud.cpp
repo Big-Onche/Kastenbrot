@@ -59,20 +59,32 @@ FVARP(cloudwindspeed, 0.0f, 1.20f, 64.0f);
 FVARP(cloudwindangle, 0.0f, 18.0f, 360.0f);
 
 // lighting: rounded side shading keeps the voxel silhouette while avoiding flat, uniformly lit slabs
-FVARP(cloudambient, 0.0f, 0.72f, 4.0f);
+// cloudambient and cloudsunlight are the sky-light and sun-light strength controls used by the raymarched lighting model
+FVARP(cloudambient, 0.0f, 1.0f, 4.0f);
 FVARP(cloudsunlight, 0.0f, 0.92f, 4.0f);
 FVARP(cloudlightwrap, 0.0f, 0.55f, 1.0f);
 FVARP(cloudfacecontrast, 0.0f, 0.46f, 1.0f);
 FVARP(cloudrounding, 0.0f, 0.72f, 1.0f);
 FVARP(cloudrimlight, 0.0f, 0.16f, 1.0f);
-FVARP(cloudundersidedarkness, 0.0f, 0.30f, 0.75f);
+FVARP(cloudundersidedarkness, 0.0f, 0.17f, 0.75f);
+
+// fixed-cost interior depth and sunlight visibility sampling
+FVARP(cloudraymarchdepth, 0.25f, 1.5f, 8.0f);
+VARP(cloudraymarchsteps, 1, 8, 32);
+VARP(cloudsunmarchsteps, 2, 16, 16);
+FVARP(cloudselfshadow, 0.0f, 0.5f, 1.0f);
+
+// additional cloud-specific atmospheric convergence toward the current scene fog color
+FVARP(cloudatmosfadestart, 0.0f, 8192.0f, 32768.0f);
+FVARP(cloudatmosfadeend, 512.0f, 16384.0f, 65536.0f);
+FVARP(cloudatmoshorizon, 0.0f, 0.35f, 1.0f);
 
 // opacity
 FVARP(cloudalpha, 0.0f, 1.0f, 1.0f);
 
-//post blur
+// post blur
 VARP(cloudpostblur, 0, 0, 1);
-FVARP(cloudrenderscale, 0.25f, 0.75f, 1.0f);
+FVARP(cloudrenderscale, 0.25f, 1.0f, 1.0f);
 VARP(cloudblurradius, 0, 1, 4);
 FVARP(cloudblursigma, 0.25f, 0.85f, 4.0f);
 
@@ -115,12 +127,12 @@ namespace
     struct cloudlayer
     {
         vector<cloudface> faces;
-        GLuint vbo, ebo;
+        GLuint vbo, ebo, masktex;
         int numverts, originx, originy, size, centerx, centery, settingsversion, weatherversion;
         bool built;
 
         cloudlayer()
-            : vbo(0), ebo(0), numverts(0), originx(0), originy(0), size(0), centerx(INT_MIN), centery(INT_MIN),
+            : vbo(0), ebo(0), masktex(0), numverts(0), originx(0), originy(0), size(0), centerx(INT_MIN), centery(INT_MIN),
               settingsversion(0), weatherversion(0), built(false)
         {
         }
@@ -427,7 +439,9 @@ namespace
     {
         if(layer.vbo) glDeleteBuffers_(1, &layer.vbo);
         if(layer.ebo) glDeleteBuffers_(1, &layer.ebo);
+        if(layer.masktex) glDeleteTextures(1, &layer.masktex);
         layer.vbo = layer.ebo = 0;
+        layer.masktex = 0;
         layer.faces.shrink(0);
         layer.numverts = 0;
         layer.size = 0;
@@ -461,6 +475,29 @@ namespace
         vector<cloudvert> verts;
         meshcloudlayer(mask, verts);
         ASSERT(verts.length() % 6 == 0);
+
+        vector<uchar> occupancy;
+        occupancy.growbuf(size * size);
+        for(int y = 0; y < size; ++y) for(int x = 0; x < size; ++x)
+            occupancy.add(mask.get(x, y) != CLOUD_EMPTY ? 255 : 0);
+
+        GLint oldactive = GL_TEXTURE0, oldtex = 0, oldunpack = 4;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &oldactive);
+        glActiveTexture_(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldunpack);
+        if(!layer.masktex) glGenTextures(1, &layer.masktex);
+        glBindTexture(GL_TEXTURE_2D, layer.masktex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, hasTRG ? GL_R8 : GL_LUMINANCE8, size, size, 0, hasTRG ? GL_RED : GL_LUMINANCE,
+                     GL_UNSIGNED_BYTE, occupancy.getbuf());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, oldunpack);
+        glBindTexture(GL_TEXTURE_2D, GLuint(oldtex));
+        glActiveTexture_(GLenum(oldactive));
 
         if(!layer.vbo) glGenBuffers_(1, &layer.vbo);
         if(!layer.ebo) glGenBuffers_(1, &layer.ebo);
@@ -559,6 +596,10 @@ namespace
 
         const float day = clamp((sunlightscale - 0.08f) / 0.72f, 0.0f, 1.0f);
         const float sunset = 4.0f * day * (1.0f - day);
+        const float cell = max(float(cloudcellsize), 1.0f);
+        const float span = max(cloudstate.size * cell, 1.0f);
+        const float fadeend = max(cloudatmosfadeend, cloudatmosfadestart + 1.0f);
+        const vec offset = cloudrenderoffset(cloudstate);
 
         LOCALPARAM(cloudsundir, sunlightdir);
         LOCALPARAM(cloudsuncolor, vec(sunlight.tocolor()).mul(sunlightscale));
@@ -569,7 +610,10 @@ namespace
         LOCALPARAM(cloudnighttint, cloudnightcolor.tocolor());
         LOCALPARAMF(cloudlighting, cloudambient, cloudsunlight, cloudundersidedarkness, 0.0f);
         LOCALPARAMF(cloudappearance, cloudlightwrap, cloudfacecontrast, cloudrounding, cloudrimlight);
-        LOCALPARAMF(cloudgeometry, float(cloudbaseheight), 1.0f / max(float(cloudheight), 1.0f), 0.0f, 0.0f);
+        LOCALPARAMF(cloudgeometry, float(cloudbaseheight), float(cloudbaseheight + cloudheight), 1.0f / max(float(cloudheight), 1.0f), cell);
+        LOCALPARAMF(cloudvolume, offset.x, offset.y, 1.0f / span, span);
+        LOCALPARAMF(cloudraymarch, cloudraymarchdepth * cell, float(cloudraymarchsteps), float(cloudsunmarchsteps), cloudselfshadow);
+        LOCALPARAMF(cloudatmosphere, cloudatmosfadestart, fadeend, cloudatmoshorizon, 0.15f);
         LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudalpha);
     }
 
@@ -585,6 +629,7 @@ namespace
 
         if(sorted) updatecloudfaceorder(cloudstate);
 
+        glBindTexture(GL_TEXTURE_2D, cloudstate.masktex);
         setclouduniforms(shader);
         enablecloudvertexformat(cloudstate);
         LOCALPARAM(cloudmeshoffset, cloudrenderoffset(cloudstate));
@@ -606,15 +651,8 @@ namespace
 
         glDepthFunc(depthfunc);
 
-        if(cloudalpha >= 0.999f)
-        {
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-            return drawcloudgeometry();
-        }
-
-        // Alpha blending is order-dependent. The mesh consists of independently merged quads, so render them back-to-front and leave the scene
-        // depth unchanged rather than relying on a repeated depth-equality pass, which produces cracks at T-junctions between unequal quads.
+        // Optical thickness and atmospheric extinction make alpha vary per fragment even when cloudalpha is one. Keep every cloud on the sorted
+        // transparency path so the fixed-cost interior shading never exposes generation-order triangles.
         glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -1042,7 +1080,7 @@ void renderclouds()
     GLint oldviewport[4] = { 0, 0, screenw, screenh };
     GLint olddepthfunc = GL_LESS;
     GLint oldsrc = GL_ONE, olddst = GL_ZERO;
-    GLint oldcullmode = GL_BACK, oldfrontface = GL_CCW, oldactivetex = GL_TEXTURE0;
+    GLint oldcullmode = GL_BACK, oldfrontface = GL_CCW, oldactivetex = GL_TEXTURE0, oldtex2d = 0;
     GLfloat oldclear[4] = { 0, 0, 0, 0 };
     GLfloat oldcleardepth = 1.0f;
     GLboolean olddepthmask = GL_TRUE;
@@ -1069,6 +1107,7 @@ void renderclouds()
     glGetFloatv(GL_DEPTH_CLEAR_VALUE, &oldcleardepth);
 
     glActiveTexture_(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex2d);
     int renderedverts = 0;
 
     // project the low-resolution cloud shadow mask onto the already-lit opaque scene
@@ -1148,6 +1187,8 @@ void renderclouds()
     glCullFace(GLenum(oldcullmode));
     glFrontFace(GLenum(oldfrontface));
     glBlendFunc(GLenum(oldsrc), GLenum(olddst));
+    glActiveTexture_(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, GLuint(oldtex2d));
     glActiveTexture_(GLenum(oldactivetex));
 
     if(oldblend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
