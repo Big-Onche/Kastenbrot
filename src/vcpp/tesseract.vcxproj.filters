@@ -166,6 +166,9 @@
     <ClCompile Include="..\engine\world.cpp">
       <Filter>engine</Filter>
     </ClCompile>
+    <ClCompile Include="..\engine\worlddef.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
     <ClCompile Include="..\engine\worldio.cpp">
       <Filter>engine</Filter>
     </ClCompile>
@@ -175,6 +178,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\engine\animmodel.h">
+      <Filter>engine</Filter>
+    </ClInclude>
+    <ClInclude Include="..\engine\worlddef.h">
       <Filter>engine</Filter>
     </ClInclude>
     <ClInclude Include="..\engine\bih.h">

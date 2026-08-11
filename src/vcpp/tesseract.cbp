@@ -207,6 +207,8 @@
 		<Unit filename="../engine/water.cpp" />
 		<Unit filename="../engine/world.cpp" />
 		<Unit filename="../engine/world.h" />
+		<Unit filename="../engine/worlddef.cpp" />
+		<Unit filename="../engine/worlddef.h" />
 		<Unit filename="../engine/worldio.cpp" />
 		<Unit filename="../game/client.cpp" />
 		<Unit filename="../game/entities.cpp" />

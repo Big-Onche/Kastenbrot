@@ -113,6 +113,7 @@ CLIENT_OBJS= \
 	engine/ui.o \
 	engine/water.o \
 	engine/world.o \
+	engine/worlddef.o \
 	engine/worldio.o \
 	game/client.o \
 	game/entities.o \
@@ -158,6 +159,7 @@ SERVER_OBJS= \
 	standalone/shared/tools.o \
 	standalone/engine/command.o \
 	standalone/engine/server.o \
+	standalone/engine/worlddef.o \
 	standalone/engine/worldio.o \
 	standalone/game/entities.o \
 	standalone/game/game.o \
@@ -464,12 +466,13 @@ engine/world.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/world.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/world.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
-engine/worldio.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
+engine/worldio.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h shared/geom.h
 engine/worldio.o: shared/ents.h shared/command.h shared/glexts.h
 engine/worldio.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/worldio.o: engine/world.h engine/octa.h engine/light.h
 engine/worldio.o: engine/texture.h engine/bih.h engine/model.h
 engine/worldio.o: game/world.h include/FastNoiseLite.h
+engine/worlddef.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h
 game/client.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/client.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/client.o: shared/iengine.h shared/igame.h
@@ -525,9 +528,10 @@ standalone/engine/command.o: shared/iengine.h shared/igame.h engine/world.h
 standalone/engine/server.o: engine/engine.h shared/cube.h shared/tools.h
 standalone/engine/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/engine/server.o: shared/iengine.h shared/igame.h engine/world.h
-standalone/engine/worldio.o: engine/engine.h shared/cube.h shared/tools.h
+standalone/engine/worldio.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h
 standalone/engine/worldio.o: shared/geom.h shared/ents.h shared/command.h
 standalone/engine/worldio.o: shared/iengine.h shared/igame.h engine/world.h
+standalone/engine/worlddef.o: engine/engine.h engine/worlddef.h shared/cube.h
 standalone/game/entities.o: game/game.h shared/cube.h shared/tools.h
 standalone/game/entities.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/entities.o: shared/iengine.h shared/igame.h
