@@ -211,8 +211,10 @@ namespace
         addhash(hash, uint(cloudheight));
         addhash(hash, hashfloat(clouddome));
         addhash(hash, hashfloat(cloudscale));
-        addhash(hash, hashfloat(weatherwindspeed));
-        addhash(hash, hashfloat(cloudwindangle));
+        addhash(hash, hashfloat(game::weather::getweatherspeed(weatherwindspeed)));
+        addhash(hash, hashfloat(game::weather::getcloudspeed(cloudwindspeed)));
+        addhash(hash, hashfloat(game::weather::getwindangle(cloudwindangle)));
+        addhash(hash, uint(game::weather::getupdateinterval(cloudupdateinterval)));
         return hash;
     }
 
@@ -1108,7 +1110,7 @@ void updateclouds()
     if(lastcloudframe == lastmillis) return;
     lastcloudframe = lastmillis;
 
-    const int seed = game::getworldseed();
+    const int seed = game::weather::getseed(game::getworldseed());
     game::weather::update(seed);
     const uint settingshash = cloudsettingshash(seed);
     const int weathersettingsversion = game::weather::getsettingsversion();
@@ -1121,14 +1123,16 @@ void updateclouds()
         cloudstate.built = false;
     }
 
-    const float seconds = game::environment::gettimemillis() / 1000.0f;
-    const float angle = cloudwindangle * RAD;
+    const double weathermillis = game::weather::gettimemillis();
+    const float seconds = float(weathermillis / 1000.0);
+    const float angle = game::weather::getwindangle(cloudwindangle) * RAD;
     const vec direction(cosf(angle), sinf(angle), 0.0f);
-    cloudwind = vec(direction).mul(cloudwindspeed * seconds);
+    cloudwind = vec(direction).mul(game::weather::getcloudspeed(cloudwindspeed) * seconds);
 
-    const int weatherstep = game::environment::gettimemillis() / max(cloudupdateinterval, 1);
-    const float weatherseconds = weatherstep * cloudupdateinterval / 1000.0f;
-    weatherwind = vec(direction).mul(weatherwindspeed * weatherseconds);
+    const int updateinterval = game::weather::getupdateinterval(cloudupdateinterval);
+    const int weatherstep = int(floor(weathermillis / max(updateinterval, 1)));
+    const float weatherseconds = weatherstep * updateinterval / 1000.0f;
+    weatherwind = vec(direction).mul(game::weather::getweatherspeed(weatherwindspeed) * weatherseconds);
     currentweatherversion = weatherstep;
 
     vec absolute = camera1->o;

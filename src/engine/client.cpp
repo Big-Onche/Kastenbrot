@@ -46,6 +46,11 @@ const ENetAddress *connectedpeer()
     return curpeer ? &curpeer->address : NULL;
 }
 
+int getserverrtt()
+{
+    return curpeer ? int(curpeer->roundTripTime) : 0;
+}
+
 ICOMMAND(connectedip, "", (),
 {
     const ENetAddress *address = connectedpeer();

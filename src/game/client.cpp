@@ -1,4 +1,5 @@
 #include "game.h"
+#include "weather.h"
 
 namespace game
 {
@@ -38,6 +39,7 @@ namespace game
 
     void resetclientreceive()
     {
+        weather::clearsync();
         currentserverid[0] = '\0';
         currentidentity = NULL;
         currentidentitycreated = false;
@@ -598,6 +600,13 @@ namespace game
                 synchronizedrevision = uint(getint(p));
                 pendingnetworktime = getint(p);
                 pendingnetworkfrozen = getint(p) != 0;
+                const int weatherseed = getint(p);
+                const uint weathermillis = uint(getint(p));
+                const int weatherupdateinterval = getint(p);
+                const float weatherwindspeed = getint(p) / 1000.0f;
+                const float cloudwindspeed = getint(p) / 1000.0f;
+                const float cloudwindangle = getint(p) / 1000.0f;
+                weather::synctime(weatherseed, weathermillis, weatherupdateinterval, weatherwindspeed, cloudwindspeed, cloudwindangle);
                 pendingnetworkreset = getint(p) != 0;
                 gamemode = getint(p);
                 if(!m_valid(gamemode) || (!m_creative && !m_survival)) gamemode = STARTGAMEMODE;
@@ -738,6 +747,17 @@ namespace game
                     pendingnetworkfrozen = frozen;
                 }
                 else environment::synctime(timemillis, frozen);
+                break;
+            }
+            case N_WEATHERSTATE:
+            {
+                const int seed = getint(p);
+                const uint millis = uint(getint(p));
+                const int updateinterval = getint(p);
+                const float weatherspeed = getint(p) / 1000.0f;
+                const float cloudspeed = getint(p) / 1000.0f;
+                const float windangle = getint(p) / 1000.0f;
+                if(!p.overread()) weather::synctime(seed, millis, updateinterval, weatherspeed, cloudspeed, windangle);
                 break;
             }
             case N_EDITMODE:

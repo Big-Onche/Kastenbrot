@@ -46,6 +46,11 @@ namespace server
     SVAR(serverdesc, "Cube-Craft authoritative server");
     SVAR(servermotd, "");
     VAR(serverworldseed, 0, 1337, INT_MAX);
+    VAR(serverweatherseed, 0, 0, INT_MAX);
+    VAR(serverweatherupdateinterval, 1000, 60000, 600000);
+    FVAR(serverweatherwindspeed, 0.0f, 0.2f, 16.0f);
+    FVAR(servercloudwindspeed, 0.0f, 16.0f, 64.0f);
+    FVAR(servercloudwindangle, 0.0f, 18.0f, 360.0f);
     VAR(identityduplicatepolicy, 0, 0, 1);
     VAR(creativemode, 0, 1, 1);
     VAR(inventorysaveinterval, 1, 15, 3600);
@@ -295,6 +300,7 @@ namespace server
     int gamemode = STARTGAMEMODE;
     uint worldeditrevision = 0;
     int worldclockmillis = SERVER_START_MILLIS, lastworldtimesync = 0;
+    uint weatherclockmillis = 0;
     bool worldtimefrozen = false, serverworldready = true, journalinitialized = false;
 
     static bool servercreative()
@@ -2583,6 +2589,18 @@ namespace server
         sendf(cn, 1, "ri3", N_WORLDTIME, worldclockmillis, worldtimefrozen ? 1 : 0);
     }
 
+    static int authoritativeweatherseed()
+    {
+        return serverweatherseed ? serverweatherseed : serverworldseed;
+    }
+
+    static void sendweatherstate(int cn = -1)
+    {
+        sendf(cn, 1, "ri7", N_WEATHERSTATE, authoritativeweatherseed(), int(weatherclockmillis), serverweatherupdateinterval,
+              int(serverweatherwindspeed * 1000.0f + 0.5f), int(servercloudwindspeed * 1000.0f + 0.5f),
+              int(servercloudwindangle * 1000.0f + 0.5f));
+    }
+
     static void sendserveredit(int cn, const serveredit &edit)
     {
         packetbuf q(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
@@ -2605,6 +2623,12 @@ namespace server
         putint(p, int(worldeditrevision));
         putint(p, worldclockmillis);
         putint(p, worldtimefrozen ? 1 : 0);
+        putint(p, authoritativeweatherseed());
+        putint(p, int(weatherclockmillis));
+        putint(p, serverweatherupdateinterval);
+        putint(p, int(serverweatherwindspeed * 1000.0f + 0.5f));
+        putint(p, int(servercloudwindspeed * 1000.0f + 0.5f));
+        putint(p, int(servercloudwindangle * 1000.0f + 0.5f));
         putint(p, reset ? 1 : 0);
         putint(p, gamemode);
         putint(p, survivalbreakmillis);
@@ -2675,6 +2699,7 @@ namespace server
         lastnpcspawnattempt = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
         worldclockmillis = SERVER_START_MILLIS;
+        weatherclockmillis = 0;
         worldtimefrozen = false;
         lastworldtimesync = 0;
         conoutf("server gameplay mode: %s", servercreative() ? "creative" : "survival");
@@ -4884,10 +4909,12 @@ namespace server
             worldclockmillis += curtime;
             while(worldclockmillis >= SERVER_DAY_MILLIS) worldclockmillis -= SERVER_DAY_MILLIS;
         }
+        if(curtime > 0) weatherclockmillis += uint(curtime);
         if(totalmillis - lastworldtimesync >= 5000)
         {
             lastworldtimesync = totalmillis;
             sendworldtime();
+            sendweatherstate();
         }
     }
     int protocolversion() { return PROTOCOL_VERSION; }

@@ -75,6 +75,10 @@ namespace game
             static int noiseseed = INT_MIN, settingsversion = 0;
             static uint currentsettingshash = 0;
             static float rainbudget = 0.0f, snowbudget = 0.0f;
+            static bool synchronized = false;
+            static int synchronizedseed = 0, synchronizedat = 0, synchronizedupdateinterval = 0;
+            static double synchronizedmillis = 0.0;
+            static float synchronizedweatherspeed = 0.0f, synchronizedcloudspeed = 0.0f, synchronizedwindangle = 0.0f;
 
             static uint mixhash(uint value)
             {
@@ -159,16 +163,20 @@ namespace game
 
             static void currentweatherposition(float &x, float &y)
             {
-                const int weatherstep = environment::gettimemillis() / max(cloudupdateinterval, 1);
-                const float weatherseconds = weatherstep * cloudupdateinterval / 1000.0f;
-                const float angle = cloudwindangle * RAD;
-                x -= cosf(angle) * weatherwindspeed * weatherseconds;
-                y -= sinf(angle) * weatherwindspeed * weatherseconds;
+                const double millis = gettimemillis();
+                const int updateinterval = getupdateinterval(cloudupdateinterval);
+                const double weatherstep = floor(millis / max(updateinterval, 1));
+                const float weatherseconds = float(weatherstep * updateinterval / 1000.0);
+                const float angle = getwindangle(cloudwindangle) * RAD;
+                const float speed = getweatherspeed(weatherwindspeed);
+                x -= cosf(angle) * speed * weatherseconds;
+                y -= sinf(angle) * speed * weatherseconds;
             }
         }
 
         void update(int seed)
         {
+            seed = getseed(seed);
             const uint hash = settingshash(seed);
             if(seed == noiseseed && hash == currentsettingshash) return;
 
@@ -197,6 +205,62 @@ namespace game
             currentsettingshash = 0;
             rainbudget = snowbudget = 0.0f;
             ++settingsversion;
+        }
+
+        void clearsync()
+        {
+            synchronized = false;
+            synchronizedseed = synchronizedat = synchronizedupdateinterval = 0;
+            synchronizedmillis = 0.0;
+            synchronizedweatherspeed = synchronizedcloudspeed = synchronizedwindangle = 0.0f;
+            reset();
+        }
+
+        void synctime(int seed, uint millis, int updateinterval, float weatherspeed, float cloudspeed, float windangle)
+        {
+            const bool settingschanged = !synchronized || synchronizedseed != seed || synchronizedupdateinterval != updateinterval ||
+                                         synchronizedweatherspeed != weatherspeed || synchronizedcloudspeed != cloudspeed ||
+                                         synchronizedwindangle != windangle;
+            synchronized = true;
+            synchronizedseed = seed;
+            synchronizedat = totalmillis;
+            synchronizedupdateinterval = max(updateinterval, 1);
+            synchronizedmillis = double(millis) + getserverrtt() * 0.5;
+            synchronizedweatherspeed = max(weatherspeed, 0.0f);
+            synchronizedcloudspeed = max(cloudspeed, 0.0f);
+            synchronizedwindangle = windangle;
+            if(settingschanged) reset();
+        }
+
+        int getseed(int fallback)
+        {
+            return synchronized ? synchronizedseed : fallback;
+        }
+
+        double gettimemillis()
+        {
+            if(!synchronized) return environment::gettimemillis();
+            return synchronizedmillis + max(totalmillis - synchronizedat, 0);
+        }
+
+        int getupdateinterval(int fallback)
+        {
+            return synchronized ? synchronizedupdateinterval : fallback;
+        }
+
+        float getweatherspeed(float fallback)
+        {
+            return synchronized ? synchronizedweatherspeed : fallback;
+        }
+
+        float getcloudspeed(float fallback)
+        {
+            return synchronized ? synchronizedcloudspeed : fallback;
+        }
+
+        float getwindangle(float fallback)
+        {
+            return synchronized ? synchronizedwindangle : fallback;
         }
 
         int getsettingsversion()
@@ -251,7 +315,7 @@ namespace game
             const int count = raincount + snowcount;
             if(count <= 0) return;
 
-            const float windangle = cloudwindangle * RAD;
+            const float windangle = getwindangle(cloudwindangle) * RAD;
             const vec wind(cosf(windangle) * weatherprecipitationwind, sinf(windangle) * weatherprecipitationwind, 0.0f);
             loopi(count)
             {
