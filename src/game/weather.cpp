@@ -30,6 +30,13 @@ FVARP(weatherfairmincoverage, 0.0f, 0.22f, 1.0f);
 FVARP(weatherfairmaxcoverage, 0.0f, 0.55f, 1.0f);
 FVARP(weatherovercastcoverage, 0.0f, 0.95f, 1.0f);
 
+// Overcast lighting is applied by game/environment.cpp after time-of-day lighting.
+FVAR(weatherovercastlightreduction, 0.0f, 0.5f, 1.0f);
+FVAR(weatherovercastsunlightreduction, 0.0f, 0.90f, 1.0f);
+FVAR(weatherovercastambientgray, 0.0f, 0.85f, 1.0f);
+FVAR(weatherovercastsunwhite, 0.0f, 0.90f, 1.0f);
+FVAR(weatherovercastlighttransition, 0.001f, 0.10f, 0.5f);
+
 extern int cloudupdateinterval;
 extern float weatherwindspeed, cloudwindangle;
 
@@ -175,6 +182,16 @@ namespace game
         float samplecoverage(float x, float y)
         {
             return coveragefromweather(sampleweather(x, y));
+        }
+
+        float samplecurrentovercast(float x, float y)
+        {
+            currentweatherposition(x, y);
+            const float value = sampleweather(x, y);
+            const float fairthreshold = clamp(weatherfairthreshold, weatherclearthreshold, 1.0f);
+            const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
+            const float halfwidth = weatherovercastlighttransition * 0.5f;
+            return smoothstep(overcastthreshold - halfwidth, overcastthreshold + halfwidth, value);
         }
 
         ICOMMAND(getdebugweather, "", (),

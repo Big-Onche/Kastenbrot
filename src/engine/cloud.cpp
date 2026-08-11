@@ -57,7 +57,7 @@ FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
 FVARP(weatherwindspeed, 0.0f, 0.20f, 16.0f);
 
 // wind
-FVARP(cloudwindspeed, 0.0f, 1.20f, 64.0f);
+FVARP(cloudwindspeed, 0.0f, 16.0f, 64.0f);
 FVARP(cloudwindangle, 0.0f, 18.0f, 360.0f);
 
 // lighting: rounded side shading keeps the voxel silhouette while avoiding flat, uniformly lit slabs

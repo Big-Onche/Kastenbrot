@@ -1,4 +1,5 @@
 #include "game.h"
+#include "weather.h"
 
 #ifndef STANDALONE
 
@@ -6,9 +7,12 @@ extern bvec ambient, fogcolour, sunlight;
 extern float sunlightscale;
 extern float sunlightyaw, sunlightpitch;
 extern void setsunlightdir();
+extern float weatherovercastlightreduction, weatherovercastsunlightreduction, weatherovercastambientgray, weatherovercastsunwhite;
 
 namespace game
 {
+    extern int getworldseed();
+
     namespace environment
     {
         VAR(skyexposurelerp, 1, 50, 60000);
@@ -68,6 +72,43 @@ namespace game
             return result;
         }
 
+        static float currentovercastblend()
+        {
+            if(!player1) return 0.0f;
+            weather::update(getworldseed());
+            vec position = player1->o;
+            worldpositiontoabsolute(position);
+            return weather::samplecurrentovercast(position.x, position.y);
+        }
+
+        static bvec neutralizeambient(const bvec &color, float amount)
+        {
+            const int gray = int(color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f + 0.5f);
+            bvec result;
+            result.lerp(color, bvec(uchar(gray), uchar(gray), uchar(gray)), amount);
+            return result;
+        }
+
+        static bvec neutralizesunlight(const bvec &color, float amount)
+        {
+            bvec result;
+            result.lerp(color, bvec(255, 255, 255), amount);
+            return result;
+        }
+
+        static void applyovercastlighting(bvec &newSunlight, bvec &newAmbient, float &newSunlightScale)
+        {
+            const float overcast = currentovercastblend();
+            if(overcast <= 0.0f) return;
+
+            const float ambientscale = 1.0f - clamp(weatherovercastlightreduction, 0.0f, 1.0f) * overcast;
+            const float sunlightscale = 1.0f - clamp(weatherovercastsunlightreduction, 0.0f, 1.0f) * overcast;
+            newAmbient = neutralizeambient(newAmbient, clamp(weatherovercastambientgray, 0.0f, 1.0f) * overcast);
+            newSunlight = neutralizesunlight(newSunlight, clamp(weatherovercastsunwhite, 0.0f, 1.0f) * overcast);
+            loopk(3) newAmbient[k] = uchar(clamp(newAmbient[k] * ambientscale + 0.5f, 0.0f, 255.0f));
+            newSunlightScale *= sunlightscale;
+        }
+
         static void updateskyexposure()
         {
             if(camera1) targetskyexposure = getworldskyexposure(camera1->o);
@@ -96,13 +137,14 @@ namespace game
             }
 
             const float blend = smoothstep((hour - from->hour) / (to->hour - from->hour));
-            const bvec newSunlight = interpolatecolor(from->sunlightcolor, to->sunlightcolor, blend);
+            bvec newSunlight = interpolatecolor(from->sunlightcolor, to->sunlightcolor, blend);
             const bvec timeFog = interpolatecolor(from->fogcolor, to->fogcolor, blend);
             const bvec timeAmbient = interpolatecolor(from->ambientcolor, to->ambientcolor, blend);
             bvec newAmbient, newFog;
             newAmbient.lerp(bvec::hexcolor(NO_SKY_AMBIENT_COLOR), timeAmbient, skyexposure);
             newFog.lerp(bvec::hexcolor(NO_SKY_FOG_COLOR), timeFog, skyexposure);
-            const float newSunlightScale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
+            float newSunlightScale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
+            applyovercastlighting(newSunlight, newAmbient, newSunlightScale);
 
             const float orbit = (hour - 6.0f) * 15.0f * RAD;
             float newSunlightYaw = hour * (360.0f / 24.0f);
