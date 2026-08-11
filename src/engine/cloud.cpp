@@ -48,6 +48,7 @@ VARP(cloudsmoothfill, 0, 5, 8);
 // main cloud deck
 VARP(cloudbaseheight, 0, 6144, 16384);
 VARP(cloudheight, 16, 128, 1024);
+FVARP(clouddome, 0.0f, 0.07f, 2.0f);
 FVARP(cloudscale, 0.00005f, 0.00090f, 0.05f);
 FVARP(cloudcoverage, 0.0f, 0.50f, 1.0f);
 FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
@@ -64,8 +65,8 @@ FVARP(cloudwindangle, 0.0f, 18.0f, 360.0f);
 
 // lighting: rounded side shading keeps the voxel silhouette while avoiding flat, uniformly lit slabs
 // cloudambient and cloudsunlight are the sky-light and sun-light strength controls used by the raymarched lighting model
-FVARP(cloudambient, 0.0f, 0.5f, 4.0f);
-FVARP(cloudsunlight, 0.0f, 0.92f, 4.0f);
+FVARP(cloudambient, 0.0f, 1.0f, 4.0f);
+FVARP(cloudsunlight, 0.0f, 1.5f, 4.0f);
 FVARP(cloudlightwrap, 0.0f, 0.55f, 1.0f);
 FVARP(cloudfacecontrast, 0.0f, 0.15f, 1.0f);
 FVARP(cloudrounding, 0.0f, 0.72f, 1.0f);
@@ -83,7 +84,7 @@ FVARP(cloudscatterstrength, 0.0f, 2.0f, 4.0f);
 FVARP(cloudscatterblue, 0.0f, 1.5f, 4.0f);
 
 // opacity
-FVARP(cloudalpha, 0.0f, 0.65f, 1.0f);
+FVARP(cloudalpha, 0.0f, 0.6f, 1.0f);
 
 // post blur
 VARP(cloudpostblur, 0, 0, 1);
@@ -211,6 +212,7 @@ namespace
         addhash(hash, uint(cloudsmoothfill));
         addhash(hash, uint(cloudbaseheight));
         addhash(hash, uint(cloudheight));
+        addhash(hash, hashfloat(clouddome));
         addhash(hash, hashfloat(cloudscale));
         addhash(hash, hashfloat(cloudcoverage));
         addhash(hash, hashfloat(weatherscale));
@@ -334,6 +336,7 @@ namespace
         const float cell = float(cloudcellsize);
         const float z0 = float(cloudbaseheight);
         const float z1 = z0 + cloudheight;
+        const int meshstep = clouddome > 0.0f ? 4 : size;
 
         // Greedy top/bottom rectangles.
         vector<uchar> topmask;
@@ -364,12 +367,14 @@ namespace
                 if(extend) ++height;
             }
 
-            const float x0 = x * cell;
-            const float y0 = y * cell;
-            const float x1 = (x + width) * cell;
-            const float y1 = (y + height) * cell;
-            addtopquad(verts, x0, y0, x1, y1, z1);
-            addbottomquad(verts, x0, y0, x1, y1, z0);
+            for(int row = 0; row < height; row += meshstep) for(int col = 0; col < width; col += meshstep)
+            {
+                const float x0 = (x + col) * cell, y0 = (y + row) * cell;
+                const float x1 = (x + min(col + meshstep, width)) * cell;
+                const float y1 = (y + min(row + meshstep, height)) * cell;
+                addtopquad(verts, x0, y0, x1, y1, z1);
+                addbottomquad(verts, x0, y0, x1, y1, z0);
+            }
 
             for(int row = 0; row < height; ++row) for(int col = 0; col < width; ++col)
                 topmask[(y + row) * size + x + col] = CLOUD_EMPTY;
@@ -389,7 +394,8 @@ namespace
                 }
                 int run = 1;
                 while(y + run < size && mask.get(x, y + run) != CLOUD_EMPTY && mask.get(x + 1, y + run) == CLOUD_EMPTY) ++run;
-                addxsidequad(verts, (x + 1) * cell, y * cell, (y + run) * cell, z0, z1, 1);
+                for(int offset = 0; offset < run; offset += meshstep)
+                    addxsidequad(verts, (x + 1) * cell, (y + offset) * cell, (y + min(offset + meshstep, run)) * cell, z0, z1, 1);
                 y += run;
             }
 
@@ -403,7 +409,8 @@ namespace
                 }
                 int run = 1;
                 while(y + run < size && mask.get(x, y + run) != CLOUD_EMPTY && mask.get(x - 1, y + run) == CLOUD_EMPTY) ++run;
-                addxsidequad(verts, x * cell, y * cell, (y + run) * cell, z0, z1, -1);
+                for(int offset = 0; offset < run; offset += meshstep)
+                    addxsidequad(verts, x * cell, (y + offset) * cell, (y + min(offset + meshstep, run)) * cell, z0, z1, -1);
                 y += run;
             }
         }
@@ -421,7 +428,8 @@ namespace
                 }
                 int run = 1;
                 while(x + run < size && mask.get(x + run, y) != CLOUD_EMPTY && mask.get(x + run, y + 1) == CLOUD_EMPTY) ++run;
-                addysidequad(verts, (y + 1) * cell, x * cell, (x + run) * cell, z0, z1, 1);
+                for(int offset = 0; offset < run; offset += meshstep)
+                    addysidequad(verts, (y + 1) * cell, (x + offset) * cell, (x + min(offset + meshstep, run)) * cell, z0, z1, 1);
                 x += run;
             }
 
@@ -435,7 +443,8 @@ namespace
                 }
                 int run = 1;
                 while(x + run < size && mask.get(x + run, y) != CLOUD_EMPTY && mask.get(x + run, y - 1) == CLOUD_EMPTY) ++run;
-                addysidequad(verts, y * cell, x * cell, (x + run) * cell, z0, z1, -1);
+                for(int offset = 0; offset < run; offset += meshstep)
+                    addysidequad(verts, y * cell, (x + offset) * cell, (x + min(offset + meshstep, run)) * cell, z0, z1, -1);
                 x += run;
             }
         }
@@ -545,11 +554,15 @@ namespace
         const float halfspan = span * 0.5f;
         const float z0 = float(cloudbaseheight);
         const float z1 = z0 + cloudheight;
-        const float halfheight = (z1 - z0) * 0.5f;
-        center = cloudrenderoffset(layer).add(vec(halfspan, halfspan, z0 + halfheight));
+        const vec offset = cloudrenderoffset(layer);
+        const float centerx = offset.x + halfspan, centery = offset.y + halfspan;
+        const float dx = centerx - camera1->o.x, dy = centery - camera1->o.y;
+        const float domecoefficient = clouddome * max(z0, 0.0f) / max(float(clouddistance * clouddistance), 1.0f);
+        const float farthestdistance = sqrtf(dx * dx + dy * dy) + SQRT2 * halfspan;
+        const float maxdomedrop = domecoefficient * farthestdistance * farthestdistance;
+        const float halfheight = (z1 - (z0 - maxdomedrop)) * 0.5f;
+        center = vec(centerx, centery, z1 - halfheight);
         radius = sqrtf(2.0f * halfspan * halfspan + halfheight * halfheight);
-        const float dx = center.x - camera1->o.x;
-        const float dy = center.y - camera1->o.y;
         return dx * dx + dy * dy <= (distance + radius) * (distance + radius);
     }
 
@@ -604,6 +617,7 @@ namespace
         const float sunset = 4.0f * day * (1.0f - day);
         const float cell = max(float(cloudcellsize), 1.0f);
         const float span = max(cloudstate.size * cell, 1.0f);
+        const float domecoefficient = clouddome * max(float(cloudbaseheight), 0.0f) / max(float(clouddistance * clouddistance), 1.0f);
         const vec offset = cloudrenderoffset(cloudstate);
 
         const float earthradius = 6371e3f, earthairheight = 8.4e3f, earthhazeheight = 1.25e3f;
@@ -630,6 +644,7 @@ namespace
         LOCALPARAMF(cloudappearance, cloudlightwrap, cloudfacecontrast, cloudrounding, cloudrimlight);
         LOCALPARAMF(cloudgeometry, float(cloudbaseheight), float(cloudbaseheight + cloudheight), 1.0f / max(float(cloudheight), 1.0f), cell);
         LOCALPARAMF(cloudvolume, offset.x, offset.y, 1.0f / span, span);
+        LOCALPARAMF(clouddomeparams, domecoefficient, 0.0f, 0.0f, 0.0f);
         LOCALPARAMF(cloudraymarch, cloudraymarchdepth * cell, float(cloudraymarchsteps), float(cloudsunmarchsteps), cloudselfshadow);
         LOCALPARAMF(atmosphereparams, planetradius, 1 + 100e3f * atmoheight / planetradius, earthairheight * atmoheight / planetradius,
                     earthhazeheight * atmoheight / planetradius);
