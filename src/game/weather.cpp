@@ -47,7 +47,7 @@ FVAR(weatherovercastlighttransition, 0.001f, 0.10f, 0.5f);
 
 FVAR(weatherprecipitationradius, 16.0f, 512.0f, 1024.0f);
 FVAR(weatherprecipitationspawnheight, 16.0f, 256.0f, 512.0f);
-FVARP(weatherprecipitationcollisionradius, 0.0f, 64.0f, 512.0f);
+FVARP(weatherprecipitationcollisionradius, 0.0f, 256.0f, 512.0f);
 VARP(weatherprecipitationmaxspawn, 1, 64, 512);
 
 FVAR(weatherprecipitationwind, 0.0f, 5.0f, 500.0f);
@@ -274,7 +274,7 @@ namespace game
 
                 const bool collide = distance <= weatherprecipitationcollisionradius;
                 if(snow) particle_precipitation(PART_SNOW, origin, velocity, PARTICLE_LIFE * 2, 0xFFFFFF, weatherprecipitationsnowsize, 50, collide);
-                else particle_precipitation(PART_RAIN, origin, velocity, PARTICLE_LIFE, 0xB8D8FF, weatherprecipitationrainsize, 0, collide);
+                else particle_precipitation(PART_RAIN, origin, velocity, PARTICLE_LIFE, 0x4062B6, weatherprecipitationrainsize, 0, collide);
 
             }
         }

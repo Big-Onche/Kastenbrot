@@ -121,6 +121,8 @@ enum
     PT_NOLAYER   = 1<<22,
     PT_COLLIDE   = 1<<23,
     PT_HUDTRACK  = 1<<24,
+    PT_GROW      = 1<<25,
+    PT_RAIN      = 1<<26,
     PT_FLIP      = PT_HFLIP | PT_VFLIP | PT_ROT
 };
 
@@ -132,7 +134,7 @@ struct particle
     int gravity, fade, millis;
     bvec color;
     uchar flags;
-    float size;
+    float size, grow;
     union
     {
         const char *text;
@@ -145,6 +147,8 @@ struct particle
         };
     };
 };
+
+static void addrainsplash(const particle &p, const vec &position);
 
 struct partvert
 {
@@ -234,7 +238,11 @@ struct partrenderer
                         blend = 0;
                     }
                 }
-                else blend = 0;
+                else
+                {
+                    if(type&PT_RAIN) addrainsplash(*p, vec(o.x, o.y, p->val));
+                    blend = 0;
+                }
             }
         }
         // HUD particles store both their origin and velocity in view-model
@@ -252,6 +260,7 @@ struct partrenderer
         if(type&PT_TRACK) concatstring(info, "t,");
         if(type&PT_FLIP) concatstring(info, "f,");
         if(type&PT_COLLIDE) concatstring(info, "c,");
+        if(type&PT_GROW) concatstring(info, "g,");
         int len = strlen(info);
         info[len-1] = info[len-1] == ',' ? ')' : '\0';
         if(texname)
@@ -783,8 +792,14 @@ struct varenderer : partrenderer
         else if(type&PT_MOD) SETMODCOLOR;
         else loopi(4) vs[i].color.a = blend;
 
-        if(type&PT_ROT) genrotpos<T>(o, d, p->size, ts, p->gravity, vs, (p->flags>>2)&0x1F);
-        else genpos<T>(o, d, p->size, ts, p->gravity, vs);
+        float size = p->size;
+        if(type&PT_GROW && p->fade > 5)
+        {
+            const float progress = clamp(ts / float(p->fade), 0.0f, 1.0f);
+            size *= 1.0f + (p->grow / 100.0f - 1.0f) * progress;
+        }
+        if(type&PT_ROT) genrotpos<T>(o, d, size, ts, p->gravity, vs, (p->flags>>2)&0x1F);
+        else genpos<T>(o, d, size, ts, p->gravity, vs);
     }
 
     void genverts()
@@ -1050,7 +1065,8 @@ static partrenderer *parts[] =
     new quadrenderer("media/particle/spark.png", PT_PART|PT_FLIP|PT_BRIGHT),                   // sparks
     new quadrenderer("media/particle/base.png",  PT_PART|PT_FLIP|PT_BRIGHT),                   // edit mode entities
     new quadrenderer("media/particle/snow.png", PT_PART|PT_FLIP|PT_RND4|PT_COLLIDE, STAIN_SNOW), // colliding weather snow
-    new verticaltrailrenderer("media/particle/rain.png", PT_VERTICAL_TRAIL|PT_RND4|PT_LERP|PT_COLLIDE), // colliding vertical rain
+    new verticaltrailrenderer("<mad:0,1>media/particle/rain.png", PT_VERTICAL_TRAIL|PT_RND4|PT_LERP|PT_COLLIDE|PT_RAIN), // colliding vertical rain
+    new quadrenderer("<mad:0,1>media/particle/splash.png", PT_PART|PT_FLIP|PT_RND4|PT_LERP|PT_GROW),    // growing rain splash
     new quadrenderer("media/particle/rail_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK),  // rail muzzle flash
     new quadrenderer("media/particle/pulse_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK), // pulse muzzle flash
     &texts,                                                                                    // text
@@ -1211,17 +1227,28 @@ void renderparticles(int layer)
 
 static int addedparticles = 0;
 
-static inline particle *newparticle(const vec &o, const vec &d, int fade, int type, int color, float size, int gravity = 0)
+static inline particle *newparticle(const vec &o, const vec &d, int fade, int type, int color, float size, int gravity = 0, float grow = 100.0f)
 {
     static particle dummy;
     if(seedemitter)
     {
         parts[type]->seedemitter(*seedemitter, o, d, fade, size, gravity);
+        dummy.grow = grow;
         return &dummy;
     }
     if(fade + emitoffset < 0) return &dummy;
     addedparticles++;
-    return parts[type]->addpart(o, d, fade, color, size, gravity);
+    particle *p = parts[type]->addpart(o, d, fade, color, size, gravity);
+    p->grow = grow;
+    return p;
+}
+
+static void addrainsplash(const particle &p, const vec &position)
+{
+    const int color = (int(p.color.r) << 16) | (int(p.color.g) << 8) | int(p.color.b);
+    vec origin(position);
+    origin.z += 0.25f * 1.5f;
+    newparticle(origin, vec(0, 0, 1), 250, PART_SPLASH, color, 1.0f, 0, 300);
 }
 
 VARP(maxparticledistance, 256, 1024, 4096);
