@@ -4885,7 +4885,7 @@ FVAR(refractdepth, 1e-3f, 16, 1e3f);
 
 int transparentlayer = 0;
 
-void rendertransparent(bool liquidlast)
+void rendertransparent(bool liquidlast, bool cloudsbeforeliquid)
 {
     GLOBALPARAMF(underwaterfog, liquidlast ? 1.0f : 0.0f);
 
@@ -4895,6 +4895,7 @@ void rendertransparent(bool liquidlast)
     if(!hasalphavas && !hasmats && !hasmodels)
     {
         if(!editmode) renderparticles();
+        if(cloudsbeforeliquid) renderclouds();
         return;
     }
 
@@ -4958,6 +4959,8 @@ void rendertransparent(bool liquidlast)
         // Above a liquid, its surface is normally behind nearby transparent geometry. Below it, the surface is in front of geometry seen through
         // the liquid and must render last so its depth does not reject that geometry before the surface can composite over it.
         int layer = liquidlast ? (renderlayer + 1) % 4 : renderlayer;
+        // Underwater, clouds must resolve after the other transparent layers but before the final liquid surface writes its depth.
+        if(cloudsbeforeliquid && layer == 0) renderclouds();
         switch(layer)
         {
         case 0:

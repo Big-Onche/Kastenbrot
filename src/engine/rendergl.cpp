@@ -2584,12 +2584,13 @@ void gl_drawview()
 
     {
         ZoneScopedN("Render/Transparency");
-        rendertransparent(fogmat != MAT_AIR);
+        rendertransparent(fogmat != MAT_AIR, fogmat != MAT_AIR);
         GLERROR;
     }
 
     // Translucent clouds resolve against the scene color and depth. Render them after alpha geometry so clouds in front attenuate that geometry,
-    // while alpha geometry in front remains protected by its depth.
+    // while alpha geometry in front remains protected by its depth. Underwater, rendertransparent() inserts them before the final liquid surface.
+    if(fogmat == MAT_AIR)
     {
         ZoneScopedN("Render/Clouds");
         renderclouds();

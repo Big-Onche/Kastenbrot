@@ -356,7 +356,7 @@ extern void shadesky();
 extern void shadegbuffer();
 extern void shademinimap(const vec &color = vec(-1, -1, -1));
 extern void shademodelpreview(int x, int y, int w, int h, bool background = true, bool scissor = false);
-extern void rendertransparent(bool liquidlast = false);
+extern void rendertransparent(bool liquidlast = false, bool cloudsbeforeliquid = false);
 extern void renderao();
 extern void loadhdrshaders(int aa = AA_UNUSED);
 extern void processhdr(GLuint outfbo = 0, int aa = AA_UNUSED);
