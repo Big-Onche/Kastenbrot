@@ -2640,6 +2640,12 @@ void gl_drawview()
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
 
+    {
+        ZoneScopedN("Render/Inside cloud fog");
+        rendercloudfog();
+        GLERROR;
+    }
+
     if(fogoverlay && fogmat != MAT_AIR)
     {
         ZoneScopedN("Render/Fog overlay");

@@ -812,6 +812,7 @@ extern void cleanupgrass();
 // cloud
 extern void updateclouds();
 extern void renderclouds();
+extern void rendercloudfog();
 extern void rendercloudshadows(int split);
 extern void cleanupclouds();
 

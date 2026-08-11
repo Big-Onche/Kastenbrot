@@ -83,6 +83,12 @@ FVARP(cloudscatterblue, 0.0f, 1.5f, 4.0f);
 // opacity
 FVARP(cloudalpha, 0.0f, 0.6f, 1.0f);
 
+// cheap depth fog while the camera occupies a cloud cell
+VAR(cloudinsidefog, 0, 1, 1);
+FVAR(cloudinsidefogdistance, 16.0f, 96.0f, 2048.0f);
+FVAR(cloudinsidefogopacity, 0.0f, 0.92f, 1.0f);
+FVAR(cloudinsidefogfade, 0.0f, 6.0f, 256.0f);
+
 // post blur
 VARP(cloudpostblur, 0, 0, 1);
 FVARP(cloudrenderscale, 0.25f, 1.0f, 1.0f);
@@ -128,6 +134,7 @@ namespace
     struct cloudlayer
     {
         vector<cloudface> faces;
+        vector<uchar> occupancy;
         GLuint vbo, ebo, masktex;
         int numverts, originx, originy, size, centerx, centery, settingsversion, weatherversion;
         bool built;
@@ -171,6 +178,8 @@ namespace
     static GLuint cloudscenefbo = 0, cloudscenetex = 0;
     static int cloudscenew = 0, cloudsceneh = 0;
     static float cloudscreenx = 0.0f, cloudscreeny = 0.0f, cloudscreenw = 1.0f, cloudscreenh = 1.0f, cloudrenderalpha = 1.0f;
+
+    static float cloudinsidepenetration();
 
     static uint mixhash(uint value)
     {
@@ -437,6 +446,7 @@ namespace
         layer.vbo = layer.ebo = 0;
         layer.masktex = 0;
         layer.faces.shrink(0);
+        layer.occupancy.shrink(0);
         layer.numverts = 0;
         layer.size = 0;
         layer.built = false;
@@ -470,10 +480,10 @@ namespace
         meshcloudlayer(mask, verts);
         ASSERT(verts.length() % 6 == 0);
 
-        vector<uchar> occupancy;
-        occupancy.growbuf(size * size);
+        layer.occupancy.shrink(0);
+        layer.occupancy.growbuf(size * size);
         for(int y = 0; y < size; ++y) for(int x = 0; x < size; ++x)
-            occupancy.add(mask.get(x, y) != CLOUD_EMPTY ? 255 : 0);
+            layer.occupancy.add(mask.get(x, y) != CLOUD_EMPTY ? 255 : 0);
 
         GLint oldactive = GL_TEXTURE0, oldtex = 0, oldunpack = 4;
         glGetIntegerv(GL_ACTIVE_TEXTURE, &oldactive);
@@ -488,7 +498,7 @@ namespace
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, hasTRG ? GL_R8 : GL_LUMINANCE8, size, size, 0, hasTRG ? GL_RED : GL_LUMINANCE,
-                     GL_UNSIGNED_BYTE, occupancy.getbuf());
+                     GL_UNSIGNED_BYTE, layer.occupancy.getbuf());
         glPixelStorei(GL_UNPACK_ALIGNMENT, oldunpack);
         glBindTexture(GL_TEXTURE_2D, GLuint(oldtex));
         glActiveTexture_(GLenum(oldactive));
@@ -619,7 +629,7 @@ namespace
         LOCALPARAM(clouddaytint, clouddaycolor.tocolor());
         LOCALPARAM(cloudsunsettint, cloudsunsetcolor.tocolor());
         LOCALPARAM(cloudnighttint, cloudnightcolor.tocolor());
-        LOCALPARAMF(cloudlighting, cloudambient, cloudsunlight, cloudundersidedarkness, 0.0f);
+        LOCALPARAMF(cloudlighting, cloudambient, cloudsunlight, cloudundersidedarkness, cloudinsidepenetration() >= 0.0f ? 1.0f : 0.0f);
         LOCALPARAMF(cloudappearance, cloudlightwrap, cloudfacecontrast, cloudrounding, cloudrimlight);
         LOCALPARAMF(cloudgeometry, float(cloudbaseheight), float(cloudbaseheight + cloudheight), 1.0f / max(float(cloudheight), 1.0f), cell);
         LOCALPARAMF(cloudvolume, offset.x, offset.y, 1.0f / span, span);
@@ -802,6 +812,43 @@ namespace
         gle::attribf(-1.0f,  1.0f);
         gle::attribf( 1.0f,  1.0f);
         gle::end();
+    }
+
+    static bool cloudcelloccupied(const cloudlayer &layer, int x, int y)
+    {
+        return x >= 0 && y >= 0 && x < layer.size && y < layer.size && layer.occupancy[y * layer.size + x] != 0;
+    }
+
+    static float cloudinsidepenetration()
+    {
+        if(!clouds || !camera1 || !cloudstate.built || cloudstate.occupancy.empty()) return -1.0f;
+
+        const float z0 = float(cloudbaseheight), z1 = z0 + cloudheight;
+        if(camera1->o.z <= z0 || camera1->o.z >= z1) return -1.0f;
+
+        const float cell = max(float(cloudcellsize), 1.0f);
+        const vec offset = cloudrenderoffset(cloudstate);
+        const float gridx = (camera1->o.x - offset.x) / cell, gridy = (camera1->o.y - offset.y) / cell;
+        const int x = int(floorf(gridx)), y = int(floorf(gridy));
+        if(!cloudcelloccupied(cloudstate, x, y)) return -1.0f;
+
+        float surfacedistance = min(camera1->o.z - z0, z1 - camera1->o.z);
+        const float localx = (gridx - x) * cell, localy = (gridy - y) * cell;
+        if(!cloudcelloccupied(cloudstate, x - 1, y)) surfacedistance = min(surfacedistance, localx);
+        if(!cloudcelloccupied(cloudstate, x + 1, y)) surfacedistance = min(surfacedistance, cell - localx);
+        if(!cloudcelloccupied(cloudstate, x, y - 1)) surfacedistance = min(surfacedistance, localy);
+        if(!cloudcelloccupied(cloudstate, x, y + 1)) surfacedistance = min(surfacedistance, cell - localy);
+
+        return surfacedistance;
+    }
+
+    static float cloudinsideamount()
+    {
+        if(!cloudinsidefog || cloudinsidefogopacity <= 0.0f) return 0.0f;
+
+        const float penetration = cloudinsidepenetration();
+        if(penetration < 0.0f) return 0.0f;
+        return cloudinsidefogfade > 0.0f ? clamp(penetration / cloudinsidefogfade, 0.0f, 1.0f) : 1.0f;
     }
 
 
@@ -1152,6 +1199,8 @@ void renderclouds()
 {
     if(!clouds || !camera1) return;
 
+    const bool camerainside = cloudinsidepenetration() >= 0.0f;
+
     GLint oldfb = 0;
     GLint oldviewport[4] = { 0, 0, screenw, screenh };
     GLint olddepthfunc = GL_LESS;
@@ -1208,7 +1257,8 @@ void renderclouds()
         glDisable(GL_POLYGON_OFFSET_FILL);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glEnable(GL_DEPTH_TEST);
-        glEnable(GL_CULL_FACE);
+        if(camerainside) glDisable(GL_CULL_FACE);
+        else glEnable(GL_CULL_FACE);
         glCullFace(GL_BACK);
         glFrontFace(GL_CW);
 
@@ -1237,7 +1287,8 @@ void renderclouds()
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             glEnable(GL_DEPTH_TEST);
-            glEnable(GL_CULL_FACE);
+            if(camerainside) glDisable(GL_CULL_FACE);
+            else glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
             glFrontFace(GL_CW);
 
@@ -1263,7 +1314,8 @@ void renderclouds()
             glBindFramebuffer_(GL_FRAMEBUFFER, GLuint(oldfb));
             glViewport(oldviewport[0], oldviewport[1], oldviewport[2], oldviewport[3]);
             glEnable(GL_DEPTH_TEST);
-            glEnable(GL_CULL_FACE);
+            if(camerainside) glDisable(GL_CULL_FACE);
+            else glEnable(GL_CULL_FACE);
             glCullFace(GL_BACK);
             glFrontFace(GL_CW);
             renderedverts = drawcloudsurface(GL_LEQUAL);
@@ -1294,6 +1346,40 @@ void renderclouds()
     if(oldpolyoffset) glEnable(GL_POLYGON_OFFSET_FILL); else glDisable(GL_POLYGON_OFFSET_FILL);
 
     if(renderedverts) xtraverts += renderedverts;
+}
+
+void rendercloudfog()
+{
+    const float inside = cloudinsideamount();
+    if(inside <= 0.0f) return;
+
+    Shader *shader = lookupshaderbyname("cloudfog");
+    if(!shader) return;
+
+    const float day = clamp((sunlightscale - 0.08f) / 0.72f, 0.0f, 1.0f);
+    const float sunset = 4.0f * day * (1.0f - day);
+    vec fogcolor(cloudnightcolor.tocolor());
+    fogcolor.lerp(clouddaycolor.tocolor(), day).lerp(cloudsunsetcolor.tocolor(), sunset * 0.35f).mul(ldrscale);
+
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    shader->set();
+    LOCALPARAM(camera, camera1->o);
+    LOCALPARAM(cloudfogcolor, fogcolor);
+    LOCALPARAMF(cloudfogparams, 1.0f / max(cloudinsidefogdistance, 1.0f), cloudinsidefogopacity * inside, 0.0f, 0.0f);
+
+    glActiveTexture_(GL_TEXTURE3);
+    bindgdepth();
+    glActiveTexture_(GL_TEXTURE0);
+    drawcloudscreenquad();
+
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
 }
 
 void rendercloudshadows(int split)
