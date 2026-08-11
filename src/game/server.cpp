@@ -1776,6 +1776,13 @@ namespace server
         return float(top);
     }
 
+    static bool servernaturalwaterat(const vec &position)
+    {
+        const int surface = serverbasesurface(int(floorf(position.x)), int(floorf(position.y))),
+                  watertop = SERVER_WORLD_GROUND_HEIGHT + serverworldgenerator->settings.sealevel * SERVER_WORLD_BLOCK_SIZE;
+        return surface < watertop && position.z >= surface && position.z < watertop;
+    }
+
     static float serversunlightintensity()
     {
         static const float hours[] = { 0, 5, 6, 7, 8, 16, 17, 18, 19, 24 };
@@ -2152,6 +2159,7 @@ namespace server
         position.z = servergroundheight(position.x, position.y) + 28.0f;
         if(position.z < 28.0f || position.z >= SERVER_WORLD_MAP_SIZE || position.squaredist(owner->o) > simulationdistance * simulationdistance ||
            !servernpcclearance(position)) return;
+        if(servernaturalwaterat(vec(position).subz(28.0f))) return;
         const int light = serverlightlevel(position);
         if(light > 3) return;
 

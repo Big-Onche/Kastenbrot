@@ -1432,6 +1432,7 @@ namespace game
         if(grounddistance < 0 || grounddistance >= probe.z) return;
         position.z = probe.z - grounddistance + 28.1f;
         if(position.squaredist(player1->o) > simulationdistance * simulationdistance) return;
+        if((lookupmaterial(vec(position).subz(STANDING_HEIGHT))&MATF_VOLUME) == MAT_WATER) return;
 
         int light = getworldlightlevel(position);
         const float heldradius = getworlditemlightradius(selectedcreativeblock());
