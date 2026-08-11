@@ -30,6 +30,10 @@ namespace game
 extern bvec ambient, sunlight;
 extern float ambientscale, sunlightscale;
 extern vec sunlightdir;
+extern int atmo;
+extern float atmoplanetsize, atmoheight, atmobright, atmosunlightscale, atmosundisksize, atmosundiskcorona, atmohaze, atmodensity, atmoozone,
+             hdrgamma;
+extern bvec atmosunlight;
 
 // general
 VARP(clouds, 0, 1, 1);
@@ -60,10 +64,10 @@ FVARP(cloudwindangle, 0.0f, 18.0f, 360.0f);
 
 // lighting: rounded side shading keeps the voxel silhouette while avoiding flat, uniformly lit slabs
 // cloudambient and cloudsunlight are the sky-light and sun-light strength controls used by the raymarched lighting model
-FVARP(cloudambient, 0.0f, 1.0f, 4.0f);
+FVARP(cloudambient, 0.0f, 0.5f, 4.0f);
 FVARP(cloudsunlight, 0.0f, 0.92f, 4.0f);
 FVARP(cloudlightwrap, 0.0f, 0.55f, 1.0f);
-FVARP(cloudfacecontrast, 0.0f, 0.46f, 1.0f);
+FVARP(cloudfacecontrast, 0.0f, 0.15f, 1.0f);
 FVARP(cloudrounding, 0.0f, 0.72f, 1.0f);
 FVARP(cloudrimlight, 0.0f, 0.16f, 1.0f);
 FVARP(cloudundersidedarkness, 0.0f, 0.17f, 0.75f);
@@ -74,10 +78,9 @@ VARP(cloudraymarchsteps, 1, 8, 32);
 VARP(cloudsunmarchsteps, 2, 16, 16);
 FVARP(cloudselfshadow, 0.0f, 0.5f, 1.0f);
 
-// additional cloud-specific atmospheric convergence toward the current scene fog color
-FVARP(cloudatmosfadestart, 0.0f, 8192.0f, 32768.0f);
-FVARP(cloudatmosfadeend, 512.0f, 16384.0f, 65536.0f);
-FVARP(cloudatmoshorizon, 0.0f, 0.35f, 1.0f);
+// finite-distance atmospheric extinction and in-scattering; driven by the same physical controls as the sky atmosphere
+FVARP(cloudscatterstrength, 0.0f, 2.0f, 4.0f);
+FVARP(cloudscatterblue, 0.0f, 1.5f, 4.0f);
 
 // opacity
 FVARP(cloudalpha, 0.0f, 1.0f, 1.0f);
@@ -91,7 +94,7 @@ FVARP(cloudblursigma, 0.25f, 0.85f, 4.0f);
 // dedicated projected cloud shadows
 VARP(cloudshadows, 0, 1, 1);
 VARP(cloudshadowdistance, 0, 4096, 16384);
-FVARP(cloudshadowalpha, 0.0f, 0.45f, 1.0f);
+FVARP(cloudshadowalpha, 0.0f, 0.32f, 1.0f);
 VARP(cloudshadowmapsize, 64, 1024, 2048);
 FVARP(cloudshadowsoftness, 0.0f, 1.25f, 8.0f);
 
@@ -598,8 +601,20 @@ namespace
         const float sunset = 4.0f * day * (1.0f - day);
         const float cell = max(float(cloudcellsize), 1.0f);
         const float span = max(cloudstate.size * cell, 1.0f);
-        const float fadeend = max(cloudatmosfadeend, cloudatmosfadestart + 1.0f);
         const vec offset = cloudrenderoffset(cloudstate);
+
+        const float earthradius = 6371e3f, earthairheight = 8.4e3f, earthhazeheight = 1.25e3f;
+        const float planetradius = earthradius * atmoplanetsize;
+        const float gm = max(0.95f - 0.2f * atmohaze, 0.65f);
+        const float miescale = pow((1 - gm) * (1 - gm) / (4 * M_PI), -2.0f / 3.0f);
+        const float mieangle = cosf(0.5f * atmosundisksize * (1 - atmosundiskcorona) * RAD);
+        static const vec lambda(680e-9f, 550e-9f, 450e-9f), k(0.686f, 0.678f, 0.666f), ozone(3.426f, 8.298f, 0.356f);
+        const vec betar = vec(lambda).square().square().recip().mul(1.241e-30f / M_LN2 * atmodensity);
+        const vec betam = vec(lambda).recip().square().mul(k).mul(9.072e-17f / M_LN2 * atmohaze);
+        const vec betao = vec(ozone).mul(1.5e-7f / M_LN2 * atmoozone);
+        vec atmosuncolor = !atmosunlight.iszero() ? atmosunlight.tocolor() : vec(1.0f, 0.98f, 0.92f);
+        atmosuncolor.mul(atmosunlightscale);
+        const vec atmosunscale = vec(atmosuncolor).mul(ldrscale).pow(hdrgamma).mul(atmobright * 16);
 
         LOCALPARAM(cloudsundir, sunlightdir);
         LOCALPARAM(cloudsuncolor, vec(sunlight.tocolor()).mul(sunlightscale));
@@ -613,7 +628,15 @@ namespace
         LOCALPARAMF(cloudgeometry, float(cloudbaseheight), float(cloudbaseheight + cloudheight), 1.0f / max(float(cloudheight), 1.0f), cell);
         LOCALPARAMF(cloudvolume, offset.x, offset.y, 1.0f / span, span);
         LOCALPARAMF(cloudraymarch, cloudraymarchdepth * cell, float(cloudraymarchsteps), float(cloudsunmarchsteps), cloudselfshadow);
-        LOCALPARAMF(cloudatmosphere, cloudatmosfadestart, fadeend, cloudatmoshorizon, 0.15f);
+        LOCALPARAMF(atmosphereparams, planetradius, 1 + 100e3f * atmoheight / planetradius, earthairheight * atmoheight / planetradius,
+                    earthhazeheight * atmoheight / planetradius);
+        LOCALPARAMF(ozoneparams, 25e3f * atmoheight / planetradius, 15e3f * atmoheight / planetradius);
+        LOCALPARAMF(mieparams, miescale * (1 + gm * gm), miescale * -2 * gm, mieangle);
+        LOCALPARAM(betarayleigh, betar);
+        LOCALPARAM(betamie, betam);
+        LOCALPARAM(betaozone, betao);
+        LOCALPARAM(atmospheresunlight, atmosunscale);
+        LOCALPARAMF(cloudscatterparams, atmo ? cloudscatterstrength : 0.0f, cloudscatterblue, 0.0f, 0.0f);
         LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudalpha);
     }
 
@@ -651,8 +674,14 @@ namespace
 
         glDepthFunc(depthfunc);
 
-        // Optical thickness and atmospheric extinction make alpha vary per fragment even when cloudalpha is one. Keep every cloud on the sorted
-        // transparency path so the fixed-cost interior shading never exposes generation-order triangles.
+        if(cloudalpha >= 0.999f)
+        {
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            return drawcloudgeometry();
+        }
+
+        // Alpha blending is order-dependent. Sort translucent voxel faces back-to-front and preserve the opaque scene depth.
         glDepthMask(GL_FALSE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
