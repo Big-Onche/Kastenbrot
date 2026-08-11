@@ -83,7 +83,7 @@ FVARP(cloudscatterstrength, 0.0f, 2.0f, 4.0f);
 FVARP(cloudscatterblue, 0.0f, 1.5f, 4.0f);
 
 // opacity
-FVARP(cloudalpha, 0.0f, 1.0f, 1.0f);
+FVARP(cloudalpha, 0.0f, 0.65f, 1.0f);
 
 // post blur
 VARP(cloudpostblur, 0, 0, 1);
@@ -170,6 +170,9 @@ namespace
     static int noiseseed = INT_MIN, currentsettingsversion = 0, currentweatherversion = 0, lastcloudframe = -1;
     static uint currentsettingshash = 0;
     static vec cloudwind(0, 0, 0), weatherwind(0, 0, 0), cloudworldorigin(0, 0, 0);
+    static GLuint cloudscenefbo = 0, cloudscenetex = 0;
+    static int cloudscenew = 0, cloudsceneh = 0;
+    static float cloudscreenx = 0.0f, cloudscreeny = 0.0f, cloudscreenw = 1.0f, cloudscreenh = 1.0f, cloudrenderalpha = 1.0f;
 
     static uint mixhash(uint value)
     {
@@ -637,7 +640,8 @@ namespace
         LOCALPARAM(betaozone, betao);
         LOCALPARAM(atmospheresunlight, atmosunscale);
         LOCALPARAMF(cloudscatterparams, atmo ? cloudscatterstrength : 0.0f, cloudscatterblue, 0.0f, 0.0f);
-        LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudalpha);
+        LOCALPARAMF(cloudscreenparams, cloudscreenx, cloudscreeny, 1.0f / max(cloudscreenw, 1.0f), 1.0f / max(cloudscreenh, 1.0f));
+        LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudrenderalpha);
     }
 
     static int drawcloudgeometry(bool sorted = false)
@@ -652,6 +656,9 @@ namespace
 
         if(sorted) updatecloudfaceorder(cloudstate);
 
+        glActiveTexture_(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, cloudscenetex);
+        glActiveTexture_(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, cloudstate.masktex);
         setclouduniforms(shader);
         enablecloudvertexformat(cloudstate);
@@ -674,18 +681,59 @@ namespace
 
         glDepthFunc(depthfunc);
 
-        if(cloudalpha >= 0.999f)
-        {
-            glDepthMask(GL_TRUE);
-            glDisable(GL_BLEND);
-            return drawcloudgeometry();
-        }
+        // cloudalpha is resolved in the shader against the captured scene. Geometry itself remains opaque and writes depth normally.
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        return drawcloudgeometry();
+    }
 
-        // Alpha blending is order-dependent. Sort translucent voxel faces back-to-front and preserve the opaque scene depth.
-        glDepthMask(GL_FALSE);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        return drawcloudgeometry(true);
+    static void cleanupcloudscene()
+    {
+        if(cloudscenefbo) glDeleteFramebuffers_(1, &cloudscenefbo);
+        if(cloudscenetex) glDeleteTextures(1, &cloudscenetex);
+        cloudscenefbo = cloudscenetex = 0;
+        cloudscenew = cloudsceneh = 0;
+    }
+
+    static bool setupcloudscene(int w, int h)
+    {
+        w = max(w, 1);
+        h = max(h, 1);
+        if(cloudscenefbo && cloudscenetex && cloudscenew == w && cloudsceneh == h) return true;
+
+        cleanupcloudscene();
+        cloudscenew = w;
+        cloudsceneh = h;
+
+        glGenTextures(1, &cloudscenetex);
+        glBindTexture(GL_TEXTURE_2D, cloudscenetex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, NULL);
+
+        glGenFramebuffers_(1, &cloudscenefbo);
+        glBindFramebuffer_(GL_FRAMEBUFFER, cloudscenefbo);
+        glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, cloudscenetex, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        const bool complete = glCheckFramebufferStatus_(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer_(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        if(!complete) cleanupcloudscene();
+        return complete;
+    }
+
+    static bool capturecloudscene(GLuint sourcefb, const GLint viewport[4])
+    {
+        if(!setupcloudscene(viewport[2], viewport[3])) return false;
+
+        glBindFramebuffer_(GL_READ_FRAMEBUFFER, sourcefb);
+        glBindFramebuffer_(GL_DRAW_FRAMEBUFFER, cloudscenefbo);
+        glBlitFramebuffer_(viewport[0], viewport[1], viewport[0] + viewport[2], viewport[1] + viewport[3], 0, 0, viewport[2], viewport[3],
+                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer_(GL_FRAMEBUFFER, sourcefb);
+        return true;
     }
 
     // optional post-process target
@@ -1109,7 +1157,7 @@ void renderclouds()
     GLint oldviewport[4] = { 0, 0, screenw, screenh };
     GLint olddepthfunc = GL_LESS;
     GLint oldsrc = GL_ONE, olddst = GL_ZERO;
-    GLint oldcullmode = GL_BACK, oldfrontface = GL_CCW, oldactivetex = GL_TEXTURE0, oldtex2d = 0;
+    GLint oldcullmode = GL_BACK, oldfrontface = GL_CCW, oldactivetex = GL_TEXTURE0, oldtex2d0 = 0, oldtex2d1 = 0;
     GLfloat oldclear[4] = { 0, 0, 0, 0 };
     GLfloat oldcleardepth = 1.0f;
     GLboolean olddepthmask = GL_TRUE;
@@ -1136,14 +1184,24 @@ void renderclouds()
     glGetFloatv(GL_DEPTH_CLEAR_VALUE, &oldcleardepth);
 
     glActiveTexture_(GL_TEXTURE0);
-    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex2d);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex2d0);
+    glActiveTexture_(GL_TEXTURE1);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex2d1);
+    glActiveTexture_(GL_TEXTURE0);
     int renderedverts = 0;
 
     // project the low-resolution cloud shadow mask onto the already-lit opaque scene
     drawcloudshadowoverlay(GLuint(oldfb), oldviewport);
 
+    cloudrenderalpha = cloudalpha;
+    if(cloudalpha > 0.0f && cloudalpha < 1.0f && !capturecloudscene(GLuint(oldfb), oldviewport)) cloudrenderalpha = 1.0f;
+
     if(!cloudpostblur || cloudblurradius <= 0)
     {
+        cloudscreenx = float(oldviewport[0]);
+        cloudscreeny = float(oldviewport[1]);
+        cloudscreenw = float(oldviewport[2]);
+        cloudscreenh = float(oldviewport[3]);
         glBindFramebuffer_(GL_FRAMEBUFFER, GLuint(oldfb));
         glViewport(oldviewport[0], oldviewport[1], oldviewport[2], oldviewport[3]);
         glDisable(GL_SCISSOR_TEST);
@@ -1164,6 +1222,9 @@ void renderclouds()
 
         if(setupcloudtarget(rtw, rth))
         {
+            cloudscreenx = cloudscreeny = 0.0f;
+            cloudscreenw = float(rtw);
+            cloudscreenh = float(rth);
             glBindFramebuffer_(GL_FRAMEBUFFER, cloudfbo[0]);
             glDrawBuffer(GL_COLOR_ATTACHMENT0);
             glViewport(0, 0, rtw, rth);
@@ -1196,6 +1257,10 @@ void renderclouds()
         }
         else
         {
+            cloudscreenx = float(oldviewport[0]);
+            cloudscreeny = float(oldviewport[1]);
+            cloudscreenw = float(oldviewport[2]);
+            cloudscreenh = float(oldviewport[3]);
             glBindFramebuffer_(GL_FRAMEBUFFER, GLuint(oldfb));
             glViewport(oldviewport[0], oldviewport[1], oldviewport[2], oldviewport[3]);
             glEnable(GL_DEPTH_TEST);
@@ -1217,7 +1282,9 @@ void renderclouds()
     glFrontFace(GLenum(oldfrontface));
     glBlendFunc(GLenum(oldsrc), GLenum(olddst));
     glActiveTexture_(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, GLuint(oldtex2d));
+    glBindTexture(GL_TEXTURE_2D, GLuint(oldtex2d0));
+    glActiveTexture_(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, GLuint(oldtex2d1));
     glActiveTexture_(GLenum(oldactivetex));
 
     if(oldblend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
@@ -1239,6 +1306,7 @@ void rendercloudshadows(int split)
 void cleanupclouds()
 {
     clearcloudlayer(cloudstate);
+    cleanupcloudscene();
     cleanupcloudtarget();
     cleanupcloudshadowtarget();
     noiseseed = INT_MIN;
