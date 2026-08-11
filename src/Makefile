@@ -479,7 +479,7 @@ game/entities.o: shared/glemu.h shared/iengine.h shared/igame.h
 game/environment.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
 game/environment.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/environment.o: shared/iengine.h shared/igame.h
-game/game.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
+game/game.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
 game/game.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/game.o: shared/iengine.h shared/igame.h
 game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h shared/geom.h

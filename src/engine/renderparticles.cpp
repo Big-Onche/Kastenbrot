@@ -1028,7 +1028,8 @@ static partrenderer *parts[] =
     &pulsebursts,                                                                              // pulse burst
     new quadrenderer("media/particle/spark.png", PT_PART|PT_FLIP|PT_BRIGHT),                   // sparks
     new quadrenderer("media/particle/base.png",  PT_PART|PT_FLIP|PT_BRIGHT),                   // edit mode entities
-    new quadrenderer("media/particle/snow.png", PT_PART|PT_FLIP|PT_RND4|PT_COLLIDE),           // colliding snow
+    new quadrenderer("media/particle/snow.png", PT_PART|PT_FLIP|PT_RND4|PT_COLLIDE, STAIN_SNOW), // colliding weather snow
+    new quadrenderer("media/particle/rain.png", PT_PART|PT_RND4|PT_LERP|PT_COLLIDE),          // colliding rain
     new quadrenderer("media/particle/rail_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK),  // rail muzzle flash
     new quadrenderer("media/particle/pulse_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK), // pulse muzzle flash
     &texts,                                                                                    // text
@@ -1264,6 +1265,23 @@ static void regularspray(int type, int color, int speed, int spread, int num, in
 bool canaddparticles()
 {
     return !minimized;
+}
+
+void particle_precipitation(int type, const vec &origin, const vec &velocity, int fade, int color, float size, int gravity, bool collide)
+{
+    if(!canaddparticles() || type < 0 || type >= int(sizeof(parts)/sizeof(parts[0]))) return;
+    // The generic particle integrator uses zero gravity to mean "stationary", so use a near-infinite divisor for constant-velocity precipitation.
+    const int movementgravity = gravity ? gravity : INT_MAX;
+    particle *part = newparticle(origin, velocity, fade, type, color, size, movementgravity);
+    if(!(parts[type]->type & PT_COLLIDE)) return;
+    if(!collide)
+    {
+        part->val = -1e16f;
+        return;
+    }
+
+    const float raydistance = parts[type]->stain >= 0 ? COLLIDERADIUS : max(origin.z, 0.0f);
+    part->val = origin.z - raycube(origin, vec(0, 0, -1), raydistance, RAY_CLIPMAT) + (parts[type]->stain >= 0 ? COLLIDEERROR : 0);
 }
 
 void particle_blockchips(int texture, const vec &p, const vec &normal, int num)
@@ -1560,11 +1578,10 @@ static void makeparticles(entity &e)
         case 7:  //lightning
         case 9:  //steam
         case 10: //water
-        case 13: //snow
         {
-            static const int typemap[]   = { PART_STREAK, -1, -1, PART_LIGHTNING, -1, PART_STEAM, PART_WATER, -1, -1, PART_SNOW };
-            static const float sizemap[] = { 0.28f, 0.0f, 0.0f, 1.0f, 0.0f, 2.4f, 0.60f, 0.0f, 0.0f, 0.5f };
-            static const int gravmap[] = { 0, 0, 0, 0, 0, -20, 2, 0, 0, 20 };
+            static const int typemap[]   = { PART_STREAK, -1, -1, PART_LIGHTNING, -1, PART_STEAM, PART_WATER };
+            static const float sizemap[] = { 0.28f, 0.0f, 0.0f, 1.0f, 0.0f, 2.4f, 0.60f };
+            static const int gravmap[] = { 0, 0, 0, 0, 0, -20, 2 };
             int type = typemap[e.attr1-4];
             float size = sizemap[e.attr1-4];
             int gravity = gravmap[e.attr1-4];
@@ -1589,6 +1606,8 @@ static void makeparticles(entity &e)
         case 12: // smoke plume <radius> <height> <rgb>
             regularflame(PART_SMOKE, e.o, float(e.attr2)/100.0f, float(e.attr3)/100.0f, colorfromattr(e.attr4), 1, 4.0f, 100.0f, 2000.0f, -20);
             break;
+        case 13: // obsolete legacy snow emitter
+            break;
         case 32: //lens flares - plain/sparkle/sun/sparklesun <red> <green> <blue>
         case 33:
         case 34:
@@ -1609,7 +1628,7 @@ bool printparticles(extentity &e, char *buf, int len)
 {
     switch(e.attr1)
     {
-        case 0: case 4: case 7: case 8: case 9: case 10: case 11: case 12: case 13:
+        case 0: case 4: case 7: case 8: case 9: case 10: case 11: case 12:
             nformatstring(buf, len, "%s %d %d %d 0x%.3hX %d", entities::entname(e.type), e.attr1, e.attr2, e.attr3, e.attr4, e.attr5);
             return true;
         case 3:

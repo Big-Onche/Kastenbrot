@@ -1,6 +1,7 @@
 #include "game.h"
 
 #ifndef STANDALONE
+#include "weather.h"
 extern int mainmenu;
 extern int initing;
 extern int simulationmaxdist;
@@ -3123,6 +3124,9 @@ namespace game
 
     void addparticles()
     {
+#ifndef STANDALONE
+        weather::addparticles();
+#endif
         addworldtorchparticles();
         heldtorchparticlemillis = -1;
         bool hudtorch = false;

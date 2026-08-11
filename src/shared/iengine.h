@@ -485,7 +485,7 @@ enum
     PART_LIGHTNING,
     PART_EXPLOSION, PART_PULSE_BURST,
     PART_SPARK, PART_EDIT,
-    PART_SNOW,
+    PART_SNOW, PART_RAIN,
     PART_RAIL_MUZZLE_FLASH, PART_PULSE_MUZZLE_FLASH,
     PART_TEXT,
     PART_METER, PART_METER_VS,
@@ -494,6 +494,7 @@ enum
 };
 
 extern bool canaddparticles();
+extern void particle_precipitation(int type, const vec &origin, const vec &velocity, int fade, int color, float size, int gravity, bool collide);
 extern void particle_blockchips(int texture, const vec &p, const vec &normal, int num = 1);
 extern void regular_particle_splash(int type, int num, int fade, const vec &p, int color = 0xFFFFFF, float size = 1.0f, int radius = 150, int gravity = 2, int delay = 0);
 extern void regular_particle_spray(int type, int num, int fade, const vec &p, const vec &direction, int color = 0xFFFFFF, float size = 1.0f, int speed = 100, int spread = 25, int gravity = 2, int delay = 0);
@@ -516,7 +517,8 @@ enum
     STAIN_PULSE_SCORCH,
     STAIN_RAIL_HOLE,
     STAIN_PULSE_GLOW,
-    STAIN_RAIL_GLOW
+    STAIN_RAIL_GLOW,
+    STAIN_SNOW
 };
 
 extern void addstain(int type, const vec &center, const vec &surface, float radius, const bvec &color = bvec(0xFF, 0xFF, 0xFF), int info = 0);
@@ -681,6 +683,7 @@ extern void startnetworkworld(int seed);
 extern bool getpreparedworldspawn(vec &position, float &yaw, float &pitch);
 extern void worldpositiontoabsolute(vec &position);
 extern void worldpositiontolocal(vec &position);
+extern float worldpositionheight(float z);
 extern void worldselectiontoabsolute(selinfo &selection);
 extern void worldselectiontolocal(selinfo &selection);
 extern bool worldselectionready(const selinfo &selection);

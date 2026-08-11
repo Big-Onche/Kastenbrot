@@ -1289,6 +1289,11 @@ void worldpositiontolocal(vec &position)
     position.y -= float(double(worldfirstchunky) * WORLD_CHUNK_SIZE);
 }
 
+float worldpositionheight(float z)
+{
+    return z / float(WORLD_BLOCK_SIZE) + WORLD_MIN_HEIGHT;
+}
+
 void worldselectiontoabsolute(selinfo &selection)
 {
     selection.o.x += worldfirstchunkx * WORLD_CHUNK_SIZE;

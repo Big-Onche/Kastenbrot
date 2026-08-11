@@ -767,7 +767,9 @@ struct stainrenderer
     }
 };
 
-enum { BREAK_STAIN = 5 };
+extern int weatherprecipitationsnowgroundtime, weatherprecipitationsnowgroundfade;
+
+enum { BREAK_STAIN = 6 };
 
 stainrenderer stains[] =
 {
@@ -776,6 +778,7 @@ stainrenderer stains[] =
     stainrenderer("<grey>media/particle/rail_hole.png", SF_ROTATE|SF_OVERBRIGHT),
     stainrenderer("<grey>media/particle/pulse_glow.png", SF_ROTATE|SF_GLOW|SF_SATURATE, 250, 1500, 250),
     stainrenderer("<grey>media/particle/rail_glow.png",  SF_ROTATE|SF_GLOW|SF_SATURATE, 100, 1100, 100),
+    stainrenderer("media/particle/snow.png", SF_RND4|SF_ROTATE, 0, 4000, 1500),
     stainrenderer("media/texture/terrain/destroy.png", SF_RND8|SF_GEOMETRY)
 };
 
@@ -874,6 +877,8 @@ VARNP(stains, showstains, 0, 1, 1);
 
 bool renderstains(int sbuf, bool gbuf, int layer)
 {
+    stains[STAIN_SNOW].timetolive = max(weatherprecipitationsnowgroundtime, 0);
+    stains[STAIN_SNOW].fadeouttime = max(weatherprecipitationsnowgroundfade, 1);
     bool rendered = false;
     loopi(sizeof(stains)/sizeof(stains[0]))
     {

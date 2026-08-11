@@ -10,6 +10,7 @@ namespace game
         int getsettingsversion();
         float samplecoverage(float x, float y);
         float samplecurrentovercast(float x, float y);
+        void addparticles();
     }
 }
 

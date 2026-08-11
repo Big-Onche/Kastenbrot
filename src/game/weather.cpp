@@ -12,23 +12,28 @@
 #undef RESTORE_WEATHER_SQRT3
 #endif
 
-// With the default cloud shape scale, weather systems are roughly thirty times
-// wider than a typical cloud feature.
-FVARP(weatherscale, 0.000001f, 0.00003f, 0.001f);
-FVARP(weatherwarpscale, 0.000001f, 0.000015f, 0.001f);
-FVARP(weatherwarpamplitude, 0.0f, 6000.0f, 50000.0f);
+// spawn rates of particles
+const float MAIN_RATE = 512.0f,
+            RAIN_RATE_MULT = 4.0f,
+            SNOW_RATE_MULT = 0.2f;
 
-// These normalized noise boundaries give about 20% clear, 55% fair, and 25%
-// overcast weather regions, favoring fair cumulus conditions.
-FVARP(weatherclearthreshold, 0.0f, 0.35f, 1.0f);
-FVARP(weatherfairthreshold, 0.0f, 0.50f, 1.0f);
-FVARP(weatherovercastthreshold, 0.0f, 0.625f, 1.0f);
-FVARP(weathertransitionwidth, 0.001f, 0.06f, 0.5f);
+VARP(weatherprecipitation, 0, 1, 1);
+
+// With the default cloud shape scale, weather systems are roughly thirty times wider than a typical cloud feature.
+FVAR(weatherscale, 0.000001f, 0.00003f, 0.001f);
+FVAR(weatherwarpscale, 0.000001f, 0.000015f, 0.001f);
+FVAR(weatherwarpamplitude, 0.0f, 6000.0f, 50000.0f);
+
+// Normalized noise boundaries give about 20% clear, 55% fair, and 25% overcast weather regions, favoring fair cumulus conditions.
+FVAR(weatherclearthreshold, 0.0f, 0.35f, 1.0f);
+FVAR(weatherfairthreshold, 0.0f, 0.50f, 1.0f);
+FVAR(weatherovercastthreshold, 0.0f, 0.625f, 1.0f);
+FVAR(weathertransitionwidth, 0.001f, 0.06f, 0.5f);
 
 // Coverage is the desired fraction of the local cloud-shape mask, not another density signal.
-FVARP(weatherfairmincoverage, 0.0f, 0.22f, 1.0f);
-FVARP(weatherfairmaxcoverage, 0.0f, 0.55f, 1.0f);
-FVARP(weatherovercastcoverage, 0.0f, 0.95f, 1.0f);
+FVAR(weatherfairmincoverage, 0.0f, 0.22f, 1.0f);
+FVAR(weatherfairmaxcoverage, 0.0f, 0.55f, 1.0f);
+FVAR(weatherovercastcoverage, 0.0f, 0.95f, 1.0f);
 
 // Overcast lighting is applied by game/environment.cpp after time-of-day lighting.
 FVAR(weatherovercastlightreduction, 0.0f, 0.5f, 1.0f);
@@ -37,7 +42,26 @@ FVAR(weatherovercastambientgray, 0.0f, 0.85f, 1.0f);
 FVAR(weatherovercastsunwhite, 0.0f, 0.90f, 1.0f);
 FVAR(weatherovercastlighttransition, 0.001f, 0.10f, 0.5f);
 
+FVAR(weatherprecipitationradius, 16.0f, 512.0f, 1024.0f);
+FVAR(weatherprecipitationspawnheight, 16.0f, 256.0f, 512.0f);
+FVARP(weatherprecipitationcollisionradius, 0.0f, 64.0f, 512.0f);
+VARP(weatherprecipitationmaxspawn, 1, 64, 512);
+
+FVAR(weatherprecipitationrainspeed, 50.0f, 900.0f, 2000.0f);
+FVAR(weatherprecipitationsnowspeed, 5.0f, 80.0f, 500.0f);
+FVAR(weatherprecipitationwind, 0.0f, 5.0f, 500.0f);
+FVAR(weatherprecipitationsnowdrift, 0.0f, 5.0f, 100.0f);
+FVAR(weatherprecipitationrainsize, 0.05f, 2.0f, 4.0f);
+FVAR(weatherprecipitationsnowsize, 0.05f, 1.25f, 4.0f);
+VAR(weatherprecipitationrainlife, 250, 2500, 10000);
+VAR(weatherprecipitationsnowlife, 500, 7000, 20000);
+FVAR(weatherprecipitationsnowblendheight, 1.0f, 20.0f, 100.0f);
+VAR(weatherprecipitationsnowgroundtime, 0, 1500, 30000);
+VAR(weatherprecipitationsnowgroundfade, 100, 4000, 30000);
+
 extern int cloudupdateinterval;
+extern int mainmenu;
+extern int worldsnowheight;
 extern float weatherwindspeed, cloudwindangle;
 
 namespace game
@@ -51,6 +75,7 @@ namespace game
             static FastNoiseLite weathernoise, weatherwarp;
             static int noiseseed = INT_MIN, settingsversion = 0;
             static uint currentsettingshash = 0;
+            static float rainbudget = 0.0f, snowbudget = 0.0f;
 
             static uint mixhash(uint value)
             {
@@ -171,6 +196,7 @@ namespace game
         {
             noiseseed = INT_MIN;
             currentsettingshash = 0;
+            rainbudget = snowbudget = 0.0f;
             ++settingsversion;
         }
 
@@ -192,6 +218,65 @@ namespace game
             const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
             const float halfwidth = weatherovercastlighttransition * 0.5f;
             return smoothstep(overcastthreshold - halfwidth, overcastthreshold + halfwidth, value);
+        }
+
+        void addparticles()
+        {
+            if(!weatherprecipitation || mainmenu || !camera1 || !player1 || curtime <= 0)
+            {
+                rainbudget = snowbudget = 0.0f;
+                return;
+            }
+
+            update(getworldseed());
+            vec absolute = player1->o;
+            absolute.z -= player1->eyeheight;
+            const float playerheight = worldpositionheight(absolute.z);
+            worldpositiontoabsolute(absolute);
+            const float intensity = samplecurrentovercast(absolute.x, absolute.y) * clamp(getworldskyexposure(camera1->o), 0.0f, 1.0f);
+            if(intensity <= 1e-3f)
+            {
+                rainbudget = snowbudget = 0.0f;
+                return;
+            }
+
+            const float snowrange = max(weatherprecipitationsnowblendheight, 1.0f);
+            const float snowblend = smoothstep(worldsnowheight - snowrange, worldsnowheight + snowrange, playerheight);
+            const float frameamount = MAIN_RATE * intensity * min(curtime, 100) / 1000.0f;
+            rainbudget += frameamount * RAIN_RATE_MULT * (1.0f - snowblend);
+            snowbudget += frameamount * SNOW_RATE_MULT * snowblend;
+            const int raincount = min(int(rainbudget), weatherprecipitationmaxspawn);
+            rainbudget = min(rainbudget - raincount, 1.0f);
+            const int snowcount = min(int(snowbudget), weatherprecipitationmaxspawn - raincount);
+            snowbudget = min(snowbudget - snowcount, 1.0f);
+            const int count = raincount + snowcount;
+            if(count <= 0) return;
+
+            const float windangle = cloudwindangle * RAD;
+            const vec wind(cosf(windangle) * weatherprecipitationwind, sinf(windangle) * weatherprecipitationwind, 0.0f);
+            loopi(count)
+            {
+                const float distance = sqrtf(rndscale(1.0f)) * weatherprecipitationradius;
+                const float angle = rndscale(2.0f * M_PI);
+                vec origin(camera1->o.x + cosf(angle) * distance, camera1->o.y + sinf(angle) * distance,
+                           camera1->o.z + weatherprecipitationspawnheight * (1.0f + 0.25f * rndscale(1.0f)));
+                const bool snow = i >= raincount;
+                vec velocity(wind);
+                if(snow)
+                {
+                    velocity.x += rndscale(2.0f * weatherprecipitationsnowdrift) - weatherprecipitationsnowdrift;
+                    velocity.y += rndscale(2.0f * weatherprecipitationsnowdrift) - weatherprecipitationsnowdrift;
+                    velocity.z = -weatherprecipitationsnowspeed * (0.8f + 0.4f * rndscale(1.0f));
+                }
+                else velocity.z = -weatherprecipitationrainspeed * (0.85f + 0.3f * rndscale(1.0f));
+
+                const bool collide = distance <= weatherprecipitationcollisionradius;
+                particle_precipitation(snow ? PART_SNOW : PART_RAIN, origin, velocity,
+                                       snow ? weatherprecipitationsnowlife : weatherprecipitationrainlife,
+                                       snow ? 0xFFFFFF : 0xB8D8FF,
+                                       snow ? weatherprecipitationsnowsize : weatherprecipitationrainsize,
+                                       snow ? 50 : 0, collide);
+            }
         }
 
         ICOMMAND(getdebugweather, "", (),
