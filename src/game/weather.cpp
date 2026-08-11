@@ -17,6 +17,9 @@ const float MAIN_RATE = 512.0f,
             RAIN_RATE_MULT = 4.0f,
             SNOW_RATE_MULT = 0.2f;
 
+const int PARTICLE_LIFE = 4000, // doubled for snow
+          PARTICLE_SPEED = 2000; // 1/3 for snow
+
 VARP(weatherprecipitation, 0, 1, 1);
 
 // With the default cloud shape scale, weather systems are roughly thirty times wider than a typical cloud feature.
@@ -47,14 +50,10 @@ FVAR(weatherprecipitationspawnheight, 16.0f, 256.0f, 512.0f);
 FVARP(weatherprecipitationcollisionradius, 0.0f, 64.0f, 512.0f);
 VARP(weatherprecipitationmaxspawn, 1, 64, 512);
 
-FVAR(weatherprecipitationrainspeed, 50.0f, 900.0f, 2000.0f);
-FVAR(weatherprecipitationsnowspeed, 5.0f, 80.0f, 500.0f);
 FVAR(weatherprecipitationwind, 0.0f, 5.0f, 500.0f);
 FVAR(weatherprecipitationsnowdrift, 0.0f, 5.0f, 100.0f);
 FVAR(weatherprecipitationrainsize, 0.05f, 2.0f, 4.0f);
 FVAR(weatherprecipitationsnowsize, 0.05f, 1.25f, 4.0f);
-VAR(weatherprecipitationrainlife, 250, 2500, 10000);
-VAR(weatherprecipitationsnowlife, 500, 7000, 20000);
 FVAR(weatherprecipitationsnowblendheight, 1.0f, 20.0f, 100.0f);
 VAR(weatherprecipitationsnowgroundtime, 0, 1500, 30000);
 VAR(weatherprecipitationsnowgroundfade, 100, 4000, 30000);
@@ -262,20 +261,21 @@ namespace game
                            camera1->o.z + weatherprecipitationspawnheight * (1.0f + 0.25f * rndscale(1.0f)));
                 const bool snow = i >= raincount;
                 vec velocity(wind);
+
+                int zvel = snow ? PARTICLE_SPEED * 0.33f : PARTICLE_SPEED;
+
                 if(snow)
                 {
                     velocity.x += rndscale(2.0f * weatherprecipitationsnowdrift) - weatherprecipitationsnowdrift;
                     velocity.y += rndscale(2.0f * weatherprecipitationsnowdrift) - weatherprecipitationsnowdrift;
-                    velocity.z = -weatherprecipitationsnowspeed * (0.8f + 0.4f * rndscale(1.0f));
+                    velocity.z = -zvel * (0.8f + 0.4f * rndscale(1.0f));
                 }
-                else velocity.z = -weatherprecipitationrainspeed * (0.85f + 0.3f * rndscale(1.0f));
+                else velocity.z = -zvel * (0.85f + 0.3f * rndscale(1.0f));
 
                 const bool collide = distance <= weatherprecipitationcollisionradius;
-                particle_precipitation(snow ? PART_SNOW : PART_RAIN, origin, velocity,
-                                       snow ? weatherprecipitationsnowlife : weatherprecipitationrainlife,
-                                       snow ? 0xFFFFFF : 0xB8D8FF,
-                                       snow ? weatherprecipitationsnowsize : weatherprecipitationrainsize,
-                                       snow ? 50 : 0, collide);
+                if(snow) particle_precipitation(PART_SNOW, origin, velocity, PARTICLE_LIFE * 2, 0xFFFFFF, weatherprecipitationsnowsize, 50, collide);
+                else particle_precipitation(PART_RAIN, origin, velocity, PARTICLE_LIFE, 0xB8D8FF, weatherprecipitationrainsize, 0, collide);
+
             }
         }
 

@@ -95,6 +95,7 @@ enum
     PT_PART = 0,
     PT_TAPE,
     PT_TRAIL,
+    PT_VERTICAL_TRAIL,
     PT_TEXT,
     PT_TEXTUP,
     PT_METER,
@@ -123,7 +124,7 @@ enum
     PT_FLIP      = PT_HFLIP | PT_VFLIP | PT_ROT
 };
 
-const char *partnames[] = { "part", "tape", "trail", "text", "textup", "meter", "metervs", "fireball", "lightning", "flare" };
+const char *partnames[] = { "part", "tape", "trail", "vertical trail", "text", "textup", "meter", "metervs", "fireball", "lightning", "flare" };
 
 struct particle
 {
@@ -556,6 +557,25 @@ inline void genpos<PT_TRAIL>(const vec &o, const vec &d, float size, int ts, int
     genpos<PT_TAPE>(o, e, size, ts, grav, vs);
 }
 
+template<>
+inline void genpos<PT_VERTICAL_TRAIL>(const vec &o, const vec &d, float size, int ts, int grav, partvert *vs)
+{
+    vec right(camera1->o.y - o.y, o.x - camera1->o.x, 0.0f);
+    if(right.squaredlen() <= 1e-6f)
+    {
+        right = vec(camright.x, camright.y, 0.0f);
+        if(right.squaredlen() <= 1e-6f) right = vec(1.0f, 0.0f, 0.0f);
+    }
+    right.normalize().mul(size);
+
+    vec top(o);
+    top.z += max(fabsf(d.z) / 75.0f, 2.0f * size);
+    vs[0].pos = vec(top).sub(right);
+    vs[1].pos = vec(top).add(right);
+    vs[2].pos = vec(o).add(right);
+    vs[3].pos = vec(o).sub(right);
+}
+
 template<int T>
 static inline void genrotpos(const vec &o, const vec &d, float size, int grav, int ts, partvert *vs, int rot)
 {
@@ -830,6 +850,7 @@ struct varenderer : partrenderer
 typedef varenderer<PT_PART> quadrenderer;
 typedef varenderer<PT_TAPE> taperenderer;
 typedef varenderer<PT_TRAIL> trailrenderer;
+typedef varenderer<PT_VERTICAL_TRAIL> verticaltrailrenderer;
 
 #include "explosion.h"
 #include "lensflare.h"
@@ -1029,7 +1050,7 @@ static partrenderer *parts[] =
     new quadrenderer("media/particle/spark.png", PT_PART|PT_FLIP|PT_BRIGHT),                   // sparks
     new quadrenderer("media/particle/base.png",  PT_PART|PT_FLIP|PT_BRIGHT),                   // edit mode entities
     new quadrenderer("media/particle/snow.png", PT_PART|PT_FLIP|PT_RND4|PT_COLLIDE, STAIN_SNOW), // colliding weather snow
-    new quadrenderer("media/particle/rain.png", PT_PART|PT_RND4|PT_LERP|PT_COLLIDE),          // colliding rain
+    new verticaltrailrenderer("media/particle/rain.png", PT_VERTICAL_TRAIL|PT_RND4|PT_LERP|PT_COLLIDE), // colliding vertical rain
     new quadrenderer("media/particle/rail_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK),  // rail muzzle flash
     new quadrenderer("media/particle/pulse_muzzle.png", PT_PART|PT_FEW|PT_FLIP|PT_BRIGHT|PT_TRACK), // pulse muzzle flash
     &texts,                                                                                    // text
