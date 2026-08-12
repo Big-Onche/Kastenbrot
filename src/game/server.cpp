@@ -1795,7 +1795,7 @@ namespace server
                                                                                 serverworldgenerator->settings.beachmaxheight),
                   beachmaximum = serverworldgenerator->settings.sealevel + max(serverworldgenerator->settings.beachminheight,
                                                                                 serverworldgenerator->settings.beachmaxheight);
-        if((biome == game::WORLD_BIOME_DESERT || (height >= beachminimum && height <= beachmaximum && serverworldgenerator->coast(x, y))) &&
+        if((biome == game::WORLD_BIOME_DESERT || (height >= beachminimum && height <= beachmaximum && serverworldgenerator->beach(x, y))) &&
            cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
             return serverworldcubeindex("sand");
         if(biome == game::WORLD_BIOME_OCEAN)

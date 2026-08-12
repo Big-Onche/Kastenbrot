@@ -102,8 +102,11 @@ namespace game
         worldgenerator(int seed, const worldsettings &settings = worldsettings());
 
         worldtectonicsample tectonics(int x, int y, float cavedepth = 0) const;
+        float beachtransitionwidth(int x, int y) const;
+        float maxbeachtransitionwidth() const;
         float coasttransitionwidth(int x, int y) const;
         float maxcoasttransitionwidth() const;
+        bool beach(int x, int y) const;
         bool coast(int x, int y) const;
         float fracturecorridor(int x, int y) const;
         int height(int x, int y, worldtectonicsample *tectonics = NULL) const;

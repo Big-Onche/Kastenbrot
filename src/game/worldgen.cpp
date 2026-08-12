@@ -62,7 +62,7 @@ struct worldgencontext
     game::worldsettings settings;
     int heightmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar biomemap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
-    uchar coastmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
+    uchar beachmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar cliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar reliefcliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar rockmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
@@ -149,13 +149,13 @@ static int generateworldheight(const worldgencontext &ctx, int chunkx, int chunk
     return ctx.generator.height(x, y, tectonics) * WORLD_BLOCK_SIZE;
 }
 
-static void generateworldcoastmap(worldgencontext &ctx, int chunkx, int chunky)
+static void generateworldbeachmap(worldgencontext &ctx, int chunkx, int chunky)
 {
-    memset(ctx.coastmap, 0, sizeof(ctx.coastmap));
+    memset(ctx.beachmap, 0, sizeof(ctx.beachmap));
     if(ctx.settings.coastwidth <= 0) return;
 
-    const int maxcoastwidth = max(ctx.settings.coastwidth + ctx.settings.coastvariation, int(ceil(ctx.generator.maxcoasttransitionwidth()))),
-              halo = maxcoastwidth + 1,
+    const int maxbeachwidth = int(ceil(ctx.generator.maxbeachtransitionwidth())),
+              halo = maxbeachwidth + 1,
               mapsize = WORLD_CHUNK_BLOCKS + 2 * halo,
               maparea = mapsize * mapsize,
               fardistance = INT_MAX / 8,
@@ -203,12 +203,10 @@ static void generateworldcoastmap(worldgencontext &ctx, int chunkx, int chunky)
 
     loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
     {
-        const float noisex = float(chunkx) * WORLD_CHUNK_BLOCKS + x + 10000.5f,
-                    noisey = float(chunky) * WORLD_CHUNK_BLOCKS + y - 10000.5f,
-                    configuredwidth = max(ctx.settings.coastwidth + ctx.generator.biomeblend.GetNoise(noisex, noisey) * ctx.settings.coastvariation, 0.0f),
-                    profilewidth = ctx.generator.coasttransitionwidth(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y),
-                    width = max(configuredwidth, profilewidth);
-        ctx.coastmap[y * WORLD_CHUNK_BLOCKS + x] = distance[(y + halo) * mapsize + x + halo] <= int(floor(width * 3.0f + 0.5f));
+        const int index = y * WORLD_CHUNK_BLOCKS + x,
+                  coastdistance = distance[(y + halo) * mapsize + x + halo];
+        ctx.beachmap[index] = coastdistance <= int(floor(ctx.generator.beachtransitionwidth(chunkx * WORLD_CHUNK_BLOCKS + x,
+                                                                                           chunky * WORLD_CHUNK_BLOCKS + y) * 3.0f + 0.5f));
     }
 }
 
@@ -250,8 +248,8 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
         }
     }
     {
-        ZoneScopedN("Chunks/Generate coast map");
-        generateworldcoastmap(ctx, chunkx, chunky);
+        ZoneScopedN("Chunks/Generate beach map");
+        generateworldbeachmap(ctx, chunkx, chunky);
     }
     {
         ZoneScopedN("Chunks/Generate biome maps");
@@ -280,9 +278,9 @@ static int worldbiome(const worldgencontext &ctx, int localx, int localy)
     return ctx.biomemap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE];
 }
 
-static bool worldcoast(const worldgencontext &ctx, int localx, int localy)
+static bool worldbeach(const worldgencontext &ctx, int localx, int localy)
 {
-    return ctx.coastmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE] != 0;
+    return ctx.beachmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE] != 0;
 }
 
 static bool worldrock(const worldgencontext &ctx, int localx, int localy)
@@ -295,7 +293,7 @@ static bool worldcliff(const worldgencontext &ctx, int localx, int localy)
     return ctx.cliffmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE] != 0;
 }
 
-static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool coast, bool cliff, bool rock)
+static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, bool cliff, bool rock)
 {
     const int surface = WORLD_GROUND_HEIGHT + height,
               watertop = WORLD_GROUND_HEIGHT + ctx.settings.sealevel * WORLD_BLOCK_SIZE,
@@ -303,7 +301,7 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
               grassbottom = surface - WORLD_BLOCK_SIZE,
               beachmin = (ctx.settings.sealevel + min(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
               beachmax = (ctx.settings.sealevel + max(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE;
-    const bool beach = coast && height >= beachmin && height <= beachmax;
+    const bool beach = beachprofile && height >= beachmin && height <= beachmax;
 
     if(z >= max(surface, watertop)) return WORLD_TERRAIN_EMPTY;
     if(surface < watertop && z >= surface && z + size <= watertop) return WORLD_TERRAIN_WATER;
@@ -344,7 +342,7 @@ static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int
               localy = blocky * WORLD_BLOCK_SIZE,
               surfacez = WORLD_GROUND_HEIGHT + height - WORLD_BLOCK_SIZE,
               type = worldcolumncubetype(ctx, surfacez, WORLD_BLOCK_SIZE, height, biome,
-                                         worldcoast(ctx, localx, localy),
+                                         worldbeach(ctx, localx, localy),
                                          worldcliff(ctx, localx, localy),
                                          worldrock(ctx, localx, localy));
     return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt");
@@ -361,7 +359,8 @@ static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
     for(int y = o.y; y < o.y + size; y += WORLD_BLOCK_SIZE)
     for(int x = o.x; x < o.x + size; x += WORLD_BLOCK_SIZE)
     {
-        int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y), worldbiome(ctx, x, y), worldcoast(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
+        int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y), worldbiome(ctx, x, y), worldbeach(ctx, x, y), worldcliff(ctx, x, y),
+                                             worldrock(ctx, x, y));
         if(columntype == WORLD_TERRAIN_MIXED || (type != WORLD_TERRAIN_UNSET && type != columntype)) return WORLD_TERRAIN_MIXED;
         type = columntype;
     }
@@ -387,7 +386,7 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
     if(visibletop > o.z && visibletop <= o.z + size)
         z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
 
-    return worldcolumncubetype(ctx, z, 1, height, biome, worldcoast(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
+    return worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
 }
 
 static bool generateworldcube(worldgencontext &ctx, cube &c, const ivec &o, int size, int mingridsize)
