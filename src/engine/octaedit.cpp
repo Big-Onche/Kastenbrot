@@ -2146,6 +2146,35 @@ void mpeditface(int dir, int mode, selinfo &sel, bool local)
         sel.o[d] += sel.grid * seldir;
 }
 
+bool pushworldcubecorner(selinfo &sel, bool local)
+{
+    if(sel.grid != 16 || sel.s != ivec(1, 1, 1) || sel.orient < O_LEFT || sel.orient > O_TOP || sel.corner < 0 || sel.corner > 3)
+        return false;
+
+    ivec origin;
+    int size = 0;
+    cube &c = lookupcube(sel.o, sel.grid, origin, size);
+    if(origin != sel.o || size != sel.grid || c.children || isempty(c)) return false;
+
+    const ivec center = ivec(sel.o).add(sel.grid / 2);
+    if(!isworldcubepushable(getworldcubeindexat(center, sel.orient))) return false;
+
+    const int d = dimension(sel.orient), dc = dimcoord(sel.orient), inward = dc ? -1 : 1;
+    ivec corner;
+    getcubevector(c, d, sel.corner & 1, sel.corner >> 1, dc, corner);
+    if((dc && corner[d] <= 0) || (!dc && corner[d] >= 8)) return false;
+
+    uchar oldedges[sizeof(c.edges)];
+    memcpy(oldedges, c.edges, sizeof(oldedges));
+    linkedpush(c, d, sel.corner & 1, sel.corner >> 1, dc, inward);
+    const bool valid = isvalidcube(c);
+    memcpy(c.edges, oldedges, sizeof(oldedges));
+    if(!valid) return false;
+
+    mpeditface(1, 2, sel, local);
+    return true;
+}
+
 void editface(int *dir, int *mode)
 {
     if(noedit(moving!=0)) return;

@@ -1729,9 +1729,54 @@ namespace server
     {
         if(serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE))
             return state->action == WORLD_ACTION_PLACE_CUBE ? state->item : -1;
-        loopvrev(worldhistory) if(worldhistory[i]->type != N_WORLDAUTH && servereditcontains(*worldhistory[i], cell)) return -1;
+        loopvrev(worldhistory) if(worldhistory[i]->type != N_WORLDAUTH && servereditcontains(*worldhistory[i], cell))
+        {
+            const serveredit &edit = *worldhistory[i];
+            if(edit.type == N_EDITF)
+            {
+                ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
+                selinfo unused;
+                if(readselection(payload, unused))
+                {
+                    getint(payload);
+                    if(getint(payload) == 2 && !payload.overread()) continue;
+                }
+            }
+            return -1;
+        }
         const int worldindex = serverbaseworldcubeindex(cell);
         return worldindex >= 0 ? getworldcubeitem(worldindex) : -1;
+    }
+
+    static int servercornerpushcount(const ivec &cell, int orient, int corner)
+    {
+        int pushes = 0;
+        loopv(worldhistory)
+        {
+            const serveredit &edit = *worldhistory[i];
+            if(!edit.active) continue;
+            if(edit.type == N_WORLDAUTH)
+            {
+                ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
+                const int action = getint(payload);
+                ivec target;
+                target.x = getint(payload); target.y = getint(payload); target.z = getint(payload);
+                const int actionorient = getint(payload);
+                if(!payload.overread() && (action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_BREAK_CUBE_START) &&
+                   worldactionstatecell(target, action, actionorient) == cell)
+                    pushes = 0;
+                continue;
+            }
+            if(edit.type != N_EDITF || edit.selection.o != cell || edit.selection.grid != SERVER_WORLD_BLOCK_SIZE ||
+               edit.selection.s != ivec(1, 1, 1) || edit.selection.orient != orient || edit.selection.corner != corner)
+                continue;
+            ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
+            selinfo unused;
+            if(!readselection(payload, unused)) continue;
+            const int dir = getint(payload), mode = getint(payload);
+            if(!payload.overread() && mode == 2) pushes = clamp(pushes + dir, 0, 8);
+        }
+        return pushes;
     }
 
     static bool serverblocksolid(const ivec &cell)
@@ -3506,6 +3551,65 @@ namespace server
         return true;
     }
 
+    static bool handlecornerpush(clientinfo &ci, uint requestid, const ivec &target, int packedorient, int item, int slot)
+    {
+        const char *error = NULL;
+        if(!validnewrequest(ci, requestid, error)) return rejectaction(ci, requestid, error, requestid == ci.lastrequestid);
+        if(packedorient < 0 || packedorient >= 24) return rejectaction(ci, requestid, "invalid pushed corner", true, true);
+        const int orient = packedorient % 6, corner = packedorient / 6;
+        if(!validactiontarget(ci, target, orient, error)) return rejectaction(ci, requestid, error, true);
+        if(!actionrate(ci, false)) return rejectaction(ci, requestid, "excessive shaping rate", true);
+
+        const int tool = getinventoryitemindex("hammer_chisel");
+        if(servercreative() || tool < 0 || slot < 0 || slot >= SURVIVAL_HOTBAR_SLOTS || slot != ci.selectedslot ||
+           ci.inventoryitems[slot] != tool || ci.inventorycounts[slot] != 1 || ci.inventorydurabilities[slot] <= 0)
+            return rejectaction(ci, requestid, "hammer and chisel is not owned in the selected inventory slot", true, true);
+
+        const int claimedworldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1,
+                  blockitem = serverblockitem(target), authoritativeworldindex = getworlditemtype(blockitem) == WORLD_ITEM_CUBE
+                                                       ? getworlditemindex(blockitem) : -1;
+        if(claimedworldindex < 0 || !isworldcubepushable(claimedworldindex) ||
+           (authoritativeworldindex >= 0 && blockitem != item) ||
+           (authoritativeworldindex >= 0 && !isworldcubepushable(authoritativeworldindex)))
+            return rejectaction(ci, requestid, "target cube cannot be pushed");
+        if(servercornerpushcount(target, orient, corner) >= 8)
+            return rejectaction(ci, requestid, "target corner is already fully pushed");
+
+        serveredit *edit = new serveredit;
+        edit->author = ci.clientnum;
+        edit->requestid = requestid;
+        edit->type = N_EDITF;
+        edit->hasselection = true;
+        copystring(edit->ownerid, ci.playerid);
+        edit->selection.o = target;
+        edit->selection.s = ivec(1, 1, 1);
+        edit->selection.grid = SERVER_WORLD_BLOCK_SIZE;
+        edit->selection.orient = orient;
+        edit->selection.cx = -1;
+        edit->selection.cy = 0;
+        edit->selection.cxs = edit->selection.cys = 2;
+        edit->selection.corner = corner;
+        packetbuf payload(MAXTRANS);
+        putint(payload, target.x); putint(payload, target.y); putint(payload, target.z);
+        putint(payload, 1); putint(payload, 1); putint(payload, 1);
+        putint(payload, SERVER_WORLD_BLOCK_SIZE); putint(payload, orient);
+        putint(payload, -1); putint(payload, 2); putint(payload, 0); putint(payload, 2); putint(payload, corner);
+        putint(payload, 1); putint(payload, 2);
+        edit->payload.put(payload.buf, payload.length());
+        if(!acceptededit(edit)) return rejectaction(ci, requestid, "server could not persist the corner push");
+
+        if(ci.breakactive) cancelbreak(ci);
+        if(--ci.inventorydurabilities[slot] <= 0)
+        {
+            ci.inventoryitems[slot] = -1;
+            ci.inventorycounts[slot] = ci.inventorydurabilities[slot] = 0;
+        }
+        markinventorydirty(ci);
+        sendinventory(ci);
+        sendactionresult(ci, requestid, true);
+        return true;
+    }
+
     static bool beginbreak(clientinfo &ci, uint requestid, int action, const ivec &target, int orient, int item)
     {
         const char *error = NULL;
@@ -3673,6 +3777,7 @@ namespace server
 
     static bool handleworldaction(clientinfo &ci, uint requestid, int action, const ivec &target, int orient, int item, int slot)
     {
+        if(action == WORLD_ACTION_PUSH_CORNER) return handlecornerpush(ci, requestid, target, orient, item, slot);
         switch(action)
         {
             case WORLD_ACTION_PLACE_CUBE:

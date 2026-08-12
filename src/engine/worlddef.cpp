@@ -403,7 +403,8 @@ ICOMMANDS("worlddef_drop", "siifN", (char *itemid, int *mincount, int *maxcount,
 
 static bool validtooltype(const char *type)
 {
-    return !type[0] || !cubecasecmp(type, "pickaxe") || !cubecasecmp(type, "axe") || !cubecasecmp(type, "shovel") || !cubecasecmp(type, "sword");
+    return !type[0] || !cubecasecmp(type, "pickaxe") || !cubecasecmp(type, "axe") || !cubecasecmp(type, "shovel") || !cubecasecmp(type, "sword") ||
+           !cubecasecmp(type, "hammer_chisel");
 }
 
 static bool buildworldpersistentindexes()

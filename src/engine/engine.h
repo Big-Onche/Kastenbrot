@@ -418,6 +418,7 @@ extern void beginworldedit(int operation, const selinfo &sel,
                            int arg1 = 0, int arg2 = 0, int arg3 = 0, int arg4 = 0);
 extern void commitworldedit();
 extern void cancelworldedit();
+extern bool pushworldcubecorner(selinfo &sel, bool local);
 extern void setworldeditauthor(int author);
 extern void setworldeditrevision(uint revision);
 extern void changed(const ivec &bbmin, const ivec &bbmax, bool commit = true);

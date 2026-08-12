@@ -133,6 +133,12 @@ int getworldcubeitem(int index)
     return index >= 0 ? worldcubedefinitions[index]->item : -1;
 }
 
+bool isworldcubepushable(int index)
+{
+    const int tag = finditemtag("pushable_cubes");
+    return tag >= 0 && itemhastag(getworldcubeitem(index), tag);
+}
+
 const char *getworldcubetexture(int index, int face)
 {
     static string texturepath;
@@ -901,6 +907,12 @@ int numworldcubes() { return worldcubedefinitions.length(); }
 int getworldcubeitem(int index)
 {
     return worldcubedefinitions.inrange(index) ? worldcubedefinitions[index]->item : -1;
+}
+
+bool isworldcubepushable(int index)
+{
+    const int tag = finditemtag("pushable_cubes");
+    return tag >= 0 && itemhastag(getworldcubeitem(index), tag);
 }
 
 bool getworldcubefall(int index)
