@@ -245,6 +245,13 @@ struct craftmatch
     craftmatch() : recipe(-1), outputitem(-1), outputcount(0) { loopi(CRAFT_GRID_MAX) consume[i] = 0; }
 };
 extern bool reloadrecipes(bool report = true);
+extern int numgeneratedcraftrecipes();
+extern const char *getgeneratedcraftrecipeid(int recipe);
+extern const char *getgeneratedcraftrecipeoutput(int recipe);
+extern const char *getgeneratedcraftrecipeingredient(int recipe);
+extern int getgeneratedcraftrecipepatternrows(int recipe);
+extern const char *getgeneratedcraftrecipepatternrow(int recipe, int row);
+extern bool getgeneratedcraftrecipemirror(int recipe);
 extern int numcraftrecipes();
 extern int numitemtags();
 extern const char *getcraftrecipeid(int recipe);

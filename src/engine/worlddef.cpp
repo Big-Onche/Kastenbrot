@@ -47,9 +47,88 @@ static worlddefinition *currentworlddefinition = NULL;
 enum
 {
     WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_HELD, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL,
-    WORLDDEF_FURNACE, WORLDDEF_FOOD, WORLDDEF_SUPPORT
+    WORLDDEF_FURNACE, WORLDDEF_FOOD, WORLDDEF_SUPPORT, MATERIAL_DEFINITION, TOOL_FAMILY_DEFINITION, TOOL_OVERRIDE_DEFINITION
 };
 static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
+
+// Materials intentionally live outside worlddefinition. Tool generation is their first consumer, but this registry can grow properties for other
+// generated content without changing the runtime item registry.
+struct materialdefinition
+{
+    string id, name, ingredient;
+    int tooltier, durability, damagebonus;
+    float toolspeed;
+    bool nameset, ingredientset, tooltierset, toolspeedset, durabilityset, damagebonusset;
+
+    materialdefinition(const char *id = "")
+        : tooltier(0), durability(0), damagebonus(0), toolspeed(0), nameset(false), ingredientset(false), tooltierset(false), toolspeedset(false),
+          durabilityset(false), damagebonusset(false)
+    {
+        copystring(this->id, id);
+        name[0] = ingredient[0] = '\0';
+    }
+};
+
+struct toolfamilydefinition
+{
+    string id, name, icon, cornerpush;
+    string pattern[3];
+    int patternrows, itemstack;
+    float itemscale, speedoffset, damagebase;
+    bool nameset, iconset, patternset, itemstackset, itemscaleset, speedoffsetset, damagebaseset, usematerialdamage, mirror, held, heldflipx,
+         heldflipy, cornerpushset;
+
+    toolfamilydefinition(const char *id = "")
+        : patternrows(0), itemstack(0), itemscale(0), speedoffset(0), damagebase(0), nameset(false), iconset(false), patternset(false),
+          itemstackset(false), itemscaleset(false), speedoffsetset(false), damagebaseset(false), usematerialdamage(false), mirror(false), held(false),
+          heldflipx(false), heldflipy(false), cornerpushset(false)
+    {
+        copystring(this->id, id);
+        name[0] = icon[0] = cornerpush[0] = '\0';
+        loopi(3) pattern[i][0] = '\0';
+    }
+};
+
+struct tooloverridedefinition
+{
+    string id, name, icon, ingredient, cornerpush;
+    int tooltier, durability;
+    float toolspeed, damage;
+    bool nameset, iconset, ingredientset, tooltierset, toolspeedset, durabilityset, damageset, heldset, heldflipx, heldflipy, cornerpushset, applied;
+
+    tooloverridedefinition(const char *id = "")
+        : tooltier(0), durability(0), toolspeed(0), damage(0), nameset(false), iconset(false), ingredientset(false), tooltierset(false),
+          toolspeedset(false), durabilityset(false), damageset(false), heldset(false), heldflipx(false), heldflipy(false), cornerpushset(false),
+          applied(false)
+    {
+        copystring(this->id, id);
+        name[0] = icon[0] = ingredient[0] = cornerpush[0] = '\0';
+    }
+};
+
+struct generatedcraftrecipe
+{
+    string id, output, ingredient;
+    string pattern[3];
+    int patternrows;
+    bool mirror;
+
+    generatedcraftrecipe() : patternrows(0), mirror(false)
+    {
+        id[0] = output[0] = ingredient[0] = '\0';
+        loopi(3) pattern[i][0] = '\0';
+    }
+};
+
+static vector<materialdefinition *> materialdefinitions;
+static vector<toolfamilydefinition *> toolfamilydefinitions;
+static vector<tooloverridedefinition *> tooloverridedefinitions;
+static vector<generatedcraftrecipe *> generatedcraftrecipes;
+static vector<char *> toolsetmaterials;
+static materialdefinition *currentmaterialdefinition = NULL;
+static toolfamilydefinition *currenttoolfamilydefinition = NULL;
+static tooloverridedefinition *currenttooloverridedefinition = NULL;
+static bool toolsetexpanded = false;
 
 worlddefinition *findworlddefinition(const char *id)
 {
@@ -91,6 +170,11 @@ const char *getworlddefinitionid(int index)
 void resetworlddefinitionregistry()
 {
     worlddefinitions.deletecontents();
+    materialdefinitions.deletecontents();
+    toolfamilydefinitions.deletecontents();
+    tooloverridedefinitions.deletecontents();
+    generatedcraftrecipes.deletecontents();
+    toolsetmaterials.deletecontents();
     worldcubedefinitions.shrink(0);
     worldscatterdefinitions.shrink(0);
     inventoryitemdefinitions.shrink(0);
@@ -99,14 +183,54 @@ void resetworlddefinitionregistry()
     inventoryitempersistentindexes.clear();
     worlderrorcube = worlderrorobject = worlderroritem = -1;
     currentworlddefinition = NULL;
+    currentmaterialdefinition = NULL;
+    currenttoolfamilydefinition = NULL;
+    currenttooloverridedefinition = NULL;
     currentworldcomponent = WORLDDEF_NONE;
     worlddefinitionerrors = 0;
+    toolsetexpanded = false;
 }
 
 static void worlddefinitionerror(const char *message)
 {
     conoutf(CON_ERROR, "worlddef \"%s\": %s", currentworlddefinition ? currentworlddefinition->id : "<none>", message);
     ++worlddefinitionerrors;
+}
+
+static void materialdefinitionerror(const char *message)
+{
+    conoutf(CON_ERROR, "material \"%s\": %s", currentmaterialdefinition ? currentmaterialdefinition->id : "<none>", message);
+    ++worlddefinitionerrors;
+}
+
+static void toolfamilydefinitionerror(const char *message)
+{
+    conoutf(CON_ERROR, "toolfamily \"%s\": %s", currenttoolfamilydefinition ? currenttoolfamilydefinition->id : "<none>", message);
+    ++worlddefinitionerrors;
+}
+
+static void tooloverridedefinitionerror(const char *message)
+{
+    conoutf(CON_ERROR, "tooloverride \"%s\": %s", currenttooloverridedefinition ? currenttooloverridedefinition->id : "<none>", message);
+    ++worlddefinitionerrors;
+}
+
+static materialdefinition *findmaterialdefinition(const char *id)
+{
+    loopv(materialdefinitions) if(!cubecasecmp(materialdefinitions[i]->id, id)) return materialdefinitions[i];
+    return NULL;
+}
+
+static toolfamilydefinition *findtoolfamilydefinition(const char *id)
+{
+    loopv(toolfamilydefinitions) if(!cubecasecmp(toolfamilydefinitions[i]->id, id)) return toolfamilydefinitions[i];
+    return NULL;
+}
+
+static tooloverridedefinition *findtooloverridedefinition(const char *id)
+{
+    loopv(tooloverridedefinitions) if(!cubecasecmp(tooloverridedefinitions[i]->id, id)) return tooloverridedefinitions[i];
+    return NULL;
 }
 
 static const char *worlddefinitioncommand(const char *command, int component)
@@ -185,7 +309,50 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "decay")) return "worlddef_supportdecay";
         if(!strcmp(command, "persistentonplace")) return "worlddef_supportpersistentonplace";
     }
+    else if(component == MATERIAL_DEFINITION)
+    {
+        if(!strcmp(command, "name")) return "material_name";
+        if(!strcmp(command, "ingredient")) return "material_ingredient";
+        if(!strcmp(command, "tier")) return "material_tier";
+        if(!strcmp(command, "speed")) return "material_speed";
+        if(!strcmp(command, "durability")) return "material_durability";
+        if(!strcmp(command, "damagebonus")) return "material_damagebonus";
+    }
+    else if(component == TOOL_FAMILY_DEFINITION)
+    {
+        if(!strcmp(command, "name")) return "toolfamily_name";
+        if(!strcmp(command, "icon")) return "toolfamily_icon";
+        if(!strcmp(command, "stack")) return "toolfamily_stack";
+        if(!strcmp(command, "scale")) return "toolfamily_scale";
+        if(!strcmp(command, "speedoffset")) return "toolfamily_speedoffset";
+        if(!strcmp(command, "damagebase")) return "toolfamily_damagebase";
+        if(!strcmp(command, "materialdamage")) return "toolfamily_materialdamage";
+        if(!strcmp(command, "heldflip")) return "toolfamily_heldflip";
+        if(!strcmp(command, "cornerpush")) return "toolfamily_cornerpush";
+        if(!strcmp(command, "recipepattern")) return "toolfamily_recipepattern";
+        if(!strcmp(command, "recipemirror")) return "toolfamily_recipemirror";
+    }
+    else if(component == TOOL_OVERRIDE_DEFINITION)
+    {
+        if(!strcmp(command, "name")) return "tooloverride_name";
+        if(!strcmp(command, "icon")) return "tooloverride_icon";
+        if(!strcmp(command, "ingredient")) return "tooloverride_ingredient";
+        if(!strcmp(command, "tier")) return "tooloverride_tier";
+        if(!strcmp(command, "speed")) return "tooloverride_speed";
+        if(!strcmp(command, "durability")) return "tooloverride_durability";
+        if(!strcmp(command, "damage")) return "tooloverride_damage";
+        if(!strcmp(command, "heldflip")) return "tooloverride_heldflip";
+        if(!strcmp(command, "cornerpush")) return "tooloverride_cornerpush";
+    }
     return NULL;
+}
+
+static void definitionbodyerror(int component, const char *message)
+{
+    if(component == MATERIAL_DEFINITION) materialdefinitionerror(message);
+    else if(component == TOOL_FAMILY_DEFINITION) toolfamilydefinitionerror(message);
+    else if(component == TOOL_OVERRIDE_DEFINITION) tooloverridedefinitionerror(message);
+    else worlddefinitionerror(message);
 }
 
 static void executeworlddefinitionbody(const char *body, int component)
@@ -237,7 +404,7 @@ static void executeworlddefinitionbody(const char *body, int component)
             if(!replacement)
             {
                 defformatstring(message, "unknown %s command \"%s\"", component == WORLDDEF_NONE ? "worlddef" : "component", command);
-                worlddefinitionerror(message);
+                definitionbodyerror(component, message);
                 return;
             }
             while(*replacement) rewritten.add(*replacement++);
@@ -270,7 +437,7 @@ static bool beginworldcomponent(int component, bool &present, const char *name)
 
 static void endworldcomponent() { currentworldcomponent = WORLDDEF_NONE; }
 
-ICOMMAND(worlddef, "sS", (char *id, char *body),
+static void registerworlddefinition(const char *id, const char *body)
 {
     if(currentworlddefinition)
     {
@@ -287,6 +454,208 @@ ICOMMAND(worlddef, "sS", (char *id, char *body),
     executeworlddefinitionbody(body, WORLDDEF_NONE);
     currentworlddefinition = NULL;
     currentworldcomponent = WORLDDEF_NONE;
+}
+
+ICOMMAND(worlddef, "sS", (char *id, char *body),
+{
+    registerworlddefinition(id, body);
+});
+
+ICOMMAND(material, "sS", (char *id, char *body),
+{
+    if(currentmaterialdefinition || currenttoolfamilydefinition || currenttooloverridedefinition)
+    {
+        conoutf(CON_ERROR, "nested material, toolfamily, and tooloverride blocks are not allowed");
+        ++worlddefinitionerrors;
+        return;
+    }
+    if(!id[0] || findmaterialdefinition(id))
+    {
+        conoutf(CON_ERROR, "duplicate or empty material id \"%s\"", id);
+        ++worlddefinitionerrors;
+        return;
+    }
+    currentmaterialdefinition = materialdefinitions.add(new materialdefinition(id));
+    executeworlddefinitionbody(body, MATERIAL_DEFINITION);
+    currentmaterialdefinition = NULL;
+});
+
+ICOMMAND(toolfamily, "sS", (char *id, char *body),
+{
+    if(currentmaterialdefinition || currenttoolfamilydefinition || currenttooloverridedefinition)
+    {
+        conoutf(CON_ERROR, "nested material, toolfamily, and tooloverride blocks are not allowed");
+        ++worlddefinitionerrors;
+        return;
+    }
+    if(!id[0] || findtoolfamilydefinition(id))
+    {
+        conoutf(CON_ERROR, "duplicate or empty toolfamily id \"%s\"", id);
+        ++worlddefinitionerrors;
+        return;
+    }
+    currenttoolfamilydefinition = toolfamilydefinitions.add(new toolfamilydefinition(id));
+    executeworlddefinitionbody(body, TOOL_FAMILY_DEFINITION);
+    currenttoolfamilydefinition = NULL;
+});
+
+ICOMMAND(tooloverride, "sS", (char *id, char *body),
+{
+    if(currentmaterialdefinition || currenttoolfamilydefinition || currenttooloverridedefinition)
+    {
+        conoutf(CON_ERROR, "nested material, toolfamily, and tooloverride blocks are not allowed");
+        ++worlddefinitionerrors;
+        return;
+    }
+    if(!id[0] || findtooloverridedefinition(id))
+    {
+        conoutf(CON_ERROR, "duplicate or empty tooloverride id \"%s\"", id);
+        ++worlddefinitionerrors;
+        return;
+    }
+    currenttooloverridedefinition = tooloverridedefinitions.add(new tooloverridedefinition(id));
+    executeworlddefinitionbody(body, TOOL_OVERRIDE_DEFINITION);
+    currenttooloverridedefinition = NULL;
+});
+
+ICOMMAND(toolset, "s", (char *materials),
+{
+    vector<char *> selected;
+    explodelist(materials, selected);
+    loopv(selected) toolsetmaterials.add(newstring(selected[i]));
+    selected.deletecontents();
+});
+
+ICOMMANDS("material_name", "s", (char *value),
+{
+    copystring(currentmaterialdefinition->name, value);
+    currentmaterialdefinition->nameset = true;
+});
+ICOMMANDS("material_ingredient", "s", (char *value),
+{
+    copystring(currentmaterialdefinition->ingredient, value);
+    currentmaterialdefinition->ingredientset = true;
+});
+ICOMMANDS("material_tier", "i", (int *value),
+{
+    currentmaterialdefinition->tooltier = *value;
+    currentmaterialdefinition->tooltierset = true;
+});
+ICOMMANDS("material_speed", "f", (float *value),
+{
+    currentmaterialdefinition->toolspeed = *value;
+    currentmaterialdefinition->toolspeedset = true;
+});
+ICOMMANDS("material_durability", "i", (int *value),
+{
+    currentmaterialdefinition->durability = *value;
+    currentmaterialdefinition->durabilityset = true;
+});
+ICOMMANDS("material_damagebonus", "i", (int *value),
+{
+    currentmaterialdefinition->damagebonus = *value;
+    currentmaterialdefinition->damagebonusset = true;
+});
+
+ICOMMANDS("toolfamily_name", "s", (char *value),
+{
+    copystring(currenttoolfamilydefinition->name, value);
+    currenttoolfamilydefinition->nameset = true;
+});
+ICOMMANDS("toolfamily_icon", "s", (char *value),
+{
+    copystring(currenttoolfamilydefinition->icon, value);
+    currenttoolfamilydefinition->iconset = true;
+});
+ICOMMANDS("toolfamily_stack", "i", (int *value),
+{
+    currenttoolfamilydefinition->itemstack = *value;
+    currenttoolfamilydefinition->itemstackset = true;
+});
+ICOMMANDS("toolfamily_scale", "f", (float *value),
+{
+    currenttoolfamilydefinition->itemscale = *value;
+    currenttoolfamilydefinition->itemscaleset = true;
+});
+ICOMMANDS("toolfamily_speedoffset", "f", (float *value),
+{
+    currenttoolfamilydefinition->speedoffset = *value;
+    currenttoolfamilydefinition->speedoffsetset = true;
+});
+ICOMMANDS("toolfamily_damagebase", "f", (float *value),
+{
+    currenttoolfamilydefinition->damagebase = *value;
+    currenttoolfamilydefinition->damagebaseset = true;
+});
+ICOMMANDS("toolfamily_materialdamage", "i", (int *value), currenttoolfamilydefinition->usematerialdamage = *value != 0);
+ICOMMANDS("toolfamily_heldflip", "ii", (int *x, int *y),
+{
+    currenttoolfamilydefinition->held = true;
+    currenttoolfamilydefinition->heldflipx = *x != 0;
+    currenttoolfamilydefinition->heldflipy = *y != 0;
+});
+ICOMMANDS("toolfamily_cornerpush", "s", (char *value),
+{
+    copystring(currenttoolfamilydefinition->cornerpush, value);
+    currenttoolfamilydefinition->cornerpushset = true;
+});
+ICOMMANDS("toolfamily_recipepattern", "s", (char *value),
+{
+    vector<char *> rows;
+    explodelist(value, rows);
+    currenttoolfamilydefinition->patternrows = min(rows.length(), 3);
+    loopi(currenttoolfamilydefinition->patternrows) copystring(currenttoolfamilydefinition->pattern[i], rows[i]);
+    currenttoolfamilydefinition->patternset = true;
+    if(rows.length() > 3) toolfamilydefinitionerror("recipepattern cannot contain more than three rows");
+    rows.deletecontents();
+});
+ICOMMANDS("toolfamily_recipemirror", "i", (int *value), currenttoolfamilydefinition->mirror = *value != 0);
+
+ICOMMANDS("tooloverride_name", "s", (char *value),
+{
+    copystring(currenttooloverridedefinition->name, value);
+    currenttooloverridedefinition->nameset = true;
+});
+ICOMMANDS("tooloverride_icon", "s", (char *value),
+{
+    copystring(currenttooloverridedefinition->icon, value);
+    currenttooloverridedefinition->iconset = true;
+});
+ICOMMANDS("tooloverride_ingredient", "s", (char *value),
+{
+    copystring(currenttooloverridedefinition->ingredient, value);
+    currenttooloverridedefinition->ingredientset = true;
+});
+ICOMMANDS("tooloverride_tier", "i", (int *value),
+{
+    currenttooloverridedefinition->tooltier = *value;
+    currenttooloverridedefinition->tooltierset = true;
+});
+ICOMMANDS("tooloverride_speed", "f", (float *value),
+{
+    currenttooloverridedefinition->toolspeed = *value;
+    currenttooloverridedefinition->toolspeedset = true;
+});
+ICOMMANDS("tooloverride_durability", "i", (int *value),
+{
+    currenttooloverridedefinition->durability = *value;
+    currenttooloverridedefinition->durabilityset = true;
+});
+ICOMMANDS("tooloverride_damage", "f", (float *value),
+{
+    currenttooloverridedefinition->damage = *value;
+    currenttooloverridedefinition->damageset = true;
+});
+ICOMMANDS("tooloverride_heldflip", "ii", (int *x, int *y),
+{
+    currenttooloverridedefinition->heldset = true;
+    currenttooloverridedefinition->heldflipx = *x != 0;
+    currenttooloverridedefinition->heldflipy = *y != 0;
+});
+ICOMMANDS("tooloverride_cornerpush", "s", (char *value),
+{
+    copystring(currenttooloverridedefinition->cornerpush, value);
+    currenttooloverridedefinition->cornerpushset = true;
 });
 
 ICOMMANDS("worlddef_item", "S", (char *body),
@@ -453,6 +822,242 @@ static bool validtooltype(const char *type)
            !cubecasecmp(type, "hammer_chisel");
 }
 
+static void toolgenerationerror(const materialdefinition *material, const toolfamilydefinition *family, const char *message)
+{
+    defformatstring(id, "%s_%s", material ? material->id : "?", family ? family->id : "?");
+    conoutf(CON_ERROR, "failed to generate tool '%s': %s", id, message);
+    ++worlddefinitionerrors;
+}
+
+static bool validcornerpush(const char *value)
+{
+    return value && (!cubecasecmp(value, "left") || !cubecasecmp(value, "right"));
+}
+
+static bool validfamilyrecipe(const toolfamilydefinition &family)
+{
+    if(!family.patternset || family.patternrows < 1 || family.patternrows > 3) return false;
+    const int width = int(strlen(family.pattern[0]));
+    if(width < 1 || width > 3) return false;
+    bool material = false;
+    loopi(family.patternrows)
+    {
+        if(int(strlen(family.pattern[i])) != width) return false;
+        for(const char *symbol = family.pattern[i]; *symbol; ++symbol)
+        {
+            if(*symbol == 'M') material = true;
+            else if(*symbol != 'S' && *symbol != ' ') return false;
+        }
+    }
+    return material;
+}
+
+static bool replaceplaceholder(char *destination, size_t length, const char *source, const char *placeholder, const char *replacement)
+{
+    vector<char> result;
+    const size_t placeholderlength = strlen(placeholder);
+    for(const char *cursor = source; cursor && *cursor;)
+    {
+        if(!strncmp(cursor, placeholder, placeholderlength))
+        {
+            for(const char *value = replacement; *value; ++value) result.add(*value);
+            cursor += placeholderlength;
+        }
+        else result.add(*cursor++);
+    }
+    result.add('\0');
+    if(size_t(result.length()) > length) return false;
+    copystring(destination, result.getbuf(), length);
+    return !strchr(destination, '%');
+}
+
+static void appenddefinitiontext(vector<char> &body, const char *text)
+{
+    for(const char *cursor = text; cursor && *cursor; ++cursor) body.add(*cursor);
+}
+
+static void appenddefinitionescaped(vector<char> &body, const char *text)
+{
+    const char *escaped = escapestring(text ? text : "");
+    appenddefinitiontext(body, escaped);
+}
+
+static void generateworlddeftool(const materialdefinition &material, const toolfamilydefinition &family, tooloverridedefinition *overrides,
+                                 const char *id, const char *icon, const char *ingredient)
+{
+    const char *name = overrides && overrides->nameset ? overrides->name : NULL;
+    defformatstring(defaultname, "%s %s", material.name, family.name);
+    const int tier = overrides && overrides->tooltierset ? overrides->tooltier : material.tooltier;
+    const int durability = overrides && overrides->durabilityset ? overrides->durability : material.durability;
+    const float speed = overrides && overrides->toolspeedset ? overrides->toolspeed : material.toolspeed + family.speedoffset;
+    const float damage = overrides && overrides->damageset ? overrides->damage
+                                                           : family.damagebase + (family.usematerialdamage ? material.damagebonus : 0);
+    const bool held = overrides && overrides->heldset ? true : family.held;
+    const bool heldflipx = overrides && overrides->heldset ? overrides->heldflipx : family.heldflipx;
+    const bool heldflipy = overrides && overrides->heldset ? overrides->heldflipy : family.heldflipy;
+    const char *cornerpush = overrides && overrides->cornerpushset ? overrides->cornerpush : family.cornerpushset ? family.cornerpush : "";
+    vector<char> body;
+    appenddefinitiontext(body, "item [ name ");
+    appenddefinitionescaped(body, name ? name : defaultname);
+    defformatstring(itemtail, "; stack %d; icon ", family.itemstack);
+    appenddefinitiontext(body, itemtail);
+    appenddefinitionescaped(body, icon);
+    defformatstring(scaletail, "; scale %s ]\n", floatstr(family.itemscale));
+    appenddefinitiontext(body, scaletail);
+    if(held)
+    {
+        defformatstring(heldbody, "held [ flip %d %d ]\n", heldflipx ? 1 : 0, heldflipy ? 1 : 0);
+        appenddefinitiontext(body, heldbody);
+    }
+    appenddefinitiontext(body, "tool [ type ");
+    appenddefinitionescaped(body, family.id);
+    string speedtext, damagetext;
+    copystring(speedtext, floatstr(speed));
+    copystring(damagetext, floatstr(damage));
+    defformatstring(toolbody, "; tier %d; speed %s; durability %d; damage %s", tier, speedtext, durability, damagetext);
+    appenddefinitiontext(body, toolbody);
+    if(cornerpush[0])
+    {
+        appenddefinitiontext(body, "; cornerpush ");
+        appenddefinitionescaped(body, cornerpush);
+    }
+    appenddefinitiontext(body, " ]\n");
+    body.add('\0');
+    registerworlddefinition(id, body.getbuf());
+
+    if(!findworlddefinition(id)) return;
+    generatedcraftrecipe &recipe = *generatedcraftrecipes.add(new generatedcraftrecipe);
+    copystring(recipe.id, id);
+    copystring(recipe.output, id);
+    copystring(recipe.ingredient, ingredient);
+    recipe.patternrows = family.patternrows;
+    loopi(recipe.patternrows) copystring(recipe.pattern[i], family.pattern[i]);
+    recipe.mirror = family.mirror;
+    if(overrides) overrides->applied = true;
+}
+
+static bool expandtoolsets()
+{
+    if(toolsetexpanded) return worlddefinitionerrors == 0;
+    toolsetexpanded = true;
+    if(toolsetmaterials.empty() && toolfamilydefinitions.empty()) return worlddefinitionerrors == 0;
+
+    vector<materialdefinition *> selectedmaterials;
+    loopv(toolsetmaterials)
+    {
+        materialdefinition *material = findmaterialdefinition(toolsetmaterials[i]);
+        if(!material)
+        {
+            conoutf(CON_ERROR, "toolset references unknown material \"%s\"", toolsetmaterials[i]);
+            ++worlddefinitionerrors;
+            continue;
+        }
+        if(selectedmaterials.find(material) >= 0)
+        {
+            conoutf(CON_ERROR, "toolset contains duplicate material \"%s\"", material->id);
+            ++worlddefinitionerrors;
+            continue;
+        }
+        selectedmaterials.add(material);
+        if(!material->nameset || !material->name[0] || !material->ingredientset || !material->ingredient[0] || !material->tooltierset ||
+           material->tooltier < 0 || !material->toolspeedset || material->toolspeed <= 0 || !material->durabilityset || material->durability <= 0 ||
+           !material->damagebonusset)
+        {
+            conoutf(CON_ERROR,
+                    "material \"%s\": selected tool material requires name, ingredient, non-negative tier, "
+                    "positive speed/durability, and damagebonus",
+                    material->id);
+            ++worlddefinitionerrors;
+        }
+    }
+    loopv(toolfamilydefinitions)
+    {
+        toolfamilydefinition &family = *toolfamilydefinitions[i];
+        if(!family.nameset || !family.name[0] || !family.iconset || !family.icon[0] || !family.itemstackset || family.itemstack <= 0 ||
+           !family.itemscaleset || family.itemscale <= 0 || !family.damagebaseset || family.damagebase <= 0 || !validtooltype(family.id))
+        {
+            conoutf(CON_ERROR, "toolfamily \"%s\": requires name, icon, positive stack/scale/damagebase, and a valid tool type", family.id);
+            ++worlddefinitionerrors;
+        }
+        if(!validfamilyrecipe(family))
+        {
+            conoutf(CON_ERROR, "toolfamily \"%s\": malformed recipe pattern (expected equal 1-3 character rows using M, S, and spaces)", family.id);
+            ++worlddefinitionerrors;
+        }
+        if(family.cornerpushset && !validcornerpush(family.cornerpush))
+        {
+            conoutf(CON_ERROR, "toolfamily \"%s\": cornerpush must be left or right", family.id);
+            ++worlddefinitionerrors;
+        }
+    }
+
+    vector<char *> generatedids;
+    loopv(selectedmaterials) loopvj(toolfamilydefinitions)
+    {
+        materialdefinition &material = *selectedmaterials[i];
+        toolfamilydefinition &family = *toolfamilydefinitions[j];
+        string id;
+        const int idlength = snprintf(id, sizeof(id), "%s_%s", material.id, family.id);
+        if(idlength < 1 || idlength >= int(sizeof(id)))
+        {
+            toolgenerationerror(&material, &family, "generated id is too long");
+            continue;
+        }
+        bool duplicate = findworlddefinition(id) != NULL;
+        loopvk(generatedids) if(!cubecasecmp(generatedids[k], id)) { duplicate = true; break; }
+        if(duplicate)
+        {
+            toolgenerationerror(&material, &family, "duplicate generated worlddef id");
+            continue;
+        }
+        generatedids.add(newstring(id));
+        string icon;
+        tooloverridedefinition *overrides = findtooloverridedefinition(id);
+        const char *iconsource = overrides && overrides->iconset ? overrides->icon : family.icon;
+        if(!replaceplaceholder(icon, sizeof(icon), iconsource, "%material%", material.id))
+            toolgenerationerror(&material, &family, "icon contains an unresolved placeholder or is too long");
+        if(overrides && overrides->cornerpushset && !validcornerpush(overrides->cornerpush))
+            toolgenerationerror(&material, &family, "override cornerpush must be left or right");
+        const char *ingredient = overrides && overrides->ingredientset ? overrides->ingredient : material.ingredient;
+        if(!ingredient[0]) toolgenerationerror(&material, &family, "material has no crafting ingredient");
+    }
+    generatedids.deletecontents();
+    if(worlddefinitionerrors) return false;
+
+    loopv(selectedmaterials) loopvj(toolfamilydefinitions)
+    {
+        materialdefinition &material = *selectedmaterials[i];
+        toolfamilydefinition &family = *toolfamilydefinitions[j];
+        defformatstring(id, "%s_%s", material.id, family.id);
+        string icon;
+        tooloverridedefinition *overrides = findtooloverridedefinition(id);
+        replaceplaceholder(icon, sizeof(icon), overrides && overrides->iconset ? overrides->icon : family.icon, "%material%", material.id);
+        const char *ingredient = overrides && overrides->ingredientset ? overrides->ingredient : material.ingredient;
+        generateworlddeftool(material, family, overrides, id, icon, ingredient);
+    }
+    loopv(tooloverridedefinitions) if(!tooloverridedefinitions[i]->applied)
+    {
+        conoutf(CON_ERROR, "tooloverride \"%s\": does not name a generated tool", tooloverridedefinitions[i]->id);
+        ++worlddefinitionerrors;
+    }
+    return worlddefinitionerrors == 0;
+}
+
+int numgeneratedcraftrecipes() { return generatedcraftrecipes.length(); }
+const char *getgeneratedcraftrecipeid(int recipe) { return generatedcraftrecipes.inrange(recipe) ? generatedcraftrecipes[recipe]->id : ""; }
+const char *getgeneratedcraftrecipeoutput(int recipe) { return generatedcraftrecipes.inrange(recipe) ? generatedcraftrecipes[recipe]->output : ""; }
+const char *getgeneratedcraftrecipeingredient(int recipe)
+{
+    return generatedcraftrecipes.inrange(recipe) ? generatedcraftrecipes[recipe]->ingredient : "";
+}
+int getgeneratedcraftrecipepatternrows(int recipe) { return generatedcraftrecipes.inrange(recipe) ? generatedcraftrecipes[recipe]->patternrows : 0; }
+const char *getgeneratedcraftrecipepatternrow(int recipe, int row)
+{
+    return generatedcraftrecipes.inrange(recipe) && row >= 0 && row < generatedcraftrecipes[recipe]->patternrows
+         ? generatedcraftrecipes[recipe]->pattern[row] : "";
+}
+bool getgeneratedcraftrecipemirror(int recipe) { return generatedcraftrecipes.inrange(recipe) && generatedcraftrecipes[recipe]->mirror; }
+
 static bool buildworldpersistentindexes()
 {
     bool valid = true;
@@ -482,6 +1087,7 @@ static bool buildworldpersistentindexes()
 
 bool resolveworlddefinitionregistry()
 {
+    if(!expandtoolsets()) return false;
     loopv(worlddefinitions)
     {
         worlddefinition &definition = *worlddefinitions[i];

@@ -858,6 +858,27 @@ bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchan
     return changed;
 }
 
+static void addgeneratedcraftrecipes()
+{
+    loopi(numgeneratedcraftrecipes())
+    {
+        rawrecipe &recipe = *rawrecipes.add(new rawrecipe(getgeneratedcraftrecipeid(i), "(generated toolset)"));
+        recipe.type = RECIPE_SHAPED;
+        copystring(recipe.output, getgeneratedcraftrecipeoutput(i));
+        recipe.outputcount = 1;
+        recipe.mirror = getgeneratedcraftrecipemirror(i);
+        bool usesstick = false;
+        loopj(getgeneratedcraftrecipepatternrows(i))
+        {
+            const char *row = getgeneratedcraftrecipepatternrow(i, j);
+            recipe.pattern.add(newstring(row));
+            if(strchr(row, 'S')) usesstick = true;
+        }
+        recipe.ingredients.add(rawingredient("M", getgeneratedcraftrecipeingredient(i), 1));
+        if(usesstick) recipe.ingredients.add(rawingredient("S", "stick", 1));
+    }
+}
+
 bool reloadrecipes(bool report)
 {
     recipes.deletecontents();
@@ -875,6 +896,7 @@ bool reloadrecipes(bool report)
     bool success = loadrecipefiles("config/game/itemtags");
     success = loadrecipefiles("config/game/recipes") && success;
     success = loadrecipefiles("config/game/furnaces") && success;
+    addgeneratedcraftrecipes();
     compiletags();
     loopv(rawrecipes) compilerecipe(*rawrecipes[i]);
     compilefurnacefuels();
