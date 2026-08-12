@@ -4,6 +4,7 @@
 #include "worlddef.h"
 #ifndef STANDALONE
 #include "../game/worldgen.h"
+#include "../game/weather.h"
 #include "worldruntime.h"
 #endif
 #include <errno.h>
@@ -780,6 +781,7 @@ static void createworld(const char *requestedname)
     worldfirstchunkx = worldfirstchunky = -WORLD_RUNTIME_CENTER;
     if(!loadworlddefinitions()) return;
     game::loadworldseed(chosenworldseed);
+    game::weather::preparemap(worldfolder, chosenworldseed);
 
     freeocta(worldroot);
     worldroot = NULL;
@@ -880,6 +882,7 @@ void startnetworkworld(int seed)
     worldfolder[0] = '\0';
     worldfirstchunkx = worldfirstchunky = -WORLD_RUNTIME_CENTER;
     if(!loadworlddefinitions()) return;
+    game::weather::update(game::weather::getseed(seed));
 
     freeocta(worldroot);
     worldroot = NULL;
@@ -1045,6 +1048,7 @@ static bool loadseedworld(const char *mname, const char *cname)
                 folder);
         return false;
     }
+    game::weather::preparemap(folder, metadata.seed);
 
     setvar("mapscale", WORLD_CHUNK_SCALE, true, false);
     setvar("mapsize", WORLD_CHUNK_MAP_SIZE, true, false);

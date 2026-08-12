@@ -61,10 +61,9 @@ FVAR(weatherprecipitationsnowblendheight, 1.0f, 20.0f, 100.0f);
 VAR(weatherprecipitationsnowgroundtime, 0, 1500, 30000);
 VAR(weatherprecipitationsnowgroundfade, 100, 4000, 30000);
 
-extern int cloudupdateinterval;
 extern int mainmenu;
 extern int worldsnowheight;
-extern float weatherwindspeed, cloudwindangle;
+extern float cloudwindangle;
 
 namespace game
 {
@@ -74,14 +73,23 @@ namespace game
     {
         namespace
         {
+            enum
+            {
+                WEATHER_MAP_VERSION = 1,
+                WEATHER_MAP_SIZE = 2048,
+                WEATHER_MAP_CELL_SIZE = 512
+            };
+
             static FastNoiseLite weathernoise, weatherwarp;
-            static int noiseseed = INT_MIN, settingsversion = 0;
+            static vector<uchar> weathermap;
+            static string currentmapfolder = "";
+            static int mapseed = INT_MIN, settingsversion = 0;
             static uint currentsettingshash = 0;
             static float rainbudget = 0.0f, snowbudget = 0.0f;
             static bool synchronized = false;
-            static int synchronizedseed = 0, synchronizedat = 0, synchronizedupdateinterval = 0;
+            static int synchronizedseed = 0, synchronizedat = 0;
             static double synchronizedmillis = 0.0;
-            static float synchronizedweatherspeed = 0.0f, synchronizedcloudspeed = 0.0f, synchronizedwindangle = 0.0f;
+            static float synchronizedcloudspeed = 0.0f, synchronizedwindangle = 0.0f;
 
             static uint mixhash(uint value)
             {
@@ -112,9 +120,6 @@ namespace game
             static uint settingshash(int seed)
             {
                 uint hash = mixhash(uint(seed));
-                addhash(hash, hashfloat(weatherscale));
-                addhash(hash, hashfloat(weatherwarpscale));
-                addhash(hash, hashfloat(weatherwarpamplitude));
                 addhash(hash, hashfloat(weatherclearthreshold));
                 addhash(hash, hashfloat(weatherfairthreshold));
                 addhash(hash, hashfloat(weatherovercastthreshold));
@@ -138,10 +143,127 @@ namespace game
                 return 0.5f + 0.5f * smoothstep(center, high, value);
             }
 
-            static float sampleweather(float x, float y)
+            static float samplegeneratedweather(float x, float y)
             {
                 if(weatherwarpamplitude > 0.0f) weatherwarp.DomainWarp(x, y);
                 return clamp(0.5f + 0.5f * weathernoise.GetNoise(x, y), 0.0f, 1.0f);
+            }
+
+            static void setupweathernoise(int seed)
+            {
+                weathernoise.SetSeed(int(mixhash(uint(seed) ^ 0xA341316CU)));
+                weathernoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+                weathernoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+                weathernoise.SetFractalOctaves(2);
+                weathernoise.SetFractalLacunarity(2.0f);
+                weathernoise.SetFractalGain(0.35f);
+                weathernoise.SetFrequency(weatherscale);
+
+                weatherwarp.SetSeed(int(mixhash(uint(seed) ^ 0x9E3779B9U)));
+                weatherwarp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+                weatherwarp.SetFractalType(FastNoiseLite::FractalType_None);
+                weatherwarp.SetFrequency(weatherwarpscale);
+                weatherwarp.SetDomainWarpAmp(weatherwarpamplitude);
+            }
+
+            static void generateweathermap(int seed)
+            {
+                setupweathernoise(seed);
+                weathermap.setsize(0);
+                const int total = WEATHER_MAP_SIZE * WEATHER_MAP_SIZE;
+                weathermap.growbuf(total);
+                loopi(total) weathermap.add(0);
+
+                const float halfspan = WEATHER_MAP_SIZE * WEATHER_MAP_CELL_SIZE * 0.5f;
+                for(int y = 0; y < WEATHER_MAP_SIZE; ++y)
+                {
+                    const float worldy = (y + 0.5f) * WEATHER_MAP_CELL_SIZE - halfspan;
+                    for(int x = 0; x < WEATHER_MAP_SIZE; ++x)
+                    {
+                        const float worldx = (x + 0.5f) * WEATHER_MAP_CELL_SIZE - halfspan;
+                        const float value = samplegeneratedweather(worldx, worldy);
+                        weathermap[y * WEATHER_MAP_SIZE + x] = uchar(clamp(int(value * 255.0f + 0.5f), 0, 255));
+                    }
+                }
+                mapseed = seed;
+                currentmapfolder[0] = '\0';
+                ++settingsversion;
+            }
+
+            static float sampleweather(float x, float y)
+            {
+                if(weathermap.length() != WEATHER_MAP_SIZE * WEATHER_MAP_SIZE) return 0.5f;
+
+                const double offset = WEATHER_MAP_SIZE * 0.5 - 0.5;
+                const double mapx = double(x) / WEATHER_MAP_CELL_SIZE + offset;
+                const double mapy = double(y) / WEATHER_MAP_CELL_SIZE + offset;
+                const double wrappedx = mapx - floor(mapx / WEATHER_MAP_SIZE) * WEATHER_MAP_SIZE;
+                const double wrappedy = mapy - floor(mapy / WEATHER_MAP_SIZE) * WEATHER_MAP_SIZE;
+                const int x0 = int(floor(wrappedx)), y0 = int(floor(wrappedy));
+                const int x1 = (x0 + 1) % WEATHER_MAP_SIZE, y1 = (y0 + 1) % WEATHER_MAP_SIZE;
+                const float tx = float(wrappedx - x0), ty = float(wrappedy - y0);
+                const float v00 = weathermap[y0 * WEATHER_MAP_SIZE + x0] / 255.0f;
+                const float v10 = weathermap[y0 * WEATHER_MAP_SIZE + x1] / 255.0f;
+                const float v01 = weathermap[y1 * WEATHER_MAP_SIZE + x0] / 255.0f;
+                const float v11 = weathermap[y1 * WEATHER_MAP_SIZE + x1] / 255.0f;
+                return (v00 + (v10 - v00) * tx) + ((v01 + (v11 - v01) * tx) - (v00 + (v10 - v00) * tx)) * ty;
+            }
+
+            static bool loadweathermap(const char *folder, int seed)
+            {
+                if(!folder || !*folder) return false;
+                defformatstring(name, "media/map/%s/weather.map", folder);
+                stream *file = openfile(path(name), "rb");
+                if(!file) return false;
+
+                char magic[4];
+                const bool validheader = file->read(magic, sizeof(magic)) == sizeof(magic) && !memcmp(magic, "CCWM", sizeof(magic));
+                const uint version = file->getlil<uint>(), storedseed = file->getlil<uint>(), size = file->getlil<uint>(),
+                           cellsize = file->getlil<uint>();
+                if(!validheader || version != WEATHER_MAP_VERSION || storedseed != uint(seed) || size != WEATHER_MAP_SIZE ||
+                   cellsize != WEATHER_MAP_CELL_SIZE)
+                {
+                    delete file;
+                    conoutf(CON_WARN, "weather map %s is incompatible; regenerating it", name);
+                    return false;
+                }
+
+                const int total = WEATHER_MAP_SIZE * WEATHER_MAP_SIZE;
+                weathermap.setsize(0);
+                weathermap.growbuf(total);
+                loopi(total) weathermap.add(0);
+                const bool loaded = file->read(weathermap.getbuf(), total) == size_t(total);
+                delete file;
+                if(!loaded)
+                {
+                    weathermap.setsize(0);
+                    conoutf(CON_WARN, "weather map %s is truncated; regenerating it", name);
+                    return false;
+                }
+                mapseed = seed;
+                copystring(currentmapfolder, folder);
+                ++settingsversion;
+                conoutf("loaded fixed weather map %s", name);
+                return true;
+            }
+
+            static bool saveweathermap(const char *folder)
+            {
+                if(!folder || !*folder || mapseed == INT_MIN || weathermap.length() != WEATHER_MAP_SIZE * WEATHER_MAP_SIZE) return false;
+                defformatstring(name, "media/map/%s/weather.map", folder);
+                stream *file = openfile(path(name), "wb");
+                if(!file)
+                {
+                    conoutf(CON_WARN, "could not save fixed weather map to %s", name);
+                    return false;
+                }
+                const bool saved = file->write("CCWM", 4) == 4 && file->putlil<uint>(WEATHER_MAP_VERSION) && file->putlil<uint>(uint(mapseed)) &&
+                                   file->putlil<uint>(WEATHER_MAP_SIZE) && file->putlil<uint>(WEATHER_MAP_CELL_SIZE) &&
+                                   file->write(weathermap.getbuf(), weathermap.length()) == size_t(weathermap.length()) && file->flush();
+                delete file;
+                if(!saved) conoutf(CON_WARN, "could not finish saving fixed weather map to %s", name);
+                else conoutf("saved fixed weather map %s", name);
+                return saved;
             }
 
             static float coveragefromweather(float value)
@@ -164,47 +286,31 @@ namespace game
                 return coverage + (overcastcoverage - coverage) * overcastblend;
             }
 
-            static void currentweatherposition(float &x, float &y)
-            {
-                const double millis = gettimemillis();
-                const int updateinterval = getupdateinterval(cloudupdateinterval);
-                const double weatherstep = floor(millis / max(updateinterval, 1));
-                const float weatherseconds = float(weatherstep * updateinterval / 1000.0);
-                const float angle = getwindangle(cloudwindangle) * RAD;
-                const float speed = getweatherspeed(weatherwindspeed);
-                x -= cosf(angle) * speed * weatherseconds;
-                y -= sinf(angle) * speed * weatherseconds;
-            }
         }
 
         void update(int seed)
         {
             seed = getseed(seed);
+            if(seed != mapseed || weathermap.length() != WEATHER_MAP_SIZE * WEATHER_MAP_SIZE) generateweathermap(seed);
             const uint hash = settingshash(seed);
-            if(seed == noiseseed && hash == currentsettingshash) return;
+            if(hash == currentsettingshash) return;
 
-            noiseseed = seed;
             currentsettingshash = hash;
             ++settingsversion;
+        }
 
-            weathernoise.SetSeed(int(mixhash(uint(seed) ^ 0xA341316CU)));
-            weathernoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
-            weathernoise.SetFractalType(FastNoiseLite::FractalType_FBm);
-            weathernoise.SetFractalOctaves(2);
-            weathernoise.SetFractalLacunarity(2.0f);
-            weathernoise.SetFractalGain(0.35f);
-            weathernoise.SetFrequency(weatherscale);
-
-            weatherwarp.SetSeed(int(mixhash(uint(seed) ^ 0x9E3779B9U)));
-            weatherwarp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
-            weatherwarp.SetFractalType(FastNoiseLite::FractalType_None);
-            weatherwarp.SetFrequency(weatherwarpscale);
-            weatherwarp.SetDomainWarpAmp(weatherwarpamplitude);
+        bool preparemap(const char *folder, int seed)
+        {
+            if(folder && !strcmp(currentmapfolder, folder) && mapseed == seed &&
+               weathermap.length() == WEATHER_MAP_SIZE * WEATHER_MAP_SIZE) return true;
+            if(loadweathermap(folder, seed)) return true;
+            generateweathermap(seed);
+            if(folder) copystring(currentmapfolder, folder);
+            return saveweathermap(folder);
         }
 
         void reset()
         {
-            noiseseed = INT_MIN;
             currentsettingshash = 0;
             rainbudget = snowbudget = 0.0f;
             ++settingsversion;
@@ -213,23 +319,20 @@ namespace game
         void clearsync()
         {
             synchronized = false;
-            synchronizedseed = synchronizedat = synchronizedupdateinterval = 0;
+            synchronizedseed = synchronizedat = 0;
             synchronizedmillis = 0.0;
-            synchronizedweatherspeed = synchronizedcloudspeed = synchronizedwindangle = 0.0f;
+            synchronizedcloudspeed = synchronizedwindangle = 0.0f;
             reset();
         }
 
-        void synctime(int seed, uint millis, int updateinterval, float weatherspeed, float cloudspeed, float windangle)
+        void synctime(int seed, uint millis, float cloudspeed, float windangle)
         {
-            const bool settingschanged = !synchronized || synchronizedseed != seed || synchronizedupdateinterval != updateinterval ||
-                                         synchronizedweatherspeed != weatherspeed || synchronizedcloudspeed != cloudspeed ||
+            const bool settingschanged = !synchronized || synchronizedseed != seed || synchronizedcloudspeed != cloudspeed ||
                                          synchronizedwindangle != windangle;
             synchronized = true;
             synchronizedseed = seed;
             synchronizedat = totalmillis;
-            synchronizedupdateinterval = max(updateinterval, 1);
             synchronizedmillis = double(millis) + getserverrtt() * 0.5;
-            synchronizedweatherspeed = max(weatherspeed, 0.0f);
             synchronizedcloudspeed = max(cloudspeed, 0.0f);
             synchronizedwindangle = windangle;
             if(settingschanged) reset();
@@ -244,16 +347,6 @@ namespace game
         {
             if(!synchronized) return environment::gettimemillis();
             return synchronizedmillis + max(totalmillis - synchronizedat, 0);
-        }
-
-        int getupdateinterval(int fallback)
-        {
-            return synchronized ? synchronizedupdateinterval : fallback;
-        }
-
-        float getweatherspeed(float fallback)
-        {
-            return synchronized ? synchronizedweatherspeed : fallback;
         }
 
         float getcloudspeed(float fallback)
@@ -278,7 +371,6 @@ namespace game
 
         float samplecurrentovercast(float x, float y)
         {
-            currentweatherposition(x, y);
             const float value = sampleweather(x, y);
             const float fairthreshold = clamp(weatherfairthreshold, weatherclearthreshold, 1.0f);
             const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
@@ -288,7 +380,6 @@ namespace game
 
         static float samplecurrentprecipitation(float x, float y)
         {
-            currentweatherposition(x, y);
             const float value = sampleweather(x, y);
             const float fairthreshold = clamp(weatherfairthreshold, weatherclearthreshold, 1.0f);
             const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
@@ -372,7 +463,6 @@ namespace game
             update(getworldseed());
             vec position = player1->o;
             worldpositiontoabsolute(position);
-            currentweatherposition(position.x, position.y);
 
             const float value = sampleweather(position.x, position.y);
             const float clearthreshold = clamp(weatherclearthreshold, 0.0f, 1.0f);

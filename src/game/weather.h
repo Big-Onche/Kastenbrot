@@ -6,13 +6,12 @@ namespace game
     namespace weather
     {
         void update(int seed);
+        bool preparemap(const char *folder, int seed);
         void reset();
         void clearsync();
-        void synctime(int seed, uint millis, int updateinterval, float weatherspeed, float cloudspeed, float windangle);
+        void synctime(int seed, uint millis, float cloudspeed, float windangle);
         int getseed(int fallback);
         double gettimemillis();
-        int getupdateinterval(int fallback);
-        float getweatherspeed(float fallback);
         float getcloudspeed(float fallback);
         float getwindangle(float fallback);
         int getsettingsversion();

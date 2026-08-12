@@ -41,7 +41,6 @@ VARP(clouds, 0, 1, 1);
 VARP(cloudcellsize, 16, 128, 256);
 VARP(clouddistance, 512, 32768, 32768);
 VARP(cloudrebuildmargin, 1, 8, 64);
-VARP(cloudupdateinterval, 1000, 60000, 600000);
 VARP(cloudsmoothpasses, 0, 2, 4);
 VARP(cloudsmoothkeep, 0, 3, 8);
 VARP(cloudsmoothfill, 0, 5, 8);
@@ -52,9 +51,6 @@ VARP(cloudheight, 16, 192, 1024);
 FVARP(clouddome, 0.0f, 0.07f, 2.0f);
 FVARP(cloudscale, 0.00005f, 0.00090f, 0.05f);
 FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
-
-// weather movement; coverage generation lives in game/weather.cpp
-FVARP(weatherwindspeed, 0.0f, 0.20f, 16.0f);
 
 // wind
 FVARP(cloudwindspeed, 0.0f, 16.0f, 64.0f);
@@ -136,12 +132,12 @@ namespace
         vector<cloudface> faces;
         vector<uchar> occupancy;
         GLuint vbo, ebo, masktex;
-        int numverts, originx, originy, size, centerx, centery, settingsversion, weatherversion;
+        int numverts, originx, originy, size, centerx, centery, settingsversion;
         bool built;
 
         cloudlayer()
             : vbo(0), ebo(0), masktex(0), numverts(0), originx(0), originy(0), size(0), centerx(INT_MIN), centery(INT_MIN),
-              settingsversion(0), weatherversion(0), built(false)
+              settingsversion(0), built(false)
         {
         }
     };
@@ -172,9 +168,9 @@ namespace
 
     static cloudlayer cloudstate;
     static FastNoiseLite cloudnoise;
-    static int noiseseed = INT_MIN, currentsettingsversion = 0, currentweathersettingsversion = 0, currentweatherversion = 0, lastcloudframe = -1;
+    static int noiseseed = INT_MIN, currentsettingsversion = 0, currentweathersettingsversion = 0, lastcloudframe = -1;
     static uint currentsettingshash = 0;
-    static vec cloudwind(0, 0, 0), weatherwind(0, 0, 0), cloudworldorigin(0, 0, 0);
+    static vec cloudwind(0, 0, 0), cloudworldorigin(0, 0, 0);
     static GLuint cloudscenefbo = 0, cloudscenetex = 0;
     static int cloudscenew = 0, cloudsceneh = 0;
     static float cloudscreenx = 0.0f, cloudscreeny = 0.0f, cloudscreenw = 1.0f, cloudscreenh = 1.0f, cloudrenderalpha = 1.0f;
@@ -220,10 +216,8 @@ namespace
         addhash(hash, uint(cloudheight));
         addhash(hash, hashfloat(clouddome));
         addhash(hash, hashfloat(cloudscale));
-        addhash(hash, hashfloat(game::weather::getweatherspeed(weatherwindspeed)));
         addhash(hash, hashfloat(game::weather::getcloudspeed(cloudwindspeed)));
         addhash(hash, hashfloat(game::weather::getwindangle(cloudwindangle)));
-        addhash(hash, uint(game::weather::getupdateinterval(cloudupdateinterval)));
         return hash;
     }
 
@@ -470,7 +464,7 @@ namespace
             const float cloudspacey = (originy + y + 0.5f) * cloudcellsize;
             const float actualx = cloudspacex + cloudwind.x;
             const float actualy = cloudspacey + cloudwind.y;
-            const float cloudcoverage = game::weather::samplecoverage(actualx - weatherwind.x, actualy - weatherwind.y);
+            const float cloudcoverage = game::weather::samplecoverage(actualx, actualy);
             mask.cell(x, y) = rawcloudcell(cloudspacex, cloudspacey, cloudcoverage) ? CLOUD_FAIR : CLOUD_EMPTY;
         }
 
@@ -526,7 +520,6 @@ namespace
         layer.centerx = centerx;
         layer.centery = centery;
         layer.settingsversion = currentsettingsversion;
-        layer.weatherversion = currentweatherversion;
         layer.built = true;
     }
 
@@ -857,7 +850,7 @@ namespace
     // The mask is rendered in cloud-local XY space, so cloud wind/camera translation only changes the sampling transform and does not force a mask rerender every frame
     static GLuint cloudshadowfbo[2] = { 0, 0 }, cloudshadowtex[2] = { 0, 0 };
     static int cloudshadowrt = 0;
-    static int cloudshadowmasksettingsversion = -1, cloudshadowmaskweatherversion = -1;
+    static int cloudshadowmasksettingsversion = -1;
     static int cloudshadowmaskoriginx = INT_MIN, cloudshadowmaskoriginy = INT_MIN;
     static int cloudshadowmaskmapsize = 0;
     static float cloudshadowmasksoftness = -1.0f;
@@ -869,7 +862,7 @@ namespace
         cloudshadowfbo[0] = cloudshadowfbo[1] = 0;
         cloudshadowtex[0] = cloudshadowtex[1] = 0;
         cloudshadowrt = 0;
-        cloudshadowmasksettingsversion = cloudshadowmaskweatherversion = -1;
+        cloudshadowmasksettingsversion = -1;
         cloudshadowmaskoriginx = cloudshadowmaskoriginy = INT_MIN;
         cloudshadowmaskmapsize = 0;
         cloudshadowmasksoftness = -1.0f;
@@ -982,7 +975,6 @@ namespace
 
         const bool stale =
             cloudshadowmasksettingsversion != cloudstate.settingsversion ||
-            cloudshadowmaskweatherversion != cloudstate.weatherversion ||
             cloudshadowmaskoriginx != cloudstate.originx ||
             cloudshadowmaskoriginy != cloudstate.originy ||
             cloudshadowmaskmapsize != cloudshadowmapsize ||
@@ -1023,7 +1015,6 @@ namespace
         }
 
         cloudshadowmasksettingsversion = cloudstate.settingsversion;
-        cloudshadowmaskweatherversion = cloudstate.weatherversion;
         cloudshadowmaskoriginx = cloudstate.originx;
         cloudshadowmaskoriginy = cloudstate.originy;
         cloudshadowmaskmapsize = cloudshadowmapsize;
@@ -1177,12 +1168,6 @@ void updateclouds()
     const vec direction(cosf(angle), sinf(angle), 0.0f);
     cloudwind = vec(direction).mul(game::weather::getcloudspeed(cloudwindspeed) * seconds);
 
-    const int updateinterval = game::weather::getupdateinterval(cloudupdateinterval);
-    const int weatherstep = int(floor(weathermillis / max(updateinterval, 1)));
-    const float weatherseconds = weatherstep * updateinterval / 1000.0f;
-    weatherwind = vec(direction).mul(game::weather::getweatherspeed(weatherwindspeed) * weatherseconds);
-    currentweatherversion = weatherstep;
-
     vec absolute = camera1->o;
     worldpositiontoabsolute(absolute);
     cloudworldorigin = vec(absolute).sub(camera1->o);
@@ -1192,7 +1177,7 @@ void updateclouds()
     const int margin = max(cloudrebuildmargin, 1);
 
     const bool moved = cloudstate.centerx == INT_MIN || abs(centerx - cloudstate.centerx) >= margin || abs(centery - cloudstate.centery) >= margin;
-    const bool stale = !cloudstate.built || cloudstate.settingsversion != currentsettingsversion || cloudstate.weatherversion != currentweatherversion;
+    const bool stale = !cloudstate.built || cloudstate.settingsversion != currentsettingsversion;
     if(moved || stale) buildcloudlayer(centerx, centery);
 }
 
@@ -1398,6 +1383,6 @@ void cleanupclouds()
     noiseseed = INT_MIN;
     game::weather::reset();
     currentsettingshash = 0;
-    currentsettingsversion = currentweathersettingsversion = currentweatherversion = 0;
+    currentsettingsversion = currentweathersettingsversion = 0;
     lastcloudframe = -1;
 }
