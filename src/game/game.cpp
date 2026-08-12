@@ -2969,16 +2969,17 @@ namespace game
     static uint survivalbreakrequestid = 0;
     static int survivalblockitem(const creativetarget &target);
 
-    static bool usesurvivalhammerchisel()
+    static bool usesurvivalcornertool(int button)
     {
-        const int slot = clampcreativehotbarslot(), tool = getinventoryitemindex("hammer_chisel");
-        if(tool < 0 || survivalcounts[slot] <= 0 || survivalitems[slot] != tool || survivaldurabilities[slot] <= 0) return false;
+        const int slot = clampcreativehotbarslot(), tool = survivalitems[slot];
+        if(survivalcounts[slot] <= 0 || survivaldurabilities[slot] <= 0 || getinventorytoolcornerpush(tool) != button)
+            return false;
 
         creativetarget target;
         if(!findcreativetarget(target) || target.type != CREATIVE_TARGET_CUBE) return true;
         const ivec center = ivec(target.cube.o).add(target.cube.grid / 2);
         const int worldindex = getworldcubeindexat(center, target.cube.orient);
-        if(!isworldcubepushable(worldindex)) return true;
+        if(!isworldcubepushable(worldindex, tool)) return true;
 
         const int d = target.cube.orient >> 1;
         target.cube.corner = (target.hitpoint[R[d]] - target.cube.o[R[d]] >= target.cube.grid * 0.5f ? 1 : 0) |
@@ -2987,8 +2988,15 @@ namespace game
         {
             const int packedorient = target.cube.orient + target.cube.corner * 6;
             sendworldaction(newworldrequestid(), WORLD_ACTION_PUSH_CORNER, target.cube.o, packedorient, getworldcubeitem(worldindex), slot);
+            player1->renderplacemillis = lastmillis;
+            player1->renderplacetoggle = !player1->renderplacetoggle;
         }
-        else if(pushworldcubecorner(target.cube, true)) wearselectedsurvivaltool();
+        else if(pushworldcubecorner(target.cube, true, tool))
+        {
+            wearselectedsurvivaltool();
+            player1->renderplacemillis = lastmillis;
+            player1->renderplacetoggle = !player1->renderplacetoggle;
+        }
         return true;
     }
 
@@ -3307,7 +3315,7 @@ namespace game
 #endif
                 if(creativeenabled() && !hitnpc) creativeremove();
 #ifndef STANDALONE
-                else if(survivalenabled() && !hitnpc && !usesurvivalhammerchisel()) updatesurvivalbreaking();
+                else if(survivalenabled() && !hitnpc && !usesurvivalcornertool(TOOL_CORNER_PUSH_LEFT)) updatesurvivalbreaking();
 #endif
             }
         }
@@ -3330,7 +3338,7 @@ namespace game
     {
         if(*down)
         {
-            if(!beginfooduse()) creativeplace();
+            if(!beginfooduse() && !(survivalenabled() && usesurvivalcornertool(TOOL_CORNER_PUSH_RIGHT))) creativeplace();
         }
         else stopfooduse();
     });

@@ -133,9 +133,12 @@ int getworldcubeitem(int index)
     return index >= 0 ? worldcubedefinitions[index]->item : -1;
 }
 
-bool isworldcubepushable(int index)
+bool isworldcubepushable(int index, int toolitem)
 {
-    const int tag = finditemtag("pushable_cubes");
+    if(!inventoryitemdefinitions.inrange(toolitem) || !inventoryitemdefinitions[toolitem]->hastool) return false;
+    string tagid;
+    formatstring(tagid, "pushable_with_%s", inventoryitemdefinitions[toolitem]->tooltype);
+    const int tag = finditemtag(tagid);
     return tag >= 0 && itemhastag(getworldcubeitem(index), tag);
 }
 
@@ -523,6 +526,11 @@ int getinventorytoolmaxdurability(int index)
     return isinventorytool(index) ? inventoryitemdefinitions[index]->maxdurability : 0;
 }
 
+int getinventorytoolcornerpush(int index)
+{
+    return isinventorytool(index) ? inventoryitemdefinitions[index]->toolcornerpush : TOOL_CORNER_PUSH_NONE;
+}
+
 float getinventorytooldamage(int index)
 {
     return isinventorytool(index) ? inventoryitemdefinitions[index]->tooldamage : 1.0f;
@@ -889,6 +897,7 @@ const char *getinventorytooltype(int index) { return isinventorytool(index) ? in
 int getinventorytooltier(int index) { return isinventorytool(index) ? inventoryitemdefinitions[index]->tooltier : 0; }
 float getinventorytoolspeed(int index) { return isinventorytool(index) ? inventoryitemdefinitions[index]->toolspeed : 1.0f; }
 int getinventorytoolmaxdurability(int index) { return isinventorytool(index) ? inventoryitemdefinitions[index]->maxdurability : 0; }
+int getinventorytoolcornerpush(int index) { return isinventorytool(index) ? inventoryitemdefinitions[index]->toolcornerpush : TOOL_CORNER_PUSH_NONE; }
 float getinventorytooldamage(int index) { return isinventorytool(index) ? inventoryitemdefinitions[index]->tooldamage : 1.0f; }
 
 static worlddefinition *getworlddefinition(int type, int index)
@@ -946,9 +955,12 @@ int getworldcubeitem(int index)
     return worldcubedefinitions.inrange(index) ? worldcubedefinitions[index]->item : -1;
 }
 
-bool isworldcubepushable(int index)
+bool isworldcubepushable(int index, int toolitem)
 {
-    const int tag = finditemtag("pushable_cubes");
+    if(!inventoryitemdefinitions.inrange(toolitem) || !inventoryitemdefinitions[toolitem]->hastool) return false;
+    string tagid;
+    formatstring(tagid, "pushable_with_%s", inventoryitemdefinitions[toolitem]->tooltype);
+    const int tag = finditemtag(tagid);
     return tag >= 0 && itemhastag(getworldcubeitem(index), tag);
 }
 

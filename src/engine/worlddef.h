@@ -29,7 +29,7 @@ struct worlddefinition
     ullong persistentid;
     float worldsize, heldsize, texsize, lightradius, hardness, toolspeed, tooldamage, foodhealth;
     int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit, foodtime;
-    int requiredtier, toolwear, tooltier, maxdurability, supportdistance;
+    int requiredtier, toolwear, tooltier, maxdurability, toolcornerpush, supportdistance;
     vector<worlddropdefinition> drops;
     bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, hasfood, hassupport;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;

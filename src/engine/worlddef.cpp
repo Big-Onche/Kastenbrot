@@ -25,7 +25,8 @@ worlddefinition::worlddefinition(const char *id)
       tooldamage(2.0f),
       foodhealth(0),
       maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
-      furnaceinputlimit(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), supportdistance(0), hasitem(false),
+      furnaceinputlimit(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), toolcornerpush(TOOL_CORNER_PUSH_NONE),
+      supportdistance(0), hasitem(false),
       hasheld(false), hascube(false),
       scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), hasfood(false), hassupport(false), itemstackset(false),
       scattermodelset(false),
@@ -166,6 +167,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "speed")) return "worlddef_speed";
         if(!strcmp(command, "durability")) return "worlddef_durability";
         if(!strcmp(command, "damage")) return "worlddef_damage";
+        if(!strcmp(command, "cornerpush")) return "worlddef_cornerpush";
     }
     else if(component == WORLDDEF_FURNACE)
     {
@@ -415,6 +417,12 @@ ICOMMANDS("worlddef_speed", "f", (float *value),
 });
 ICOMMANDS("worlddef_durability", "i", (int *value), currentworlddefinition->maxdurability = *value);
 ICOMMANDS("worlddef_damage", "f", (float *value), currentworlddefinition->tooldamage = *value);
+ICOMMANDS("worlddef_cornerpush", "s", (char *value),
+{
+    if(!cubecasecmp(value, "left")) currentworlddefinition->toolcornerpush = TOOL_CORNER_PUSH_LEFT;
+    else if(!cubecasecmp(value, "right")) currentworlddefinition->toolcornerpush = TOOL_CORNER_PUSH_RIGHT;
+    else worlddefinitionerror("tool cornerpush must be left or right");
+});
 ICOMMANDS("worlddef_slots", "i", (int *value), currentworlddefinition->furnaceinputslots = *value);
 ICOMMANDS("worlddef_capacity", "i", (int *value), currentworlddefinition->furnaceinputlimit = *value);
 ICOMMANDS("worlddef_foodhealth", "f", (float *value), currentworlddefinition->foodhealth = *value);

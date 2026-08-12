@@ -164,9 +164,9 @@ extern bool getworldcubefall(int index);
 extern int getworldcubesupportdistance(int index);
 extern bool getworldcubesupportdecay(int index);
 extern bool getworldcubesupportpersistentonplace(int index);
-extern bool isworldcubepushable(int index);
+extern bool isworldcubepushable(int index, int toolitem);
 extern const char *getworldcubetexture(int index, int face = WORLD_CUBE_TOP);
-extern bool pushworldcubecorner(selinfo &sel, bool local);
+extern bool pushworldcubecorner(selinfo &sel, bool local, int toolitem = -1);
 extern int numworldscatters();
 extern const char *getworldscattername(int index);
 extern ullong getworldscatterpersistentid(int index);
@@ -195,6 +195,8 @@ extern int getinventoryitemindex(const char *id);
 extern bool isinventoryfood(int index);
 extern float getinventoryfoodhealth(int index);
 extern int getinventoryfoodtime(int index);
+enum { TOOL_CORNER_PUSH_NONE = 0, TOOL_CORNER_PUSH_LEFT, TOOL_CORNER_PUSH_RIGHT };
+extern int getinventorytoolcornerpush(int index);
 
 enum { FURNACE_INPUT_MAX = 4 };
 struct furnacematch

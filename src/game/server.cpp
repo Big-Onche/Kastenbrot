@@ -3932,17 +3932,17 @@ namespace server
         if(!validactiontarget(ci, target, orient, error)) return rejectaction(ci, requestid, error, true);
         if(!actionrate(ci, false)) return rejectaction(ci, requestid, "excessive shaping rate", true);
 
-        const int tool = getinventoryitemindex("hammer_chisel");
-        if(servercreative() || tool < 0 || slot < 0 || slot >= SURVIVAL_HOTBAR_SLOTS || slot != ci.selectedslot ||
-           ci.inventoryitems[slot] != tool || ci.inventorycounts[slot] != 1 || ci.inventorydurabilities[slot] <= 0)
-            return rejectaction(ci, requestid, "hammer and chisel is not owned in the selected inventory slot", true, true);
+        if(servercreative() || slot < 0 || slot >= SURVIVAL_HOTBAR_SLOTS || slot != ci.selectedslot || ci.inventorycounts[slot] != 1 ||
+           ci.inventorydurabilities[slot] <= 0 || getinventorytoolcornerpush(ci.inventoryitems[slot]) == TOOL_CORNER_PUSH_NONE)
+            return rejectaction(ci, requestid, "a shaping tool is not owned in the selected inventory slot", true, true);
+        const int tool = ci.inventoryitems[slot];
 
         const int claimedworldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1,
                   blockitem = serverblockitem(target), authoritativeworldindex = getworlditemtype(blockitem) == WORLD_ITEM_CUBE
                                                        ? getworlditemindex(blockitem) : -1;
-        if(claimedworldindex < 0 || !isworldcubepushable(claimedworldindex) ||
+        if(claimedworldindex < 0 || !isworldcubepushable(claimedworldindex, tool) ||
            (authoritativeworldindex >= 0 && blockitem != item) ||
-           (authoritativeworldindex >= 0 && !isworldcubepushable(authoritativeworldindex)))
+           (authoritativeworldindex >= 0 && !isworldcubepushable(authoritativeworldindex, tool)))
             return rejectaction(ci, requestid, "target cube cannot be pushed");
         if(servercornerpushcount(target, orient, corner) >= 8)
             return rejectaction(ci, requestid, "target corner is already fully pushed");

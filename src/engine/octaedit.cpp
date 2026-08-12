@@ -2146,7 +2146,7 @@ void mpeditface(int dir, int mode, selinfo &sel, bool local)
         sel.o[d] += sel.grid * seldir;
 }
 
-bool pushworldcubecorner(selinfo &sel, bool local)
+bool pushworldcubecorner(selinfo &sel, bool local, int toolitem)
 {
     if(sel.grid != 16 || sel.s != ivec(1, 1, 1) || sel.orient < O_LEFT || sel.orient > O_TOP || sel.corner < 0 || sel.corner > 3)
         return false;
@@ -2157,7 +2157,7 @@ bool pushworldcubecorner(selinfo &sel, bool local)
     if(origin != sel.o || size != sel.grid || c.children || isempty(c)) return false;
 
     const ivec center = ivec(sel.o).add(sel.grid / 2);
-    if(!isworldcubepushable(getworldcubeindexat(center, sel.orient))) return false;
+    if(toolitem >= 0 && !isworldcubepushable(getworldcubeindexat(center, sel.orient), toolitem)) return false;
 
     const int d = dimension(sel.orient), dc = dimcoord(sel.orient), inward = dc ? -1 : 1;
     ivec corner;
