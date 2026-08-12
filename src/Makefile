@@ -125,7 +125,8 @@ CLIENT_OBJS= \
 	game/render.o \
 	game/server.o \
 	game/weather.o \
-	game/world.o
+	game/world.o \
+	game/worldgen.o
 
 ifeq ($(TRACY),1)
 CLIENT_OBJS+= include/tracy/public/TracyClient.o
@@ -466,12 +467,13 @@ engine/world.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/world.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/world.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
-engine/worldio.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h shared/geom.h
+engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldruntime.h engine/worldstream.cpp engine/worldvisibility.cpp
+engine/worldio.o: engine/worlddiff.cpp engine/worldedit.cpp game/worldcontent.cpp game/worldrender.cpp game/worldgen.h shared/cube.h shared/tools.h shared/geom.h
 engine/worldio.o: shared/ents.h shared/command.h shared/glexts.h
 engine/worldio.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/worldio.o: engine/world.h engine/octa.h engine/light.h
 engine/worldio.o: engine/texture.h engine/bih.h engine/model.h
-engine/worldio.o: game/world.h include/FastNoiseLite.h
+engine/worldio.o: game/worldgen.h
 engine/worlddef.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h
 game/client.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/client.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
@@ -500,6 +502,8 @@ game/weather.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
 game/world.o: game/game.h game/world.h shared/cube.h shared/tools.h shared/geom.h
 game/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/world.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
+game/worldgen.o: game/game.h game/world.h game/worldgen.h engine/engine.h engine/worlddef.h engine/worldruntime.h
+game/worldgen.o: shared/cube.h shared/tools.h shared/geom.h shared/ents.h shared/command.h include/FastNoiseLite.h
 
 shared/cube.h.gch: shared/tools.h shared/geom.h shared/ents.h
 shared/cube.h.gch: shared/command.h shared/glexts.h shared/glemu.h

@@ -68,6 +68,7 @@
 		D1FCB17418832B7500AFC227 /* scoreboard.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13218832B7500AFC227 /* scoreboard.cpp */; };
 		D1FCB17518832B7500AFC227 /* server.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13318832B7500AFC227 /* server.cpp */; };
 		A1B2C3D4E5F60718293A4B5D /* world.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* world.cpp */; };
+		F00000000000000000000001 /* worldgen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000016 /* worldgen.cpp */; };
 		D1FCB17618832B7500AFC227 /* waypoint.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13418832B7500AFC227 /* waypoint.cpp */; };
 		D1FCB17718832B7500AFC227 /* weapon.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13518832B7500AFC227 /* weapon.cpp */; };
 		D1FCB17B18832BBC00AFC227 /* SDL2_image.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D1FCB17818832BBC00AFC227 /* SDL2_image.framework */; };
@@ -167,6 +168,11 @@
 		D1FCB12318832B7500AFC227 /* world.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = world.cpp; sourceTree = "<group>"; };
 		D1FCB12418832B7500AFC227 /* world.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = world.h; sourceTree = "<group>"; };
 		D1FCB12518832B7500AFC227 /* worldio.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldio.cpp; sourceTree = "<group>"; };
+		F00000000000000000000010 /* worldstream.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldstream.cpp; sourceTree = "<group>"; };
+		F00000000000000000000011 /* worldvisibility.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldvisibility.cpp; sourceTree = "<group>"; };
+		F00000000000000000000012 /* worlddiff.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worlddiff.cpp; sourceTree = "<group>"; };
+		F00000000000000000000013 /* worldedit.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldedit.cpp; sourceTree = "<group>"; };
+		F00000000000000000000014 /* worldruntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = worldruntime.h; sourceTree = "<group>"; };
 		D1FCB12718832B7500AFC227 /* ai.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ai.cpp; sourceTree = "<group>"; };
 		D1FCB12818832B7500AFC227 /* ai.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ai.h; sourceTree = "<group>"; };
 		D1FCB12918832B7500AFC227 /* aiman.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = aiman.h; sourceTree = "<group>"; };
@@ -186,6 +192,10 @@
 		D1FCB13218832B7500AFC227 /* scoreboard.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = scoreboard.cpp; sourceTree = "<group>"; };
 		D1FCB13318832B7500AFC227 /* server.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = server.cpp; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5C /* world.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = world.cpp; sourceTree = "<group>"; };
+		F00000000000000000000015 /* worldcontent.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldcontent.cpp; sourceTree = "<group>"; };
+		F00000000000000000000016 /* worldgen.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldgen.cpp; sourceTree = "<group>"; };
+		F00000000000000000000017 /* worldgen.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = worldgen.h; sourceTree = "<group>"; };
+		F00000000000000000000018 /* worldrender.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldrender.cpp; sourceTree = "<group>"; };
 		D1FCB13418832B7500AFC227 /* waypoint.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = waypoint.cpp; sourceTree = "<group>"; };
 		D1FCB13518832B7500AFC227 /* weapon.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = weapon.cpp; sourceTree = "<group>"; };
 		D1FCB17818832BBC00AFC227 /* SDL2_image.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SDL2_image.framework; path = /Library/Frameworks/SDL2_image.framework; sourceTree = "<group>"; };
@@ -398,6 +408,11 @@
 				D1FCB12318832B7500AFC227 /* world.cpp */,
 				D1FCB12418832B7500AFC227 /* world.h */,
 				D1FCB12518832B7500AFC227 /* worldio.cpp */,
+				F00000000000000000000012 /* worlddiff.cpp */,
+				F00000000000000000000013 /* worldedit.cpp */,
+				F00000000000000000000014 /* worldruntime.h */,
+				F00000000000000000000010 /* worldstream.cpp */,
+				F00000000000000000000011 /* worldvisibility.cpp */,
 			);
 			name = engine;
 			path = ../engine;
@@ -425,6 +440,10 @@
 				D1FCB13218832B7500AFC227 /* scoreboard.cpp */,
 				D1FCB13318832B7500AFC227 /* server.cpp */,
 				A1B2C3D4E5F60718293A4B5C /* world.cpp */,
+				F00000000000000000000015 /* worldcontent.cpp */,
+				F00000000000000000000016 /* worldgen.cpp */,
+				F00000000000000000000017 /* worldgen.h */,
+				F00000000000000000000018 /* worldrender.cpp */,
 				D1FCB13418832B7500AFC227 /* waypoint.cpp */,
 				D1FCB13518832B7500AFC227 /* weapon.cpp */,
 			);
@@ -576,6 +595,7 @@
 				D1FCB17418832B7500AFC227 /* scoreboard.cpp in Sources */,
 				D1FCB17518832B7500AFC227 /* server.cpp in Sources */,
 				A1B2C3D4E5F60718293A4B5D /* world.cpp in Sources */,
+				F00000000000000000000001 /* worldgen.cpp in Sources */,
 				D1FCB17618832B7500AFC227 /* waypoint.cpp in Sources */,
 				D1FCB17718832B7500AFC227 /* weapon.cpp in Sources */,
 				D1FCB19018832C7600AFC227 /* crypto.cpp in Sources */,

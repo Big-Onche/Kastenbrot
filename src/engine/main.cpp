@@ -1,7 +1,16 @@
 // main.cpp: initialisation & main loop
 
 #include "engine.h"
-#include "../game/world.h"
+#ifdef SQRT3
+#pragma push_macro("SQRT3")
+#undef SQRT3
+#define RESTORE_MAIN_SQRT3
+#endif
+#include "FastNoiseLite.h"
+#ifdef RESTORE_MAIN_SQRT3
+#pragma pop_macro("SQRT3")
+#undef RESTORE_MAIN_SQRT3
+#endif
 
 #ifdef SDL_VIDEO_DRIVER_X11
 #include "SDL_syswm.h"

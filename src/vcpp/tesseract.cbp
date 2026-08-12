@@ -210,6 +210,11 @@
 		<Unit filename="../engine/worlddef.cpp" />
 		<Unit filename="../engine/worlddef.h" />
 		<Unit filename="../engine/worldio.cpp" />
+		<Unit filename="../engine/worlddiff.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../engine/worldedit.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../engine/worldruntime.h" />
+		<Unit filename="../engine/worldstream.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../engine/worldvisibility.cpp"><Option compile="0" link="0" /></Unit>
 		<Unit filename="../game/client.cpp" />
 		<Unit filename="../game/entities.cpp" />
 		<Unit filename="../game/environment.cpp" />
@@ -228,6 +233,10 @@
 		<Unit filename="../game/weather.h" />
 		<Unit filename="../game/world.cpp" />
 		<Unit filename="../game/world.h" />
+		<Unit filename="../game/worldcontent.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../game/worldrender.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../game/worldgen.cpp" />
+		<Unit filename="../game/worldgen.h" />
 		<Unit filename="../include/tracy/public/TracyClient.cpp">
 			<Option target="profile64" />
 		</Unit>

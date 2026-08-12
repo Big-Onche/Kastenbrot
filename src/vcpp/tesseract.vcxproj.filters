@@ -55,6 +55,9 @@
     <ClCompile Include="..\game\world.cpp">
       <Filter>game</Filter>
     </ClCompile>
+    <ClCompile Include="..\game\worldgen.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
     <ClCompile Include="..\shared\geom.cpp">
       <Filter>shared</Filter>
     </ClCompile>
@@ -183,6 +186,9 @@
     <ClInclude Include="..\engine\worlddef.h">
       <Filter>engine</Filter>
     </ClInclude>
+    <ClInclude Include="..\engine\worldruntime.h">
+      <Filter>engine</Filter>
+    </ClInclude>
     <ClInclude Include="..\engine\bih.h">
       <Filter>engine</Filter>
     </ClInclude>
@@ -288,6 +294,17 @@
     <ClInclude Include="..\engine\world.h">
       <Filter>engine</Filter>
     </ClInclude>
+    <ClInclude Include="..\game\worldgen.h">
+      <Filter>game</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\engine\worlddiff.cpp"><Filter>engine</Filter></None>
+    <None Include="..\engine\worldedit.cpp"><Filter>engine</Filter></None>
+    <None Include="..\engine\worldstream.cpp"><Filter>engine</Filter></None>
+    <None Include="..\engine\worldvisibility.cpp"><Filter>engine</Filter></None>
+    <None Include="..\game\worldcontent.cpp"><Filter>game</Filter></None>
+    <None Include="..\game\worldrender.cpp"><Filter>game</Filter></None>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="tesseract.rc" />

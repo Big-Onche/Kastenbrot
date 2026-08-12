@@ -408,6 +408,7 @@
     <ClInclude Include="..\engine\octa.h" />
     <ClInclude Include="..\engine\world.h" />
     <ClInclude Include="..\engine\worlddef.h" />
+    <ClInclude Include="..\engine\worldruntime.h" />
     <ClInclude Include="..\engine\animmodel.h" />
     <ClInclude Include="..\engine\bih.h" />
     <ClInclude Include="..\engine\explosion.h" />
@@ -439,6 +440,7 @@
     <ClInclude Include="..\game\mining.h" />
     <ClInclude Include="..\game\weather.h" />
     <ClInclude Include="..\game\world.h" />
+    <ClInclude Include="..\game\worldgen.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\include\tracy\public\TracyClient.cpp">
@@ -1138,6 +1140,18 @@
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <ObjectFileName>$(IntDir)game_world.obj</ObjectFileName>
     </ClCompile>
+    <ClCompile Include="..\game\worldgen.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_worldgen.obj</ObjectFileName>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\engine\worlddiff.cpp" />
+    <None Include="..\engine\worldedit.cpp" />
+    <None Include="..\engine\worldstream.cpp" />
+    <None Include="..\engine\worldvisibility.cpp" />
+    <None Include="..\game\worldcontent.cpp" />
+    <None Include="..\game\worldrender.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="tesseract.rc" />
