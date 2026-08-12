@@ -1797,6 +1797,26 @@ namespace server
         return intensities[0];
     }
 
+    static float serverambientlightlevel()
+    {
+        static const float hours[] = { 0, 5, 6, 7, 8, 16, 17, 18, 19, 24 };
+        static const int colors[] =
+        {
+            0x080C20, 0x10172D, 0x302A40, 0x4B4658, 0x5A5A6E, 0x5A5A6E, 0x4B4658, 0x30243A, 0x10172D, 0x080C20
+        };
+        const float hour = float(worldclockmillis) * 24.0f / SERVER_DAY_MILLIS;
+        loopi(int(sizeof(hours) / sizeof(hours[0])) - 1) if(hour <= hours[i + 1])
+        {
+            float blend = clamp((hour - hours[i]) / (hours[i + 1] - hours[i]), 0.0f, 1.0f);
+            blend = blend * blend * (3.0f - 2.0f * blend);
+            bvec color;
+            color.lerp(bvec::hexcolor(colors[i]), bvec::hexcolor(colors[i + 1]), blend);
+            return (color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f) * (1.25f * 16.0f / 255.0f);
+        }
+        const bvec color = bvec::hexcolor(colors[0]);
+        return (color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f) * (1.25f * 16.0f / 255.0f);
+    }
+
     static bool servercelldirectsky(const ivec &cell)
     {
         if(cell.x < 0 || cell.y < 0 || cell.x >= SERVER_WORLD_MAP_SIZE || cell.y >= SERVER_WORLD_MAP_SIZE || cell.z < 0 ||
@@ -1853,7 +1873,8 @@ namespace server
 
     static int serverlightlevel(const vec &position)
     {
-        float level = serverskylightlevel(position) * serversunlightintensity();
+        const float skyexposure = serverskylightlevel(position) / 16.0f;
+        float level = skyexposure * (serversunlightintensity() * 16.0f + serverambientlightlevel());
         loopv(serverworldactions)
         {
             const serverworldaction &state = *serverworldactions[i];
@@ -1872,6 +1893,15 @@ namespace server
             if(radius > 0) level = max(level, radius - vec(ci->o).addz(SERVER_PLAYER_EYE_HEIGHT).dist(position) / SERVER_WORLD_BLOCK_SIZE);
         }
         return clamp(int(floorf(level + 0.5f)), 0, 16);
+    }
+
+    static int serveraggressivespawnlightlevel(const vec &position)
+    {
+        const vec feet = vec(position).subz(28.0f);
+        const vec cell(floorf(feet.x / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f,
+                       floorf(feet.y / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f,
+                       floorf(feet.z / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f);
+        return max(serverlightlevel(position), serverlightlevel(cell));
     }
 
     static void sendplayerstate(int cn, const clientinfo &subject, const vec &impulse = vec(0, 0, 0))
@@ -2160,7 +2190,7 @@ namespace server
         if(position.z < 28.0f || position.z >= SERVER_WORLD_MAP_SIZE || position.squaredist(owner->o) > simulationdistance * simulationdistance ||
            !servernpcclearance(position)) return;
         if(servernaturalwaterat(vec(position).subz(28.0f))) return;
-        const int light = serverlightlevel(position);
+        const int light = serveraggressivespawnlightlevel(position);
         if(light > 3) return;
 
         servernpc *mob = new servernpc(nextnpcid++, definition);

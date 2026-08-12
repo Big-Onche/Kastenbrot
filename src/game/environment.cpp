@@ -4,7 +4,7 @@
 #ifndef STANDALONE
 
 extern bvec ambient, fogcolour, sunlight;
-extern float sunlightscale;
+extern float ambientscale, sunlightscale;
 extern float sunlightyaw, sunlightpitch;
 extern void setsunlightdir();
 extern float weatherovercastlightreduction, weatherovercastsunlightreduction, weatherovercastambientgray, weatherovercastsunwhite;
@@ -53,6 +53,7 @@ namespace game
         static double cyclemillis = START_HOUR * CYCLE_MILLIS / 24.0;
         static bool initialized = false, timefrozen = false;
         static float skyexposure = 1.0f, targetskyexposure = 1.0f;
+        static float worldambientlightlevel = 0.0f;
 
         static float smoothstep(float value)
         {
@@ -96,16 +97,21 @@ namespace game
             return result;
         }
 
-        static void applyovercastlighting(bvec &newSunlight, bvec &newAmbient, float &newSunlightScale)
+        static void applyovercastambient(bvec &newAmbient, float overcast)
         {
-            const float overcast = currentovercastblend();
             if(overcast <= 0.0f) return;
 
             const float ambientscale = 1.0f - clamp(weatherovercastlightreduction, 0.0f, 1.0f) * overcast;
-            const float sunlightscale = 1.0f - clamp(weatherovercastsunlightreduction, 0.0f, 1.0f) * overcast;
             newAmbient = neutralizeambient(newAmbient, clamp(weatherovercastambientgray, 0.0f, 1.0f) * overcast);
-            newSunlight = neutralizesunlight(newSunlight, clamp(weatherovercastsunwhite, 0.0f, 1.0f) * overcast);
             loopk(3) newAmbient[k] = uchar(clamp(newAmbient[k] * ambientscale + 0.5f, 0.0f, 255.0f));
+        }
+
+        static void applyovercastsunlight(bvec &newSunlight, float &newSunlightScale, float overcast)
+        {
+            if(overcast <= 0.0f) return;
+
+            const float sunlightscale = 1.0f - clamp(weatherovercastsunlightreduction, 0.0f, 1.0f) * overcast;
+            newSunlight = neutralizesunlight(newSunlight, clamp(weatherovercastsunwhite, 0.0f, 1.0f) * overcast);
             newSunlightScale *= sunlightscale;
         }
 
@@ -144,7 +150,13 @@ namespace game
             newAmbient.lerp(bvec::hexcolor(NO_SKY_AMBIENT_COLOR), timeAmbient, skyexposure);
             newFog.lerp(bvec::hexcolor(NO_SKY_FOG_COLOR), timeFog, skyexposure);
             float newSunlightScale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
-            applyovercastlighting(newSunlight, newAmbient, newSunlightScale);
+            const float overcast = currentovercastblend();
+            bvec worldAmbient = timeAmbient;
+            applyovercastambient(worldAmbient, overcast);
+            worldambientlightlevel = (worldAmbient.r * 0.2126f + worldAmbient.g * 0.7152f + worldAmbient.b * 0.0722f) * ambientscale *
+                                     (16.0f / 255.0f);
+            applyovercastambient(newAmbient, overcast);
+            applyovercastsunlight(newSunlight, newSunlightScale, overcast);
 
             const float orbit = (hour - 6.0f) * 15.0f * RAD;
             float newSunlightYaw = hour * (360.0f / 24.0f);
@@ -209,6 +221,11 @@ namespace game
         bool istimefrozen()
         {
             return timefrozen;
+        }
+
+        float getambientlightlevel()
+        {
+            return worldambientlightlevel;
         }
 
         ICOMMAND(time, "sN", (char *value, int *numargs),

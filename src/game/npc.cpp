@@ -260,18 +260,32 @@ namespace game
         return npcs.length();
     }
 
-    static int playerlightlevel()
+    static int locallightlevel(const vec &position)
     {
-        if(!player1) return 16;
-        int level = getworldlightlevel(player1->o);
+        int level = getworldlightlevel(position);
+        if(!player1) return level;
         const float radius = getworlditemlightradius(selectedcreativeblock());
         if(radius > 0)
         {
             vec emitter = player1->o;
             heldtorchemitterposition(player1, emitter);
-            level = max(level, clamp(int(floorf(radius - emitter.dist(player1->o) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
+            level = max(level, clamp(int(floorf(radius - emitter.dist(position) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
         }
         return level;
+    }
+
+    static int playerlightlevel()
+    {
+        return player1 ? locallightlevel(player1->o) : 16;
+    }
+
+    static int localaggressivespawnlightlevel(const vec &position)
+    {
+        const vec feet = vec(position).subz(STANDING_HEIGHT);
+        const vec cell(floorf(feet.x / GAMEUNITSPERMETER) * GAMEUNITSPERMETER + GAMEUNITSPERMETER * 0.5f,
+                       floorf(feet.y / GAMEUNITSPERMETER) * GAMEUNITSPERMETER + GAMEUNITSPERMETER * 0.5f,
+                       floorf(feet.z / GAMEUNITSPERMETER) * GAMEUNITSPERMETER + GAMEUNITSPERMETER * 0.5f);
+        return max(locallightlevel(position), locallightlevel(cell));
     }
 
     ICOMMAND(getdebugplayerlight, "", (), intret(playerlightlevel()));
@@ -1434,20 +1448,17 @@ namespace game
         if(position.squaredist(player1->o) > simulationdistance * simulationdistance) return;
         if((lookupmaterial(vec(position).subz(STANDING_HEIGHT))&MATF_VOLUME) == MAT_WATER) return;
 
-        int light = getworldlightlevel(position);
-        const float heldradius = getworlditemlightradius(selectedcreativeblock());
-        if(heldradius > 0)
-        {
-            vec emitter = player1->o;
-            heldtorchemitterposition(player1, emitter);
-            light = max(light, clamp(int(floorf(heldradius - emitter.dist(position) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
-        }
-        if(light > 3) return;
+        if(localaggressivespawnlightlevel(position) > 3) return;
 
         npc *mob = new npc(definition, nextnpcid);
         mob->o = position;
         mob->yaw = float(worlddrophash(seed ^ 0x27D4EB2FU) % 36000U) / 100.0f;
         if(!entinmap(mob, true))
+        {
+            delete mob;
+            return;
+        }
+        if(localaggressivespawnlightlevel(mob->o) > 3)
         {
             delete mob;
             return;

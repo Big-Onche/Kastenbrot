@@ -499,6 +499,7 @@ namespace game
         extern void synctime(int millis, bool frozen);
         extern int gettimemillis();
         extern bool istimefrozen();
+        extern float getambientlightlevel();
     }
 #endif
 }

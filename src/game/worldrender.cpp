@@ -2,6 +2,14 @@
 
 #ifdef WORLDIO_MODULE_IMPLEMENTATION
 
+namespace game
+{
+    namespace environment
+    {
+        extern float getambientlightlevel();
+    }
+}
+
 struct worldgrasscandidate
 {
     ivec key;
@@ -370,7 +378,7 @@ bool getworldscatterentityedit(int id, int &type, ivec &support, int &orient)
 int getworldlightlevel(const vec &position)
 {
     const float skyexposure = getworldskyexposure(position),
-                ambientlevel = (ambient.r * 0.2126f + ambient.g * 0.7152f + ambient.b * 0.0722f) * ambientscale * (16.0f / 255.0f);
+                ambientlevel = game::environment::getambientlightlevel();
     float level = clamp(skyexposure * (sunlightscale * 16.0f + ambientlevel), 0.0f, 16.0f);
     loopv(worldchunks)
     {
