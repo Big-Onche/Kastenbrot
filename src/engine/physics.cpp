@@ -1814,6 +1814,8 @@ bool moveplayer(physent *pl, int moveres, bool local, int curtime)
     bool floating = pl->type==ENT_PLAYER && (pl->state==CS_EDITING || pl->state==CS_SPECTATOR);
     const float immersion = floating ? 0.0f : getwaterimmersion(pl);
     float secs = curtime/1000.f;
+    const bool wasfalling = pl->physstate == PHYS_FALL;
+    const float previousz = pl->o.z;
 
     // apply gravity
     if(!floating) modifygravity(pl, water, curtime);
@@ -1846,6 +1848,25 @@ bool moveplayer(physent *pl, int moveres, bool local, int curtime)
 
         d.mul(f);
         loopi(moveres) if(!move(pl, d) && ++collisions<5) i--; // discrete steps collision detection & sliding
+        if(water)
+        {
+            pl->falldistance = pl->fallvelocity = 0;
+        }
+        else
+        {
+            const float downwardvelocity = max(-(pl->vel.z + pl->falling.z), 0.0f);
+            if((wasfalling || pl->physstate == PHYS_FALL) && pl->o.z < previousz)
+            {
+                pl->falldistance = min(pl->falldistance + previousz - pl->o.z, float(1<<20));
+                pl->fallvelocity = max(pl->fallvelocity, downwardvelocity);
+            }
+            if(wasfalling && pl->physstate >= PHYS_SLOPE)
+            {
+                const float distance = pl->falldistance, velocity = pl->fallvelocity;
+                pl->falldistance = pl->fallvelocity = 0;
+                game::falltrigger(pl, local, distance, velocity);
+            }
+        }
         if(timeinair > 800 && !pl->timeinair && !water) // if we land after long time must have been a high jump, make thud sound
         {
             game::physicstrigger(pl, local, -1, 0);

@@ -970,6 +970,20 @@ namespace game
         cleardynentcache();
     }
 
+    void damagefallingnpc(physent *d, float damage)
+    {
+        if(!d || damage <= 0) return;
+        loopv(npcs)
+        {
+            npc &mob = *npcs[i];
+            if(&mob != d || mob.replicated || mob.state != CS_ALIVE) continue;
+            mob.totalhealth = max(mob.totalhealth - damage, 0.0f);
+            mob.parthealth[HITBOX_TORSO] = max(mob.parthealth[HITBOX_TORSO] - damage, 0.0f);
+            if(mob.totalhealth <= 0) ragdollnpc(mob, mob.feetpos(), vec(0, 0, -min(45.0f, 12.0f + damage * 2.0f)));
+            return;
+        }
+    }
+
     void receivenpcspawn(uint id, const char *definitionid, const vec &absoluteposition, float yaw, float health, uint detachedparts, int stateflags)
     {
         npcdefinition *definition = findnpcdefinition(definitionid);

@@ -146,7 +146,7 @@ static const int msgsizes[] =
     N_DELCUBE, 14, N_CALCLIGHT, 1, N_REMIP, 1, N_EDITVSLOT, 16,
     N_UNDO, 0, N_REDO, 0, N_NEWMAP, 2, N_GETMAP, 1, N_SENDMAP, 0,
     N_CLIPBOARD, 0, N_EDITVAR, 0, N_EDITSCATTER, 16, N_EDITAUTHOR, 4,
-    N_WORLDSTATE, 25, N_WORLDREADY, 6, N_WORLDSYNC, 2, N_WORLDTIME, 3, N_WEATHERSTATE, 7,
+    N_WORLDSTATE, 33, N_WORLDREADY, 6, N_WORLDSYNC, 2, N_WORLDTIME, 3, N_WEATHERSTATE, 7,
     N_SETPRIVILEGE, 3, N_SETMASTER, 0, N_SERVERCOMMAND, 0,
     N_SERVERIDENTITY, 0, N_IDENTITYLOGIN, 0, N_IDENTITYREGISTER, 0, N_IDENTITYCHALLENGE, 0,
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
@@ -162,7 +162,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 27
+#define PROTOCOL_VERSION 28
 
 enum
 {
@@ -437,6 +437,7 @@ namespace game
     extern bool waitforserveredit();
     extern void requestworldcommand(const char *command);
     extern float horizontalmeterspersecond(const physent *d);
+    extern int fallimpactdamage(float distance);
     extern float playerarmactionpitch(const gameent *d);
     extern float playerfooduseamount(const gameent *d);
     extern float creativearmwave(int elapsed);
@@ -445,6 +446,9 @@ namespace game
     extern void damageplayer(float damage, const vec &source);
     extern float getlocalplayerhealth();
     extern void restorelocalplayerhealth(float health);
+    extern void getlocalplayermotion(vec &velocity, vec &falling, float &falldistance, int &physstate);
+    extern void restorelocalplayermotion(const vec &velocity, const vec &falling, float falldistance, int physstate);
+    extern void savesessionstate();
     extern void receiveplayerstate(int clientnum, float health, int state, const vec &position, const vec &impulse);
     extern void receivefoodstate(int clientnum, bool active, int item, int elapsed);
     extern void beginplayerragdoll(gameent *d, const vec &impulse);
@@ -484,6 +488,7 @@ namespace game
     extern void rendernpcs();
     extern void rendernpcdebug();
     extern bool attacknpc();
+    extern void damagefallingnpc(physent *d, float damage);
     extern void receivenpcspawn(uint id, const char *definition, const vec &position, float yaw, float health, uint detachedparts, int stateflags);
     extern void receivenpcdespawn(uint id);
     extern void receivenpcsnapshot(uint id, int tick, const vec &position, const vec &velocity, float yaw, int stateflags);
@@ -496,8 +501,9 @@ namespace game
     extern void resetclientreceive();
     extern bool pendingnetworkworld, pendingnetworkreset, pendingnetworkfrozen,
                 pendingnetworkrestoreposition;
-    extern int pendingnetworkseed, pendingnetworktime, pendingnetworkyaw, pendingnetworkpitch;
-    extern vec pendingnetworkposition;
+    extern int pendingnetworkseed, pendingnetworktime, pendingnetworkyaw, pendingnetworkpitch, pendingnetworkphysstate;
+    extern float pendingnetworkfalldistance;
+    extern vec pendingnetworkposition, pendingnetworkvelocity, pendingnetworkfalling;
 
     namespace environment
     {

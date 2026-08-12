@@ -147,6 +147,7 @@ void disconnect(bool async, bool cleanup)
     {
         if(!discmillis)
         {
+            game::savesessionstate();
             enet_peer_disconnect(curpeer, DISC_NONE);
             enet_host_flush(clienthost);
             discmillis = totalmillis;

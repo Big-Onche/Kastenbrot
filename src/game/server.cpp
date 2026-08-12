@@ -20,7 +20,7 @@ namespace server
         PLAYER_IDENTITY_VERSION = 1,
         PLAYER_IDENTITY_TIMEOUT = 15000,
         PLAYER_IDENTITY_MAX_RECORDS = 100000,
-        PLAYER_STATE_VERSION = 2,
+        PLAYER_STATE_VERSION = 3,
         DROP_PICKUP_DELAY = 500
     };
 
@@ -116,14 +116,14 @@ namespace server
 
     struct clientinfo
     {
-        int clientnum, privilege, lastpositionmillis, lastpositionsave, positionyaw, positionpitch, identitystate, identitykind,
+        int clientnum, privilege, lastpositionmillis, lastpositionsave, positionyaw, positionpitch, positionphysstate, identitystate, identitykind,
             identitychallengemillis,
             identityfailures, identityfailurewindow, selectedslot, inventorycursoritem, inventorycursorcount, lastinventorysave,
             violations, violationwindow, actionwindow, placements, destructions,
             breakaction, breakorient, breakitem, breakstart, breakupdate, breakstage, breakrelease,
             breakduration, breaktoolitem, breaktoolslot, breaktooldurability, selectedcreative, lastnpcattack, lastnpcattackattempt,
             deathsequence, foodstart, fooditem, foodslot;
-        float health;
+        float health, falldistance;
         uint ip;
         uint lastrequestid, breakrequestid, lastnpcattackrequest;
         bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen,
@@ -135,12 +135,13 @@ namespace server
         ivec positioncoords, breaktarget, craftingstationtarget, furnacetarget;
         vector<uchar> position;
         vector<uint> knownnpcs;
-        vec o;
+        vec o, velocity, falling;
         ENetPacket *getmap;
         void *identitychallenge;
         serveridentity *identity;
 
         clientinfo() : clientnum(-1), privilege(PRIV_NONE), lastpositionmillis(0), lastpositionsave(0), positionyaw(0), positionpitch(0),
+                       positionphysstate(PHYS_FALL),
                        identitystate(IDENTITY_UNAUTHENTICATED), identitykind(IDENTITY_KIND_NONE),
                        identitychallengemillis(0),
                        identityfailures(0), identityfailurewindow(0),
@@ -150,7 +151,7 @@ namespace server
                        breakorient(0), breakitem(-1), breakstart(0), breakupdate(0), breakstage(0), breakrelease(0),
                        breakduration(0), breaktoolitem(-1), breaktoolslot(-1), breaktooldurability(0), selectedcreative(-1),
                        lastnpcattack(-1000), lastnpcattackattempt(-1000), deathsequence(0), foodstart(0), fooditem(-1), foodslot(-1),
-                       health(game::PLAYER_MAX_HEALTH),
+                       health(game::PLAYER_MAX_HEALTH), falldistance(0),
                        ip(0),
                        lastrequestid(0), breakrequestid(0), lastnpcattackrequest(0),
                        connected(false), local(false),
@@ -158,7 +159,7 @@ namespace server
                        breakactive(false), breakdropeligible(true), furnaceopen(false), dead(false), foodactive(false),
                        craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
                        positioncoords(0, 0, 0), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0),
-                       o(0, 0, 0), getmap(NULL),
+                       o(0, 0, 0), velocity(0, 0, 0), falling(0, 0, 0), getmap(NULL),
                        identitychallenge(NULL), identity(NULL)
         {
             name[0] = playerid[0] = pendingpublickey[0] = pendingname[0] = '\0';
@@ -233,14 +234,14 @@ namespace server
         uint id, detachedparts;
         npcdefinition *definition;
         vec o, velocity, spawn, destination;
-        float yaw, health, parthealth[NUM_HUMANOID_HITBOXES];
+        float yaw, health, falldistance, parthealth[NUM_HUMANOID_HITBOXES];
         int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis;
-        bool paused, frozen, attacking;
+        bool paused, frozen, attacking, airborne;
 
         servernpc(uint id, npcdefinition *definition)
             : id(id), detachedparts(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0), yaw(0),
-              health(definition->health), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis), lastattack(-1000),
-              deathmillis(0), paused(true), frozen(false), attacking(false)
+              health(definition->health), falldistance(0), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis),
+              lastattack(-1000), deathmillis(0), paused(true), frozen(false), attacking(false), airborne(false)
         {
             parthealth[HITBOX_TORSO] = definition->health;
             loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
@@ -954,7 +955,15 @@ namespace server
                   file->putlil<int>(ci.positionyaw) &&
                   file->putlil<int>(ci.positionpitch) &&
                   file->putlil<int>(int(ci.health * 1000.0f)) &&
-                  file->putlil<int>(ci.dead ? 1 : 0);
+                  file->putlil<int>(ci.dead ? 1 : 0) &&
+                  file->putlil<int>(int(ci.velocity.x * DNF)) &&
+                  file->putlil<int>(int(ci.velocity.y * DNF)) &&
+                  file->putlil<int>(int(ci.velocity.z * DNF)) &&
+                  file->putlil<int>(int(ci.falling.x * DNF)) &&
+                  file->putlil<int>(int(ci.falling.y * DNF)) &&
+                  file->putlil<int>(int(ci.falling.z * DNF)) &&
+                  file->putlil<int>(int(ci.falldistance * DMF)) &&
+                  file->putlil<int>(ci.positionphysstate);
         delete file;
         if(!ok || !replaceserveridentityfile(temppath, finalpath))
         {
@@ -973,6 +982,9 @@ namespace server
         ci.lastpositionsave = max(totalmillis, 1);
         ci.positioncoords = ivec(0, 0, 0);
         ci.positionyaw = ci.positionpitch = 0;
+        ci.positionphysstate = PHYS_FALL;
+        ci.velocity = ci.falling = vec(0, 0, 0);
+        ci.falldistance = 0;
         ci.health = game::PLAYER_MAX_HEALTH;
         ci.dead = false;
         string relative;
@@ -988,7 +1000,7 @@ namespace server
                      (version = file->getlil<uint>()) >= 1 && version <= PLAYER_STATE_VERSION &&
                      readserveridentitystring(*file, world, sizeof(world)) &&
                      (seed = file->getlil<uint>()) == uint(serverworldseed) &&
-                     !strcmp(world, serverworld) && file->size() - file->tell() == (version >= 2 ? 7 : 5) * int(sizeof(int));
+                     !strcmp(world, serverworld) && file->size() - file->tell() == (version >= 3 ? 15 : version >= 2 ? 7 : 5) * int(sizeof(int));
         if(valid)
         {
             position.x = file->getlil<int>();
@@ -1001,9 +1013,18 @@ namespace server
                 ci.health = file->getlil<int>() / 1000.0f;
                 ci.dead = file->getlil<int>() != 0;
             }
+            if(version >= 3)
+            {
+                loopk(3) ci.velocity[k] = file->getlil<int>() / DNF;
+                loopk(3) ci.falling[k] = file->getlil<int>() / DNF;
+                ci.falldistance = file->getlil<int>() / DMF;
+                ci.positionphysstate = file->getlil<int>();
+            }
             valid = position.z >= 0 && position.z <= int((1 << 13) * DMF) &&
                     yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90 &&
-                    ci.health >= 0 && ci.health <= game::PLAYER_MAX_HEALTH && ci.dead == (ci.health <= 0) && file->tell() == file->size();
+                    ci.health >= 0 && ci.health <= game::PLAYER_MAX_HEALTH && ci.dead == (ci.health <= 0) &&
+                    ci.falldistance >= 0 && ci.falldistance <= (1 << 13) &&
+                    ci.positionphysstate >= PHYS_FLOAT && ci.positionphysstate <= PHYS_BOUNCE && file->tell() == file->size();
         }
         delete file;
         if(!valid)
@@ -2109,6 +2130,9 @@ namespace server
         if(ci.health <= 0)
         {
             ci.dead = true;
+            ci.velocity = ci.falling = vec(0, 0, 0);
+            ci.falldistance = 0;
+            ci.positionphysstate = PHYS_FALL;
             cancelfooduse(ci);
             ci.position.setsize(0);
             if(ci.breakactive) cancelbreak(ci);
@@ -2127,6 +2151,9 @@ namespace server
         ci.positioncoords = ivec(int(ci.o.x * DMF), int(ci.o.y * DMF), int(ci.o.z * DMF));
         ci.positionyaw = servermapspawnyaw;
         ci.positionpitch = servermapspawnpitch;
+        ci.positionphysstate = PHYS_FALL;
+        ci.velocity = ci.falling = vec(0, 0, 0);
+        ci.falldistance = 0;
         ci.health = game::PLAYER_MAX_HEALTH;
         ci.dead = false;
         ci.hasposition = ci.positiondirty = true;
@@ -2504,6 +2531,49 @@ namespace server
         return best;
     }
 
+    static void damageservernpcfall(servernpc &mob)
+    {
+        const int damage = game::fallimpactdamage(mob.falldistance);
+        mob.falldistance = 0;
+        if(servercreative() || damage <= 0 || mob.deathmillis) return;
+        mob.health = max(mob.health - damage, 0.0f);
+        mob.parthealth[HITBOX_TORSO] = max(mob.parthealth[HITBOX_TORSO] - damage, 0.0f);
+        const vec impact = mob.o, impulse(0, 0, -min(45.0f, 12.0f + damage * 2.0f));
+        if(mob.health <= 0)
+        {
+            mob.deathmillis = totalmillis;
+            mob.velocity = vec(0, 0, 0);
+            broadcastnpcevent(mob, NPC_EVENT_DEATH, HITBOX_TORSO, impact, impulse);
+        }
+        else broadcastnpcevent(mob, NPC_EVENT_DAMAGE, HITBOX_TORSO, impact, impulse);
+    }
+
+    static void updateservernpcfall(servernpc &mob, int elapsed)
+    {
+        const float feet = mob.o.z - 28.0f, ground = servergroundheight(mob.o.x, mob.o.y);
+        if(servernaturalwaterat(vec(mob.o).subz(28.0f))) mob.falldistance = 0;
+        if(!mob.airborne && feet <= ground + 0.1f)
+        {
+            mob.velocity.z = 0;
+            return;
+        }
+        mob.airborne = true;
+        const float seconds = elapsed / 1000.0f, previousvelocity = mob.velocity.z;
+        mob.velocity.z -= 210.0f * seconds;
+        const float distance = max(-(previousvelocity + mob.velocity.z) * 0.5f * seconds, 0.0f);
+        if(feet - distance > ground)
+        {
+            mob.o.z -= distance;
+            mob.falldistance = min(mob.falldistance + distance, float(1<<13));
+            return;
+        }
+        mob.falldistance = min(mob.falldistance + max(feet - ground, 0.0f), float(1<<13));
+        mob.o.z = ground + 28.0f;
+        mob.velocity.z = 0;
+        mob.airborne = false;
+        damageservernpcfall(mob);
+    }
+
     static void pickservernpcdestination(servernpc &mob)
     {
         const uint hash = worlddrophash(mob.id ^ uint(max(totalmillis, 1)));
@@ -2520,6 +2590,8 @@ namespace server
         if(mob.deathmillis) return;
         const int elapsed = clamp(totalmillis - mob.lastupdate, 0, 100);
         mob.lastupdate = totalmillis;
+        updateservernpcfall(mob, elapsed);
+        if(mob.deathmillis) return;
         clientinfo *target = NULL;
         if(mob.definition->attitude == NPC_AGGRESSIVE)
             target = nearestservernpcplayer(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
@@ -2552,7 +2624,7 @@ namespace server
         }
         else if(mob.paused)
         {
-            mob.velocity = vec(0, 0, 0);
+            mob.velocity.x = mob.velocity.y = 0;
             if(totalmillis >= mob.pauseuntil) pickservernpcdestination(mob);
             return;
         }
@@ -2560,7 +2632,7 @@ namespace server
         {
             mob.paused = true;
             mob.pauseuntil = totalmillis + 600 + int(worlddrophash(mob.id + uint(totalmillis)) % 1801U);
-            mob.velocity = vec(0, 0, 0);
+            mob.velocity.x = mob.velocity.y = 0;
             return;
         }
 
@@ -2572,15 +2644,23 @@ namespace server
         float speed = mob.definition->speed;
         const uint missinglegs = mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG));
         if(missinglegs) speed *= missinglegs == ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG)) ? 0.34f : 0.58f;
-        mob.velocity = vec(direction).mul(speed);
-        vec next = vec(mob.o).madd(mob.velocity, elapsed / 1000.0f);
+        mob.velocity.x = direction.x * speed;
+        mob.velocity.y = direction.y * speed;
+        vec next = vec(mob.o).madd(vec(mob.velocity.x, mob.velocity.y, 0), elapsed / 1000.0f);
         const float ground = servergroundheight(next.x, next.y), oldground = mob.o.z - 28.0f;
-        if(fabsf(ground - oldground) <= SERVER_WORLD_BLOCK_SIZE && servernpcclearance(vec(next.x, next.y, ground + 28.0f), mob.id))
+        if(!mob.airborne && fabsf(ground - oldground) <= SERVER_WORLD_BLOCK_SIZE &&
+           servernpcclearance(vec(next.x, next.y, ground + 28.0f), mob.id))
         {
             next.z = ground + 28.0f;
             mob.o = next;
         }
-        else mob.velocity = vec(0, 0, 0);
+        else if(ground < oldground - SERVER_WORLD_BLOCK_SIZE && servernpcclearance(vec(next.x, next.y, mob.o.z), mob.id))
+        {
+            mob.o.x = next.x;
+            mob.o.y = next.y;
+            mob.airborne = true;
+        }
+        else mob.velocity.x = mob.velocity.y = 0;
     }
 
     static void updateservernpcinterest()
@@ -2847,6 +2927,10 @@ namespace server
         putint(p, restoreposition ? ci.positioncoords.z : 0);
         putint(p, restoreposition ? ci.positionyaw : 0);
         putint(p, restoreposition ? ci.positionpitch : 0);
+        loopk(3) putint(p, restoreposition ? int(ci.velocity[k] * DNF) : 0);
+        loopk(3) putint(p, restoreposition ? int(ci.falling[k] * DNF) : 0);
+        putint(p, restoreposition ? int(ci.falldistance * DMF) : 0);
+        putint(p, restoreposition ? ci.positionphysstate : PHYS_FALL);
         sendpacket(ci.clientnum, 1, p.finalize());
         senddropsettings(ci.clientnum);
     }
@@ -4132,6 +4216,17 @@ namespace server
         sendf(ci.clientnum, 1, "ris", N_SERVMSG, message);
     }
 
+    static clientinfo *findconnectedplayer(const char *name)
+    {
+        if(!name || !name[0]) return NULL;
+        loopv(clients)
+        {
+            clientinfo *candidate = clients[i];
+            if(candidate && candidate->connected && !cubecasecmp(candidate->name, name)) return candidate;
+        }
+        return NULL;
+    }
+
     static bool editinarea(const serveredit &edit, const ivec &minimum, const ivec &maximum)
     {
         if(!edit.hasselection) return false;
@@ -4157,6 +4252,64 @@ namespace server
         while(*args && !iscubespace(*args)) ++args;
         if(*args) *args++ = '\0';
         while(iscubespace(*args)) ++args;
+
+        if(cubecaseequal(command, "give"))
+        {
+            char *itemid = args;
+            while(*args && !iscubespace(*args)) ++args;
+            if(*args) *args++ = '\0';
+            while(iscubespace(*args)) ++args;
+
+            char *amounttext = args;
+            while(*args && !iscubespace(*args)) ++args;
+            if(*args) *args++ = '\0';
+            while(iscubespace(*args)) ++args;
+            char *playername = args;
+            char *tail = playername + strlen(playername);
+            while(tail > playername && iscubespace(tail[-1])) *--tail = '\0';
+
+            char *end = NULL;
+            errno = 0;
+            const long amount = strtol(amounttext, &end, 10);
+            if(!itemid[0] || end == amounttext || *end || errno == ERANGE || amount <= 0 || amount > INT_MAX)
+            {
+                sendcommandresult(ci, "usage: /give <item_name> <amount> [player name]");
+                return;
+            }
+
+            const int item = getinventoryitemindex(itemid);
+            if(item < 0)
+            {
+                defformatstring(message, "give failed: unknown item '%s'", itemid);
+                sendcommandresult(ci, message);
+                return;
+            }
+
+            clientinfo *target = playername[0] ? findconnectedplayer(playername) : &ci;
+            if(!target)
+            {
+                defformatstring(message, "give failed: player '%s' is not connected", playername);
+                sendcommandresult(ci, message);
+                return;
+            }
+            if(!inventoryhasroom(*target, item, int(amount)))
+            {
+                defformatstring(message, "give failed: %s's inventory does not have room for %ld x %s", target->name, amount, itemid);
+                sendcommandresult(ci, message);
+                return;
+            }
+
+            loopi(int(amount)) addinventoryitem(*target, item);
+            sendinventory(*target);
+            defformatstring(message, "gave %ld x %s to %s", amount, itemid, target->name);
+            sendcommandresult(ci, message);
+            if(target != &ci)
+            {
+                defformatstring(notification, "an administrator gave you %ld x %s", amount, itemid);
+                sendcommandresult(*target, notification);
+            }
+            return;
+        }
 
         if(cubecaseequal(command, "spawn"))
         {
@@ -4612,20 +4765,27 @@ namespace server
                 dir |= p.get()<<8;
                 const int yaw = dir%360, pitch = clamp(dir/360, 0, 180) - 90;
                 p.get();
-                p.get();
-                if(flags&(1<<3)) p.get();
-                p.get();
-                p.get();
+                int mag = p.get();
+                if(flags&(1<<3)) mag |= p.get()<<8;
+                dir = p.get();
+                dir |= p.get()<<8;
+                vec velocity, falling;
+                vecfromyawpitch(dir%360, clamp(dir/360, 0, 180) - 90, 1, 0, velocity);
+                velocity.mul(mag / DVELF);
                 if(flags&(1<<4))
                 {
-                    p.get();
-                    if(flags&(1<<5)) p.get();
+                    mag = p.get();
+                    if(flags&(1<<5)) mag |= p.get()<<8;
                     if(flags&(1<<6))
                     {
-                        p.get();
-                        p.get();
+                        dir = p.get();
+                        dir |= p.get()<<8;
+                        vecfromyawpitch(dir%360, clamp(dir/360, 0, 180) - 90, 1, 0, falling);
                     }
+                    else falling = vec(0, 0, -1);
+                    falling.mul(mag / DVELF);
                 }
+                else falling = vec(0, 0, 0);
                 if(p.overread()) return;
                 if(cn != sender || (physstate&7) > PHYS_BOUNCE || ci->dead) continue;
 
@@ -4636,16 +4796,37 @@ namespace server
                    (ci->hasposition && nextposition.dist(ci->o) > 32.0f + elapsed * 0.5f))
                     continue;
 
+                const int movementstate = physstate&7;
+                const bool wasfalling = ci->hasposition && ci->positionphysstate == PHYS_FALL,
+                           isfalling = movementstate == PHYS_FALL,
+                           inwater = servernaturalwaterat(nextposition);
+                int falldamage = 0;
+                if(inwater) ci->falldistance = 0;
+                else
+                {
+                    if(ci->hasposition && (wasfalling || isfalling) && nextposition.z < ci->o.z)
+                        ci->falldistance = min(ci->falldistance + ci->o.z - nextposition.z, float(1<<13));
+                    if(wasfalling && movementstate >= PHYS_SLOPE)
+                    {
+                        falldamage = game::fallimpactdamage(ci->falldistance);
+                        ci->falldistance = 0;
+                    }
+                }
+
                 ci->position.setsize(0);
                 ci->position.put(&p.buf[packetstart], p.length() - packetstart);
                 ci->positioncoords = ivec(coords[0], coords[1], coords[2]);
                 ci->o = nextposition;
                 ci->positionyaw = yaw;
                 ci->positionpitch = pitch;
+                ci->positionphysstate = movementstate;
+                ci->velocity = velocity;
+                ci->falling = falling;
                 ci->selectedcreative = servercreative() && helditem > 0 && helditem <= uint(numinventoryitems()) ? int(helditem - 1) : -1;
                 ci->hasposition = true;
                 ci->positiondirty = true;
                 ci->lastpositionmillis = now;
+                if(falldamage > 0) damageserverplayer(*ci, float(falldamage), vec(ci->o).addz(GAMEUNITSPERMETER));
                 if(ci->breakactive)
                 {
                     if(actiontargetoutofreach(*ci, ci->breaktarget) || servernpcinterceptsaction(*ci, ci->breaktarget))

@@ -75,9 +75,16 @@ namespace game
         return sqrtf(x*x + y*y) / GAMEUNITSPERMETER;
     }
 
+    int fallimpactdamage(float distance)
+    {
+        const float damagingblocks = max(distance / GAMEUNITSPERMETER - 3.0f, 0.0f);
+        return int(ceilf(damagingblocks * 0.5f));
+    }
+
     static string connectpass = "";
     static int lastpositionsend = -1000;
     static string sentname = "";
+    static void sendposition(gameent *d, packetbuf &q);
 #ifndef STANDALONE
     static void updatesurvivalbreaking();
     static void cancelclientbreakrequest(uint requestid);
@@ -576,6 +583,9 @@ namespace game
             const bool frozen = pendingnetworkfrozen,
                        restoreposition = pendingnetworkrestoreposition;
             const vec savedposition = pendingnetworkposition;
+            const vec savedvelocity = pendingnetworkvelocity, savedfalling = pendingnetworkfalling;
+            const float savedfalldistance = pendingnetworkfalldistance;
+            const int savedphysstate = pendingnetworkphysstate;
             const int savedyaw = pendingnetworkyaw, savedpitch = pendingnetworkpitch;
             pendingnetworkreset = pendingnetworkrestoreposition = false;
 
@@ -591,6 +601,7 @@ namespace game
                 player1->o = restored;
                 player1->yaw = savedyaw;
                 player1->pitch = savedpitch;
+                restorelocalplayermotion(savedvelocity, savedfalling, savedfalldistance, savedphysstate);
                 player1->resetinterp();
                 updateworldchunks(true);
             }
@@ -631,6 +642,21 @@ namespace game
     }
 
     void physicstrigger(physent *d, bool local, int floorlevel, int waterlevel, int material) {}
+
+    void falltrigger(physent *d, bool local, float distance, float velocity)
+    {
+        if(!local || !m_survival || !d || d->state != CS_ALIVE) return;
+        const int damage = fallimpactdamage(distance);
+        if(damage <= 0) return;
+        if(d == player1)
+        {
+            if(!multiplayer(false)) damageplayer(float(damage), vec(d->o).addz(distance));
+            return;
+        }
+#ifndef STANDALONE
+        if(!multiplayer(false)) damagefallingnpc(d, float(damage));
+#endif
+    }
     void bounced(physent *d, const vec &surface) {}
 
     void edittrigger(const selinfo &sel, int op, int arg1, int arg2, int arg3, const VSlot *vs)
@@ -1503,6 +1529,51 @@ namespace game
         return true;
     }
 
+    static void giveitems(const char *itemid, int quantity, const char *playername)
+    {
+        if(waitforserveredit())
+        {
+            if(playername && playername[0])
+            {
+                defformatstring(command, "give %s %d %s", itemid ? itemid : "", quantity, playername);
+                requestworldcommand(command);
+            }
+            else
+            {
+                defformatstring(command, "give %s %d", itemid ? itemid : "", quantity);
+                requestworldcommand(command);
+            }
+            return;
+        }
+
+        if(!itemid || !itemid[0] || quantity <= 0)
+        {
+            conoutf(CON_WARN, "usage: /give <item_name> <amount> [player name]");
+            return;
+        }
+        if(playername && playername[0] && (!player1 || cubecasecmp(player1->name, playername)))
+        {
+            conoutf(CON_WARN, "giving items to another player is only available in multiplayer");
+            return;
+        }
+
+        const int item = getinventoryitemindex(itemid);
+        if(item < 0)
+        {
+            conoutf(CON_WARN, "give failed: unknown item '%s'", itemid);
+            return;
+        }
+        if(!survivalhasroom(item, quantity))
+        {
+            conoutf(CON_WARN, "give failed: inventory does not have room for %d x %s", quantity, itemid);
+            return;
+        }
+        loopi(quantity) addsurvivalitem(item);
+        conoutf("gave %d x %s", quantity, itemid);
+    }
+
+    ICOMMAND(give, "siS", (char *itemid, int *quantity, char *playername), giveitems(itemid, *quantity, playername));
+
     static ivec worlddropcell(const ivec &target, int action, int orient)
     {
         ivec cell = target;
@@ -2013,6 +2084,7 @@ namespace game
         d.collidetype = COLLIDE_NONE;
         d.stopmoving();
         d.vel = d.falling = vec(0, 0, 0);
+        d.falldistance = d.fallvelocity = 0;
         beginplayerragdoll(&d, impulse);
         if(&d == player1) showdeathscreen();
         cleardynentcache();
@@ -2029,6 +2101,7 @@ namespace game
         d.collidetype = COLLIDE_ELLIPSE;
         d.stopmoving();
         d.vel = d.falling = vec(0, 0, 0);
+        d.falldistance = d.fallvelocity = 0;
         d.resetinterp();
         if(&d == player1) hidedeathscreen();
         cleardynentcache();
@@ -2050,6 +2123,41 @@ namespace game
         if(!player1) return;
         player1->health = clamp(health, 0.0f, float(PLAYER_MAX_HEALTH));
         if(player1->health <= 0) setplayerdead(*player1, vec(0, 0, 0));
+    }
+
+    void getlocalplayermotion(vec &velocity, vec &falling, float &falldistance, int &physstate)
+    {
+        if(!player1)
+        {
+            velocity = falling = vec(0, 0, 0);
+            falldistance = 0;
+            physstate = PHYS_FALL;
+            return;
+        }
+        velocity = player1->vel;
+        falling = player1->falling;
+        falldistance = max(player1->falldistance, 0.0f);
+        physstate = player1->physstate;
+    }
+
+    void restorelocalplayermotion(const vec &velocity, const vec &falling, float falldistance, int physstate)
+    {
+        if(!player1 || player1->state != CS_ALIVE) return;
+        player1->vel = velocity;
+        player1->falling = falling;
+        player1->falldistance = max(falldistance, 0.0f);
+        player1->fallvelocity = max(-(velocity.z + falling.z), 0.0f);
+        player1->physstate = clamp(physstate, int(PHYS_FLOAT), int(PHYS_BOUNCE));
+        player1->resetinterp();
+    }
+
+    void savesessionstate()
+    {
+        if(!connected || !player1 || player1->clientnum < 0) return;
+        packetbuf p(100, ENET_PACKET_FLAG_RELIABLE);
+        sendposition(player1, p);
+        sendclientpacket(p.finalize(), 0);
+        flushclient();
     }
 
     float getlocalplayerhealth()
@@ -3373,7 +3481,7 @@ namespace game
         putint(q, o.z);
 
         // 3 bits physics state, 2 bits movement, and 2 bits strafing.
-        uchar physstate = d->physstate | ((d->move&3)<<4) | ((d->strafe&3)<<6);
+        uchar physstate = d->physstate | (d->inwater ? 1<<3 : 0) | ((d->move&3)<<4) | ((d->strafe&3)<<6);
         q.put(physstate);
 
         uint vel = min(int(d->vel.magnitude()*DVELF), 0xFFFF),
@@ -3540,6 +3648,12 @@ namespace game
     {
         defformatstring(speed, "%.2f", horizontalmeterspersecond(player1));
         result(speed);
+    });
+    ICOMMAND(getdebugplayerverticalspeed, "", (),
+    {
+        const float speed = player1 ? (player1->vel.z + player1->falling.z) / GAMEUNITSPERMETER : 0.0f;
+        defformatstring(verticalspeed, "%.2f", speed);
+        result(verticalspeed);
     });
     ICOMMAND(getplayercolor, "ii", (int *model, int *team), intret(0xFFFFFF));
     ICOMMAND(showscores, "D", (int *down), {});

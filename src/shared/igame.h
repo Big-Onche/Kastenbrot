@@ -56,6 +56,9 @@ namespace game
     extern bool savesurvivalinventory(stream *f);
     extern float getlocalplayerhealth();
     extern void restorelocalplayerhealth(float health);
+    extern void getlocalplayermotion(vec &velocity, vec &falling, float &falldistance, int &physstate);
+    extern void restorelocalplayermotion(const vec &velocity, const vec &falling, float falldistance, int physstate);
+    extern void savesessionstate();
     extern void resetfurnaces();
     extern bool savelocalfurnaces(const char *world);
     extern bool loadlocalfurnaces(const char *world);
@@ -76,6 +79,7 @@ namespace game
     extern void updateworld();
     extern void initclient();
     extern void physicstrigger(physent *d, bool local, int floorlevel, int waterlevel, int material = 0);
+    extern void falltrigger(physent *d, bool local, float distance, float velocity);
     extern void bounced(physent *d, const vec &surface);
     extern void edittrigger(const selinfo &sel, int op, int arg1 = 0, int arg2 = 0, int arg3 = 0, const VSlot *vs = NULL);
     extern void vartrigger(ident *id);

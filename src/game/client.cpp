@@ -34,8 +34,9 @@ namespace game
 
     bool pendingnetworkworld = false, pendingnetworkreset = false,
          pendingnetworkfrozen = false, pendingnetworkrestoreposition = false;
-    int pendingnetworkseed = 0, pendingnetworktime = 0, pendingnetworkyaw = 0, pendingnetworkpitch = 0;
-    vec pendingnetworkposition;
+    int pendingnetworkseed = 0, pendingnetworktime = 0, pendingnetworkyaw = 0, pendingnetworkpitch = 0, pendingnetworkphysstate = PHYS_FALL;
+    float pendingnetworkfalldistance = 0;
+    vec pendingnetworkposition, pendingnetworkvelocity, pendingnetworkfalling;
 
     void resetclientreceive()
     {
@@ -44,6 +45,9 @@ namespace game
         currentidentity = NULL;
         currentidentitycreated = false;
         pendingnetworkworld = pendingnetworkreset = pendingnetworkrestoreposition = false;
+        pendingnetworkvelocity = pendingnetworkfalling = vec(0, 0, 0);
+        pendingnetworkfalldistance = 0;
+        pendingnetworkphysstate = PHYS_FALL;
         pendingnetworkedits.deletecontents();
         authoritativeauthor = -1;
         authoritativerevision = authoritativerequestid = synchronizedrevision = 0;
@@ -378,6 +382,7 @@ namespace game
                 d->vel = vel;
                 d->falling = falling;
                 d->physstate = physstate&7;
+                d->inwater = physstate&(1<<3) ? MAT_WATER : MAT_AIR;
                 updatephysstate(d);
                 updateremotepos(d);
 
@@ -616,6 +621,11 @@ namespace game
                 vec serverposition;
                 loopk(3) serverposition[k] = getint(p)/DMF;
                 const int serveryaw = getint(p), serverpitch = getint(p);
+                vec servervelocity, serverfalling;
+                loopk(3) servervelocity[k] = getint(p) / DNF;
+                loopk(3) serverfalling[k] = getint(p) / DNF;
+                const float serverfalldistance = getint(p) / DMF;
+                const int serverphysstate = getint(p);
                 receiveserversettings(breakmillis, scatterbreakmillis, waterupdates, waterdistance, waterspeed, npcsimulationdistance);
                 pendingnetworkrestoreposition = player1 && (pendingnetworkreset || serverrestoreposition);
                 if(pendingnetworkrestoreposition && pendingnetworkreset)
@@ -624,6 +634,8 @@ namespace game
                     worldpositiontoabsolute(pendingnetworkposition);
                     pendingnetworkyaw = int(player1->yaw);
                     pendingnetworkpitch = int(player1->pitch);
+                    getlocalplayermotion(pendingnetworkvelocity, pendingnetworkfalling, pendingnetworkfalldistance,
+                                         pendingnetworkphysstate);
                 }
                 else if(pendingnetworkrestoreposition)
                 {
@@ -631,6 +643,10 @@ namespace game
                     pendingnetworkposition.z += player1->eyeheight;
                     pendingnetworkyaw = clamp(serveryaw, 0, 359);
                     pendingnetworkpitch = clamp(serverpitch, -90, 90);
+                    pendingnetworkvelocity = servervelocity;
+                    pendingnetworkfalling = serverfalling;
+                    pendingnetworkfalldistance = max(serverfalldistance, 0.0f);
+                    pendingnetworkphysstate = clamp(serverphysstate, int(PHYS_FLOAT), int(PHYS_BOUNCE));
                 }
                 pendingnetworkedits.deletecontents();
                 resetworlddrops();

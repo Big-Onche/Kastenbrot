@@ -80,7 +80,9 @@ VARP(savebak, 0, 2, 2);
 struct worlddiffmetadata
 {
     int seed, worldgenversion, saveformatversion, gamemode, inventorycursoritem, inventorycursorcount, inventorycursordurability;
-    float playerhealth;
+    float playerhealth, playerfalldistance;
+    int playerphysstate;
+    vec playervelocity, playerfalling;
     int inventoryitems[game::SURVIVAL_USABLE_SLOTS],
         inventorycounts[game::SURVIVAL_USABLE_SLOTS], inventorydurabilities[game::SURVIVAL_USABLE_SLOTS];
     ullong parameterhash;
@@ -89,6 +91,7 @@ struct worlddiffmetadata
     worlddiffmetadata()
         : seed(0), worldgenversion(0), saveformatversion(0), gamemode(0),
           inventorycursoritem(-1), inventorycursorcount(0), inventorycursordurability(0), playerhealth(game::PLAYER_MAX_HEALTH),
+          playerfalldistance(0), playerphysstate(PHYS_FALL), playervelocity(0, 0, 0), playerfalling(0, 0, 0),
           parameterhash(0), valid(false)
     {
         loopi(game::SURVIVAL_USABLE_SLOTS)
@@ -464,12 +467,20 @@ static bool saveworldmetadata(int chunkx, int chunky)
     activeworldmetadata.saveformatversion = WORLD_SAVE_FORMAT_VERSION;
     activeworldmetadata.gamemode = game::gamemode;
     activeworldmetadata.playerhealth = clamp(game::getlocalplayerhealth(), 0.0f, float(game::PLAYER_MAX_HEALTH));
+    game::getlocalplayermotion(activeworldmetadata.playervelocity, activeworldmetadata.playerfalling,
+                               activeworldmetadata.playerfalldistance, activeworldmetadata.playerphysstate);
     bool ok = f->printf("CUBECRAFT_WORLD 5\n") > 0;
     if(ok) ok = f->printf("world_seed %d\n", activeworldmetadata.seed) > 0;
     if(ok) ok = f->printf("worldgen_version %d\n", activeworldmetadata.worldgenversion) > 0;
     if(ok) ok = f->printf("worldgen_parameter_hash " WORLD_ULL_FORMAT "\n", activeworldmetadata.parameterhash) > 0;
     if(ok) ok = f->printf("save_format_version %d\n", activeworldmetadata.saveformatversion) > 0;
     if(ok) ok = f->printf("player_health %.9g\n", activeworldmetadata.playerhealth) > 0;
+    if(ok) ok = f->printf("player_velocity %.9g %.9g %.9g\n", activeworldmetadata.playervelocity.x, activeworldmetadata.playervelocity.y,
+                          activeworldmetadata.playervelocity.z) > 0;
+    if(ok) ok = f->printf("player_falling %.9g %.9g %.9g\n", activeworldmetadata.playerfalling.x, activeworldmetadata.playerfalling.y,
+                          activeworldmetadata.playerfalling.z) > 0;
+    if(ok) ok = f->printf("player_fall_distance %.9g\n", activeworldmetadata.playerfalldistance) > 0;
+    if(ok) ok = f->printf("player_physics_state %d\n", activeworldmetadata.playerphysstate) > 0;
     if(ok) ok = game::savesurvivalinventory(f);
     if(ok) ok = f->printf("entry %d %d\n", chunkx, chunky) > 0;
     if(ok && player)
@@ -514,6 +525,12 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
         }
         if(sscanf(line, "game_mode %d", &metadata.gamemode) == 1) continue;
         if(sscanf(line, "player_health %f", &metadata.playerhealth) == 1) continue;
+        if(sscanf(line, "player_velocity %f %f %f", &metadata.playervelocity.x, &metadata.playervelocity.y,
+                  &metadata.playervelocity.z) == 3) continue;
+        if(sscanf(line, "player_falling %f %f %f", &metadata.playerfalling.x, &metadata.playerfalling.y,
+                  &metadata.playerfalling.z) == 3) continue;
+        if(sscanf(line, "player_fall_distance %f", &metadata.playerfalldistance) == 1) continue;
+        if(sscanf(line, "player_physics_state %d", &metadata.playerphysstate) == 1) continue;
         ullong inventoryid;
         char inventoryidtext[32];
         if(sscanf(line, "inventory_cursor %31s %d %d", inventoryidtext, &metadata.inventorycursorcount,
@@ -589,6 +606,16 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
     if(!game::validgamemode(metadata.gamemode)) metadata.gamemode = 0;
     if(!(metadata.playerhealth >= 0 && metadata.playerhealth <= game::PLAYER_MAX_HEALTH))
         metadata.playerhealth = game::PLAYER_MAX_HEALTH;
+    bool validmotion = metadata.playerfalldistance >= 0 && metadata.playerfalldistance <= WORLD_MAP_SIZE &&
+                       metadata.playerphysstate >= PHYS_FLOAT && metadata.playerphysstate <= PHYS_BOUNCE;
+    loopk(3) validmotion = validmotion && metadata.playervelocity[k] >= -65535.0f && metadata.playervelocity[k] <= 65535.0f &&
+                                      metadata.playerfalling[k] >= -65535.0f && metadata.playerfalling[k] <= 65535.0f;
+    if(!validmotion)
+    {
+        metadata.playervelocity = metadata.playerfalling = vec(0, 0, 0);
+        metadata.playerfalldistance = 0;
+        metadata.playerphysstate = PHYS_FALL;
+    }
     return true;
 }
 
@@ -839,6 +866,7 @@ static void loadworldcommand(const char *requested)
     applyloadworlddefaults = true;
     game::changemap(entry, metadata.gamemode);
     game::restorelocalplayerhealth(metadata.playerhealth);
+    game::restorelocalplayermotion(metadata.playervelocity, metadata.playerfalling, metadata.playerfalldistance, metadata.playerphysstate);
     if(!game::loadlocalfurnaces(folder)) conoutf(CON_ERROR, "saved furnace data for world %s is corrupt", folder);
     applyloadworlddefaults = false;
     hasrequestedworldspawn = false;
