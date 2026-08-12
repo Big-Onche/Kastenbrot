@@ -56,12 +56,38 @@ namespace game
     static vector<worlddrop *> worlddrops;
     static vector<fallingblock *> fallingblocks;
     static vector<ivec> fallblockchecks;
+
+    struct localsupportcell
+    {
+        int distance, index, unsupportedindex;
+
+        localsupportcell(int distance = 0, int index = -1) : distance(distance), index(index), unsupportedindex(-1) {}
+    };
+
+    struct localsupportcheck
+    {
+        ivec cell;
+        int remaining;
+
+        localsupportcheck(const ivec &cell = ivec(0, 0, 0), int remaining = 0) : cell(cell), remaining(remaining) {}
+    };
+
+    static hashtable<ivec, localsupportcell> localsupportcells(1 << 12);
+    static hashtable<ivec, int> localsupportpersistent(1 << 10);
+    static vector<ivec> localsupportpositions, localunsupportedpositions;
+    static vector<localsupportcheck> localsupportchecks;
     static uint nextlocaldropid = 1;
     static uint nextlocalfallblockid = 1;
+    static int localsupportlasttick = 0;
     static int personaldrops = 0, droptimeout = 300, maxdrop = 1024, dynamicentsmaxdistance = 64, requireconfirmeditems = 1;
+    VARP(supportdecaymillis, 10, 3000, 60000);
     static void updateworlddrops();
     static void updatefallingblocks();
     static void queuefallblockcheck(const ivec &cell);
+    static void updatesupportblocks();
+    static void queuesupportchange(const ivec &cell);
+    static void setlocalsupportpersistent(const ivec &cell, bool persistent);
+    static void resetlocalsupportblocks();
     static void updatefurnaces();
     static void predictsurvivaldrops(int objectitem, uint requestid, const ivec &target, int action, int orient);
 #endif
@@ -165,7 +191,12 @@ namespace game
                 mpeditface(-1, 1, sel, false);
                 paintworldcube(type, placed, false);
                 waterterrainchanged(absoluteplacedorigin);
-                if(!waitforserveredit()) queuefallblockcheck(absoluteplacedorigin);
+                if(!waitforserveredit())
+                {
+                    setlocalsupportpersistent(absoluteplacedorigin, false);
+                    queuefallblockcheck(absoluteplacedorigin);
+                    queuesupportchange(absoluteplacedorigin);
+                }
                 return true;
             }
             case WORLD_ACTION_PLACE_SCATTER:
@@ -175,7 +206,12 @@ namespace game
             case WORLD_ACTION_BREAK_CUBE_START:
                 mpdelcube(sel, false);
                 waterterrainchanged(absolutetarget);
-                if(!waitforserveredit()) queuefallblockcheck(ivec(absolutetarget).add(ivec(0, 0, 16)));
+                if(!waitforserveredit())
+                {
+                    setlocalsupportpersistent(absolutetarget, false);
+                    queuefallblockcheck(ivec(absolutetarget).add(ivec(0, 0, 16)));
+                    queuesupportchange(absolutetarget);
+                }
                 return true;
             case WORLD_ACTION_BREAK_SCATTER_START:
                 return (getworlditemtype(item) == WORLD_ITEM_SCATTER || getworlditemtype(item) == WORLD_ITEM_PLACEABLE) &&
@@ -360,6 +396,7 @@ namespace game
         predictedworldactions.deletecontents();
         resetworlddrops();
         resetfallingblocks();
+        resetlocalsupportblocks();
         resetfurnaces();
         nextworldrequestid = 1;
         resetsurvivalinventory();
@@ -409,6 +446,7 @@ namespace game
         localworldactive = true;
         resetwatersimulationsettings();
         resetfallingblocks();
+        resetlocalsupportblocks();
 #ifndef STANDALONE
         resetclientreceive();
 #endif
@@ -635,6 +673,7 @@ namespace game
         updatefooduse();
         updateworlddrops();
         updatefallingblocks();
+        updatesupportblocks();
         updatefurnaces();
 #endif
         gets2c();
@@ -810,6 +849,7 @@ namespace game
         resetwatersimulation();
         if(!pendingnetworkworld) resetworlddrops();
         if(!pendingnetworkworld) resetfallingblocks();
+        if(!pendingnetworkworld) resetlocalsupportblocks();
 #endif
         copystring(clientmap, name ? name : "");
 #ifndef STANDALONE
@@ -1861,6 +1901,267 @@ namespace game
         return true;
     }
 
+    static const int localsupportdirections[6][3] =
+    {
+        { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 },
+        { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+    };
+
+    static int localmaxsupportdistance()
+    {
+        int distance = 0;
+        loopi(numworldcubes()) distance = max(distance, getworldcubesupportdistance(i));
+        return distance;
+    }
+
+    static bool localblockworldindex(const ivec &cell, int &worldindex)
+    {
+        int item = -1;
+        bool solid = false;
+        if(!localfallblockcell(cell, item, solid)) return false;
+        worldindex = solid && getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+        return true;
+    }
+
+    static bool localsupportinrange(const ivec &cell)
+    {
+        if(!player1) return false;
+        vec playerposition = player1->o;
+        worldpositiontoabsolute(playerposition);
+        const float radius = simulationmaxdist * GAMEUNITSPERMETER;
+        return vec(cell).add(CREATIVE_GRID / 2).squaredist(playerposition) <= radius * radius;
+    }
+
+    static void queuesupportcheck(const ivec &cell, int remaining)
+    {
+        if(remaining < 0) return;
+        loopv(localsupportchecks) if(localsupportchecks[i].cell == cell)
+        {
+            localsupportchecks[i].remaining = max(localsupportchecks[i].remaining, remaining);
+            return;
+        }
+        localsupportchecks.add(localsupportcheck(cell, remaining));
+    }
+
+    static void queuesupportchange(const ivec &cell)
+    {
+        const int distance = localmaxsupportdistance();
+        if(distance <= 0) return;
+        queuesupportcheck(cell, distance);
+        loopi(6)
+            queuesupportcheck(ivec(cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                  localsupportdirections[i][2]).mul(CREATIVE_GRID)), distance);
+    }
+
+    static void setlocalsupportpersistent(const ivec &cell, bool persistent)
+    {
+        const ivec key = cell;
+        if(persistent) localsupportpersistent.access(key, 1);
+        else localsupportpersistent.remove(key);
+    }
+
+    struct localsupportsearchnode
+    {
+        ivec cell;
+        int reach, distance, worldindex;
+
+        localsupportsearchnode(const ivec &cell, int reach, int worldindex) : cell(cell), reach(reach), distance(0), worldindex(worldindex) {}
+    };
+
+    static bool localsupportdistance(const ivec &cell, int maxdistance, int &result)
+    {
+        vector<localsupportsearchnode> nodes;
+        hashtable<ivec, int> indexes(1 << 8);
+        int targetindex = -1;
+        result = 0;
+        if(!localblockworldindex(cell, targetindex)) return false;
+        if(targetindex < 0 || getworldcubesupportdistance(targetindex) <= 0) return true;
+        nodes.add(localsupportsearchnode(cell, 0, targetindex));
+        indexes.access(cell, 0);
+        for(int cursor = 0; cursor < nodes.length(); ++cursor)
+        {
+            const localsupportsearchnode node = nodes[cursor];
+            if(node.reach >= maxdistance) continue;
+            loopi(6)
+            {
+                const ivec neighbor = ivec(node.cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                                localsupportdirections[i][2]).mul(CREATIVE_GRID));
+                int worldindex = -1;
+                if(!localblockworldindex(neighbor, worldindex)) return false;
+                if(worldindex < 0 || getworldcubesupportdistance(worldindex) <= 0 || indexes.access(neighbor)) continue;
+                indexes.access(neighbor, nodes.length());
+                nodes.add(localsupportsearchnode(neighbor, node.reach + 1, worldindex));
+            }
+        }
+
+        vector<int> frontier;
+        loopv(nodes)
+        {
+            localsupportsearchnode &node = nodes[i];
+            loopj(6)
+            {
+                const ivec neighbor = ivec(node.cell).add(ivec(localsupportdirections[j][0], localsupportdirections[j][1],
+                                                                localsupportdirections[j][2]).mul(CREATIVE_GRID));
+                int worldindex = -1;
+                if(!localblockworldindex(neighbor, worldindex)) return false;
+                if(worldindex >= 0 && getworldcubesupportdistance(worldindex) <= 0)
+                {
+                    node.distance = 1;
+                    frontier.add(i);
+                    break;
+                }
+            }
+        }
+        for(int cursor = 0; cursor < frontier.length(); ++cursor)
+        {
+            const int nodeindex = frontier[cursor], distance = nodes[nodeindex].distance + 1;
+            const ivec origin = nodes[nodeindex].cell;
+            loopi(6)
+            {
+                const ivec neighbor = ivec(origin).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                             localsupportdirections[i][2]).mul(CREATIVE_GRID));
+                int *index = indexes.access(neighbor);
+                if(!index || distance > getworldcubesupportdistance(nodes[*index].worldindex) ||
+                   (nodes[*index].distance && nodes[*index].distance <= distance))
+                    continue;
+                nodes[*index].distance = distance;
+                frontier.add(*index);
+            }
+        }
+        result = nodes[0].distance <= maxdistance ? nodes[0].distance : 0;
+        return true;
+    }
+
+    static void removelocalsupportcell(const ivec &cell)
+    {
+        const ivec key = cell;
+        localsupportcell *state = localsupportcells.access(key);
+        if(!state) return;
+        const int unsupportedindex = state->unsupportedindex, unsupportedlast = localunsupportedpositions.length() - 1;
+        if(unsupportedindex >= 0 && unsupportedindex <= unsupportedlast)
+        {
+            if(unsupportedindex != unsupportedlast)
+            {
+                localunsupportedpositions[unsupportedindex] = localunsupportedpositions[unsupportedlast];
+                localsupportcell *moved = localsupportcells.access(localunsupportedpositions[unsupportedindex]);
+                if(moved) moved->unsupportedindex = unsupportedindex;
+            }
+            localunsupportedpositions.setsize(unsupportedlast);
+        }
+        const int index = state->index, last = localsupportpositions.length() - 1;
+        if(index >= 0 && index <= last)
+        {
+            if(index != last)
+            {
+                localsupportpositions[index] = localsupportpositions[last];
+                localsupportcell *moved = localsupportcells.access(localsupportpositions[index]);
+                if(moved) moved->index = index;
+            }
+            localsupportpositions.setsize(last);
+        }
+        localsupportcells.remove(key);
+    }
+
+    static void updatelocalunsupportedstate(const ivec &cell, localsupportcell &state)
+    {
+        const bool unsupported = state.distance <= 0 && !localsupportpersistent.access(cell);
+        if(unsupported == (state.unsupportedindex >= 0)) return;
+        if(unsupported)
+        {
+            state.unsupportedindex = localunsupportedpositions.length();
+            localunsupportedpositions.add(cell);
+            return;
+        }
+        const int index = state.unsupportedindex, last = localunsupportedpositions.length() - 1;
+        if(index >= 0 && index <= last)
+        {
+            if(index != last)
+            {
+                localunsupportedpositions[index] = localunsupportedpositions[last];
+                localsupportcell *moved = localsupportcells.access(localunsupportedpositions[index]);
+                if(moved) moved->unsupportedindex = index;
+            }
+            localunsupportedpositions.setsize(last);
+        }
+        state.unsupportedindex = -1;
+    }
+
+    static bool updatesupportcell(const localsupportcheck &check)
+    {
+        int worldindex = -1;
+        if(!localblockworldindex(check.cell, worldindex)) return false;
+        const int maxdistance = getworldcubesupportdistance(worldindex);
+        localsupportcell *state = localsupportcells.access(check.cell);
+        if(maxdistance <= 0)
+        {
+            if(state) removelocalsupportcell(check.cell);
+            return true;
+        }
+        int distance = 0;
+        if(!localsupportdistance(check.cell, maxdistance, distance)) return false;
+        const int previous = state ? state->distance : -1;
+        if(!state)
+        {
+            const int index = localsupportpositions.length();
+            localsupportpositions.add(check.cell);
+            state = &localsupportcells.access(check.cell, localsupportcell(distance, index));
+        }
+        else state->distance = distance;
+        updatelocalunsupportedstate(check.cell, *state);
+        if(previous == distance || check.remaining <= 0) return true;
+        loopi(6)
+            queuesupportcheck(ivec(check.cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                         localsupportdirections[i][2]).mul(CREATIVE_GRID)), check.remaining - 1);
+        return true;
+    }
+
+    static void randomticklocalsupportblock(const ivec &cell)
+    {
+        localsupportcell *state = localsupportcells.access(cell);
+        if(!state || state->distance > 0 || !localsupportinrange(cell) || localsupportpersistent.access(cell)) return;
+        int worldindex = -1;
+        if(!localblockworldindex(cell, worldindex) || worldindex < 0 || !getworldcubesupportdecay(worldindex)) return;
+        const int item = getworldcubeitem(worldindex);
+        if(item < 0 || !applyworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item)) return;
+        selinfo dropselection;
+        worldactionselection(dropselection, cell, WORLD_ORIENT_TOP);
+        worldselectiontolocal(dropselection);
+        predictsurvivaldrops(item, newworldrequestid(), dropselection.o, WORLD_ACTION_BREAK_CUBE_START, WORLD_ORIENT_TOP);
+        removelocalsupportcell(cell);
+    }
+
+    static void updatesupportblocks()
+    {
+        if(waitforserveredit() || !islocalworld() || !player1) return;
+        const int checks = min(localsupportchecks.length(), 64);
+        loopi(checks)
+        {
+            const localsupportcheck check = localsupportchecks.remove(0);
+            if(!localsupportinrange(check.cell) || !updatesupportcell(check))
+            {
+                queuesupportcheck(check.cell, check.remaining);
+                continue;
+            }
+        }
+        if(totalmillis - localsupportlasttick < supportdecaymillis || localunsupportedpositions.empty()) return;
+        localsupportlasttick = totalmillis;
+        loopi(3)
+        {
+            if(localunsupportedpositions.empty()) break;
+            randomticklocalsupportblock(localunsupportedpositions[rnd(localunsupportedpositions.length())]);
+        }
+    }
+
+    static void resetlocalsupportblocks()
+    {
+        localsupportcells.clear();
+        localsupportpersistent.clear();
+        localsupportpositions.setsize(0);
+        localunsupportedpositions.setsize(0);
+        localsupportchecks.setsize(0);
+        localsupportlasttick = totalmillis;
+    }
+
     static bool findlocalfallblocklanding(fallingblock &block)
     {
         for(int z = block.origin.z - CREATIVE_GRID; z >= 0; z -= CREATIVE_GRID)
@@ -2486,6 +2787,8 @@ namespace game
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
             queuefallblockcheck(absolute.o);
+            setlocalsupportpersistent(absolute.o, getworldcubesupportpersistentonplace(worldindex));
+            queuesupportchange(absolute.o);
         }
         else
         {
@@ -2531,6 +2834,8 @@ namespace game
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
             queuefallblockcheck(ivec(absolute.o).add(ivec(0, 0, CREATIVE_GRID)));
+            setlocalsupportpersistent(absolute.o, false);
+            queuesupportchange(absolute.o);
         }
         else
         {
@@ -2817,6 +3122,8 @@ namespace game
                 mpdelcube(survivalbreaktarget.cube, true);
                 waterterrainchanged(absolute.o);
                 queuefallblockcheck(ivec(absolute.o).add(ivec(0, 0, CREATIVE_GRID)));
+                setlocalsupportpersistent(absolute.o, false);
+                queuesupportchange(absolute.o);
             }
             else
             {

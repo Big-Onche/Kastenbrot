@@ -260,6 +260,22 @@ bool getworldcubefall(int index)
     return index >= 0 && worldcubedefinitions[index]->fall;
 }
 
+int getworldcubesupportdistance(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport ? worldcubedefinitions[index]->supportdistance : 0;
+}
+
+bool getworldcubesupportdecay(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport && worldcubedefinitions[index]->supportdecay;
+}
+
+bool getworldcubesupportpersistentonplace(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport &&
+           worldcubedefinitions[index]->supportpersistentonplace;
+}
+
 int getinventoryitemindex(const char *id)
 {
     worlddefinition *item = findinventoryitem(id);
@@ -918,6 +934,22 @@ bool isworldcubepushable(int index)
 bool getworldcubefall(int index)
 {
     return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->fall;
+}
+
+int getworldcubesupportdistance(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport ? worldcubedefinitions[index]->supportdistance : 0;
+}
+
+bool getworldcubesupportdecay(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport && worldcubedefinitions[index]->supportdecay;
+}
+
+bool getworldcubesupportpersistentonplace(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport &&
+           worldcubedefinitions[index]->supportpersistentonplace;
 }
 
 const char *getworldcubename(int index)

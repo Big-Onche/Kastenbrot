@@ -73,6 +73,7 @@ namespace server
     VAR(servernpcsnapshotmillis, 33, 100, 1000);
     VAR(servernpcdeathtimeout, 1000, 20000, 120000);
     VAR(servernpcspawnmillis, 100, 500, 60000);
+    VAR(serversupportdecaymillis, 10, 3000, 60000);
 #ifdef STANDALONE
     VAR(personaldrops, 0, 0, 1);
     VAR(droptimeout, 1, 300, 86400);
@@ -202,8 +203,9 @@ namespace server
     {
         ivec target;
         int action, orient, item;
+        bool supportpersistent;
 
-        serverworldaction() : target(0, 0, 0), action(-1), orient(0), item(-1) {}
+        serverworldaction() : target(0, 0, 0), action(-1), orient(0), item(-1), supportpersistent(false) {}
     };
 
     enum
@@ -218,10 +220,10 @@ namespace server
 
     struct servercollisionchunk
     {
-        int x, y, lastused;
+        int x, y, lastused, supportscan;
         short heights[SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS];
 
-        servercollisionchunk(int x = 0, int y = 0) : x(x), y(y), lastused(totalmillis)
+        servercollisionchunk(int x = 0, int y = 0) : x(x), y(y), lastused(totalmillis), supportscan(0)
         {
             memset(heights, 0, sizeof(heights));
         }
@@ -270,6 +272,21 @@ namespace server
         serverfallingblock() : id(0), item(-1), lastupdate(totalmillis), velocity(0), origin(0, 0, 0), o(0, 0, 0) {}
     };
 
+    struct serversupportcell
+    {
+        int distance, index, unsupportedindex;
+
+        serversupportcell(int distance = 0, int index = -1) : distance(distance), index(index), unsupportedindex(-1) {}
+    };
+
+    struct serversupportcheck
+    {
+        ivec cell;
+        int remaining;
+
+        serversupportcheck(const ivec &cell = ivec(0, 0, 0), int remaining = 0) : cell(cell), remaining(remaining) {}
+    };
+
     static vector<serverworldaction *> serverworldactions;
     static vector<servercollisionchunk *> servercollisionchunks;
     static vector<servernpc *> servernpcs;
@@ -282,14 +299,19 @@ namespace server
     static vector<serverdrop *> serverdrops;
     static vector<serverfallingblock *> serverfallingblocks;
     static vector<ivec> serverfallblockchecks;
+    static hashtable<ivec, serversupportcell> serversupportcells(1 << 12);
+    static vector<ivec> serversupportpositions;
+    static vector<ivec> serverunsupportedpositions;
+    static vector<serversupportcheck> serversupportchecks;
     static vector<furnaceinstance *> serverfurnaces;
     static uint nextdropid = 1;
     static uint nextfallblockid = 1;
     static bool furnacesdirty = false;
     static int lastfurnacesave = 0;
     static serverworldaction *findworldaction(const ivec &target, int action);
-    static void setworldactionstate(const ivec &target, int action, int orient, int item);
+    static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced = false);
     static void queueserverfallblockcheck(const ivec &cell);
+    static void queueserversupportchange(const ivec &cell);
     static void sendfallblockspawn(int cn, const serverfallingblock &block);
     static bool loadserverfurnaces();
     static bool saveserverfurnaces(bool force = false);
@@ -543,7 +565,7 @@ namespace server
             const int item = itemid ? getinventoryitempersistentindex(itemid) : -1;
             if(!p.overread() && !p.remaining() && orient >= 0 && orient <= 5)
             {
-                setworldactionstate(worldactionstatecell(target, action, orient), action, orient, item);
+                setworldactionstate(worldactionstatecell(target, action, orient), action, orient, item, edit.author >= 0);
             }
             return;
         }
@@ -623,6 +645,10 @@ namespace server
         serverdrops.deletecontents();
         serverfallingblocks.deletecontents();
         serverfallblockchecks.setsize(0);
+        serversupportcells.clear();
+        serversupportpositions.setsize(0);
+        serverunsupportedpositions.setsize(0);
+        serversupportchecks.setsize(0);
         serverfurnaces.deletecontents();
         nextdropid = 1;
         nextfallblockid = 1;
@@ -1639,7 +1665,39 @@ namespace server
         serverfallblockchecks.add(cell);
     }
 
-    static void setworldactionstate(const ivec &target, int action, int orient, int item)
+    static int servermaxsupportdistance()
+    {
+        int distance = 0;
+        loopi(numworldcubes()) distance = max(distance, getworldcubesupportdistance(i));
+        return distance;
+    }
+
+    static void queueserversupportcheck(const ivec &cell, int remaining)
+    {
+        if(remaining < 0) return;
+        loopv(serversupportchecks) if(serversupportchecks[i].cell == cell)
+        {
+            serversupportchecks[i].remaining = max(serversupportchecks[i].remaining, remaining);
+            return;
+        }
+        serversupportchecks.add(serversupportcheck(cell, remaining));
+    }
+
+    static void queueserversupportchange(const ivec &cell)
+    {
+        const int distance = servermaxsupportdistance();
+        if(distance <= 0) return;
+        static const int directions[6][3] =
+        {
+            { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 },
+            { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+        };
+        queueserversupportcheck(cell, distance);
+        loopi(6) queueserversupportcheck(ivec(cell).add(ivec(directions[i][0], directions[i][1], directions[i][2]).mul(SERVER_WORLD_BLOCK_SIZE)),
+                                          distance);
+    }
+
+    static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced)
     {
         serverworldaction *state = findworldaction(target, action);
         if(!state)
@@ -1651,8 +1709,12 @@ namespace server
         state->action = action;
         state->orient = orient;
         state->item = item;
+        const int type = getworlditemtype(item), index = getworlditemindex(item);
+        state->supportpersistent = action == WORLD_ACTION_PLACE_CUBE && playerplaced && type == WORLD_ITEM_CUBE &&
+                                   getworldcubesupportpersistentonplace(index);
         queueserverfallblockcheck(target);
         queueserverfallblockcheck(ivec(target).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
+        queueserversupportchange(target);
     }
 
     static int serverfloordiv(int value, int divisor)
@@ -1710,6 +1772,14 @@ namespace server
                   watertop = SERVER_WORLD_GROUND_HEIGHT + serverworldgenerator->settings.sealevel * SERVER_WORLD_BLOCK_SIZE,
                   dirtbottom = surface - serverworldgenerator->settings.soildepth * SERVER_WORLD_BLOCK_SIZE,
                   grassbottom = surface - SERVER_WORLD_BLOCK_SIZE;
+        if(cell.z >= surface && cell.z < surface + 10 * SERVER_WORLD_BLOCK_SIZE)
+        {
+            const int treeblock = serverworldgenerator->treeblock(x, y, cell.z / SERVER_WORLD_BLOCK_SIZE);
+            if(treeblock == game::WORLD_TREE_WOOD) return serverworldcubeindex("wood");
+            if(treeblock == game::WORLD_TREE_DARK_WOOD) return serverworldcubeindex("dark_wood");
+            if(treeblock == game::WORLD_TREE_LEAVES) return serverworldcubeindex("leaves");
+            if(treeblock == game::WORLD_TREE_NEEDLES) return serverworldcubeindex("needles");
+        }
         if(cell.z >= max(surface, watertop) || (surface < watertop && cell.z >= surface)) return -1;
         if(cell.z + SERVER_WORLD_BLOCK_SIZE <= dirtbottom) return serverworldcubeindex("stone");
         const int biome = serverworldgenerator->biome(x, y, height);
@@ -3316,6 +3386,229 @@ namespace server
         return false;
     }
 
+    struct serversupportsearchnode
+    {
+        ivec cell;
+        int reach, distance, worldindex;
+
+        serversupportsearchnode(const ivec &cell, int reach, int worldindex) : cell(cell), reach(reach), distance(0), worldindex(worldindex) {}
+    };
+
+    static int serverblockworldindex(const ivec &cell)
+    {
+        const int item = serverblockitem(cell);
+        return getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+    }
+
+    static int serversupportdistance(const ivec &cell, int maxdistance)
+    {
+        static const int directions[6][3] =
+        {
+            { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 },
+            { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+        };
+        vector<serversupportsearchnode> nodes;
+        hashtable<ivec, int> indexes(1 << 8);
+        const int targetindex = serverblockworldindex(cell);
+        if(targetindex < 0 || getworldcubesupportdistance(targetindex) <= 0) return 0;
+        nodes.add(serversupportsearchnode(cell, 0, targetindex));
+        indexes.access(cell, 0);
+        for(int cursor = 0; cursor < nodes.length(); ++cursor)
+        {
+            const serversupportsearchnode node = nodes[cursor];
+            if(node.reach >= maxdistance) continue;
+            loopi(6)
+            {
+                const ivec neighbor = ivec(node.cell).add(ivec(directions[i][0], directions[i][1], directions[i][2]).mul(SERVER_WORLD_BLOCK_SIZE));
+                const int worldindex = serverblockworldindex(neighbor);
+                if(worldindex < 0 || getworldcubesupportdistance(worldindex) <= 0 || indexes.access(neighbor)) continue;
+                indexes.access(neighbor, nodes.length());
+                nodes.add(serversupportsearchnode(neighbor, node.reach + 1, worldindex));
+            }
+        }
+
+        vector<int> frontier;
+        loopv(nodes)
+        {
+            serversupportsearchnode &node = nodes[i];
+            loopj(6)
+            {
+                const ivec neighbor = ivec(node.cell).add(ivec(directions[j][0], directions[j][1], directions[j][2]).mul(SERVER_WORLD_BLOCK_SIZE));
+                const int worldindex = serverblockworldindex(neighbor);
+                if(worldindex >= 0 && getworldcubesupportdistance(worldindex) <= 0)
+                {
+                    node.distance = 1;
+                    frontier.add(i);
+                    break;
+                }
+            }
+        }
+        for(int cursor = 0; cursor < frontier.length(); ++cursor)
+        {
+            const int nodeindex = frontier[cursor], distance = nodes[nodeindex].distance + 1;
+            const ivec origin = nodes[nodeindex].cell;
+            loopi(6)
+            {
+                const ivec neighbor = ivec(origin).add(ivec(directions[i][0], directions[i][1], directions[i][2]).mul(SERVER_WORLD_BLOCK_SIZE));
+                int *index = indexes.access(neighbor);
+                if(!index || distance > getworldcubesupportdistance(nodes[*index].worldindex) ||
+                   (nodes[*index].distance && nodes[*index].distance <= distance))
+                    continue;
+                nodes[*index].distance = distance;
+                frontier.add(*index);
+            }
+        }
+        return nodes[0].distance <= maxdistance ? nodes[0].distance : 0;
+    }
+
+    static void removeserversupportcell(const ivec &cell)
+    {
+        const ivec key = cell;
+        serversupportcell *state = serversupportcells.access(key);
+        if(!state) return;
+        const int unsupportedindex = state->unsupportedindex, unsupportedlast = serverunsupportedpositions.length() - 1;
+        if(unsupportedindex >= 0 && unsupportedindex <= unsupportedlast)
+        {
+            if(unsupportedindex != unsupportedlast)
+            {
+                serverunsupportedpositions[unsupportedindex] = serverunsupportedpositions[unsupportedlast];
+                serversupportcell *moved = serversupportcells.access(serverunsupportedpositions[unsupportedindex]);
+                if(moved) moved->unsupportedindex = unsupportedindex;
+            }
+            serverunsupportedpositions.setsize(unsupportedlast);
+        }
+        const int index = state->index, last = serversupportpositions.length() - 1;
+        if(index >= 0 && index <= last)
+        {
+            if(index != last)
+            {
+                serversupportpositions[index] = serversupportpositions[last];
+                serversupportcell *moved = serversupportcells.access(serversupportpositions[index]);
+                if(moved) moved->index = index;
+            }
+            serversupportpositions.setsize(last);
+        }
+        serversupportcells.remove(key);
+    }
+
+    static bool serversupportpersistent(const ivec &cell)
+    {
+        serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE);
+        return state && state->action == WORLD_ACTION_PLACE_CUBE && state->supportpersistent;
+    }
+
+    static void updateserverunsupportedstate(const ivec &cell, serversupportcell &state)
+    {
+        const bool unsupported = state.distance <= 0 && !serversupportpersistent(cell);
+        if(unsupported == (state.unsupportedindex >= 0)) return;
+        if(unsupported)
+        {
+            state.unsupportedindex = serverunsupportedpositions.length();
+            serverunsupportedpositions.add(cell);
+            return;
+        }
+        const int index = state.unsupportedindex, last = serverunsupportedpositions.length() - 1;
+        if(index >= 0 && index <= last)
+        {
+            if(index != last)
+            {
+                serverunsupportedpositions[index] = serverunsupportedpositions[last];
+                serversupportcell *moved = serversupportcells.access(serverunsupportedpositions[index]);
+                if(moved) moved->unsupportedindex = index;
+            }
+            serverunsupportedpositions.setsize(last);
+        }
+        state.unsupportedindex = -1;
+    }
+
+    static void updateserversupportcell(const serversupportcheck &check)
+    {
+        static const int directions[6][3] =
+        {
+            { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 },
+            { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+        };
+        const int worldindex = serverblockworldindex(check.cell), maxdistance = getworldcubesupportdistance(worldindex);
+        serversupportcell *state = serversupportcells.access(check.cell);
+        if(maxdistance <= 0)
+        {
+            if(state) removeserversupportcell(check.cell);
+            return;
+        }
+        const int distance = serversupportdistance(check.cell, maxdistance), previous = state ? state->distance : -1;
+        if(!state)
+        {
+            const int index = serversupportpositions.length();
+            serversupportpositions.add(check.cell);
+            state = &serversupportcells.access(check.cell, serversupportcell(distance, index));
+        }
+        else state->distance = distance;
+        updateserverunsupportedstate(check.cell, *state);
+        if(previous == distance || check.remaining <= 0) return;
+        loopi(6)
+            queueserversupportcheck(ivec(check.cell).add(ivec(directions[i][0], directions[i][1], directions[i][2]).mul(SERVER_WORLD_BLOCK_SIZE)),
+                                    check.remaining - 1);
+    }
+
+    static void randomtickserversupportblock(const ivec &cell)
+    {
+        serversupportcell *state = serversupportcells.access(cell);
+        if(!state || state->distance > 0 || !serverfallblockinrange(cell) || serversupportpersistent(cell)) return;
+        const int item = serverblockitem(cell), worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+        if(item < 0 || !getworldcubesupportdecay(worldindex)) return;
+        if(!acceptsystemworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, item)) return;
+        addworlddrops(NULL, worldeditrevision, WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item);
+        removeserversupportcell(cell);
+    }
+
+    static void updateserversupportblocks()
+    {
+        int discoverybudget = 8;
+        loopv(servercollisionchunks)
+        {
+            servercollisionchunk &chunk = *servercollisionchunks[i];
+            while(discoverybudget > 0 && chunk.supportscan < SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS)
+            {
+                const int column = chunk.supportscan++, localx = column % SERVER_WORLD_CHUNK_BLOCKS,
+                          localy = column / SERVER_WORLD_CHUNK_BLOCKS,
+                          blockx = chunk.x * SERVER_WORLD_CHUNK_BLOCKS + localx,
+                          blocky = chunk.y * SERVER_WORLD_CHUNK_BLOCKS + localy,
+                          surface = SERVER_WORLD_GROUND_HEIGHT + chunk.heights[column] * SERVER_WORLD_BLOCK_SIZE;
+                loopj(10)
+                {
+                    const ivec cell(blockx * SERVER_WORLD_BLOCK_SIZE, blocky * SERVER_WORLD_BLOCK_SIZE, surface + j * SERVER_WORLD_BLOCK_SIZE);
+                    const int worldindex = serverblockworldindex(cell), distance = getworldcubesupportdistance(worldindex);
+                    if(distance > 0) queueserversupportcheck(cell, distance);
+                }
+                --discoverybudget;
+            }
+            if(discoverybudget <= 0) break;
+        }
+
+        const int checks = min(serversupportchecks.length(), 64);
+        loopi(checks)
+        {
+            const serversupportcheck check = serversupportchecks.remove(0);
+            if(!serverfallblockinrange(check.cell))
+            {
+                queueserversupportcheck(check.cell, check.remaining);
+                continue;
+            }
+            updateserversupportcell(check);
+        }
+
+        static int lastrandomtick = 0;
+        if(totalmillis - lastrandomtick < serversupportdecaymillis || serverunsupportedpositions.empty()) return;
+        lastrandomtick = totalmillis;
+        int players = 0;
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready && clients[i]->hasposition) ++players;
+        loopi(max(players * 3, 1))
+        {
+            if(serverunsupportedpositions.empty()) break;
+            randomtickserversupportblock(serverunsupportedpositions[rnd(serverunsupportedpositions.length())]);
+        }
+    }
+
     static bool startserverfallingblock(const ivec &cell, int item)
     {
         if(!acceptsystemworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, item)) return false;
@@ -3614,7 +3907,7 @@ namespace server
             return rejectaction(ci, requestid, "invalid placed item type", true, true);
         if(!acceptworldaction(ci, requestid, action, support, orient, item))
             return rejectaction(ci, requestid, "server could not persist the placement");
-        setworldactionstate(occupied, action, orient, item);
+        setworldactionstate(occupied, action, orient, item, true);
         if(!servercreative())
         {
             if(--ci.inventorycounts[slot] <= 0)
@@ -4819,6 +5112,8 @@ namespace server
                 ci->falling = falling;
                 ci->selectedcreative = servercreative() && helditem > 0 && helditem <= uint(numinventoryitems()) ? int(helditem - 1) : -1;
                 ci->hasposition = true;
+                getservercollisionchunk(serverfloordiv(int(floorf(ci->o.x)), SERVER_WORLD_CHUNK_SIZE),
+                                        serverfloordiv(int(floorf(ci->o.y)), SERVER_WORLD_CHUNK_SIZE));
                 ci->positiondirty = true;
                 ci->lastpositionmillis = now;
                 if(falldamage > 0) damageserverplayer(*ci, float(falldamage), vec(ci->o).addz(GAMEUNITSPERMETER));
@@ -5339,6 +5634,7 @@ namespace server
         if(!journalinitialized) return;
         updateserverfurnaces();
         updateserverfallingblocks();
+        updateserversupportblocks();
         updateservernpcs();
         loopv(clients)
         {

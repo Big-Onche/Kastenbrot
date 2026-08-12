@@ -24,11 +24,12 @@ worlddefinition::worlddefinition(const char *id)
     : persistentid(worldpersistentid(id)), worldsize(1.0f), texsize(1), lightradius(0), hardness(1.0f), toolspeed(1.0f), tooldamage(2.0f),
       foodhealth(0),
       maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
-      furnaceinputlimit(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), hasitem(false), hascube(false), scatter(false),
-      placeable(false), hasmining(false), hastool(false), hasfurnace(false), hasfood(false), itemstackset(false), cubetextureset(false),
+      furnaceinputlimit(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), supportdistance(0), hasitem(false),
+      hascube(false),
+      scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), hasfood(false), hassupport(false), itemstackset(false),
       scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
-      handbreakable(true)
+      handbreakable(true), supportdecay(false), supportpersistentonplace(false)
 {
     copystring(this->id, id);
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
@@ -44,7 +45,7 @@ static worlddefinition *currentworlddefinition = NULL;
 enum
 {
     WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL, WORLDDEF_FURNACE,
-    WORLDDEF_FOOD
+    WORLDDEF_FOOD, WORLDDEF_SUPPORT
 };
 static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
 
@@ -118,6 +119,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "tool")) return "worlddef_tool";
         if(!strcmp(command, "furnace")) return "worlddef_furnace";
         if(!strcmp(command, "food")) return "worlddef_food";
+        if(!strcmp(command, "support")) return "worlddef_support";
         if(!strcmp(command, "drop")) return "worlddef_drop";
     }
     else if(component == WORLDDEF_ITEM)
@@ -167,6 +169,12 @@ static const char *worlddefinitioncommand(const char *command, int component)
     {
         if(!strcmp(command, "health")) return "worlddef_foodhealth";
         if(!strcmp(command, "time")) return "worlddef_foodtime";
+    }
+    else if(component == WORLDDEF_SUPPORT)
+    {
+        if(!strcmp(command, "distance")) return "worlddef_supportdistance";
+        if(!strcmp(command, "decay")) return "worlddef_supportdecay";
+        if(!strcmp(command, "persistentonplace")) return "worlddef_supportpersistentonplace";
     }
     return NULL;
 }
@@ -332,6 +340,13 @@ ICOMMANDS("worlddef_food", "S", (char *body),
     endworldcomponent();
 });
 
+ICOMMANDS("worlddef_support", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_SUPPORT, currentworlddefinition->hassupport, "support")) return;
+    executeworlddefinitionbody(body, WORLDDEF_SUPPORT);
+    endworldcomponent();
+});
+
 ICOMMANDS("worlddef_name", "s", (char *value), copystring(currentworlddefinition->name, value));
 ICOMMANDS("worlddef_stack", "i", (int *value),
 {
@@ -384,6 +399,9 @@ ICOMMANDS("worlddef_slots", "i", (int *value), currentworlddefinition->furnacein
 ICOMMANDS("worlddef_capacity", "i", (int *value), currentworlddefinition->furnaceinputlimit = *value);
 ICOMMANDS("worlddef_foodhealth", "f", (float *value), currentworlddefinition->foodhealth = *value);
 ICOMMANDS("worlddef_foodtime", "i", (int *value), currentworlddefinition->foodtime = *value);
+ICOMMANDS("worlddef_supportdistance", "i", (int *value), currentworlddefinition->supportdistance = *value);
+ICOMMANDS("worlddef_supportdecay", "i", (int *value), currentworlddefinition->supportdecay = *value != 0);
+ICOMMANDS("worlddef_supportpersistentonplace", "i", (int *value), currentworlddefinition->supportpersistentonplace = *value != 0);
 
 ICOMMANDS("worlddef_drop", "siifN", (char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
 {
@@ -486,6 +504,11 @@ bool resolveworlddefinitionregistry()
         if(definition.hasfood && (!definition.hasitem || definition.foodhealth <= 0 || definition.foodtime <= 0))
         {
             conoutf(CON_ERROR, "worlddef \"%s\": food requires item, positive health, and positive time", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hassupport && (!definition.hascube || definition.supportdistance <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": support requires cube and a positive distance", definition.id);
             ++worlddefinitionerrors;
         }
         loopv(definition.drops)

@@ -1418,16 +1418,6 @@ static bool generateworldcavenetworks(worldgencontext &ctx, uchar *carvemap, int
     return true;
 }
 
-static bool generateworldcaveentrance(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, int height)
-{
-    const float x = float((long long)chunkx * WORLD_CHUNK_BLOCKS + blockx) + 0.5f,
-                y = float((long long)chunky * WORLD_CHUNK_BLOCKS + blocky) + 0.5f,
-                z = height / float(WORLD_BLOCK_SIZE) - 0.5f;
-    loopv(ctx.cavesegments)
-        if(ctx.cavesegments[i].entrance && worldcavesegmentcontains(ctx, ctx.cavesegments[i], x, y, z)) return true;
-    return false;
-}
-
 static bool generateworldlavalakes(worldgencontext &ctx, uchar *carvemap, int chunkx, int chunky)
 {
     const int spacing = max(ctx.settings.lavalakespacing, 1),
@@ -1763,8 +1753,6 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             else if(terrain.rockyledge > 0.22f
                  || generateworldcliff(ctx, chunkx, chunky, x, y, height)
                  || generateworldrock(ctx, chunkx, chunky, x, y, height)) continue;
-            if(generateworldcaveentrance(ctx, chunkx, chunky, x, y, height)) continue;
-
             const float density = biome == game::WORLD_BIOME_FOREST ? ctx.settings.foresttreedensity : ctx.settings.plainstreedensity;
             const uint spawn = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0xD1B54A35U);
             if(worldtreeunit(spawn) >= density) continue;

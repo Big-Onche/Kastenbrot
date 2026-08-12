@@ -493,7 +493,7 @@ game/mining.o: shared/iengine.h shared/igame.h
 game/render.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/render.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/render.o: shared/iengine.h shared/igame.h
-game/server.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
+game/server.o: game/game.h game/world.h shared/cube.h shared/tools.h shared/geom.h
 game/server.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/server.o: shared/iengine.h shared/igame.h
 game/weather.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
@@ -542,7 +542,7 @@ standalone/game/entities.o: shared/iengine.h shared/igame.h
 standalone/game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h
 standalone/game/mining.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/mining.o: shared/iengine.h shared/igame.h
-standalone/game/server.o: game/game.h shared/cube.h shared/tools.h
+standalone/game/server.o: game/game.h game/world.h shared/cube.h shared/tools.h
 standalone/game/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/server.o: shared/iengine.h shared/igame.h
 standalone/engine/master.o: shared/cube.h shared/tools.h shared/geom.h

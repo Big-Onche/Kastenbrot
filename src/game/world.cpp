@@ -182,7 +182,7 @@ namespace game
     }
 
     worldgenerator::worldgenerator(int seed, const worldsettings &settings)
-        : settings(settings), seed(seed)
+        : settings(settings), seed(seed), treeblockcache(1 << 12)
     {
         // Two gentle octaves define the continental silhouette. Hills remain
         // broad and subordinate so changing one frequency scales all geology.
@@ -625,6 +625,121 @@ namespace game
         const float rockweight = smoothstep(low, high, height);
         const float selector = clamp(rockiness.GetNoise(x + 10000.5f, y - 10000.5f) * 1.25f + 0.5f, 0.0f, 1.0f);
         return rockweight > selector;
+    }
+
+    static uint worldtreehash(uint seed, int chunkx, int chunky, int blockx, int blocky, uint salt)
+    {
+        const uint worldx = uint(chunkx) * 64U + uint(blockx), worldy = uint(chunky) * 64U + uint(blocky);
+        uint hash = seed ^ salt;
+        hash ^= worldx * 0x9E3779B9U;
+        hash ^= worldy * 0x85EBCA6BU;
+        hash ^= hash >> 16;
+        hash *= 0x7FEB352DU;
+        hash ^= hash >> 15;
+        hash *= 0x846CA68BU;
+        hash ^= hash >> 16;
+        return hash;
+    }
+
+    static float worldtreeunit(uint hash)
+    {
+        return float(hash & 0x00FFFFFFU) / float(0x01000000U);
+    }
+
+    struct queriedworldtree
+    {
+        int x, y, base, height;
+        uint priority, shape;
+        bool pine;
+
+        queriedworldtree() : x(0), y(0), base(0), height(0), priority(0), shape(0), pine(false) {}
+    };
+
+    static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
+    {
+        worldtectonicsample terrain;
+        const int height = generator.height(x, y, &terrain), biome = generator.biome(x, y, height);
+        if(biome != WORLD_BIOME_FOREST && biome != WORLD_BIOME_PLAINS) return false;
+        const int beachmin = generator.settings.sealevel + min(generator.settings.beachminheight, generator.settings.beachmaxheight),
+                  beachmax = generator.settings.sealevel + max(generator.settings.beachminheight, generator.settings.beachmaxheight),
+                  coasttreemax = generator.settings.sealevel + 2;
+        if(generator.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) return false;
+        if(terrain.rockyledge > 0.22f || generator.cliff(x, y, height) || generator.rock(x, y, height)) return false;
+        const float density = biome == WORLD_BIOME_FOREST ? generator.settings.foresttreedensity : generator.settings.plainstreedensity;
+        const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64, chunky = y >= 0 ? y / 64 : (y - 63) / 64,
+                  blockx = x - chunkx * 64, blocky = y - chunky * 64;
+        const uint spawn = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0xD1B54A35U);
+        if(worldtreeunit(spawn) >= density) return false;
+        const uint shape = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0x94D049BBU);
+        const float pinelow = float(min(generator.settings.pinestartheight, generator.settings.pinefullheight)),
+                    pinehigh = float(max(generator.settings.pinestartheight, generator.settings.pinefullheight)),
+                    pinechance = smoothstep(pinelow, pinehigh, float(height));
+        tree.x = x;
+        tree.y = y;
+        tree.base = 256 + height;
+        tree.pine = worldtreeunit(shape) < pinechance;
+        tree.height = tree.pine ? 6 + int((shape >> 24) & 3U) : 4 + int((shape >> 24) % 3U);
+        tree.priority = spawn;
+        tree.shape = shape;
+        return tree.base + tree.height < 512;
+    }
+
+    static bool queryworldtree(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
+    {
+        if(!queryworldtreecandidate(generator, x, y, tree)) return false;
+        for(int oy = -1; oy <= 1; ++oy) for(int ox = -1; ox <= 1; ++ox)
+        {
+            if(!ox && !oy) continue;
+            queriedworldtree other;
+            if(!queryworldtreecandidate(generator, x + ox, y + oy, other)) continue;
+            if(other.priority < tree.priority || (other.priority == tree.priority &&
+               (other.y < tree.y || (other.y == tree.y && other.x < tree.x))))
+                return false;
+        }
+        return true;
+    }
+
+    static bool regularworldtreeleaf(const queriedworldtree &tree, int x, int y, int z)
+    {
+        const int level = z - tree.base, dx = x - tree.x, dy = y - tree.y;
+        if(level < tree.height - 2 || level > tree.height) return false;
+        const int radius = level == tree.height ? 1 : 2;
+        if(abs(dx) > radius || abs(dy) > radius) return false;
+        return radius != 2 || abs(dx) != 2 || abs(dy) != 2 ||
+               !(worldtreehash(tree.shape, dx, dy, level, tree.height, 0xA511E9B3U) & 1U);
+    }
+
+    static bool pineworldtreeneedle(const queriedworldtree &tree, int x, int y, int z)
+    {
+        const int level = z - tree.base, dx = abs(x - tree.x), dy = abs(y - tree.y);
+        if(level == tree.height) return !dx && !dy;
+        if(level < 2 || level >= tree.height) return false;
+        const int radius = min(3, 1 + (tree.height - level) / 3);
+        return dx <= radius && dy <= radius && dx + dy <= radius + 1;
+    }
+
+    int worldgenerator::treeblock(int x, int y, int z) const
+    {
+        if(treeblockcache.numelems >= 1 << 18) treeblockcache.clear();
+        const ivec key(x, y, z);
+        int *cached = treeblockcache.access(key);
+        if(cached) return *cached;
+        int foliage = WORLD_TREE_AIR;
+        for(int treeY = y - 3; treeY <= y + 3; ++treeY) for(int treeX = x - 3; treeX <= x + 3; ++treeX)
+        {
+            queriedworldtree tree;
+            if(!queryworldtree(*this, treeX, treeY, tree)) continue;
+            if(x == tree.x && y == tree.y && z >= tree.base && z < tree.base + tree.height)
+            {
+                const int wood = tree.pine ? WORLD_TREE_DARK_WOOD : WORLD_TREE_WOOD;
+                treeblockcache.access(key, wood);
+                return wood;
+            }
+            if(!tree.pine && regularworldtreeleaf(tree, x, y, z)) foliage = WORLD_TREE_LEAVES;
+            else if(foliage == WORLD_TREE_AIR && tree.pine && pineworldtreeneedle(tree, x, y, z)) foliage = WORLD_TREE_NEEDLES;
+        }
+        treeblockcache.access(key, foliage);
+        return foliage;
     }
 
     int getworldseed()

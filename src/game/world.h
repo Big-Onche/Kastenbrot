@@ -25,6 +25,15 @@ namespace game
         WORLD_BIOME_PLAINS
     };
 
+    enum worldtreeblock
+    {
+        WORLD_TREE_AIR = 0,
+        WORLD_TREE_WOOD,
+        WORLD_TREE_DARK_WOOD,
+        WORLD_TREE_LEAVES,
+        WORLD_TREE_NEEDLES
+    };
+
     struct worldtectonicsample
     {
         float activity, landuplift, oceantrench, caveexpansion;
@@ -84,6 +93,7 @@ namespace game
         worldsettings settings;
         int seed;
         float foldcos, foldsin;
+        mutable hashtable<ivec, int> treeblockcache;
 
         worldgenerator(int seed, const worldsettings &settings = worldsettings());
 
@@ -96,6 +106,7 @@ namespace game
         int biome(int x, int y, int height) const;
         bool cliff(int x, int y, int height) const;
         bool rock(int x, int y, int height) const;
+        int treeblock(int x, int y, int z) const;
     };
 
     extern int getworldseed();
