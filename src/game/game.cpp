@@ -72,13 +72,24 @@ namespace game
         localsupportcheck(const ivec &cell = ivec(0, 0, 0), int remaining = 0) : cell(cell), remaining(remaining) {}
     };
 
+    enum
+    {
+        LOCAL_SUPPORT_SECTION_SIZE = 16 * 16,
+        LOCAL_SUPPORT_SECTION_LAYERS = 512 / 16
+    };
+
     static hashtable<ivec, localsupportcell> localsupportcells(1 << 12);
     static hashtable<ivec, int> localsupportpersistent(1 << 10);
+    static hashtable<ivec, int> localsupportscannedsections(1 << 10);
+    static hashtable<ivec, int> localsupportqueuedsections(1 << 10);
     static vector<ivec> localsupportpositions, localunsupportedpositions;
+    static vector<ivec> localsupportscannedpositions, localsupportsectionchecks;
     static vector<localsupportcheck> localsupportchecks;
     static uint nextlocaldropid = 1;
     static uint nextlocalfallblockid = 1;
     static int localsupportlasttick = 0;
+    static ivec localsupportlastsection(INT_MIN, INT_MIN, INT_MIN);
+    static int localsupportlastdistance = -1;
     static int personaldrops = 0, droptimeout = 300, maxdrop = 1024, dynamicentsmaxdistance = 64, requireconfirmeditems = 1;
     VARP(supportdecaymillis, 10, 3000, 60000);
     static void updateworlddrops();
@@ -2130,9 +2141,102 @@ namespace game
         removelocalsupportcell(cell);
     }
 
+    static bool localsupportsectioninrange(const ivec &origin, const vec &playerposition, float radiussquared)
+    {
+        const float dx = playerposition.x < origin.x ? origin.x - playerposition.x
+                       : playerposition.x > origin.x + LOCAL_SUPPORT_SECTION_SIZE
+                       ? playerposition.x - origin.x - LOCAL_SUPPORT_SECTION_SIZE : 0,
+                    dy = playerposition.y < origin.y ? origin.y - playerposition.y
+                       : playerposition.y > origin.y + LOCAL_SUPPORT_SECTION_SIZE
+                       ? playerposition.y - origin.y - LOCAL_SUPPORT_SECTION_SIZE : 0,
+                    dz = playerposition.z < origin.z ? origin.z - playerposition.z
+                       : playerposition.z > origin.z + LOCAL_SUPPORT_SECTION_SIZE
+                       ? playerposition.z - origin.z - LOCAL_SUPPORT_SECTION_SIZE : 0;
+        return dx * dx + dy * dy + dz * dz <= radiussquared;
+    }
+
+    static bool localsupportsectionqueued(const ivec &origin)
+    {
+        return localsupportqueuedsections.access(origin) != NULL;
+    }
+
+    static void discoverlocalsupportblocks()
+    {
+        vec playerposition = player1->o;
+        worldpositiontoabsolute(playerposition);
+        const int distance = simulationmaxdist * GAMEUNITSPERMETER,
+                  sectionx = int(floor(playerposition.x / LOCAL_SUPPORT_SECTION_SIZE)),
+                  sectiony = int(floor(playerposition.y / LOCAL_SUPPORT_SECTION_SIZE)),
+                  sectionz = int(floor(playerposition.z / LOCAL_SUPPORT_SECTION_SIZE));
+        const ivec playersection(sectionx, sectiony, sectionz);
+        const float radiussquared = float(distance) * distance;
+        if(playersection != localsupportlastsection || distance != localsupportlastdistance)
+        {
+            for(int i = localsupportsectionchecks.length() - 1; i >= 0; --i)
+                if(!localsupportsectioninrange(localsupportsectionchecks[i], playerposition, radiussquared))
+                {
+                    localsupportqueuedsections.remove(localsupportsectionchecks[i]);
+                    localsupportsectionchecks.removeunordered(i);
+                }
+            for(int i = localsupportscannedpositions.length() - 1; i >= 0; --i)
+            {
+                const ivec origin = localsupportscannedpositions[i];
+                if(localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
+                localsupportscannedsections.remove(origin);
+                localsupportscannedpositions.removeunordered(i);
+            }
+            const int radiussections = (distance + LOCAL_SUPPORT_SECTION_SIZE - 1) / LOCAL_SUPPORT_SECTION_SIZE,
+                      minimumz = max(sectionz - radiussections, 0),
+                      maximumz = min(sectionz + radiussections, int(LOCAL_SUPPORT_SECTION_LAYERS) - 1);
+            const ivec currentorigin(sectionx * LOCAL_SUPPORT_SECTION_SIZE, sectiony * LOCAL_SUPPORT_SECTION_SIZE,
+                                     sectionz * LOCAL_SUPPORT_SECTION_SIZE);
+            if(!localsupportscannedsections.access(currentorigin) && !localsupportsectionqueued(currentorigin))
+            {
+                localsupportsectionchecks.add(currentorigin);
+                if(localsupportsectionchecks.length() > 1)
+                    swap(localsupportsectionchecks[0], localsupportsectionchecks.last());
+                localsupportqueuedsections.access(currentorigin, 1);
+            }
+            for(int z = minimumz; z <= maximumz; ++z)
+                for(int y = sectiony - radiussections; y <= sectiony + radiussections; ++y)
+                    for(int x = sectionx - radiussections; x <= sectionx + radiussections; ++x)
+                    {
+                        const ivec origin(x * LOCAL_SUPPORT_SECTION_SIZE, y * LOCAL_SUPPORT_SECTION_SIZE,
+                                          z * LOCAL_SUPPORT_SECTION_SIZE);
+                        if(!localsupportsectioninrange(origin, playerposition, radiussquared) ||
+                           localsupportscannedsections.access(origin) || localsupportsectionqueued(origin))
+                            continue;
+                        localsupportsectionchecks.add(origin);
+                        localsupportqueuedsections.access(origin, 1);
+                    }
+            localsupportlastsection = playersection;
+            localsupportlastdistance = distance;
+        }
+
+        const int scans = min(localsupportsectionchecks.length(), 8);
+        loopi(scans)
+        {
+            const ivec origin = localsupportsectionchecks.remove(0);
+            localsupportqueuedsections.remove(origin);
+            if(!localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
+            vector<ivec> cells;
+            if(!collectworldsupportcells(origin, LOCAL_SUPPORT_SECTION_SIZE, cells))
+            {
+                localsupportsectionchecks.add(origin);
+                localsupportqueuedsections.access(origin, 1);
+                continue;
+            }
+            localsupportscannedsections.access(origin, 1);
+            localsupportscannedpositions.add(origin);
+            const int distance = localmaxsupportdistance();
+            loopv(cells) queuesupportcheck(cells[i], distance);
+        }
+    }
+
     static void updatesupportblocks()
     {
         if(waitforserveredit() || !islocalworld() || !player1) return;
+        discoverlocalsupportblocks();
         const int checks = min(localsupportchecks.length(), 64);
         loopi(checks)
         {
@@ -2158,8 +2262,14 @@ namespace game
         localsupportpersistent.clear();
         localsupportpositions.setsize(0);
         localunsupportedpositions.setsize(0);
+        localsupportscannedsections.clear();
+        localsupportqueuedsections.clear();
+        localsupportscannedpositions.setsize(0);
+        localsupportsectionchecks.setsize(0);
         localsupportchecks.setsize(0);
         localsupportlasttick = totalmillis;
+        localsupportlastsection = ivec(INT_MIN, INT_MIN, INT_MIN);
+        localsupportlastdistance = -1;
     }
 
     static bool findlocalfallblocklanding(fallingblock &block)

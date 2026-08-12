@@ -157,6 +157,7 @@ extern ullong getworldcubepersistentid(int index);
 extern int getworldcubepersistentindex(ullong id, bool warn = true);
 extern int getworldcubetextureslotat(const ivec &position, int orient);
 extern bool isworldcubesolidat(const ivec &position);
+extern bool collectworldsupportcells(const ivec &absoluteorigin, int size, vector<ivec> &cells);
 extern const char *getworldcubename(int index);
 extern int getworldcubeitem(int index);
 extern bool getworldcubefall(int index);

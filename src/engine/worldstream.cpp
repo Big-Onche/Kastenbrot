@@ -657,6 +657,62 @@ static ivec worldchunkorigin(const worldchunk &chunk, int z = 0)
                 (chunk.y - worldfirstchunky) * WORLD_CHUNK_SIZE, z);
 }
 
+static void collectworldsupportnode(const cube &c, const ivec &origin, int size, const ivec &minimum, const ivec &maximum,
+                                    const worldchunk &chunk, vector<ivec> &cells)
+{
+    if(origin.x >= maximum.x || origin.y >= maximum.y || origin.z >= maximum.z || origin.x + size <= minimum.x ||
+       origin.y + size <= minimum.y || origin.z + size <= minimum.z)
+        return;
+    if(c.children)
+    {
+        const int childsize = size >> 1;
+        loopi(8) collectworldsupportnode(c.children[i], ivec(i, origin, childsize), childsize, minimum, maximum, chunk, cells);
+        return;
+    }
+    const int worldindex = getworldcubeindex(c.texture[WORLD_ORIENT_TOP]);
+    if(size < WORLD_BLOCK_SIZE || isempty(c) || !isentirelysolid(c) || getworldcubesupportdistance(worldindex) <= 0)
+        return;
+    const int startx = max(origin.x, minimum.x), starty = max(origin.y, minimum.y), startz = max(origin.z, minimum.z),
+              endx = min(origin.x + size, maximum.x), endy = min(origin.y + size, maximum.y), endz = min(origin.z + size, maximum.z),
+              absolutex = chunk.x * WORLD_CHUNK_SIZE, absolutey = chunk.y * WORLD_CHUNK_SIZE;
+    for(int z = startz; z < endz; z += WORLD_BLOCK_SIZE)
+        for(int y = starty; y < endy; y += WORLD_BLOCK_SIZE)
+            for(int x = startx; x < endx; x += WORLD_BLOCK_SIZE)
+                cells.add(ivec(absolutex + x, absolutey + y, z));
+}
+
+bool collectworldsupportcells(const ivec &absoluteorigin, int size, vector<ivec> &cells)
+{
+    cells.setsize(0);
+    if(size <= 0 || absoluteorigin.z < 0 || absoluteorigin.z + size > WORLD_MAP_SIZE) return false;
+    const int chunkx = int(floor(double(absoluteorigin.x) / WORLD_CHUNK_SIZE)),
+              chunky = int(floor(double(absoluteorigin.y) / WORLD_CHUNK_SIZE));
+    const int index = findworldchunk(chunkx, chunky);
+    if(!worldchunks.inrange(index)) return false;
+    const worldchunk &chunk = worldchunks[index];
+    if(chunk.loading || chunk.corrupted || !chunk.root) return false;
+    const ivec minimum(absoluteorigin.x - chunkx * WORLD_CHUNK_SIZE, absoluteorigin.y - chunky * WORLD_CHUNK_SIZE, absoluteorigin.z),
+               maximum = ivec(minimum).add(size);
+    if(size == WORLD_SECTION_SIZE && !(minimum.x % WORLD_SECTION_SIZE) && !(minimum.y % WORLD_SECTION_SIZE) &&
+       !(minimum.z % WORLD_SECTION_SIZE))
+    {
+        const int section = minimum.z / WORLD_SECTION_SIZE,
+                  tile = minimum.y / WORLD_SECTION_SIZE * WORLD_SECTION_COLUMNS + minimum.x / WORLD_SECTION_SIZE;
+        if(section >= 0 && section < WORLD_SECTION_LAYERS && tile >= 0 && tile < WORLD_SECTION_TILES &&
+           (chunk.mountedtiles[section] & (1U << tile)))
+        {
+            const ivec runtimeorigin = ivec(worldchunkorigin(chunk)).add(minimum);
+            collectworldsupportnode(lookupcube(runtimeorigin, WORLD_SECTION_SIZE), minimum, WORLD_SECTION_SIZE,
+                                    minimum, maximum, chunk, cells);
+            return true;
+        }
+    }
+    loopi(8)
+        collectworldsupportnode(chunk.root[i], ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), WORLD_CHUNK_ROOT_SIZE,
+                                minimum, maximum, chunk, cells);
+    return true;
+}
+
 static cube &lookupworldchunkcube(worldchunk &chunk, const ivec &pos, int size)
 {
     int scale = WORLD_CHUNK_SCALE - 1;
