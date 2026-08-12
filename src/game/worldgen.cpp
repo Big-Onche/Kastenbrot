@@ -110,8 +110,7 @@ static void freepreparedworldchunk(cube *root)
     delete[] root;
 }
 
-static void setworldcubetexture(cube &c, int texture, int toptexture = -1,
-                                int bottomtexture = -1, int material = MAT_AIR)
+static void setworldcubetexture(cube &c, int texture, int toptexture = -1, int bottomtexture = -1, int material = MAT_AIR)
 {
     solidfaces(c);
     c.material = material;
@@ -143,9 +142,7 @@ static float worldsmoothstep(float low, float high, float value)
     return t * t * (3.0f - 2.0f * t);
 }
 
-static int generateworldheight(const worldgencontext &ctx, int chunkx, int chunky,
-                               int blockx, int blocky,
-                               game::worldtectonicsample *tectonics = NULL)
+static int generateworldheight(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, game::worldtectonicsample *tectonics = NULL)
 {
     const int x = chunkx * WORLD_CHUNK_BLOCKS + blockx,
               y = chunky * WORLD_CHUNK_BLOCKS + blocky;
@@ -157,8 +154,7 @@ static void generateworldcoastmap(worldgencontext &ctx, int chunkx, int chunky)
     memset(ctx.coastmap, 0, sizeof(ctx.coastmap));
     if(ctx.settings.coastwidth <= 0) return;
 
-    const int maxcoastwidth = max(ctx.settings.coastwidth + ctx.settings.coastvariation,
-                                  int(ceil(ctx.generator.maxcoasttransitionwidth()))),
+    const int maxcoastwidth = max(ctx.settings.coastwidth + ctx.settings.coastvariation, int(ceil(ctx.generator.maxcoasttransitionwidth()))),
               halo = maxcoastwidth + 1,
               mapsize = WORLD_CHUNK_BLOCKS + 2 * halo,
               maparea = mapsize * mapsize,
@@ -184,8 +180,7 @@ static void generateworldcoastmap(worldgencontext &ctx, int chunkx, int chunky)
     {
         const int index = y * mapsize + x;
         const uchar iswater = water[index];
-        if(water[index - 1] != iswater || water[index + 1] != iswater ||
-           water[index - mapsize] != iswater || water[index + mapsize] != iswater)
+        if(water[index - 1] != iswater || water[index + 1] != iswater || water[index - mapsize] != iswater || water[index + mapsize] != iswater)
             distance[index] = 0;
     }
 
@@ -210,37 +205,28 @@ static void generateworldcoastmap(worldgencontext &ctx, int chunkx, int chunky)
     {
         const float noisex = float(chunkx) * WORLD_CHUNK_BLOCKS + x + 10000.5f,
                     noisey = float(chunky) * WORLD_CHUNK_BLOCKS + y - 10000.5f,
-                    configuredwidth = max(ctx.settings.coastwidth
-                                        + ctx.generator.biomeblend.GetNoise(noisex, noisey)
-                                          * ctx.settings.coastvariation,
-                                          0.0f),
-                    profilewidth = ctx.generator.coasttransitionwidth(
-                        chunkx * WORLD_CHUNK_BLOCKS + x,
-                        chunky * WORLD_CHUNK_BLOCKS + y),
+                    configuredwidth = max(ctx.settings.coastwidth + ctx.generator.biomeblend.GetNoise(noisex, noisey) * ctx.settings.coastvariation, 0.0f),
+                    profilewidth = ctx.generator.coasttransitionwidth(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y),
                     width = max(configuredwidth, profilewidth);
-        ctx.coastmap[y * WORLD_CHUNK_BLOCKS + x] =
-            distance[(y + halo) * mapsize + x + halo] <= int(floor(width * 3.0f + 0.5f));
+        ctx.coastmap[y * WORLD_CHUNK_BLOCKS + x] = distance[(y + halo) * mapsize + x + halo] <= int(floor(width * 3.0f + 0.5f));
     }
 }
 
-static int generateworldbiome(const worldgencontext &ctx, int chunkx, int chunky,
-                              int blockx, int blocky, int height)
+static int generateworldbiome(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, int height)
 {
     const int x = chunkx * WORLD_CHUNK_BLOCKS + blockx,
               y = chunky * WORLD_CHUNK_BLOCKS + blocky;
     return ctx.generator.biome(x, y, height / WORLD_BLOCK_SIZE);
 }
 
-static bool generateworldrock(const worldgencontext &ctx, int chunkx, int chunky,
-                              int blockx, int blocky, int height)
+static bool generateworldrock(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, int height)
 {
     const int x = chunkx * WORLD_CHUNK_BLOCKS + blockx,
               y = chunky * WORLD_CHUNK_BLOCKS + blocky;
     return ctx.generator.rock(x, y, height / WORLD_BLOCK_SIZE);
 }
 
-static bool generateworldcliff(const worldgencontext &ctx, int chunkx, int chunky,
-                               int blockx, int blocky, int height)
+static bool generateworldcliff(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, int height)
 {
     const int x = chunkx * WORLD_CHUNK_BLOCKS + blockx,
               y = chunky * WORLD_CHUNK_BLOCKS + blocky;
@@ -275,11 +261,8 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
             loop(x, WORLD_CHUNK_BLOCKS)
             {
                 const int index = y * WORLD_CHUNK_BLOCKS + x;
-                ctx.biomemap[index] = generateworldbiome(ctx, chunkx, chunky, x, y,
-                                                         ctx.heightmap[index]);
-                ctx.cliffmap[index] = ctx.reliefcliffmap[index]
-                                   || generateworldcliff(ctx, chunkx, chunky, x, y,
-                                                         ctx.heightmap[index]);
+                ctx.biomemap[index] = generateworldbiome(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
+                ctx.cliffmap[index] = ctx.reliefcliffmap[index] || generateworldcliff(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
                 ctx.rockmap[index] = generateworldrock(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
             }
         }
@@ -312,17 +295,14 @@ static bool worldcliff(const worldgencontext &ctx, int localx, int localy)
     return ctx.cliffmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE] != 0;
 }
 
-static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height,
-                               int biome, bool coast, bool cliff, bool rock)
+static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool coast, bool cliff, bool rock)
 {
     const int surface = WORLD_GROUND_HEIGHT + height,
               watertop = WORLD_GROUND_HEIGHT + ctx.settings.sealevel * WORLD_BLOCK_SIZE,
               dirtbottom = surface - ctx.settings.soildepth * WORLD_BLOCK_SIZE,
               grassbottom = surface - WORLD_BLOCK_SIZE,
-              beachmin = (ctx.settings.sealevel
-                        + min(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
-              beachmax = (ctx.settings.sealevel
-                        + max(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE;
+              beachmin = (ctx.settings.sealevel + min(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
+              beachmax = (ctx.settings.sealevel + max(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE;
     const bool beach = coast && height >= beachmin && height <= beachmax;
 
     if(z >= max(surface, watertop)) return WORLD_TERRAIN_EMPTY;
@@ -358,8 +338,7 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     return WORLD_TERRAIN_MIXED;
 }
 
-static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int blocky,
-                                     int height, int biome)
+static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int blocky, int height, int biome)
 {
     const int localx = blockx * WORLD_BLOCK_SIZE,
               localy = blocky * WORLD_BLOCK_SIZE,
@@ -382,9 +361,7 @@ static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
     for(int y = o.y; y < o.y + size; y += WORLD_BLOCK_SIZE)
     for(int x = o.x; x < o.x + size; x += WORLD_BLOCK_SIZE)
     {
-        int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y),
-                                            worldbiome(ctx, x, y), worldcoast(ctx, x, y),
-                                            worldcliff(ctx, x, y), worldrock(ctx, x, y));
+        int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y), worldbiome(ctx, x, y), worldcoast(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
         if(columntype == WORLD_TERRAIN_MIXED || (type != WORLD_TERRAIN_UNSET && type != columntype)) return WORLD_TERRAIN_MIXED;
         type = columntype;
     }
@@ -410,16 +387,14 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
     if(visibletop > o.z && visibletop <= o.z + size)
         z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
 
-    return worldcolumncubetype(ctx, z, 1, height, biome, worldcoast(ctx, x, y),
-                               worldcliff(ctx, x, y), worldrock(ctx, x, y));
+    return worldcolumncubetype(ctx, z, 1, height, biome, worldcoast(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
 }
 
 static bool generateworldcube(worldgencontext &ctx, cube &c, const ivec &o, int size, int mingridsize)
 {
     if(ctx.iscanceled()) return false;
     int type = worldcubetype(ctx, o, size);
-    if(type == WORLD_TERRAIN_MIXED && size <= mingridsize)
-        type = worldrepresentativecubetype(ctx, o, size);
+    if(type == WORLD_TERRAIN_MIXED && size <= mingridsize) type = worldrepresentativecubetype(ctx, o, size);
     if(type == WORLD_TERRAIN_EMPTY)
     {
         setworldcubematerial(c, MAT_AIR);
@@ -555,8 +530,7 @@ static const cube &lookupgeneratedworldcube(const cube *root, const ivec &pos)
     return *c;
 }
 
-static bool validgeneratedworldscatter(const cube *root,
-                                       const worldscatterinstance &scatter)
+static bool validgeneratedworldscatter(const cube *root, const worldscatterinstance &scatter)
 {
     if(!root || scatter.x < 0 || scatter.x >= WORLD_CHUNK_SIZE ||
        scatter.y < 0 || scatter.y >= WORLD_CHUNK_SIZE ||
@@ -564,54 +538,45 @@ static bool validgeneratedworldscatter(const cube *root,
        scatter.type < 0 || scatter.type >= numworldscatters() ||
        scatter.orient < O_LEFT || scatter.orient > O_TOP)
         return false;
-    const ivec center(scatter.x + WORLD_BLOCK_SIZE / 2,
-                      scatter.y + WORLD_BLOCK_SIZE / 2,
-                      scatter.z + WORLD_BLOCK_SIZE / 2);
+
+    const ivec center(scatter.x + WORLD_BLOCK_SIZE / 2, scatter.y + WORLD_BLOCK_SIZE / 2, scatter.z + WORLD_BLOCK_SIZE / 2);
     const cube &occupied = lookupgeneratedworldcube(root, center);
     if(!isempty(occupied) || occupied.material != MAT_AIR) return false;
 
     const bool placeable = isworldplaceable(scatter.type);
-    if((!placeable && scatter.orient != O_TOP) ||
-       (placeable && scatter.orient == O_BOTTOM))
+
+    if((!placeable && scatter.orient != O_TOP) || (placeable && scatter.orient == O_BOTTOM))
         return false;
-    const ivec supportcenter = ivec(center).sub(
-        ivec(worldgenorientnormal(scatter.orient)).mul(WORLD_BLOCK_SIZE));
+
+    const ivec supportcenter = ivec(center).sub(ivec(worldgenorientnormal(scatter.orient)).mul(WORLD_BLOCK_SIZE));
+
     // An edge-mounted torch can be owned by the neighboring chunk. Its support
     // is checked once both chunks are mounted in the runtime world.
-    if(supportcenter.x < 0 || supportcenter.x >= WORLD_CHUNK_SIZE ||
-       supportcenter.y < 0 || supportcenter.y >= WORLD_CHUNK_SIZE)
+    if(supportcenter.x < 0 || supportcenter.x >= WORLD_CHUNK_SIZE || supportcenter.y < 0 || supportcenter.y >= WORLD_CHUNK_SIZE)
         return placeable;
-    const cube &support = lookupgeneratedworldcube(
-        root, supportcenter);
-    if(isempty(support) || !isentirelysolid(support) ||
-       support.material != MAT_AIR)
-        return false;
+
+    const cube &support = lookupgeneratedworldcube(root, supportcenter);
+    if(isempty(support) || !isentirelysolid(support) || support.material != MAT_AIR) return false;
     return true;
 }
 
-static bool worldflowerspaced(const worldgrasscollectcontext &ctx, uint worldx,
-                              uint worldy, int flower)
+static bool worldflowerspaced(const worldgrasscollectcontext &ctx, uint worldx, uint worldy, int flower)
 {
     static const uint spacingsalts[3] =
     {
         0xD1B54A35U, 0x94D049BBU, 0x369DEA0FU
     };
-    const uint priority = hashworldgrass(ctx.seed, worldx, worldy,
-                                         spacingsalts[flower]);
+    const uint priority = hashworldgrass(ctx.seed, worldx, worldy, spacingsalts[flower]);
     for(int oy = -1; oy <= 1; ++oy) for(int ox = -1; ox <= 1; ++ox)
     {
         if(!ox && !oy) continue;
-        const uint other = hashworldgrass(ctx.seed, worldx + ox, worldy + oy,
-                                          spacingsalts[flower]);
-        if(other < priority ||
-           (other == priority && (oy < 0 || (!oy && ox < 0))))
-            return false;
+        const uint other = hashworldgrass(ctx.seed, worldx + ox, worldy + oy, spacingsalts[flower]);
+        if(other < priority || (other == priority && (oy < 0 || (!oy && ox < 0)))) return false;
     }
     return true;
 }
 
-static int chooseworldflower(worldgrasscollectcontext &ctx, float noisex,
-                             float noisey, uint worldx, uint worldy)
+static int chooseworldflower(worldgrasscollectcontext &ctx, float noisex, float noisey, uint worldx, uint worldy)
 {
     const float weights[3] =
     {
@@ -640,21 +605,15 @@ static int chooseworldflower(worldgrasscollectcontext &ctx, float noisex,
     {
         if(weights[i] <= 0) continue;
 
-        const float noise = clamp(ctx.flowerdistribution[i].GetNoise(noisex, noisey)
-                                  * 0.5f + 0.5f, 0.0f, 1.0f),
+        const float noise = clamp(ctx.flowerdistribution[i].GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f),
                     patch = worldsmoothstep(0.48f, 0.72f, noise),
-                    chance = clamp(ctx.settings.flowerchance
-                                   * (weights[i] / weightsum)
-                                   * (0.05f + 4.95f * patch * patch),
-                                   0.0f, 1.0f);
-        if(worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy,
-                                        chancesalts[i])) >= chance ||
-           !worldflowerspaced(ctx, worldx, worldy, i))
+                    chance = clamp(ctx.settings.flowerchance * (weights[i] / weightsum) * (0.05f + 4.95f * patch * patch), 0.0f, 1.0f);
+
+        if(worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy, chancesalts[i])) >= chance || !worldflowerspaced(ctx, worldx, worldy, i))
             continue;
 
-        const float score = patch
-                          + worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy,
-                                                        choicesalts[i])) * 0.05f;
+        const float score = patch + worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy, choicesalts[i])) * 0.05f;
+
         if(score > selectedscore)
         {
             selected = types[i];
@@ -664,8 +623,7 @@ static int chooseworldflower(worldgrasscollectcontext &ctx, float noisex,
     return selected;
 }
 
-static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, const cube *root, const ivec &o, int size,
-                                  int surfacetexture)
+static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, const cube *root, const ivec &o, int size, int surfacetexture)
 {
     if(o.z >= WORLD_MAP_SIZE || o.x >= WORLD_CHUNK_SIZE || o.y >= WORLD_CHUNK_SIZE)
         return;
@@ -674,8 +632,7 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
     {
         const int childsize = size >> 1;
         loopi(8)
-            collectworldgrassnode(ctx, c.children[i], root,
-                                  ivec(i, o, childsize), childsize, surfacetexture);
+            collectworldgrassnode(ctx, c.children[i], root, ivec(i, o, childsize), childsize, surfacetexture);
         return;
     }
 
@@ -688,30 +645,27 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
     const int startx = max(o.x, 0), starty = max(o.y, 0),
               endx = min(o.x + size, int(WORLD_CHUNK_SIZE)),
               endy = min(o.y + size, int(WORLD_CHUNK_SIZE));
+
     for(int y = starty; y < endy; y += WORLD_BLOCK_SIZE)
     for(int x = startx; x < endx; x += WORLD_BLOCK_SIZE)
     {
         const cube &above = lookupgeneratedworldcube(root, ivec(x + WORLD_BLOCK_SIZE / 2, y + WORLD_BLOCK_SIZE / 2, top));
         if(!isempty(above) || above.material != MAT_AIR) continue;
 
-        const int blockx = ctx.chunkx * WORLD_CHUNK_BLOCKS
-                         + x / WORLD_BLOCK_SIZE,
-                  blocky = ctx.chunky * WORLD_CHUNK_BLOCKS
-                         + y / WORLD_BLOCK_SIZE;
+        const int blockx = ctx.chunkx * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE,
+                  blocky = ctx.chunky * WORLD_CHUNK_BLOCKS + y / WORLD_BLOCK_SIZE;
         const uint worldx = uint(blockx), worldy = uint(blocky);
         const float noisex = float(blockx) + 0.5f,
                     noisey = float(blocky) + 0.5f;
         int type = chooseworldflower(ctx, noisex, noisey, worldx, worldy);
+
         if(type < 0)
         {
             if(worldgrassscatter < 0) continue;
-            const float
-                    noise = clamp(ctx.distribution.GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f),
-                    patch = worldsmoothstep(0.2f, 0.8f, noise),
-                    density = clamp(ctx.settings.grassdensity * (0.12f + 1.88f * patch * patch), 0.0f, 1.0f);
-            if(worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy, 0xA511E9B3U))
-               >= density)
-                continue;
+            const float noise = clamp(ctx.distribution.GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f),
+                        patch = worldsmoothstep(0.2f, 0.8f, noise),
+                        density = clamp(ctx.settings.grassdensity * (0.12f + 1.88f * patch * patch), 0.0f, 1.0f);
+            if(worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy, 0xA511E9B3U)) >= density) continue;
             type = worldgrassscatter;
         }
 
@@ -723,26 +677,27 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
 static void generateworldscatter(cube *root, int chunkx, int chunky, const game::worldsettings &settings, vector<worldscatterinstance> &scatter)
 {
     scatter.setsize(0);
+
     if(!root || (worldgrassscatter < 0 && worldrosescatter < 0 && worldtulipscatter < 0 && worlddandelionscatter < 0))
         return;
+
     const bool grass = worldgrassscatter >= 0 && settings.grassdensity > 0,
-               flowers = settings.flowerchance > 0 &&
-                         ((worldrosescatter >= 0 && settings.roseweight > 0) ||
-                          (worldtulipscatter >= 0 && settings.tulipweight > 0) ||
-                          (worlddandelionscatter >= 0 &&
-                           settings.dandelionweight > 0));
+               flowers = settings.flowerchance > 0 && ((worldrosescatter >= 0 && settings.roseweight > 0) || (worldtulipscatter >= 0 && settings.tulipweight > 0) || (worlddandelionscatter >= 0 && settings.dandelionweight > 0));
+
     if(!grass && !flowers) return;
+
     worlddefinition *surface = findworldcube("grass");
     if(!surface && worldcubedefinitions.inrange(worlderrorcube)) surface = worldcubedefinitions[worlderrorcube];
     worldgrasscollectcontext ctx(chunkx, chunky, settings, scatter);
-    loopi(8)
-        collectworldgrassnode(ctx, root[i], root, ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), WORLD_CHUNK_ROOT_SIZE, surface->slot);
+
+    loopi(8) collectworldgrassnode(ctx, root[i], root, ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), WORLD_CHUNK_ROOT_SIZE, surface->slot);
 }
 
 static void addworldtreeblock(vector<ivec> &blocks, int blockx, int blocky, int blockz)
 {
     if(blockx < 0 || blockx >= WORLD_CHUNK_BLOCKS || blocky < 0 || blocky >= WORLD_CHUNK_BLOCKS || blockz < 0 || blockz >= WORLD_HEIGHT_BLOCKS)
         return;
+
     blocks.add(ivec(blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE, blockz * WORLD_BLOCK_SIZE));
 }
 
@@ -761,8 +716,7 @@ static void addworldregulartree(vector<ivec> &wood, vector<ivec> &leaves, int bl
     }
 }
 
-static void addworldpinetree(vector<ivec> &pinewood, vector<ivec> &needles,
-                            int blockx, int blocky, int basez, int height)
+static void addworldpinetree(vector<ivec> &pinewood, vector<ivec> &needles, int blockx, int blocky, int basez, int height)
 {
     loop(z, height) addworldtreeblock(pinewood, blockx, blocky, basez + z);
     addworldtreeblock(needles, blockx, blocky, basez + height);
@@ -831,9 +785,7 @@ static cube &lookupworldgenblock(worldgencontext &ctx, cube *root, const ivec &p
     int size = WORLD_CHUNK_ROOT_SIZE;
     for(;;)
     {
-        const int index = (position.x >= origin.x + size ? 1 : 0)
-                        | (position.y >= origin.y + size ? 2 : 0)
-                        | (position.z >= origin.z + size ? 4 : 0);
+        const int index = (position.x >= origin.x + size ? 1 : 0) | (position.y >= origin.y + size ? 2 : 0) | (position.z >= origin.z + size ? 4 : 0);
         cube &c = family[index];
         if(size == WORLD_BLOCK_SIZE) return c;
         subdivideworldgencube(ctx, c);
@@ -896,9 +848,7 @@ static const worldoredefinition worldores[] =
 
 static float worldoreoptimalweight(const worldoredefinition &ore, int elevation)
 {
-    const int edge = elevation < ore.optimalminheight
-                   ? ore.optimalminheight - ore.minheight
-                   : ore.maxheight - ore.optimalmaxheight;
+    const int edge = elevation < ore.optimalminheight ? ore.optimalminheight - ore.minheight : ore.maxheight - ore.optimalmaxheight;
     if(elevation >= ore.optimalminheight && elevation <= ore.optimalmaxheight) return 1.0f;
     if(edge <= 0) return 0.35f;
     const int dist = elevation < ore.optimalminheight ? ore.optimalminheight - elevation : elevation - ore.optimalmaxheight;
@@ -992,11 +942,14 @@ static void addworldcaveworm(const worldgencontext &ctx, worldcaverandom &random
 {
     const int mindepth = min(ctx.settings.cavemindepth, ctx.settings.cavefulldepth),
               bottom = WORLD_MIN_HEIGHT + clamp(ctx.settings.bottomlavalayers, 0, int(WORLD_HEIGHT_BLOCKS)) + 3;
+
     vec position(origin);
+
     const float initialdeepness = worldsmoothstep(180.0f, 228.0f, -origin.z);
     float radius = min(3.0f + random.unit() * 3.0f, 4.25f - initialdeepness * 1.75f), targetradius = radius,
           turnrate = (random.unit() < 0.5f ? -1.0f : 1.0f) * (0.14f + random.unit() * 0.25f);
     int radiussteps = 1, turnsteps = random.range(1, 3);
+
     anchors.add(worldcaveanchor(position, worm));
 
     loopi(steps)
@@ -1015,8 +968,7 @@ static void addworldcaveworm(const worldgencontext &ctx, worldcaverandom &random
             turnsteps = random.range(1, 3);
         }
         pitch = pitch * (0.68f - deepness * 0.12f) + (random.unit() - 0.5f) * (0.32f + deepness * 0.24f);
-        if(random.unit() < 0.10f + deepness * 0.08f)
-            pitch += (random.unit() < 0.72f ? -1.0f : 1.0f) * (0.38f + random.unit() * (0.44f + deepness * 0.20f));
+        if(random.unit() < 0.10f + deepness * 0.08f) pitch += (random.unit() < 0.72f ? -1.0f : 1.0f) * (0.38f + random.unit() * (0.44f + deepness * 0.20f));
         pitch = clamp(pitch, -0.85f, 0.70f);
 
         if(--radiussteps <= 0)
@@ -1042,8 +994,7 @@ static void addworldcaveworm(const worldgencontext &ctx, worldcaverandom &random
     }
 }
 
-static void addworldcaveconnection(worldcaverandom &random, vector<worldcavesegment> &segments, const vec &start, const vec &end,
-                                   float startradius, float endradius, bool entrance = false)
+static void addworldcaveconnection(worldcaverandom &random, vector<worldcavesegment> &segments, const vec &start, const vec &end, float startradius, float endradius, bool entrance = false)
 {
     const float deepness = worldsmoothstep(180.0f, 228.0f, -min(start.z, end.z));
     const float dx = end.x - start.x, dy = end.y - start.y, dz = end.z - start.z,
@@ -1072,8 +1023,7 @@ static void addworldcaveconnection(worldcaverandom &random, vector<worldcavesegm
     }
 }
 
-static void addworldcavedeepdescent(const worldgencontext &ctx, worldcaverandom &random, vector<worldcavesegment> &segments,
-                                    vector<worldcaveanchor> &anchors, const vec &start, int worm)
+static void addworldcavedeepdescent(const worldgencontext &ctx, worldcaverandom &random, vector<worldcavesegment> &segments, vector<worldcaveanchor> &anchors, const vec &start, int worm)
 {
     const int bottomlayers = clamp(ctx.settings.bottomlavalayers, 0, int(WORLD_HEIGHT_BLOCKS));
     const float lavaceiling = WORLD_MIN_HEIGHT + bottomlayers + 0.5f,
@@ -1081,17 +1031,22 @@ static void addworldcavedeepdescent(const worldgencontext &ctx, worldcaverandom 
     const int levels = clamp(int(ceilf(verticaldistance / 44.0f)), 3, 9);
     vec previous(start);
     float previousradius = min(3.2f + random.unit() * 1.4f, 4.2f), angle = random.unit() * 2.0f * M_PI;
+
     anchors.add(worldcaveanchor(previous, worm));
+
     for(int i = 1; i <= levels; ++i)
     {
         const float amount = i / float(levels),
                     deepness = worldsmoothstep(0.45f, 1.0f, amount),
                     horizontal = i == levels ? random.unit() * 10.0f : 13.0f + random.unit() * (25.0f - deepness * 8.0f),
                     radius = 3.2f + (1.65f - 3.2f) * deepness + random.unit() * (0.65f - deepness * 0.25f);
+
         angle += (random.unit() < 0.5f ? -1.0f : 1.0f) * (0.55f + random.unit() * 1.35f);
+
         const vec next(start.x + cosf(angle) * horizontal,
                        start.y + sinf(angle) * horizontal,
                        start.z + (lavaceiling - start.z) * amount);
+
         addworldcaveconnection(random, segments, previous, next, previousradius, radius);
         previous = next;
         previousradius = radius;
@@ -1109,6 +1064,7 @@ static void addworldcavechamber(worldcaverandom &random, vector<worldcavechamber
                 baseradius = min(generatedradius, 6.0f - deepness * 2.5f);
     const int lobes = random.range(3, category >= 0.97f ? 7 : 5);
     const float mainangle = random.unit() * 2.0f * M_PI;
+
     loopi(lobes)
     {
         const float offsetangle = mainangle + (random.unit() - 0.5f) * M_PI,
@@ -1121,12 +1077,12 @@ static void addworldcavechamber(worldcaverandom &random, vector<worldcavechamber
         const vec center(attachment.x + cosf(offsetangle) * offsetdistance,
                          attachment.y + sinf(offsetangle) * offsetdistance,
                          attachment.z + verticaloffset);
+
         chambers.add(worldcavechamber(center, radiusx, radiusy, radiusz, angle, random.next()));
     }
 }
 
-static bool generateworldcavesystem(const worldgencontext &ctx, long long regionx, long long regiony, vector<worldcavesegment> &segments,
-                                    vector<worldcavechamber> &chambers)
+static bool generateworldcavesystem(const worldgencontext &ctx, long long regionx, long long regiony, vector<worldcavesegment> &segments, vector<worldcavechamber> &chambers)
 {
     // Neighboring regions share a density class, producing compact quiet areas and dense labyrinth clusters.
     const long long clusterx = worldfloordiv(regionx, 2), clustery = worldfloordiv(regiony, 2);
@@ -1134,6 +1090,7 @@ static bool generateworldcavesystem(const worldgencontext &ctx, long long region
     const int density = cluster < 0.14f ? 0 : cluster < 0.68f ? 1 : 2;
     const float systemchance = density == 0 ? 0.56f : density == 1 ? 0.84f : 0.99f;
     const uint systemhash = hashworldfeature(uint(ctx.seed), regionx, regiony, density, 0xB5297A4DU);
+
     if(worldtreeunit(systemhash) >= systemchance) return false;
 
     worldcaverandom random(systemhash ^ 0x68E31DA4U);
@@ -1144,12 +1101,14 @@ static bool generateworldcavesystem(const worldgencontext &ctx, long long region
               mindepth = min(ctx.settings.cavemindepth, ctx.settings.cavefulldepth),
               depth = random.range(28, density == 2 ? 105 : 82) + (random.unit() < 0.18f ? random.range(35, 90) : 0),
               originz = clamp(surface - depth, bottom, surface - mindepth - 8);
+
     if(originz <= bottom && surface - bottom < mindepth + 12) return false;
 
     vector<worldcaveanchor> anchors;
     const vec origin(originx, originy, float(originz));
     const int primaryworms = random.range(density == 0 ? 3 : 4, density == 2 ? 9 : density == 1 ? 7 : 5);
     int worm = 0;
+
     loopi(primaryworms)
     {
         const float yaw = random.unit() * 2.0f * M_PI,
@@ -1614,9 +1573,7 @@ static void placeworldoreblock(worldgencontext &ctx, cube *root, const worldored
     if(!isempty(c) && c.texture[0] == stonetexture) setworldcubetype(c, ctx, orecube);
 }
 
-static void placeworldorevein(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky, long long cellx,
-                              long long celly,
-                              int cellz, int centerx, int centery, int centerz, int stonetexture, int orecube)
+static void placeworldorevein(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky, long long cellx, long long celly, int cellz, int centerx, int centery, int centerz, int stonetexture, int orecube)
 {
     const uint sizehash = hashworldfeature(uint(ctx.seed), cellx, celly, cellz, ore.salt ^ 0xA511E9B3U),
                shapehash = hashworldfeature(uint(ctx.seed), cellx, celly, cellz, ore.salt ^ 0x63D83595U);
@@ -1713,9 +1670,7 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
 
             const game::worldtectonicsample tectonics = ctx.generator.tectonics(centerx, centery);
             const float caveweight = ore.uniformdistribution ? 1.0f : worldorecaveedge(ctx, centerx, centery, centerz) ? 2.5f : 0.75f;
-            const float chance = clamp(ore.chance * worldoreelevationweight(ore, centerz) *
-                                           worldoregeologicalweight(ore, tectonics, centerz) * caveweight,
-                                       0.0f, 1.0f);
+            const float chance = clamp(ore.chance * worldoreelevationweight(ore, centerz) * worldoregeologicalweight(ore, tectonics, centerz) * caveweight, 0.0f, 1.0f);
             if(worldtreeunit(chancehash) >= chance) continue;
 
             placeworldorevein(ctx, root, ore, chunkx, chunky, cellx, celly, cellz, centerx, centery, centerz, stonetexture, orecube);
@@ -1768,8 +1723,7 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
 
             if(basez + treeheight >= WORLD_HEIGHT_BLOCKS) continue;
 
-            candidates.add(worldtreecandidate(x, y, chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, basez, treeheight, spawn,
-                                              shape, pine));
+            candidates.add(worldtreecandidate(x, y, chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, basez, treeheight, spawn, shape, pine));
         }
     }
 
@@ -1778,11 +1732,8 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
         loopv(candidates)
         {
             if(!worldtreecandidateallowed(candidates, candidates[i])) continue;
-            if(candidates[i].pine)
-                addworldpinetree(pinewood, needles, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height);
-            else
-                addworldregulartree(wood, leaves, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height,
-                                    candidates[i].shape);
+            if(candidates[i].pine) addworldpinetree(pinewood, needles, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height);
+            else addworldregulartree(wood, leaves, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height, candidates[i].shape);
         }
         ZoneValue(wood.length() + pinewood.length() + leaves.length() + needles.length());
         const int leafcube = ctx.cubetype("leaves"), needlescube = ctx.cubetype("needles"),
@@ -1807,8 +1758,7 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
         loopv(pinewood)
         {
             cube &c = lookupworldgenblock(ctx, root, pinewood[i]);
-            if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
-                setworldcubetype(c, ctx, pinewoodcube);
+            if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture) setworldcubetype(c, ctx, pinewoodcube);
         }
     }
     return !ctx.iscanceled();
@@ -1887,8 +1837,7 @@ static cube *generateworldchunk(int chunkx, int chunky)
     return generateworldchunk(chunkx, chunky, ctx);
 }
 
-static bool dryworldspawnblock(const game::worldgenerator &generator,
-                               const game::worldsettings &settings, int x, int y)
+static bool dryworldspawnblock(const game::worldgenerator &generator, const game::worldsettings &settings, int x, int y)
 {
     const int height = generator.height(x, y);
     return height >= settings.sealevel && height <= WORLD_MAX_HEIGHT - 3;
@@ -1898,6 +1847,7 @@ bool game::chooseworldspawn(double originx, double originy, double &spawnx, doub
 {
     const int originblockx = int(floor(originx / WORLD_BLOCK_SIZE)),
               originblocky = int(floor(originy / WORLD_BLOCK_SIZE));
+
     game::worldsettings settings;
     game::worldgenerator generator(game::getworldseed(), settings);
 
