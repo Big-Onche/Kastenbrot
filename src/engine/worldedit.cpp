@@ -152,14 +152,14 @@ static bool validworldscatter(const worldchunk &chunk, const worldscatterinstanc
     if(!insideworld(center) || !insideworld(supportcenter)) return false;
     ivec cubeorigin;
     int cubesize;
-    const cube &occupied = lookupcube(center, 0, cubeorigin, cubesize);
+    const cube occupied = sampleworldblockcube(lookupcube(center, 0, cubeorigin, cubesize), center, cubeorigin, cubesize, false);
     if(!isempty(occupied) || occupied.material != MAT_AIR) return false;
 
     const bool placeable = isworldplaceable(scatter.type);
     if((!placeable && scatter.orient != O_TOP) ||
        (placeable && scatter.orient == O_BOTTOM))
         return false;
-    const cube &support = lookupcube(supportcenter, 0, cubeorigin, cubesize);
+    const cube support = sampleworldblockcube(lookupcube(supportcenter, 0, cubeorigin, cubesize), supportcenter, cubeorigin, cubesize, false);
     if(isempty(support) || !isentirelysolid(support) ||
        support.material != MAT_AIR)
         return false;

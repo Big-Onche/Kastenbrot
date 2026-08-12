@@ -215,15 +215,16 @@ static bool worldskylighttransparent(const cube &c)
     return isempty(c) || (c.material&MATF_VOLUME) == MAT_GLASS || isworldleaftexture(c);
 }
 
-static cube sampleworldskylightcube(const cube &source, const ivec &position, ivec &origin, int &size)
+static cube sampleworldblockcube(const cube &source, const ivec &position, ivec &origin, int &size, bool stopattransparent)
 {
     cube sampled = source;
     sampled.children = NULL;
     sampled.ext = NULL;
-    // Remipping may collapse partial terrain across several blocks. Rebuild only
-    // the sampled branch so the vertical scan cannot skip the whole coarse leaf.
-    while(size > WORLD_BLOCK_SIZE && !worldskylighttransparent(sampled) && !isentirelysolid(sampled))
+    // Remipping may collapse several block-sized cells into a partial coarse leaf.
+    // Rebuild only the sampled branch when block-accurate geometry is required.
+    while(size > WORLD_BLOCK_SIZE && !isempty(sampled) && !isentirelysolid(sampled))
     {
+        if(stopattransparent && worldskylighttransparent(sampled)) break;
         cube children[8];
         subdivideworldmip(sampled, children);
         size >>= 1;
@@ -234,6 +235,11 @@ static cube sampleworldskylightcube(const cube &source, const ivec &position, iv
         sampled = children[child];
     }
     return sampled;
+}
+
+static cube sampleworldskylightcube(const cube &source, const ivec &position, ivec &origin, int &size)
+{
+    return sampleworldblockcube(source, position, origin, size, true);
 }
 
 static bool worldskyfieldcontains(int blockx, int blocky)
