@@ -21,15 +21,16 @@ static ullong worldpersistentid(const char *id)
 }
 
 worlddefinition::worlddefinition(const char *id)
-    : persistentid(worldpersistentid(id)), worldsize(1.0f), texsize(1), lightradius(0), hardness(1.0f), toolspeed(1.0f), tooldamage(2.0f),
+    : persistentid(worldpersistentid(id)), worldsize(1.0f), heldsize(100.0f), texsize(1), lightradius(0), hardness(1.0f), toolspeed(1.0f),
+      tooldamage(2.0f),
       foodhealth(0),
       maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
       furnaceinputlimit(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), supportdistance(0), hasitem(false),
-      hascube(false),
+      hasheld(false), hascube(false),
       scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), hasfood(false), hassupport(false), itemstackset(false),
       scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
-      handbreakable(true), supportdecay(false), supportpersistentonplace(false)
+      heldflipx(false), heldflipy(false), handbreakable(true), supportdecay(false), supportpersistentonplace(false)
 {
     copystring(this->id, id);
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
@@ -44,8 +45,8 @@ int worlderrorcube = -1, worlderrorobject = -1, worlderroritem = -1;
 static worlddefinition *currentworlddefinition = NULL;
 enum
 {
-    WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL, WORLDDEF_FURNACE,
-    WORLDDEF_FOOD, WORLDDEF_SUPPORT
+    WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_HELD, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL,
+    WORLDDEF_FURNACE, WORLDDEF_FOOD, WORLDDEF_SUPPORT
 };
 static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
 
@@ -112,6 +113,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
     if(component == WORLDDEF_NONE)
     {
         if(!strcmp(command, "item")) return "worlddef_item";
+        if(!strcmp(command, "held")) return "worlddef_held";
         if(!strcmp(command, "cube")) return "worlddef_cube";
         if(!strcmp(command, "scatter")) return "worlddef_scatter";
         if(!strcmp(command, "placeable")) return "worlddef_placeable";
@@ -129,6 +131,11 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "texture") || !strcmp(command, "model")) return "worlddef_itemtexture";
         if(!strcmp(command, "icon")) return "worlddef_icon";
         if(!strcmp(command, "scale")) return "worlddef_scale";
+    }
+    else if(component == WORLDDEF_HELD)
+    {
+        if(!strcmp(command, "flip")) return "worlddef_heldflip";
+        if(!strcmp(command, "size")) return "worlddef_heldsize";
     }
     else if(component == WORLDDEF_CUBE)
     {
@@ -288,6 +295,13 @@ ICOMMANDS("worlddef_item", "S", (char *body),
     endworldcomponent();
 });
 
+ICOMMANDS("worlddef_held", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_HELD, currentworlddefinition->hasheld, "held")) return;
+    executeworlddefinitionbody(body, WORLDDEF_HELD);
+    endworldcomponent();
+});
+
 ICOMMANDS("worlddef_cube", "S", (char *body),
 {
     if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_CUBE, currentworlddefinition->hascube, "cube")) return;
@@ -356,6 +370,12 @@ ICOMMANDS("worlddef_stack", "i", (int *value),
 ICOMMANDS("worlddef_itemtexture", "s", (char *value), copystring(currentworlddefinition->texture, value));
 ICOMMANDS("worlddef_icon", "s", (char *value), copystring(currentworlddefinition->texture, value));
 ICOMMANDS("worlddef_scale", "f", (float *value), currentworlddefinition->worldsize = *value);
+ICOMMANDS("worlddef_heldflip", "ii", (int *x, int *y),
+{
+    currentworlddefinition->heldflipx = *x != 0;
+    currentworlddefinition->heldflipy = *y != 0;
+});
+ICOMMANDS("worlddef_heldsize", "f", (float *value), currentworlddefinition->heldsize = *value);
 ICOMMANDS("worlddef_cubetexture", "s", (char *value),
 {
     copystring(currentworlddefinition->cubetexture, value);
@@ -461,6 +481,11 @@ bool resolveworlddefinitionregistry()
         if(definition.hasitem && (!definition.name[0] || !definition.itemstackset || definition.maxstack <= 0))
         {
             conoutf(CON_ERROR, "worlddef \"%s\": item requires name and a positive stack", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hasheld && (!definition.hasitem || definition.heldsize <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": held requires item and a positive size percentage", definition.id);
             ++worlddefinitionerrors;
         }
         if(definition.hascube && (!definition.cubetextureset || !definition.cubetexture[0] || definition.texsize <= 0))

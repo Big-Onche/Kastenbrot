@@ -335,6 +335,21 @@ float getinventoryitemworldsize(int index)
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->worldsize : 1.0f;
 }
 
+bool getinventoryitemheldflipx(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->heldflipx;
+}
+
+bool getinventoryitemheldflipy(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->heldflipy;
+}
+
+float getinventoryitemheldsize(int index)
+{
+    return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->heldsize / 100.0f : 1.0f;
+}
+
 int getworlditemtype(int item)
 {
     loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == item) return WORLD_ITEM_CUBE;
@@ -917,6 +932,12 @@ bool isworldobjecthandbreakable(int type, int index)
 const char *getinventoryitemtexture(int index) { return ""; }
 
 float getinventoryitemworldsize(int index) { return 1.0f; }
+
+bool getinventoryitemheldflipx(int index) { return false; }
+
+bool getinventoryitemheldflipy(int index) { return false; }
+
+float getinventoryitemheldsize(int index) { return 1.0f; }
 
 int numworldcubes() { return worldcubedefinitions.length(); }
 

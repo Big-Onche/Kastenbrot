@@ -49,12 +49,13 @@ namespace game
         itemspritemesh *mesh;
         vec origin;
         float yaw, pitch, roll, size, griphoffset, gripvoffset;
+        bool flipx, flipy;
         int flags;
 
         itemspriteinstance(itemspritemesh *mesh, const vec &origin, float yaw, float pitch, float roll, float size, float griphoffset,
-                           float gripvoffset, int flags)
+                           float gripvoffset, bool flipx, bool flipy, int flags)
             : mesh(mesh), origin(origin), yaw(yaw), pitch(pitch), roll(roll), size(size), griphoffset(griphoffset), gripvoffset(gripvoffset),
-              flags(flags)
+              flipx(flipx), flipy(flipy), flags(flags)
         {
         }
     };
@@ -238,6 +239,8 @@ namespace game
             world.transposedtransformnormal(pitchaxis, localpitchaxis);
             world.rotate(instance.pitch * RAD, localpitchaxis);
         }
+        if(instance.flipx) world.rotate_around_z(PI);
+        if(instance.flipy) world.rotate_around_y(PI);
         world.translate(vec(0, instance.griphoffset, EXTRUDED_SPRITE_HEIGHT * 0.5f + instance.gripvoffset), instance.size);
         world.scale(instance.size);
         return world;
@@ -333,11 +336,11 @@ namespace game
     }
 
     static void renderitemsprite(const char *source, const vec &origin, float yaw, float pitch, float roll, int flags, float size,
-                                 float griphoffset = 0, float gripvoffset = 0)
+                                 float griphoffset = 0, float gripvoffset = 0, bool flipx = false, bool flipy = false)
     {
         itemspritemesh *mesh = finditemspritemesh(source);
         if(!mesh) return;
-        const itemspriteinstance instance(mesh, origin, yaw, pitch, roll, size, griphoffset, gripvoffset, flags);
+        const itemspriteinstance instance(mesh, origin, yaw, pitch, roll, size, griphoffset, gripvoffset, flipx, flipy, flags);
         if(flags & MDL_NOBATCH)
         {
             if(flags & MDL_ONLYSHADOW) return;
@@ -961,9 +964,15 @@ namespace game
         pose.pitch = pitch;
         pose.roll = roll;
         const int type = getworlditemtype(selected), worldindex = getworlditemindex(selected);
-        if(type == WORLD_ITEM_CUBE) renderheldcube(d, worldindex, pose, flags, hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE, hud);
-        else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE) renderheldscatter(d, worldindex, pose, flags, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE);
-        else if(type == WORLD_ITEM_NONE) renderitemsprite(getinventoryitemtexture(selected), pose.origin, pose.yaw, pose.pitch, pose.roll, flags, (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * getinventoryitemworldsize(selected), extrudedspritegriphoffset, extrudedspritegripvoffset);
+        const float heldsize = getinventoryitemheldsize(selected);
+        if(type == WORLD_ITEM_CUBE) renderheldcube(d, worldindex, pose, flags, (hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE) * heldsize, hud);
+        else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
+            renderheldscatter(d, worldindex, pose, flags, (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize);
+        else if(type == WORLD_ITEM_NONE)
+            renderitemsprite(getinventoryitemtexture(selected), pose.origin, pose.yaw, pose.pitch, pose.roll, flags,
+                             (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * getinventoryitemworldsize(selected) * heldsize,
+                             extrudedspritegriphoffset, extrudedspritegripvoffset, getinventoryitemheldflipx(selected),
+                             getinventoryitemheldflipy(selected));
     }
 
     bool heldtorchemitterposition(gameent *d, vec &position)
@@ -977,7 +986,10 @@ namespace game
         if(!model[0]) return false;
 
         helditempose item, arm;
-        if(!(hud ? hudrightarmpose(d, arm, item) : worldhelditempose(d, item)) || !modeltagposition(model, "tag_emitter", position, item.origin, item.yaw, item.pitch, item.roll, hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE))
+        const float heldsize = getinventoryitemheldsize(selected);
+        if(!(hud ? hudrightarmpose(d, arm, item) : worldhelditempose(d, item)) ||
+           !modeltagposition(model, "tag_emitter", position, item.origin, item.yaw, item.pitch, item.roll,
+                             (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize))
             return false;
 
         if(hud) position = calcavatardepthpos(position);
