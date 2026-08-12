@@ -49,11 +49,15 @@ namespace game
     struct worldsettings
     {
         float geologyfrequency, maxcontinentheight, maxoceandepth;
+        float megacontinentfrequency, macrocontinentfrequency;
         float coastdetailfrequency, coastdetailstrength;
+        float oceanregionalfrequency, oceanregionalbias;
         float oceancoverage, terraincoverage;
         float plainscoverage, hillscoverage, mountainscoverage, highsummitscoverage;
         float terrainmicrofrequency, plainsmicrovariation, reliefmicrovariation;
         float secondarysummitheight, rockyledgeheight, clusedepth;
+        float mountainchainfrequency, mountainlocalfrequency, mountainmaxamplitude;
+        float mountainthreshold, mountainwidth;
         float tectonicfrequency, tectonicwarpamplitude, tectonicridgepower;
         float tectonicactivitythreshold, maxlanduplift, maxoceansubsidence;
         float tectoniccavestrength, tectonicfracturestrength, coastprotectionwidth;
@@ -82,7 +86,7 @@ namespace game
 
     struct worldgenerator
     {
-        FastNoiseLite geology, hills, coastshape, coastdetail, covenoise, beachnoise, cliffnoise;
+        FastNoiseLite geology, hills, coastshape, coastdetail, covenoise, oceanregional, beachnoise, cliffnoise;
         FastNoiseLite mountainrange, mountainnoise, mountainpeaks;
         FastNoiseLite secondarysummita, secondarysummitb, hollowshape, foldnoise, clusenoise;
         FastNoiseLite terrainmicro, terrainmicromask;
