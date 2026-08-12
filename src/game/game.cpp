@@ -82,6 +82,8 @@ namespace game
     static void updatesurvivalbreaking();
     static void cancelclientbreakrequest(uint requestid);
     static void hidedeathscreen();
+    static void updatefooduse();
+    static bool survivalenabled();
 #endif
 
     static void putsel(packetbuf &p, const selinfo &sel)
@@ -616,6 +618,7 @@ namespace game
 #ifndef STANDALONE
         updatewatersimulation();
         updatesurvivalbreaking();
+        updatefooduse();
         updateworlddrops();
         updatefallingblocks();
         updatefurnaces();
@@ -803,6 +806,8 @@ namespace game
             player1->rendercrouchmillis = -1;
             player1->renderstridemillis = -1;
             player1->renderattacking = false;
+            player1->rendereating = false;
+            player1->rendereatitem = -1;
             player1->renderattackreleasemillis = -1000;
             player1->renderplacemillis = -1000;
             player1->renderactioninitialized = true;
@@ -1999,6 +2004,8 @@ namespace game
     static void setplayerdead(gameent &d, const vec &impulse)
     {
         if(d.state == CS_DEAD) return;
+        d.rendereating = false;
+        d.rendereatitem = -1;
         d.state = CS_DEAD;
         d.collidetype = COLLIDE_NONE;
         d.stopmoving();
@@ -2014,6 +2021,8 @@ namespace game
         d.o = position;
         d.health = PLAYER_MAX_HEALTH;
         d.state = d.editstate = CS_ALIVE;
+        d.rendereating = false;
+        d.rendereatitem = -1;
         d.collidetype = COLLIDE_ELLIPSE;
         d.stopmoving();
         d.vel = d.falling = vec(0, 0, 0);
@@ -2102,6 +2111,66 @@ namespace game
         }
     }
 
+    static bool fooduseheld = false;
+
+    static void setfoodrenderstate(gameent &d, bool active, int item = -1, int elapsed = 0)
+    {
+        d.rendereating = active;
+        d.rendereatitem = active ? item : -1;
+        d.rendereatduration = active ? getinventoryfoodtime(item) : 0;
+        d.rendereatmillis = active ? lastmillis - clamp(elapsed, 0, max(d.rendereatduration, 0)) : -1000;
+        d.rendereatcrumbmillis = active ? d.rendereatmillis - 1 : -1;
+    }
+
+    void receivefoodstate(int clientnum, bool active, int item, int elapsed)
+    {
+        gameent *d = player1 && clientnum == player1->clientnum ? player1 : clients.inrange(clientnum) ? clients[clientnum] : NULL;
+        if(!d) return;
+        if(active && isinventoryfood(item)) setfoodrenderstate(*d, true, item, elapsed);
+        else
+        {
+            setfoodrenderstate(*d, false);
+            if(d == player1) fooduseheld = false;
+        }
+    }
+
+    static void stopfooduse(bool notifyserver = true)
+    {
+        if(!fooduseheld && (!player1 || !player1->rendereating)) return;
+        fooduseheld = false;
+        if(player1) setfoodrenderstate(*player1, false);
+        if(notifyserver && waitforserveredit()) addmsg(N_FOODACTION, "ri", 0);
+    }
+
+    static bool beginfooduse()
+    {
+        if(!survivalenabled() || player1->health >= PLAYER_MAX_HEALTH) return false;
+        const int item = selectedcreativeblock();
+        if(!isinventoryfood(item)) return false;
+        fooduseheld = true;
+        setfoodrenderstate(*player1, true, item);
+        if(waitforserveredit()) addmsg(N_FOODACTION, "ri", 1);
+        return true;
+    }
+
+    static void updatefooduse()
+    {
+        if(!fooduseheld || !player1 || !player1->rendereating) return;
+        const int item = selectedcreativeblock();
+        if(!survivalenabled() || item != player1->rendereatitem || !isinventoryfood(item) || player1->health >= PLAYER_MAX_HEALTH)
+        {
+            stopfooduse();
+            return;
+        }
+        if(waitforserveredit() || lastmillis - player1->rendereatmillis < getinventoryfoodtime(item)) return;
+
+        consumesurvivalitem();
+        player1->health = min(player1->health + getinventoryfoodhealth(item), float(PLAYER_MAX_HEALTH));
+        const int nextitem = selectedcreativeblock();
+        if(player1->health < PLAYER_MAX_HEALTH && nextitem == item) setfoodrenderstate(*player1, true, item);
+        else stopfooduse(false);
+    }
+
     static bool creativeenabled()
     {
         return m_creative && !editmode && player1 && player1->state == CS_ALIVE;
@@ -2144,6 +2213,15 @@ namespace game
 
         elapsed = lastmillis - d->renderplacemillis;
         return elapsed >= 0 && elapsed < CREATIVE_ARM_CYCLE ? creativearmwave(elapsed) : -1.0f;
+    }
+
+    float playerfooduseamount(const gameent *d)
+    {
+        if(!d || !d->rendereating || !isinventoryfood(d->rendereatitem)) return 0.0f;
+        const int elapsed = max(lastmillis - d->rendereatmillis, 0), cycle = 400;
+        const float progress = (elapsed % cycle) / float(cycle);
+        const float approach = min(elapsed / 200.0f, 1.0f), bite = 0.5f - 0.5f * cosf(progress * 2.0f * PI);
+        return approach * (0.75f + 0.25f * bite);
     }
 
     static bool creativehit(selinfo &hit, vec *hitpoint = NULL)
@@ -2697,7 +2775,14 @@ namespace game
 #endif
         }
     });
-    ICOMMAND(creativeplaceblock, "D", (int *down), { if(*down) creativeplace(); });
+    ICOMMAND(creativeplaceblock, "D", (int *down),
+    {
+        if(*down)
+        {
+            if(!beginfooduse()) creativeplace();
+        }
+        else stopfooduse();
+    });
     ICOMMAND(creativeselect, "i", (int *index),
     {
         int count = numinventoryitems();
@@ -3120,6 +3205,24 @@ namespace game
     static vec previoushudparticleorigin, hudparticlemovement;
     static int previoushudparticlemillis = -1, hudparticlemovementmillis = -1;
 
+    static bool foodcrumbemitter(gameent *d, vec &mouth, vec &direction, bool &hud)
+    {
+        if(!d || !d->rendereating || !isinventoryfood(d->rendereatitem) || d->state != CS_ALIVE) return false;
+        hud = d == player1 && !isthirdperson();
+        if(hud)
+        {
+            mouth = vec(camera1->o).madd(camdir, 5.0f).madd(camup, -3.0f);
+            direction = vec(camdir).madd(camup, -0.35f).normalize();
+        }
+        else
+        {
+            vecfromyawpitch(d->yaw, clamp(d->pitch, -80.0f, 80.0f), 1, 0, direction);
+            mouth = vec(d->o).madd(direction, 2.25f).addz(-2.5f);
+            direction.addz(-0.35f).normalize();
+        }
+        return true;
+    }
+
     void adddynlights()
     {
         addworldtorchlights();
@@ -3137,6 +3240,18 @@ namespace game
         weather::addparticles();
 #endif
         addworldtorchparticles();
+        loopv(players)
+        {
+            gameent *d = players[i];
+            vec mouth, direction;
+            bool hud;
+            if(!foodcrumbemitter(d, mouth, direction, hud)) continue;
+            const int elapsed = max(lastmillis - d->rendereatmillis, 0),
+                      bitetime = d->rendereatmillis + (elapsed / 400) * 400 + 160;
+            if(lastmillis < bitetime || d->rendereatcrumbmillis >= bitetime) continue;
+            particle_itemchips(getinventoryitemtexture(d->rendereatitem), mouth, direction, 3, hud ? d : NULL);
+            d->rendereatcrumbmillis = bitetime;
+        }
         heldtorchparticlemillis = -1;
         bool hudtorch = false;
         loopv(players)
@@ -3203,6 +3318,14 @@ namespace game
         const vec localorigin(o), localvelocity(d);
         o = vec(heldtorchparticleorigin).madd(camright, localorigin.x).madd(camdir, localorigin.y).madd(camup, localorigin.z);
         d = vec(camright).mul(localvelocity.x).madd(camdir, localvelocity.y).madd(camup, localvelocity.z);
+    }
+
+    bool foodparticletrack(physent *owner, vec &o)
+    {
+        if(!owner || owner != player1 || !camera1) return false;
+        const vec localorigin(o), mouth = vec(camera1->o).madd(camdir, 5.0f).madd(camup, -3.0f);
+        o = vec(mouth).madd(camright, localorigin.x).madd(camdir, localorigin.y).madd(camup, localorigin.z);
+        return true;
     }
     void dynlighttrack(physent *owner, vec &o, vec &hud) {}
     int maxsoundradius(int n) { return 500; }

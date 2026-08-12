@@ -122,12 +122,12 @@ namespace server
             violations, violationwindow, actionwindow, placements, destructions,
             breakaction, breakorient, breakitem, breakstart, breakupdate, breakstage, breakrelease,
             breakduration, breaktoolitem, breaktoolslot, breaktooldurability, selectedcreative, lastnpcattack, lastnpcattackattempt,
-            deathsequence;
+            deathsequence, foodstart, fooditem, foodslot;
         float health;
         uint ip;
         uint lastrequestid, breakrequestid, lastnpcattackrequest;
         bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen,
-             dead;
+             dead, foodactive;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
         int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
@@ -149,12 +149,13 @@ namespace server
                        actionwindow(0), placements(0), destructions(0), breakaction(-1),
                        breakorient(0), breakitem(-1), breakstart(0), breakupdate(0), breakstage(0), breakrelease(0),
                        breakduration(0), breaktoolitem(-1), breaktoolslot(-1), breaktooldurability(0), selectedcreative(-1),
-                       lastnpcattack(-1000), lastnpcattackattempt(-1000), deathsequence(0), health(game::PLAYER_MAX_HEALTH),
+                       lastnpcattack(-1000), lastnpcattackattempt(-1000), deathsequence(0), foodstart(0), fooditem(-1), foodslot(-1),
+                       health(game::PLAYER_MAX_HEALTH),
                        ip(0),
                        lastrequestid(0), breakrequestid(0), lastnpcattackrequest(0),
                        connected(false), local(false),
                        worldready(false), hasposition(false), positiondirty(false), inventoryloaded(false), inventorydirty(false),
-                       breakactive(false), breakdropeligible(true), furnaceopen(false), dead(false),
+                       breakactive(false), breakdropeligible(true), furnaceopen(false), dead(false), foodactive(false),
                        craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
                        positioncoords(0, 0, 0), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0),
                        o(0, 0, 0), getmap(NULL),
@@ -1918,6 +1919,91 @@ namespace server
             sendplayerstate(clients[i]->clientnum, subject, impulse);
     }
 
+    static void sendfoodstate(int cn, const clientinfo &subject)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_FOODSTATE);
+        putint(p, subject.clientnum);
+        putint(p, subject.foodactive ? 1 : 0);
+        putpersistentid(p, getinventoryitempersistentid(subject.foodactive ? subject.fooditem : -1));
+        putint(p, subject.foodactive ? max(totalmillis - subject.foodstart, 0) : 0);
+        sendpacket(cn, 1, p.finalize());
+    }
+
+    static void broadcastfoodstate(const clientinfo &subject)
+    {
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready)
+            sendfoodstate(clients[i]->clientnum, subject);
+    }
+
+    static void cancelfooduse(clientinfo &ci, bool broadcast = true)
+    {
+        if(!ci.foodactive) return;
+        ci.foodactive = false;
+        ci.foodstart = 0;
+        ci.fooditem = ci.foodslot = -1;
+        if(broadcast) broadcastfoodstate(ci);
+    }
+
+    static void handlefoodaction(clientinfo &ci, bool active)
+    {
+        if(!active)
+        {
+            cancelfooduse(ci);
+            return;
+        }
+        if(ci.foodactive)
+        {
+            sendfoodstate(ci.clientnum, ci);
+            return;
+        }
+        const int slot = ci.selectedslot,
+                  item = slot >= 0 && slot < SURVIVAL_HOTBAR_SLOTS && ci.inventorycounts[slot] > 0 ? ci.inventoryitems[slot] : -1;
+        if(servercreative() || ci.dead || !ci.worldready || ci.health >= game::PLAYER_MAX_HEALTH || !isinventoryfood(item))
+        {
+            sendfoodstate(ci.clientnum, ci);
+            return;
+        }
+        ci.foodactive = true;
+        ci.foodstart = max(totalmillis, 1);
+        ci.fooditem = item;
+        ci.foodslot = slot;
+        broadcastfoodstate(ci);
+    }
+
+    static void updatefooduse(clientinfo &ci)
+    {
+        if(!ci.foodactive) return;
+        const bool valid = !servercreative() && !ci.dead && ci.worldready && ci.health < game::PLAYER_MAX_HEALTH &&
+                           ci.foodslot == ci.selectedslot && ci.foodslot >= 0 && ci.foodslot < SURVIVAL_HOTBAR_SLOTS &&
+                           ci.inventorycounts[ci.foodslot] > 0 && ci.inventoryitems[ci.foodslot] == ci.fooditem &&
+                           isinventoryfood(ci.fooditem);
+        if(!valid)
+        {
+            cancelfooduse(ci);
+            return;
+        }
+        if(totalmillis - ci.foodstart < getinventoryfoodtime(ci.fooditem)) return;
+
+        if(--ci.inventorycounts[ci.foodslot] <= 0)
+        {
+            ci.inventoryitems[ci.foodslot] = -1;
+            ci.inventorycounts[ci.foodslot] = ci.inventorydurabilities[ci.foodslot] = 0;
+        }
+        ci.health = min(ci.health + getinventoryfoodhealth(ci.fooditem), float(game::PLAYER_MAX_HEALTH));
+        ci.positiondirty = true;
+        markinventorydirty(ci);
+        sendinventory(ci);
+        broadcastplayerstate(ci);
+
+        if(ci.health < game::PLAYER_MAX_HEALTH && ci.inventorycounts[ci.foodslot] > 0 && ci.inventoryitems[ci.foodslot] == ci.fooditem)
+        {
+            ci.foodstart = max(totalmillis, 1);
+            broadcastfoodstate(ci);
+        }
+        else cancelfooduse(ci);
+    }
+
     static void addserverplayerdrop(clientinfo &ci, int item, int count, int durability, const vec &origin, uint spreadseed)
     {
         if(item < 0 || count <= 0) return;
@@ -1978,6 +2064,7 @@ namespace server
         if(ci.health <= 0)
         {
             ci.dead = true;
+            cancelfooduse(ci);
             ci.position.setsize(0);
             if(ci.breakactive) cancelbreak(ci);
             dropserverplayerinventory(ci);
@@ -2730,7 +2817,10 @@ namespace server
         sendf(ci.clientnum, 1, "ri2", N_WORLDSYNC, int(worldeditrevision));
         ci.worldready = true;
         loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->hasposition)
+        {
             sendplayerstate(ci.clientnum, *clients[i]);
+            if(clients[i]->foodactive) sendfoodstate(ci.clientnum, *clients[i]);
+        }
         loopv(clients) if(clients[i] && clients[i] != &ci && clients[i]->connected && clients[i]->worldready && ci.hasposition)
             sendplayerstate(clients[i]->clientnum, ci);
     }
@@ -2782,6 +2872,7 @@ namespace server
         if(clientinfo *ci = getinfo(n))
         {
             cancelbreak(*ci);
+            cancelfooduse(*ci);
             ci->furnaceopen = false;
             if(ci->connected && !saveinventory(*ci, true))
                 conoutf(CON_ERROR, "could not save survival inventory for player ID %s on disconnect", ci->playerid);
@@ -4692,6 +4783,13 @@ namespace server
                     if(ci && ci->connected && !p.overread()) handleinventoryaction(*ci, requestid, action, first, second);
                     break;
                 }
+                case N_FOODACTION:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    const int active = getint(p);
+                    if(ci && ci->connected && !p.overread()) handlefoodaction(*ci, active != 0);
+                    break;
+                }
                 case N_CRAFTACTION:
                 {
                     clientinfo *ci = getinfo(sender);
@@ -4856,6 +4954,7 @@ namespace server
                 case N_NPCDESPAWN:
                 case N_NPCSNAPSHOT:
                 case N_NPCEVENT:
+                case N_FOODSTATE:
                 {
                     clientinfo *ci = getinfo(sender);
                     p.pad(p.remaining());
@@ -4966,6 +5065,7 @@ namespace server
             if(ci && ci->identitystate == IDENTITY_AWAITING_RESPONSE && ci->identitychallenge && totalmillis - ci->identitychallengemillis > PLAYER_IDENTITY_TIMEOUT)
                 rejectidentity(*ci, "authentication challenge expired");
             if(!ci || !ci->connected) continue;
+            updatefooduse(*ci);
             if(ci->violations && totalmillis - ci->violationwindow >= violationresetinterval * 1000)
             {
                 ci->violations = 0;

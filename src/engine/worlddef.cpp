@@ -22,9 +22,11 @@ static ullong worldpersistentid(const char *id)
 
 worlddefinition::worlddefinition(const char *id)
     : persistentid(worldpersistentid(id)), worldsize(1.0f), texsize(1), lightradius(0), hardness(1.0f), toolspeed(1.0f), tooldamage(2.0f),
+      foodhealth(0),
       maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
-      furnaceinputlimit(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), hasitem(false), hascube(false), scatter(false),
-      placeable(false), hasmining(false), hastool(false), hasfurnace(false), itemstackset(false), cubetextureset(false), scattermodelset(false),
+      furnaceinputlimit(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0), hasitem(false), hascube(false), scatter(false),
+      placeable(false), hasmining(false), hastool(false), hasfurnace(false), hasfood(false), itemstackset(false), cubetextureset(false),
+      scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
       handbreakable(true)
 {
@@ -39,7 +41,11 @@ hashtable<worldpersistentkey, int> worldcubepersistentindexes(256), worldscatter
 int worlderrorcube = -1, worlderrorobject = -1, worlderroritem = -1;
 
 static worlddefinition *currentworlddefinition = NULL;
-enum { WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL, WORLDDEF_FURNACE };
+enum
+{
+    WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL, WORLDDEF_FURNACE,
+    WORLDDEF_FOOD
+};
 static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
 
 worlddefinition *findworlddefinition(const char *id)
@@ -111,6 +117,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "mining")) return "worlddef_mining";
         if(!strcmp(command, "tool")) return "worlddef_tool";
         if(!strcmp(command, "furnace")) return "worlddef_furnace";
+        if(!strcmp(command, "food")) return "worlddef_food";
         if(!strcmp(command, "drop")) return "worlddef_drop";
     }
     else if(component == WORLDDEF_ITEM)
@@ -155,6 +162,11 @@ static const char *worlddefinitioncommand(const char *command, int component)
     {
         if(!strcmp(command, "slots")) return "worlddef_slots";
         if(!strcmp(command, "capacity")) return "worlddef_capacity";
+    }
+    else if(component == WORLDDEF_FOOD)
+    {
+        if(!strcmp(command, "health")) return "worlddef_foodhealth";
+        if(!strcmp(command, "time")) return "worlddef_foodtime";
     }
     return NULL;
 }
@@ -313,6 +325,13 @@ ICOMMANDS("worlddef_furnace", "S", (char *body),
     endworldcomponent();
 });
 
+ICOMMANDS("worlddef_food", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_FOOD, currentworlddefinition->hasfood, "food")) return;
+    executeworlddefinitionbody(body, WORLDDEF_FOOD);
+    endworldcomponent();
+});
+
 ICOMMANDS("worlddef_name", "s", (char *value), copystring(currentworlddefinition->name, value));
 ICOMMANDS("worlddef_stack", "i", (int *value),
 {
@@ -363,6 +382,8 @@ ICOMMANDS("worlddef_durability", "i", (int *value), currentworlddefinition->maxd
 ICOMMANDS("worlddef_damage", "f", (float *value), currentworlddefinition->tooldamage = *value);
 ICOMMANDS("worlddef_slots", "i", (int *value), currentworlddefinition->furnaceinputslots = *value);
 ICOMMANDS("worlddef_capacity", "i", (int *value), currentworlddefinition->furnaceinputlimit = *value);
+ICOMMANDS("worlddef_foodhealth", "f", (float *value), currentworlddefinition->foodhealth = *value);
+ICOMMANDS("worlddef_foodtime", "i", (int *value), currentworlddefinition->foodtime = *value);
 
 ICOMMANDS("worlddef_drop", "siifN", (char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
 {
@@ -459,6 +480,11 @@ bool resolveworlddefinitionregistry()
            definition.furnaceinputlimit < 1))
         {
             conoutf(CON_ERROR, "worlddef \"%s\": furnace requires cube, 1-%d slots, and positive capacity", definition.id, FURNACE_INPUT_MAX);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hasfood && (!definition.hasitem || definition.foodhealth <= 0 || definition.foodtime <= 0))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": food requires item, positive health, and positive time", definition.id);
             ++worlddefinitionerrors;
         }
         loopv(definition.drops)

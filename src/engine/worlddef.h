@@ -27,11 +27,11 @@ struct worlddefinition
     string id, name, texture, icon, cubetexture, sidetexture, bottom, bottomtexture, model, modelicon, lightcolor;
     string preferredtool, tooltype;
     ullong persistentid;
-    float worldsize, texsize, lightradius, hardness, toolspeed, tooldamage;
-    int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit;
+    float worldsize, texsize, lightradius, hardness, toolspeed, tooldamage, foodhealth;
+    int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit, foodtime;
     int requiredtier, toolwear, tooltier, maxdurability;
     vector<worlddropdefinition> drops;
-    bool hasitem, hascube, scatter, placeable, hasmining, hastool, hasfurnace;
+    bool hasitem, hascube, scatter, placeable, hasmining, hastool, hasfurnace, hasfood;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
     bool explicitdrops, errorfallback, fall, handbreakable;
 

@@ -685,6 +685,14 @@ namespace game
                 if(!p.overread()) receiveplayerstate(clientnum, health, state, position, impulse);
                 break;
             }
+            case N_FOODSTATE:
+            {
+                const int clientnum = getint(p), active = getint(p);
+                const ullong itemid = getpersistentid(p);
+                const int item = itemid ? getinventoryitempersistentindex(itemid) : -1, elapsed = getint(p);
+                if(!p.overread()) receivefoodstate(clientnum, active != 0, item, elapsed);
+                break;
+            }
             case N_DROPSETTINGS:
             {
                 const int personal = getint(p), timeout = getint(p), maximum = getint(p), maxdistance = getint(p), requireconfirmation = getint(p);

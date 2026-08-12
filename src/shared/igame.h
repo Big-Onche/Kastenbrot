@@ -124,6 +124,7 @@ namespace game
     extern void addparticles();
     extern void particletrack(physent *owner, vec &o, vec &d);
     extern void hudparticletrack(physent *owner, vec &o, vec &d, int age);
+    extern bool foodparticletrack(physent *owner, vec &o);
     extern void dynlighttrack(physent *owner, vec &o, vec &hud);
     extern int maxsoundradius(int n);
     extern bool needminimap();

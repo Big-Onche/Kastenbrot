@@ -891,6 +891,7 @@ struct blockchip
 {
     vec o, velocity;
     Texture *tex;
+    physent *owner;
     vec2 uvmin, uvmax;
     bvec color;
     float size, groundz;
@@ -906,6 +907,8 @@ struct blockchiprenderer
         MAX_LIFETIME = 20000,
         SETTLED_LIFETIME = 3000,
         SETTLED_FADE = 500,
+        HUD_LIFETIME = 900,
+        HUD_FADE = 400,
         CHIP_GRAVITY = 120
     };
 
@@ -922,11 +925,8 @@ struct blockchiprenderer
 
     bool haswork() const { return !chips.empty(); }
 
-    void add(int texture, const vec &p, const vec &normal, int num)
+    void add(Texture *tex, const bvec &color, float scale, const vec &p, const vec &normal, int num, physent *owner, bool centered)
     {
-        VSlot &vslot = lookupvslot(texture, true);
-        if(!vslot.slot || vslot.slot->sts.empty()) return;
-        Texture *tex = vslot.slot->sts[0].t;
         if(!tex || tex == notexture || tex->xs <= 0 || tex->ys <= 0) return;
 
         const int maxcrop = min(min(tex->xs, tex->ys), 3);
@@ -939,18 +939,27 @@ struct blockchiprenderer
         {
             blockchip &chip = chips.length() < MAX_CHIPS ? chips.add() : chips[rnd(chips.length())];
             const int crop = mincrop + rnd(maxcrop - mincrop + 1),
-                      x = rnd(tex->xs - crop + 1),
-                      y = rnd(tex->ys - crop + 1);
+                      xmin = centered ? tex->xs / 4 : 0,
+                      ymin = centered ? tex->ys / 4 : 0,
+                      xmax = centered ? max(tex->xs * 3 / 4 - crop, xmin) : tex->xs - crop,
+                      ymax = centered ? max(tex->ys * 3 / 4 - crop, ymin) : tex->ys - crop,
+                      x = xmin + rnd(xmax - xmin + 1),
+                      y = ymin + rnd(ymax - ymin + 1);
             chip.o = vec(p).madd(normal, 0.25f).madd(tangent, (rnd(701) - 350)/100.0f).madd(bitangent, (rnd(701) - 350)/100.0f);
             chip.velocity = vec(normal).mul(6.0f + rnd(70)/10.0f).madd(tangent, (rnd(141) - 70)/10.0f).madd(bitangent, (rnd(141) - 70)/10.0f);
             chip.velocity.z += 5.0f + rnd(150)/10.0f;
+            if(owner)
+            {
+                chip.o.sub(p);
+                chip.o = vec(chip.o.dot(camright), chip.o.dot(camdir), chip.o.dot(camup));
+                chip.velocity = vec(chip.velocity.dot(camright), chip.velocity.dot(camdir), chip.velocity.dot(camup));
+            }
             chip.tex = tex;
+            chip.owner = owner;
             chip.uvmin = vec2(x/float(tex->xs), y/float(tex->ys));
             chip.uvmax = vec2((x + crop)/float(tex->xs), (y + crop)/float(tex->ys));
-            chip.color = bvec(uchar(clamp(int(vslot.colorscale.x*255), 0, 255)),
-                              uchar(clamp(int(vslot.colorscale.y*255), 0, 255)),
-                              uchar(clamp(int(vslot.colorscale.z*255), 0, 255)));
-            chip.size = max(crop*vslot.scale/(2.0f*TEX_SCALE), 0.1f);
+            chip.color = color;
+            chip.size = max(crop*scale/(2.0f*TEX_SCALE), 0.1f);
             chip.groundz = 0;
             chip.millis = lastmillis;
             chip.rotation = rnd(32);
@@ -958,6 +967,23 @@ struct blockchiprenderer
             chip.settled = false;
         }
         if(lastupdate < 0) lastupdate = lastmillis;
+    }
+
+    void add(int texture, const vec &p, const vec &normal, int num)
+    {
+        VSlot &vslot = lookupvslot(texture, true);
+        if(!vslot.slot || vslot.slot->sts.empty()) return;
+        add(vslot.slot->sts[0].t,
+            bvec(uchar(clamp(int(vslot.colorscale.x*255), 0, 255)), uchar(clamp(int(vslot.colorscale.y*255), 0, 255)),
+                 uchar(clamp(int(vslot.colorscale.z*255), 0, 255))),
+            vslot.scale, p, normal, num, NULL, false);
+    }
+
+    void add(const char *texture, const vec &p, const vec &normal, int num, physent *owner)
+    {
+        if(!texture || !texture[0]) return;
+        defformatstring(filename, "media/texture/%s", texture);
+        add(textureload(filename, 3, true, true), bvec(255, 255, 255), 4.5f, p, normal, num, owner, true);
     }
 
     void update()
@@ -975,6 +1001,11 @@ struct blockchiprenderer
         loopvrev(chips)
         {
             blockchip &chip = chips[i];
+            if(chip.owner && lastmillis - chip.millis >= HUD_LIFETIME)
+            {
+                chips.removeunordered(i);
+                continue;
+            }
             if(chip.settled)
             {
                 if(lastmillis - chip.settledmillis >= SETTLED_LIFETIME) chips.removeunordered(i);
@@ -988,7 +1019,7 @@ struct blockchiprenderer
 
             chip.velocity.z -= CHIP_GRAVITY*seconds;
             vec next = vec(chip.o).madd(chip.velocity, seconds);
-            if(next.z < chip.o.z)
+            if(!chip.owner && next.z < chip.o.z)
             {
                 const float fall = chip.o.z - next.z;
                 const vec probe(next.x, next.y, chip.o.z);
@@ -1004,7 +1035,7 @@ struct blockchiprenderer
                     continue;
                 }
             }
-            if(!insideworld(next)) chips.removeunordered(i);
+            if(!chip.owner && !insideworld(next)) chips.removeunordered(i);
             else chip.o = next;
         }
     }
@@ -1030,12 +1061,16 @@ struct blockchiprenderer
                 const blockchip &chip = chips[i];
                 const vec2 *coeffs = rotcoeffs[chip.rotation];
                 const int age = chip.settled ? lastmillis - chip.settledmillis : lastmillis - chip.millis,
-                          lifetime = chip.settled ? SETTLED_LIFETIME : MAX_LIFETIME,
-                          fadetime = chip.settled ? SETTLED_FADE : 1000,
+                          lifetime = chip.owner ? HUD_LIFETIME : chip.settled ? SETTLED_LIFETIME : MAX_LIFETIME,
+                          fadetime = chip.owner ? HUD_FADE : chip.settled ? SETTLED_FADE : 1000,
                           alpha = age <= lifetime - fadetime ? 255 : clamp((lifetime - age)*255/fadetime, 0, 255);
                 const bvec4 color(chip.color, uchar(alpha));
                 vec renderorigin = chip.o;
-                if(chip.settled)
+                if(chip.owner)
+                {
+                    if(!game::foodparticletrack(chip.owner, renderorigin)) continue;
+                }
+                else if(chip.settled)
                 {
                     float minz = 0;
                     loopj(4) minz = min(minz, (camright.z*coeffs[j].x + camup.z*coeffs[j].y)*chip.size);
@@ -1344,6 +1379,12 @@ void particle_blockchips(int texture, const vec &p, const vec &normal, int num)
 {
     if(!canaddparticles() || !camera1 || camera1->o.dist(p) > maxparticledistance) return;
     blockchips.add(texture, p, normal, num);
+}
+
+void particle_itemchips(const char *texture, const vec &p, const vec &normal, int num, physent *owner)
+{
+    if(!canaddparticles() || !camera1 || (!owner && camera1->o.dist(p) > maxparticledistance)) return;
+    blockchips.add(texture, p, normal, num, owner);
 }
 
 void regular_particle_splash(int type, int num, int fade, const vec &p, int color, float size, int radius, int gravity, int delay)

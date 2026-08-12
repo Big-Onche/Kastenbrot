@@ -265,6 +265,21 @@ int getinventoryitemmaxstack(int index)
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->maxstack : 0;
 }
 
+bool isinventoryfood(int index)
+{
+    return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->hasfood;
+}
+
+float getinventoryfoodhealth(int index)
+{
+    return isinventoryfood(index) ? inventoryitemdefinitions[index]->foodhealth : 0.0f;
+}
+
+int getinventoryfoodtime(int index)
+{
+    return isinventoryfood(index) ? inventoryitemdefinitions[index]->foodtime : 0;
+}
+
 const char *getinventoryitemtexture(int index)
 {
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->texture : "";
@@ -815,6 +830,10 @@ int getinventoryitemmaxstack(int index)
 {
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->maxstack : 0;
 }
+
+bool isinventoryfood(int index) { return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->hasfood; }
+float getinventoryfoodhealth(int index) { return isinventoryfood(index) ? inventoryitemdefinitions[index]->foodhealth : 0.0f; }
+int getinventoryfoodtime(int index) { return isinventoryfood(index) ? inventoryitemdefinitions[index]->foodtime : 0; }
 
 bool getworldfurnaceconfig(int item, int &inputslots, int &inputlimit)
 {

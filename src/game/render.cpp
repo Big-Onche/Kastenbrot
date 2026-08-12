@@ -396,6 +396,8 @@ namespace game
     static const float HUD_ARM_IDLE_PITCH = -90.0f, HUD_ARM_ROLL = -3.0f;
     static const float HUD_ARM_GAIT_SCALE = 0.45f, HUD_ARM_BOB = 0.35f;
     static const float HELD_ARM_PITCH = 50.0f;
+    static const float WORLD_EAT_ARM_YAW = 28.0f, WORLD_EAT_ARM_PITCH = 32.0f, WORLD_EAT_ARM_ROLL = -8.0f;
+    static const float HUD_EAT_ARM_YAW = -36.0f, HUD_EAT_ARM_PITCH = 30.0f, HUD_EAT_ARM_ROLL = 10.0f;
     static const float HUD_HELD_CUBE_SIZE = 0.7f, HUD_HELD_SCATTER_SIZE = 0.5f;
     static const float WORLD_HELD_CUBE_SIZE = 0.75f, WORLD_HELD_SCATTER_SIZE = 0.55f;
 
@@ -667,7 +669,8 @@ namespace game
     static int heldcreativeitem(const gameent *d)
     {
         if(!d || (!m_creative && !m_survival) || d->state != CS_ALIVE) return -1;
-        const int selected = d == player1 ? (editmode ? -1 : selectedcreativeblock()) : d->selectedcreative,
+        const int selected = d->rendereating ? d->rendereatitem
+                           : d == player1 ? (editmode ? -1 : selectedcreativeblock()) : d->selectedcreative,
                   count = numinventoryitems();
         return selected >= 0 && selected < count ? selected : -1;
     }
@@ -706,6 +709,7 @@ namespace game
         float armpitch = CROUCH_ARM_PITCH * crouch;
         float legpitch = CROUCH_LEG_PITCH * crouch;
         float actionpitch = playerarmactionpitch(d);
+        const float eatamount = playerfooduseamount(d);
         bool actionactive = actionpitch >= 0;
 
         vec feet = d->feetpos(bob);
@@ -719,13 +723,15 @@ namespace game
             renderpart(d, PART_HEAD, partorigins[PART_HEAD], headyaw, clamp(d->pitch, -80.0f, 80.0f) + sinf(phase * 2.0f) * 1.5f * movement, 0, flags);
 
         const int selected = heldcreativeitem(d);
-        const float rightarmpitch = armpitch + (selected >= 0 ? HELD_ARM_PITCH : 0) + (actionactive ? actionpitch : forwardstride * ARM_SWING),
-                    rightarmroll = actionactive ? 0 : strafestride * ARM_STRAFE_SWING;
+        const float rightarmyaw = bodyyaw + WORLD_EAT_ARM_YAW * eatamount,
+                    rightarmpitch = armpitch + (selected >= 0 ? HELD_ARM_PITCH : 0) + WORLD_EAT_ARM_PITCH * eatamount +
+                                    (actionactive ? actionpitch : forwardstride * ARM_SWING),
+                    rightarmroll = WORLD_EAT_ARM_ROLL * eatamount + (actionactive ? 0 : strafestride * ARM_STRAFE_SWING);
 
         if(parttagged[PART_LEFT_ARM])
             renderpart(d, PART_LEFT_ARM, partorigins[PART_LEFT_ARM], bodyyaw, armpitch - forwardstride * ARM_SWING, -strafestride * ARM_STRAFE_SWING, flags);
         if(parttagged[PART_RIGHT_ARM])
-            renderpart(d, PART_RIGHT_ARM, partorigins[PART_RIGHT_ARM], bodyyaw, rightarmpitch, rightarmroll, flags);
+            renderpart(d, PART_RIGHT_ARM, partorigins[PART_RIGHT_ARM], rightarmyaw, rightarmpitch, rightarmroll, flags);
         if(parttagged[PART_LEFT_LEG])
             renderpart(d, PART_LEFT_LEG, partorigins[PART_LEFT_LEG], bodyyaw, legpitch + forwardstride * LEG_SWING, strafestride * LEG_STRAFE_SWING, flags);
         if(parttagged[PART_RIGHT_LEG])
@@ -734,8 +740,9 @@ namespace game
         if(selected >= 0 && parttagged[PART_RIGHT_ARM])
         {
             vec hand;
-            if(modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", hand, partorigins[PART_RIGHT_ARM], bodyyaw, rightarmpitch, rightarmroll))
-                renderhelditem(d, selected, hand, bodyyaw, rightarmpitch + 270.0f, rightarmroll, flags, false);
+            if(modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", hand, partorigins[PART_RIGHT_ARM],
+                                rightarmyaw, rightarmpitch, rightarmroll))
+                renderhelditem(d, selected, hand, rightarmyaw, rightarmpitch + 270.0f, rightarmroll, flags, false);
         }
     }
 
@@ -864,15 +871,19 @@ namespace game
                     forwardstride = stride * forwardgait,
                     strafestride = stride * strafegait * strafedirection,
                     actionpitch = playerarmactionpitch(d),
+                    eatamount = playerfooduseamount(d),
                     basepitch = HUD_ARM_IDLE_PITCH + CROUCH_ARM_PITCH * crouch,
                     bob = (0.5f - fabsf(cosf(phase))) * HUD_ARM_BOB * movement * (1.0f - 0.65f * crouch),
-                    relativepitch = basepitch + (actionpitch >= 0 ? actionpitch : -forwardstride * ARM_SWING * HUD_ARM_GAIT_SCALE);
+                    relativepitch = basepitch + HUD_EAT_ARM_PITCH * eatamount +
+                                    (actionpitch >= 0 ? actionpitch : -forwardstride * ARM_SWING * HUD_ARM_GAIT_SCALE);
 
         arm.origin = camera1->o;
         arm.origin.madd(camdir, HUD_ARM_FORWARD).madd(camright, HUD_ARM_SIDE).madd(camup, -HUD_ARM_DOWN + bob);
-        arm.yaw = camera1->yaw;
+        arm.origin.madd(camright, -5.0f * eatamount).madd(camup, -3.0f * eatamount);
+        arm.yaw = camera1->yaw + HUD_EAT_ARM_YAW * eatamount;
         arm.pitch = camera1->pitch + relativepitch;
-        arm.roll = 180.0f + HUD_ARM_ROLL + (actionpitch >= 0 ? 0 : -strafestride * ARM_STRAFE_SWING * HUD_ARM_GAIT_SCALE);
+        arm.roll = 180.0f + HUD_ARM_ROLL + HUD_EAT_ARM_ROLL * eatamount +
+                   (actionpitch >= 0 ? 0 : -strafestride * ARM_STRAFE_SWING * HUD_ARM_GAIT_SCALE);
 
         item.yaw = arm.yaw;
         item.pitch = arm.pitch - HUD_ARM_IDLE_PITCH;
@@ -897,16 +908,19 @@ namespace game
                     bob = fabsf(cosf(phase)) * 0.45f * movement * (1.0f - 0.65f * crouch),
                     bodyyaw = updatebodyyaw(d, movement),
                     torsopitch = CROUCH_TORSO_PITCH * crouch,
-                    actionpitch = playerarmactionpitch(d);
+                    actionpitch = playerarmactionpitch(d),
+                    eatamount = playerfooduseamount(d);
 
         const vec torsoorigin = d->feetpos(bob).addz(HIP_HEIGHT - CROUCH_HIP_DROP * crouch);
         vec shoulder;
         if(!playerpartorigin(PART_RIGHT_ARM, shoulder, torsoorigin, bodyyaw, torsopitch)) return false;
 
-        const float armpitch = CROUCH_ARM_PITCH * crouch + HELD_ARM_PITCH + (actionpitch >= 0 ? actionpitch : forwardstride * ARM_SWING),
-                    armroll = actionpitch >= 0 ? 0 : strafestride * ARM_STRAFE_SWING;
-        const bool tagged = modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", item.origin, shoulder, bodyyaw, armpitch, armroll);
-        item.yaw = bodyyaw;
+        const float armyaw = bodyyaw + WORLD_EAT_ARM_YAW * eatamount,
+                    armpitch = CROUCH_ARM_PITCH * crouch + HELD_ARM_PITCH + WORLD_EAT_ARM_PITCH * eatamount +
+                               (actionpitch >= 0 ? actionpitch : forwardstride * ARM_SWING),
+                    armroll = WORLD_EAT_ARM_ROLL * eatamount + (actionpitch >= 0 ? 0 : strafestride * ARM_STRAFE_SWING);
+        const bool tagged = modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", item.origin, shoulder, armyaw, armpitch, armroll);
+        item.yaw = armyaw;
         item.pitch = armpitch + 270.0f;
         item.roll = armroll;
         return tagged;

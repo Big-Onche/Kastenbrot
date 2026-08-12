@@ -183,6 +183,9 @@ extern const char *getinventoryitemtexture(int index);
 extern const char *getinventoryitemicon(int index);
 extern float getinventoryitemworldsize(int index);
 extern int getinventoryitemindex(const char *id);
+extern bool isinventoryfood(int index);
+extern float getinventoryfoodhealth(int index);
+extern int getinventoryfoodtime(int index);
 
 enum { FURNACE_INPUT_MAX = 4 };
 struct furnacematch
@@ -518,6 +521,7 @@ enum
 extern bool canaddparticles();
 extern void particle_precipitation(int type, const vec &origin, const vec &velocity, int fade, int color, float size, int gravity, bool collide);
 extern void particle_blockchips(int texture, const vec &p, const vec &normal, int num = 1);
+extern void particle_itemchips(const char *texture, const vec &p, const vec &normal, int num = 1, physent *owner = NULL);
 extern void regular_particle_splash(int type, int num, int fade, const vec &p, int color = 0xFFFFFF, float size = 1.0f, int radius = 150, int gravity = 2, int delay = 0);
 extern void regular_particle_spray(int type, int num, int fade, const vec &p, const vec &direction, int color = 0xFFFFFF, float size = 1.0f, int speed = 100, int spread = 25, int gravity = 2, int delay = 0);
 extern void regular_particle_flame(int type, const vec &p, float radius, float height, int color, int density = 3, float scale = 2.0f, float speed = 200.0f, float fade = 600.0f, int gravity = -15);

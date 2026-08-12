@@ -70,7 +70,7 @@ enum
     N_FALLBLOCKSPAWN, N_FALLBLOCKUPDATE, N_FALLBLOCKDELETE,
     N_FURNACESTATE, N_FURNACEACTION,
     N_NPCSPAWN, N_NPCDESPAWN, N_NPCSNAPSHOT, N_NPCEVENT, N_NPCATTACK,
-    N_PLAYERSTATE, N_RESPAWN,
+    N_PLAYERSTATE, N_RESPAWN, N_FOODACTION, N_FOODSTATE,
     NUMMSG
 };
 
@@ -154,14 +154,14 @@ static const int msgsizes[] =
     N_FALLBLOCKSPAWN, 7, N_FALLBLOCKUPDATE, 7, N_FALLBLOCKDELETE, 2,
     N_FURNACESTATE, 0, N_FURNACEACTION, 7,
     N_NPCSPAWN, 0, N_NPCDESPAWN, 3, N_NPCSNAPSHOT, 11, N_NPCEVENT, 0, N_NPCATTACK, 4,
-    N_PLAYERSTATE, 10, N_RESPAWN, 1,
+    N_PLAYERSTATE, 10, N_RESPAWN, 1, N_FOODACTION, 2, N_FOODSTATE, 6,
     -1
 };
 
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 26
+#define PROTOCOL_VERSION 27
 
 enum
 {
@@ -336,9 +336,11 @@ struct gameent : dynent
     float deltayaw, deltapitch, deltaroll, newyaw, newpitch, newroll;
     float renderbodyyaw, rendercrouch, renderstridephase, renderattackreleasepitch;
     int smoothmillis, renderbodyyawmillis, rendercrouchmillis, renderstridemillis, selectedcreative,
-        renderattackmillis, renderattackreleasemillis, renderplacemillis, ragdollstart[6], ragdollend[6];
+        renderattackmillis, renderattackreleasemillis, renderplacemillis, rendereatmillis, rendereatitem, rendereatduration,
+        rendereatcrumbmillis,
+        ragdollstart[6], ragdollend[6];
     float health;
-    bool renderattacking, renderplacetoggle, renderactioninitialized;
+    bool renderattacking, rendereating, renderplacetoggle, renderactioninitialized;
     string name;
 
     gameent() : clientnum(-1), privilege(0), ping(0), lastupdate(0), plag(0), edit(NULL),
@@ -347,7 +349,9 @@ struct gameent : dynent
                 smoothmillis(-1), renderbodyyawmillis(-1), rendercrouchmillis(-1),
                 renderstridemillis(-1), selectedcreative(-1), renderattackmillis(0),
                 renderattackreleasemillis(-1000),
-                renderplacemillis(-1000), health(20.0f), renderattacking(false), renderplacetoggle(false),
+                renderplacemillis(-1000), rendereatmillis(-1000), rendereatitem(-1), rendereatduration(0), rendereatcrumbmillis(-1),
+                health(20.0f), renderattacking(false),
+                rendereating(false), renderplacetoggle(false),
                 renderactioninitialized(false)
     {
         type = ENT_PLAYER;
@@ -433,6 +437,7 @@ namespace game
     extern void requestworldcommand(const char *command);
     extern float horizontalmeterspersecond(const physent *d);
     extern float playerarmactionpitch(const gameent *d);
+    extern float playerfooduseamount(const gameent *d);
     extern float creativearmwave(int elapsed);
     extern int selectedcreativeblock();
     extern void wearselectedsurvivaltool();
@@ -440,6 +445,7 @@ namespace game
     extern float getlocalplayerhealth();
     extern void restorelocalplayerhealth(float health);
     extern void receiveplayerstate(int clientnum, float health, int state, const vec &position, const vec &impulse);
+    extern void receivefoodstate(int clientnum, bool active, int item, int elapsed);
     extern void beginplayerragdoll(gameent *d, const vec &impulse);
     extern void clearplayerragdoll(gameent *d);
     extern void receiveserversettings(int breakmillis, int scatterbreakmillis, int waterupdates, int waterdistance, int waterspeed, int npcsimulationdistance);
