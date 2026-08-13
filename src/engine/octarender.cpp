@@ -1161,7 +1161,7 @@ vtxarray *newva(const ivec &o, int size)
     va->mergelevel = -1;
 
     vc.setupdata(va);
-    va->oqcontent = va->alphatris || va->matmask;
+    va->oqcontent = va->alphatris || va->matmask || !va->mapmodels.empty() || !va->decals.empty();
 
     if(va->alphatris)
     {
@@ -1251,7 +1251,7 @@ void updatevabb(vtxarray *va, bool force)
 {
     if(!force && !va->bbdirty) return;
 
-    va->oqcontent = va->alphatris || va->matmask;
+    va->oqcontent = va->alphatris || va->matmask || !va->mapmodels.empty() || !va->decals.empty();
     va->bbmin = va->geommin;
     va->bbmax = va->geommax;
     va->bbmin.min(va->lavamin);
