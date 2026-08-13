@@ -245,9 +245,9 @@ void addworldtorchlights()
             const float distancesquared = flame.squaredist(camera1->o);
             if(distancesquared > maxdistancesquared) continue;
             const float distance = sqrtf(distancesquared);
-            //const int flags = distance <= fullshadowdistance ? 0 : distance <= dynshadowdistance ? L_NODYNSHADOW : L_NOSHADOW;
+            const int flags = distance <= fullshadowdistance ? 0 : distance <= dynshadowdistance ? L_NODYNSHADOW : L_NOSHADOW;
             const worlddefinition &type = *worldscatterdefinitions[scatter.type];
-            adddynlight(flame, type.lightradius * WORLD_BLOCK_SIZE, worldplacelightcolor(type), 0, 0, L_NOSHADOW | DL_NODIST);
+            adddynlight(flame, type.lightradius * WORLD_BLOCK_SIZE, worldplacelightcolor(type), 0, 0, flags | DL_NODIST);
         }
     }
 }
@@ -379,7 +379,7 @@ int getworldlightlevel(const vec &position)
 {
     const float skyexposure = getworldskyexposure(position),
                 ambientlevel = game::environment::getambientlightlevel();
-    float level = clamp(sunlightscale * 16.0f + skyexposure * ambientlevel, 0.0f, 16.0f);
+    float level = clamp(skyexposure * (sunlightscale * 16.0f + ambientlevel), 0.0f, 16.0f);
     loopv(worldchunks)
     {
         const worldchunk &chunk = worldchunks[i];

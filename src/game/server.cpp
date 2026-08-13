@@ -315,7 +315,6 @@ namespace server
     static void sendfallblockspawn(int cn, const serverfallingblock &block);
     static bool loadserverfurnaces();
     static bool saveserverfurnaces(bool force = false);
-    static void clearserverskylight();
 
     vector<clientinfo *> clients;
     vector<serveredit *> worldhistory, worldredostack;
@@ -643,7 +642,6 @@ namespace server
         worldhistory.deletecontents();
         worldredostack.deletecontents();
         serverworldactions.deletecontents();
-        clearserverskylight();
         serverdrops.deletecontents();
         serverfallingblocks.deletecontents();
         serverfallblockchecks.setsize(0);
@@ -1714,7 +1712,6 @@ namespace server
         const int type = getworlditemtype(item), index = getworlditemindex(item);
         state->supportpersistent = action == WORLD_ACTION_PLACE_CUBE && playerplaced && type == WORLD_ITEM_CUBE &&
                                    getworldcubesupportpersistentonplace(index);
-        if(action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_BREAK_CUBE_START) clearserverskylight();
         queueserverfallblockcheck(target);
         queueserverfallblockcheck(ivec(target).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
         queueserversupportchange(target);
@@ -1955,134 +1952,51 @@ namespace server
         return (color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f) * (1.25f * 16.0f / 255.0f);
     }
 
-    enum
+    static bool servercelldirectsky(const ivec &cell)
     {
-        SERVER_SKYLIGHT_MAX = 32,
-        SERVER_SKYLIGHT_RADIUS = 32,
-        SERVER_SKYLIGHT_CACHE_RADIUS = SERVER_SKYLIGHT_RADIUS + 8,
-        SERVER_SKYLIGHT_DIAMETER = SERVER_SKYLIGHT_CACHE_RADIUS * 2 + 1,
-        SERVER_WORLD_HEIGHT_BLOCKS = SERVER_WORLD_MAP_SIZE / SERVER_WORLD_BLOCK_SIZE
-    };
-
-    static vector<uchar> serverskytransparent, serverskylight;
-    static vector<int> serverskyqueue;
-    static ivec serverskyorigin(0, 0, 0);
-    static int serverskydiameter = 0;
-    static uint serverskylightrevision = ~0U;
-
-    static void clearserverskylight()
-    {
-        serverskytransparent.setsize(0);
-        serverskylight.setsize(0);
-        serverskyqueue.setsize(0);
-        serverskydiameter = 0;
-        serverskylightrevision = ~0U;
-    }
-
-    static bool serverskyfieldcontains(int blockx, int blocky)
-    {
-        if(!serverskydiameter || serverskylightrevision != worldeditrevision) return false;
-        const int worldblocks = SERVER_WORLD_MAP_SIZE / SERVER_WORLD_BLOCK_SIZE;
-        const bool insideleft = serverskyorigin.x == 0 ? blockx >= 0 : blockx >= serverskyorigin.x + SERVER_SKYLIGHT_RADIUS,
-                   insideright = serverskyorigin.x + serverskydiameter >= worldblocks ? blockx < worldblocks
-                       : blockx < serverskyorigin.x + serverskydiameter - SERVER_SKYLIGHT_RADIUS,
-                   insidefront = serverskyorigin.y == 0 ? blocky >= 0 : blocky >= serverskyorigin.y + SERVER_SKYLIGHT_RADIUS,
-                   insideback = serverskyorigin.y + serverskydiameter >= worldblocks ? blocky < worldblocks
-                       : blocky < serverskyorigin.y + serverskydiameter - SERVER_SKYLIGHT_RADIUS;
-        return insideleft && insideright && insidefront && insideback;
-    }
-
-    static void buildserverskylight(int blockx, int blocky)
-    {
-        ZoneScopedN("World Sky Distance Lighting");
-        const int worldblocks = SERVER_WORLD_MAP_SIZE / SERVER_WORLD_BLOCK_SIZE,
-                  diameter = min(int(SERVER_SKYLIGHT_DIAMETER), worldblocks),
-                  plane = diameter * diameter,
-                  cellcount = plane * SERVER_WORLD_HEIGHT_BLOCKS;
-        serverskyorigin.x = clamp(blockx - SERVER_SKYLIGHT_CACHE_RADIUS, 0, max(worldblocks - diameter, 0));
-        serverskyorigin.y = clamp(blocky - SERVER_SKYLIGHT_CACHE_RADIUS, 0, max(worldblocks - diameter, 0));
-        serverskyorigin.z = 0;
-        serverskydiameter = diameter;
-        serverskylightrevision = worldeditrevision;
-        serverskytransparent.setsize(0);
-        serverskylight.setsize(0);
-        serverskytransparent.pad(cellcount);
-        serverskylight.pad(cellcount);
-        serverskyqueue.setsize(0);
-        serverskyqueue.reserve(cellcount);
-        memset(serverskytransparent.getbuf(), 0, cellcount);
-        memset(serverskylight.getbuf(), 0, cellcount);
-
-        loop(y, diameter) loop(x, diameter)
-        {
-            bool directsky = true;
-            for(int z = SERVER_WORLD_HEIGHT_BLOCKS - 1; z >= 0; --z)
-            {
-                const int index = (z * diameter + y) * diameter + x;
-                ivec cell((serverskyorigin.x + x) * SERVER_WORLD_BLOCK_SIZE, (serverskyorigin.y + y) * SERVER_WORLD_BLOCK_SIZE,
-                          z * SERVER_WORLD_BLOCK_SIZE);
-                if(serverblocksolid(cell)) directsky = false;
-                else
-                {
-                    serverskytransparent[index] = 1;
-                    if(directsky) serverskylight[index] = SERVER_SKYLIGHT_MAX;
-                }
-            }
-        }
-
-        loop(z, SERVER_WORLD_HEIGHT_BLOCKS) loop(y, diameter) loop(x, diameter)
-        {
-            const int index = (z * diameter + y) * diameter + x, light = serverskylight[index];
-            if(!light) continue;
-            if((x > 0 && serverskytransparent[index - 1] && serverskylight[index - 1] < light) ||
-               (x + 1 < diameter && serverskytransparent[index + 1] && serverskylight[index + 1] < light) ||
-               (y > 0 && serverskytransparent[index - diameter] && serverskylight[index - diameter] < light) ||
-               (y + 1 < diameter && serverskytransparent[index + diameter] && serverskylight[index + diameter] < light) ||
-               (z > 0 && serverskytransparent[index - plane] && serverskylight[index - plane] < light) ||
-               (z + 1 < SERVER_WORLD_HEIGHT_BLOCKS && serverskytransparent[index + plane] && serverskylight[index + plane] < light))
-                serverskyqueue.add(index);
-        }
-
-        for(int cursor = 0; cursor < serverskyqueue.length(); ++cursor)
-        {
-            const int index = serverskyqueue[cursor], light = serverskylight[index];
-            if(light <= 1) continue;
-            const int propagated = light - 1,
-                      z = index / plane,
-                      offset = index - z * plane,
-                      y = offset / diameter,
-                      x = offset - y * diameter;
-
-            #define PROPAGATESERVERSKYLIGHT(neighbor) do { \
-                const int next = (neighbor); \
-                if(serverskytransparent[next] && propagated > serverskylight[next]) \
-                { \
-                    serverskylight[next] = propagated; \
-                    serverskyqueue.add(next); \
-                } \
-            } while(0)
-
-            if(x > 0) PROPAGATESERVERSKYLIGHT(index - 1);
-            if(x + 1 < diameter) PROPAGATESERVERSKYLIGHT(index + 1);
-            if(y > 0) PROPAGATESERVERSKYLIGHT(index - diameter);
-            if(y + 1 < diameter) PROPAGATESERVERSKYLIGHT(index + diameter);
-            if(z > 0) PROPAGATESERVERSKYLIGHT(index - plane);
-            if(z + 1 < SERVER_WORLD_HEIGHT_BLOCKS) PROPAGATESERVERSKYLIGHT(index + plane);
-
-            #undef PROPAGATESERVERSKYLIGHT
-        }
-        serverskyqueue.setsize(0);
+        if(cell.x < 0 || cell.y < 0 || cell.x >= SERVER_WORLD_MAP_SIZE || cell.y >= SERVER_WORLD_MAP_SIZE || cell.z < 0 ||
+           cell.z >= SERVER_WORLD_MAP_SIZE || serverblocksolid(cell)) return false;
+        for(int z = cell.z + SERVER_WORLD_BLOCK_SIZE; z < SERVER_WORLD_MAP_SIZE; z += SERVER_WORLD_BLOCK_SIZE)
+            if(serverblocksolid(ivec(cell.x, cell.y, z))) return false;
+        return true;
     }
 
     static int serverskylightlevel(const vec &position)
     {
+        struct skynode
+        {
+            ivec cell;
+            int distance;
+
+            skynode(const ivec &cell, int distance) : cell(cell), distance(distance) {}
+        };
+        static const ivec directions[] =
+        {
+            ivec(SERVER_WORLD_BLOCK_SIZE, 0, 0), ivec(-SERVER_WORLD_BLOCK_SIZE, 0, 0),
+            ivec(0, SERVER_WORLD_BLOCK_SIZE, 0), ivec(0, -SERVER_WORLD_BLOCK_SIZE, 0),
+            ivec(0, 0, SERVER_WORLD_BLOCK_SIZE), ivec(0, 0, -SERVER_WORLD_BLOCK_SIZE)
+        };
         const ivec start = serverblockat(position);
-        if(start.x < 0 || start.y < 0 || start.x >= SERVER_WORLD_MAP_SIZE || start.y >= SERVER_WORLD_MAP_SIZE || start.z < 0 ||
-           start.z >= SERVER_WORLD_MAP_SIZE || serverblocksolid(start)) return 0;
-        const int blockx = start.x / SERVER_WORLD_BLOCK_SIZE, blocky = start.y / SERVER_WORLD_BLOCK_SIZE;
-        if(!serverskyfieldcontains(blockx, blocky)) buildserverskylight(blockx, blocky);
-        const int x = blockx - serverskyorigin.x, y = blocky - serverskyorigin.y, z = start.z / SERVER_WORLD_BLOCK_SIZE;
-        return serverskylight[(z * serverskydiameter + y) * serverskydiameter + x];
+        if(serverblocksolid(start)) return 0;
+        vector<skynode> queue;
+        hashtable<ivec, int> visited(1 << 12);
+        queue.add(skynode(start, 0));
+        visited[start] = 0;
+        loopv(queue)
+        {
+            const skynode node = queue[i];
+            if(servercelldirectsky(node.cell)) return 16 - node.distance;
+            if(node.distance >= 15) continue;
+            loopj(int(sizeof(directions) / sizeof(directions[0])))
+            {
+                const ivec next = ivec(node.cell).add(directions[j]);
+                if(next.x < 0 || next.y < 0 || next.z < 0 || next.x >= SERVER_WORLD_MAP_SIZE || next.y >= SERVER_WORLD_MAP_SIZE ||
+                   next.z >= SERVER_WORLD_MAP_SIZE || visited.access(next) || serverblocksolid(next)) continue;
+                visited[next] = node.distance + 1;
+                queue.add(skynode(next, node.distance + 1));
+            }
+        }
+        return 0;
     }
 
     static int serverequippeditem(const clientinfo &ci)
@@ -2094,8 +2008,8 @@ namespace server
 
     static int serverlightlevel(const vec &position)
     {
-        const float skyexposure = serverskylightlevel(position) / float(SERVER_SKYLIGHT_MAX);
-        float level = serversunlightintensity() * 16.0f + skyexposure * serverambientlightlevel();
+        const float skyexposure = serverskylightlevel(position) / 16.0f;
+        float level = skyexposure * (serversunlightintensity() * 16.0f + serverambientlightlevel());
         loopv(serverworldactions)
         {
             const serverworldaction &state = *serverworldactions[i];

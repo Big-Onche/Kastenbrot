@@ -202,46 +202,25 @@ int getworldsectionsize()
     return worldchunks.empty() ? 0 : WORLD_SECTION_SIZE;
 }
 
-enum
-{
-    WORLD_SKYLIGHT_RECENTER_DISTANCE = 4
-};
-
-static vector<uchar> worldskyattenuation, worldskylight;
+static vector<uchar> worldskytransparent, worldskylight;
 static vector<int> worldskyqueue;
 static ivec worldskyorigin(0, 0, 0);
 static int worldskydiameter = 0;
-static bool worldskydirty = false;
-static GLuint worldskylighttex = 0;
-static bool worldskylighttexturedirty = false;
 
 static void clearworldskyexposure()
 {
-    worldskyattenuation.setsize(0);
+    worldskytransparent.setsize(0);
     worldskylight.setsize(0);
     worldskyqueue.setsize(0);
     worldskydiameter = 0;
-    worldskydirty = false;
-    worldskylighttexturedirty = false;
-    if(worldskylighttex)
-    {
-        glDeleteTextures(1, &worldskylighttex);
-        worldskylighttex = 0;
-    }
 }
 
-VARFP(skyexposuredrawdistance, 16, 48, 128, clearworldskyexposure());
-VARFP(skyexposurepropagationdistance, 1, 32, 64, clearworldskyexposure());
-FVARP(skyexposurelow, 0.0f, 0.0f, 1.0f);
-FVARP(skyexposurehigh, 0.0f, 1.0f, 1.0f);
-FVARP(skyexposurecurve, 0.25f, 1.0f, 4.0f);
+VARFP(skyexposureradius, 4, 16, 64, clearworldskyexposure());
+VARFP(skyexposureattenuation, 1, 16, 255, clearworldskyexposure());
 
-static int worldskylightattenuation(const cube &c)
+static bool worldskylighttransparent(const cube &c)
 {
-    const int volume = c.material&MATF_VOLUME;
-    if(isworldleaftexture(c) || volume == MAT_GLASS) return 2;
-    if(!isempty(c)) return 0;
-    return volume == MAT_AIR ? 1 : volume == MAT_WATER ? 2 : 0;
+    return isempty(c) || (c.material&MATF_VOLUME) == MAT_GLASS || isworldleaftexture(c);
 }
 
 static cube sampleworldblockcube(const cube &source, const ivec &position, ivec &origin, int &size, bool stopattransparent)
@@ -253,7 +232,7 @@ static cube sampleworldblockcube(const cube &source, const ivec &position, ivec 
     // Rebuild only the sampled branch when block-accurate geometry is required.
     while(size > WORLD_BLOCK_SIZE && !isempty(sampled) && !isentirelysolid(sampled))
     {
-        if(stopattransparent && worldskylightattenuation(sampled) == 1) break;
+        if(stopattransparent && worldskylighttransparent(sampled)) break;
         cube children[8];
         subdivideworldmip(sampled, children);
         size >>= 1;
@@ -274,15 +253,14 @@ static cube sampleworldskylightcube(const cube &source, const ivec &position, iv
 static bool worldskyfieldcontains(int blockx, int blocky)
 {
     if(!worldskydiameter) return false;
-    const int worldblocks = worldsize / WORLD_BLOCK_SIZE,
-              cacheradius = (worldskydiameter - 1) / 2,
-              margin = max(cacheradius - WORLD_SKYLIGHT_RECENTER_DISTANCE, skyexposurepropagationdistance);
+    const int margin = max((worldskydiameter - 1) / 4, 1),
+              worldblocks = worldsize / WORLD_BLOCK_SIZE;
     const bool insideleft = worldskyorigin.x == 0 ? blockx >= 0 : blockx >= worldskyorigin.x + margin,
                insideright = worldskyorigin.x + worldskydiameter >= worldblocks ? blockx < worldblocks
-                   : blockx < worldskyorigin.x + worldskydiameter - margin,
+                                                                                : blockx < worldskyorigin.x + worldskydiameter - margin,
                insidefront = worldskyorigin.y == 0 ? blocky >= 0 : blocky >= worldskyorigin.y + margin,
                insideback = worldskyorigin.y + worldskydiameter >= worldblocks ? blocky < worldblocks
-                   : blocky < worldskyorigin.y + worldskydiameter - margin;
+                                                                               : blocky < worldskyorigin.y + worldskydiameter - margin;
     return insideleft && insideright && insidefront && insideback;
 }
 
@@ -293,15 +271,15 @@ static void invalidateworldskyexposure(const ivec &bbmin, const ivec &bbmax)
     const ivec fieldmax((worldskyorigin.x + worldskydiameter) * WORLD_BLOCK_SIZE, (worldskyorigin.y + worldskydiameter) * WORLD_BLOCK_SIZE,
                         WORLD_MAP_SIZE);
     if(bbmax.x > fieldmin.x && bbmin.x < fieldmax.x && bbmax.y > fieldmin.y && bbmin.y < fieldmax.y && bbmax.z > fieldmin.z && bbmin.z < fieldmax.z)
-        worldskydirty = true;
+        clearworldskyexposure();
 }
 
 static void buildworldskyexposure(int blockx, int blocky)
 {
-    ZoneScopedN("World Sky Distance Lighting");
+    ZoneScopedN("World/Six-direction skylight");
     const int worldblocks = worldsize / WORLD_BLOCK_SIZE,
-              cacheradius = skyexposuredrawdistance + skyexposurepropagationdistance,
-              diameter = min(cacheradius * 2 + 1, worldblocks),
+              radius = min(skyexposureradius, max((worldblocks - 1) / 2, 0)),
+              diameter = 2 * radius + 1,
               plane = diameter * diameter,
               cellcount = plane * WORLD_HEIGHT_BLOCKS;
     if(diameter <= 0 || cellcount <= 0)
@@ -310,23 +288,22 @@ static void buildworldskyexposure(int blockx, int blocky)
         return;
     }
 
-    worldskyorigin.x = clamp(blockx - cacheradius, 0, max(worldblocks - diameter, 0));
-    worldskyorigin.y = clamp(blocky - cacheradius, 0, max(worldblocks - diameter, 0));
+    worldskyorigin.x = clamp(blockx - radius, 0, max(worldblocks - diameter, 0));
+    worldskyorigin.y = clamp(blocky - radius, 0, max(worldblocks - diameter, 0));
     worldskyorigin.z = 0;
     worldskydiameter = diameter;
-    worldskydirty = false;
-    worldskyattenuation.setsize(0);
+    worldskytransparent.setsize(0);
     worldskylight.setsize(0);
-    worldskyattenuation.pad(cellcount);
+    worldskytransparent.pad(cellcount);
     worldskylight.pad(cellcount);
     worldskyqueue.setsize(0);
-    worldskyqueue.reserve(min(cellcount, plane * skyexposurepropagationdistance));
-    memset(worldskyattenuation.getbuf(), 0, cellcount);
+    worldskyqueue.reserve(cellcount);
+    memset(worldskytransparent.getbuf(), 0, cellcount);
     memset(worldskylight.getbuf(), 0, cellcount);
 
     loop(y, diameter) loop(x, diameter)
     {
-        int directskylight = skyexposurepropagationdistance;
+        bool directsky = true;
         for(int z = WORLD_HEIGHT_BLOCKS - 1; z >= 0;)
         {
             const ivec center((worldskyorigin.x + x) * WORLD_BLOCK_SIZE + WORLD_BLOCK_SIZE / 2,
@@ -335,51 +312,40 @@ static void buildworldskyexposure(int blockx, int blocky)
             ivec cubeorigin;
             int cubesize;
             const cube c = sampleworldskylightcube(lookupcube(center, 0, cubeorigin, cubesize), center, cubeorigin, cubesize);
-            const int attenuation = worldskylightattenuation(c);
+            const bool transparent = worldskylighttransparent(c);
             int bottom = cubesize >= WORLD_BLOCK_SIZE ? cubeorigin.z / WORLD_BLOCK_SIZE : z;
             bottom = clamp(bottom, 0, z);
-            if(!attenuation) directskylight = 0;
-            else if(attenuation > 1) directskylight = max(directskylight - attenuation, 0);
+            if(!transparent) directsky = false;
 
             for(; z >= bottom; --z)
             {
-                if(!attenuation) continue;
+                if(!transparent) continue;
                 const int index = (z * diameter + y) * diameter + x;
-                worldskyattenuation[index] = attenuation;
-                worldskylight[index] = directskylight;
+
+                worldskytransparent[index] = 1;
+                if(directsky)
+                {
+                    worldskylight[index] = 255;
+                    worldskyqueue.add(index);
+                }
             }
         }
-    }
-
-    // Only direct-sky cells bordering darker space need to seed the queue. Open
-    // air columns already contain their final value and do not need flooding.
-    loop(z, WORLD_HEIGHT_BLOCKS) loop(y, diameter) loop(x, diameter)
-    {
-        const int index = (z * diameter + y) * diameter + x, light = worldskylight[index];
-        if(!light) continue;
-        if((x > 0 && worldskyattenuation[index - 1] && worldskylight[index - 1] < light) ||
-           (x + 1 < diameter && worldskyattenuation[index + 1] && worldskylight[index + 1] < light) ||
-           (y > 0 && worldskyattenuation[index - diameter] && worldskylight[index - diameter] < light) ||
-           (y + 1 < diameter && worldskyattenuation[index + diameter] && worldskylight[index + diameter] < light) ||
-           (z > 0 && worldskyattenuation[index - plane] && worldskylight[index - plane] < light) ||
-           (z + 1 < WORLD_HEIGHT_BLOCKS && worldskyattenuation[index + plane] && worldskylight[index + plane] < light))
-            worldskyqueue.add(index);
     }
 
     for(int cursor = 0; cursor < worldskyqueue.length(); ++cursor)
     {
         const int index = worldskyqueue[cursor],
                   light = worldskylight[index];
-        if(light <= 1) continue;
-        const int z = index / plane,
+        if(light <= skyexposureattenuation) continue;
+        const int propagated = light - skyexposureattenuation,
+                  z = index / plane,
                   offset = index - z * plane,
                   y = offset / diameter,
                   x = offset - y * diameter;
 
         #define PROPAGATESKYLIGHT(neighbor) do { \
             const int next = (neighbor); \
-            const int propagated = light - worldskyattenuation[next]; \
-            if(worldskyattenuation[next] && propagated > worldskylight[next]) \
+            if(worldskytransparent[next] && worldskylight[next] < propagated) \
             { \
                 worldskylight[next] = propagated; \
                 worldskyqueue.add(next); \
@@ -396,18 +362,11 @@ static void buildworldskyexposure(int blockx, int blocky)
         #undef PROPAGATESKYLIGHT
     }
     worldskyqueue.setsize(0);
-    worldskylighttexturedirty = true;
 }
 
 static float sampleworldskylight(float x, float y, float z)
 {
     const int diameter = worldskydiameter, plane = diameter * diameter;
-    const int anchor[3] =
-    {
-        int(floorf(x / WORLD_BLOCK_SIZE)) - worldskyorigin.x,
-        int(floorf(y / WORLD_BLOCK_SIZE)) - worldskyorigin.y,
-        int(floorf(z / WORLD_BLOCK_SIZE))
-    };
     float positions[3] =
     {
         x / WORLD_BLOCK_SIZE - worldskyorigin.x - 0.5f,
@@ -425,50 +384,23 @@ static float sampleworldskylight(float x, float y, float z)
         blend[i] = positions[i] - lower[i];
     }
 
-    int sampleindices[8], anchorindex = 0;
+    float samples[2][2][2];
     loop(zindex, 2) loop(yindex, 2) loop(xindex, 2)
     {
         const int sx = xindex ? upper[0] : lower[0],
                   sy = yindex ? upper[1] : lower[1],
-                  sz = zindex ? upper[2] : lower[2],
-                  corner = zindex * 4 + yindex * 2 + xindex;
-        sampleindices[corner] = sz * plane + sy * diameter + sx;
+                  sz = zindex ? upper[2] : lower[2];
+        samples[zindex][yindex][xindex] = worldskylight[sz * plane + sy * diameter + sx] / 255.0f;
     }
-    loopi(3) if(upper[i] != lower[i] && anchor[i] == upper[i]) anchorindex |= 1 << i;
-    if(!worldskyattenuation[sampleindices[anchorindex]]) return 0.0f;
 
-    bool reachable[8] = { false, false, false, false, false, false, false, false };
-    int queue[8], head = 0, tail = 0;
-    reachable[anchorindex] = true;
-    queue[tail++] = anchorindex;
-    while(head < tail)
+    float layers[2];
+    loop(zindex, 2)
     {
-        const int corner = queue[head++];
-        loopi(3)
-        {
-            const int neighbor = corner ^ (1 << i);
-            if(reachable[neighbor] || !worldskyattenuation[sampleindices[neighbor]]) continue;
-            reachable[neighbor] = true;
-            queue[tail++] = neighbor;
-        }
+        const float low = samples[zindex][0][0] + (samples[zindex][0][1] - samples[zindex][0][0]) * blend[0],
+                    high = samples[zindex][1][0] + (samples[zindex][1][1] - samples[zindex][1][0]) * blend[0];
+        layers[zindex] = low + (high - low) * blend[1];
     }
-
-    float light = 0.0f, totalweight = 0.0f;
-    loopi(8) if(reachable[i])
-    {
-        const float weight = (i&1 ? blend[0] : 1.0f - blend[0]) * (i&2 ? blend[1] : 1.0f - blend[1]) *
-                             (i&4 ? blend[2] : 1.0f - blend[2]);
-        light += worldskylight[sampleindices[i]] * weight;
-        totalweight += weight;
-    }
-    return totalweight > 0.0f ? light / (totalweight * skyexposurepropagationdistance) : 0.0f;
-}
-
-static float worldskyexposureresponse(float skylight)
-{
-    const float low = min(skyexposurelow, skyexposurehigh), high = max(skyexposurelow, skyexposurehigh);
-    const float exposure = high > low ? clamp((skylight - low) / (high - low), 0.0f, 1.0f) : skylight >= high ? 1.0f : 0.0f;
-    return powf(exposure, skyexposurecurve);
+    return layers[0] + (layers[1] - layers[0]) * blend[2];
 }
 
 float getworldskyexposure(const vec &position)
@@ -478,46 +410,8 @@ float getworldskyexposure(const vec &position)
 
     const int blockx = int(floorf(position.x / WORLD_BLOCK_SIZE)),
               blocky = int(floorf(position.y / WORLD_BLOCK_SIZE));
-    if(worldskydirty || !worldskyfieldcontains(blockx, blocky)) buildworldskyexposure(blockx, blocky);
-    return worldskydiameter ? worldskyexposureresponse(sampleworldskylight(position.x, position.y, position.z)) : 1.0f;
-}
-
-void bindworldskylight()
-{
-    if(camera1 && (worldskydirty || !worldskyfieldcontains(int(floorf(camera1->o.x / WORLD_BLOCK_SIZE)),
-                                                            int(floorf(camera1->o.y / WORLD_BLOCK_SIZE)))))
-        buildworldskyexposure(int(floorf(camera1->o.x / WORLD_BLOCK_SIZE)), int(floorf(camera1->o.y / WORLD_BLOCK_SIZE)));
-
-    glActiveTexture_(GL_TEXTURE9);
-    if(worldskylighttexturedirty)
-    {
-        if(!worldskylighttex) glGenTextures(1, &worldskylighttex);
-        glBindTexture(GL_TEXTURE_3D, worldskylighttex);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        create3dtexture(worldskylighttex, worldskydiameter, worldskydiameter, WORLD_HEIGHT_BLOCKS, worldskylight.getbuf(), 7, 1,
-                        hasTRG ? GL_R8 : GL_LUMINANCE8);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        worldskylighttexturedirty = false;
-    }
-
-    glBindTexture(GL_TEXTURE_3D, worldskylighttex);
-    glActiveTexture_(GL_TEXTURE0);
-    if(worldskylighttex)
-    {
-        GLOBALPARAMF(worldskylightparams, 1.0f / (worldskydiameter * WORLD_BLOCK_SIZE),
-                     1.0f / (worldskydiameter * WORLD_BLOCK_SIZE), 1.0f / WORLD_MAP_SIZE,
-                     float(WORLD_BLOCK_SIZE));
-        GLOBALPARAMF(worldskylightorigin, float(worldskyorigin.x * WORLD_BLOCK_SIZE),
-                     float(worldskyorigin.y * WORLD_BLOCK_SIZE), 0.0f);
-    }
-    else
-    {
-        GLOBALPARAMF(worldskylightparams, 0.0f, 0.0f, 0.0f, float(WORLD_BLOCK_SIZE));
-        GLOBALPARAMF(worldskylightorigin, 0.0f, 0.0f, 0.0f);
-    }
-    const float responselow = min(skyexposurelow, skyexposurehigh),
-                responsehigh = max(max(skyexposurelow, skyexposurehigh), responselow + 1e-4f);
-    GLOBALPARAMF(worldskylightresponse, responselow, responsehigh, skyexposurecurve, float(skyexposurepropagationdistance));
+    if(!worldskyfieldcontains(blockx, blocky)) buildworldskyexposure(blockx, blocky);
+    return worldskydiameter ? sampleworldskylight(position.x, position.y, position.z) : 1.0f;
 }
 
 struct worlddebugstats
