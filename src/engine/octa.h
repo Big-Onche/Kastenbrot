@@ -145,6 +145,7 @@ struct vtxarray
     ivec glassmin, glassmax; // BB of any glass
     ivec nogimin, nogimax;   // BB of any nogi
     ivec bbmin, bbmax;       // BB of everything including children
+    bool bbdirty;            // own or descendant aggregate bounds need recomputing
     uchar curvfc, occluded;
     uint occludedframe;
     occludequery *query;

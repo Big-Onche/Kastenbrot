@@ -1150,6 +1150,7 @@ vtxarray *newva(const ivec &o, int size)
     va->parent = NULL;
     va->o = o;
     va->size = size;
+    va->bbdirty = true;
     va->curvfc = VFC_NOT_VISIBLE;
     va->occluded = OCCLUDE_NOTHING;
     va->occludedframe = 0;
@@ -1191,6 +1192,15 @@ vtxarray *newva(const ivec &o, int size)
     return va;
 }
 
+void invalidatevabb(vtxarray *va)
+{
+    while(va)
+    {
+        va->bbdirty = true;
+        va = va->parent;
+    }
+}
+
 void destroyva(vtxarray *va, bool reparent)
 {
     vtxarray *parent = va->parent;
@@ -1209,11 +1219,7 @@ void destroyva(vtxarray *va, bool reparent)
             if(parent) parent->children.add(child);
             else varoot.add(child);
         }
-        while(parent)
-        {
-            parent->bbmin = parent->bbmax = ivec(-1, -1, -1);
-            parent = parent->parent;
-        }
+        invalidatevabb(parent);
     }
     if(va->vbuf) destroyvbo(va->vbuf);
     if(va->ebuf) destroyvbo(va->ebuf);
@@ -1243,7 +1249,7 @@ ivec worldmin(0, 0, 0), worldmax(0, 0, 0), nogimin(0, 0, 0), nogimax(0, 0, 0);
 
 void updatevabb(vtxarray *va, bool force)
 {
-    if(!force && va->bbmin.x >= 0) return;
+    if(!force && !va->bbdirty) return;
 
     va->oqcontent = va->alphatris || va->matmask;
     va->bbmin = va->geommin;
@@ -1280,6 +1286,7 @@ void updatevabb(vtxarray *va, bool force)
     worldmax.max(va->bbmax);
     nogimin.min(va->nogimin);
     nogimax.max(va->nogimax);
+    va->bbdirty = false;
 }
 
 void updatevabbs(bool force)

@@ -447,6 +447,7 @@ extern void octarender();
 extern void allchanged(bool load = false);
 extern void clearvas(cube *c);
 extern void destroyva(vtxarray *va, bool reparent = true);
+extern void invalidatevabb(vtxarray *va);
 extern void updatevabb(vtxarray *va, bool force = false);
 extern void updatevabbs(bool force = false);
 

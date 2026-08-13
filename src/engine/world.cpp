@@ -98,7 +98,7 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                 case ET_DECAL:
                     if(va)
                     {
-                        va->bbmin.x = -1;
+                        invalidatevabb(va);
                         if(oe.decals.empty()) va->decals.add(&oe);
                     }
                     oe.decals.add(id);
@@ -110,7 +110,7 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                     {
                         if(va)
                         {
-                            va->bbmin.x = -1;
+                            invalidatevabb(va);
                             if(oe.mapmodels.empty()) va->mapmodels.add(&oe);
                         }
                         oe.mapmodels.add(id);
@@ -134,7 +134,7 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                     oe.decals.removeobj(id);
                     if(va)
                     {
-                        va->bbmin.x = -1;
+                        invalidatevabb(va);
                         if(oe.decals.empty()) va->decals.removeobj(&oe);
                     }
                     oe.bbmin = oe.bbmax = oe.o;
@@ -158,7 +158,7 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
                         oe.mapmodels.removeobj(id);
                         if(va)
                         {
-                            va->bbmin.x = -1;
+                            invalidatevabb(va);
                             if(oe.mapmodels.empty()) va->mapmodels.removeobj(&oe);
                         }
                         oe.bbmin = oe.bbmax = oe.o;
@@ -190,9 +190,9 @@ void modifyoctaentity(int flags, int id, extentity &e, cube *c, const ivec &cor,
         {
             if(lastva)
             {
-                if(va->bbmin.x < 0) lastva->bbmin.x = -1;
+                if(va->bbdirty) invalidatevabb(lastva);
             }
-            else if(flags&MODOE_UPDATEBB) updatevabb(va);
+            else if(flags&MODOE_UPDATEBB) updatevabbs();
         }
     }
 }
