@@ -252,7 +252,7 @@ static bool addwatercell(const ivec &position, int level, int sourcekind, bool f
         fluidcells.remove(position);
         return false;
     }
-    if(materialexists && refresh) worldwaterchanged();
+    if(materialexists && refresh) worldwaterchanged(position, ivec(position).add(WATER_BLOCK_SIZE));
     schedulewater(position, delay);
     return true;
 }
@@ -362,7 +362,7 @@ void watermaterialchanged(const selinfo &selection, int material)
             activated |= addwatercell(position, 0, WATER_SOURCE_MANUAL, false, 0, false);
         else waterterrainchanged(position);
     }
-    if(activated) worldwaterchanged();
+    if(activated) worldwaterchanged(absolute.o, end);
 }
 
 static bool watercanflowinto(const ivec &position)

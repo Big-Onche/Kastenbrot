@@ -667,9 +667,8 @@ void commitchanges(bool force)
     }
 }
 
-void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
+void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
-    markworldchunksdirty(bbmin, bbmax);
     {
         ZoneScopedN("Geometry/Invalidate changed region");
         readychanges(bbmin, bbmax, worldroot, ivec(0, 0, 0), worldsize/2);
@@ -677,6 +676,12 @@ void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
     haschanged = true;
 
     if(commit) commitchanges();
+}
+
+void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
+{
+    markworldchunksdirty(bbmin, bbmax);
+    changedgeometry(bbmin, bbmax, commit);
 }
 
 void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit)
@@ -2740,7 +2745,8 @@ void mpreplacetex(int oldtex, int newtex, bool insel, selinfo &sel, bool local)
     {
         loopi(8) replacetexcube(worldroot[i], oldtex, newtex);
     }
-    allchanged();
+    if(insel) changed(sel);
+    else allchanged();
 }
 
 bool mpreplacetex(int oldtex, int newtex, bool insel, selinfo &sel, ucharbuf &buf)

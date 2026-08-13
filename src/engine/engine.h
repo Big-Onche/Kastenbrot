@@ -420,6 +420,8 @@ extern void commitworldedit();
 extern void cancelworldedit();
 extern void setworldeditauthor(int author);
 extern void setworldeditrevision(uint revision);
+// Invalidates render geometry without recording a persistent world edit.
+extern void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit = true);
 extern void changed(const ivec &bbmin, const ivec &bbmax, bool commit = true);
 extern void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit = true);
 extern void changed(const block3 &sel, bool commit = true);
@@ -441,6 +443,7 @@ extern void guessnormals(const vec *pos, int numverts, vec *normals);
 extern void reduceslope(ivec &n);
 extern void findtjoints();
 extern void octarender();
+// Full-world invalidation for map loads and global renderer configuration only.
 extern void allchanged(bool load = false);
 extern void clearvas(cube *c);
 extern void destroyva(vtxarray *va, bool reparent = true);
