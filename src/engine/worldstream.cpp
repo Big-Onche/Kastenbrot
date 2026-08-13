@@ -22,7 +22,9 @@ VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generat
 
 worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
     : x(x), y(y), families(0), optimized(0), loaderror(0), revision(0), canonicalhash(0), epoch(epoch), request(request), loaded(false),
-      remip(chunkremip != 0), leavesalpha(::leavesalpha != 0), sectionstatesready(false), root(NULL), generation(NULL)
+      cached(false),
+      remip(chunkremip != 0), leavesalpha(::leavesalpha != 0), sectionstatesready(false), root(NULL), seed(game::getworldseed()),
+      worldgenhash(game::worldgenerationparameterhash()), generation(NULL)
 {
     memclear(contenttiles);
     memclear(opaquetiles);
@@ -31,6 +33,7 @@ worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
     SDL_AtomicSet(&cancelled, 0);
     generation = game::createworldgeneration(true, remip, &cancelled);
     filename[0] = '\0';
+    cachefilename[0] = '\0';
 }
 
 worldchunkjob::~worldchunkjob()
@@ -42,6 +45,7 @@ static vector<worldchunk> worldchunks;
 static vector<worldscatterinstance> reconstructedworldscatter;
 static bool reconstructedworldscatterready = false;
 static vector<worldchunkjob *> worldchunkjobs, worldchunkactivejobs, worldchunkresults;
+static vector<worldchunkcachewritejob *> worldchunkcachewrites, worldchunkactivecachewrites;
 static vector<worldchunkdiffstate *> worldchunkdiffstates;
 static string worldfolder = "";
 static bool applyloadworlddefaults = false;
@@ -55,6 +59,7 @@ static SDL_mutex *worldchunkmutex = NULL;
 static SDL_cond *worldchunkcond = NULL;
 static bool stopworldchunkthread = false;
 static uint worldchunkepoch = 1;
+static uint worldchunkcachewriteid = 1;
 static uint worldchunkrequest = 1;
 static int lastworldchunkpublish = -1;
 static bool stopworldchunkgeneration = false;
@@ -156,6 +161,7 @@ static void updateleavesalpha()
 
 VARP(asyncchunkloads, 2, 4, 4);
 VARP(chunkthreads, 0, 0, 16);
+VARP(generatedchunkcache, 0, 1, 1);
 VARP(chunkcachedist, 0, 0, 0);
 VARP(chunkpendinglimit, 4, 8, 16);
 VARP(chunklookahead, 0, 2, 8);
@@ -173,6 +179,8 @@ static void updateworldscatterers();
 static void clearworldscattererentities();
 static int findworldchunk(int x, int y);
 int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled = NULL);
+static int remipworldchunkbounded(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled,
+                                  const worldchunkdirtybounds *dirty);
 static bool subdivideworldmip(const cube &c, cube *children);
 static bool prepareworldchunksectionstates(worldchunkjob &job);
 static int pruneworldchunkcache(int chunkx, int chunky, int limit);
@@ -180,7 +188,7 @@ static bool saveworldconfig();
 static void worldchunkname(char *name, size_t len, const worldchunk &chunk);
 static worldchunkdiffstate *findworldchunkdiffstate(int x, int y, bool create = false);
 static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename, vector<worldscatterinstance> &scatter, bool prepared, int &families,
-                                ullong &revision, ullong &canonicalhash);
+                                ullong &revision, ullong &canonicalhash, worldchunkdirtybounds *dirty = NULL);
 static ullong hashworldchunk(cube *root);
 static void flushworlddiffjournals(bool force = false);
 static bool compactworldchunkdiff(worldchunk &chunk);
@@ -1022,11 +1030,7 @@ static int worldchunkcoordinatescore(int x, int y)
 
 static int worldchunkjobscore(const worldchunkjob &job)
 {
-    long long score = worldchunkcoordinatescore(job.x, job.y);
-    // Disk hits are normally much faster than generation. Prefer one only
-    // within the same spatial band so nearby collision terrain still wins.
-    if(job.filename[0]) score = max(score - 0x1000, 0LL);
-    return int(min(score, (long long)INT_MAX));
+    return worldchunkcoordinatescore(job.x, job.y);
 }
 
 static int worldchunkloader(void *)
@@ -1038,7 +1042,7 @@ static int worldchunkloader(void *)
     for(;;)
     {
         SDL_LockMutex(worldchunkmutex);
-        while(worldchunkjobs.empty() && !stopworldchunkthread)
+        while(worldchunkjobs.empty() && worldchunkcachewrites.empty() && !stopworldchunkthread)
             SDL_CondWait(worldchunkcond, worldchunkmutex);
         if(stopworldchunkthread)
         {
@@ -1046,21 +1050,44 @@ static int worldchunkloader(void *)
             return 0;
         }
         worldchunkjob *job = NULL;
+        worldchunkcachewritejob *cachewrite = NULL;
         {
             ZoneScopedN("Chunks/Worker select job");
             ZoneValue(worldchunkjobs.length());
-            int best = 0, bestscore = worldchunkjobscore(*worldchunkjobs[0]);
-            loopv(worldchunkjobs) if(i)
+            if(!worldchunkjobs.empty())
             {
-                int score = worldchunkjobscore(*worldchunkjobs[i]);
-                if(score < bestscore) { best = i; bestscore = score; }
+                int best = 0, bestscore = worldchunkjobscore(*worldchunkjobs[0]);
+                loopv(worldchunkjobs) if(i)
+                {
+                    int score = worldchunkjobscore(*worldchunkjobs[i]);
+                    if(score < bestscore) { best = i; bestscore = score; }
+                }
+                job = worldchunkjobs.remove(best);
+                worldchunkactivejobs.add(job);
+                TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
+                TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
             }
-            job = worldchunkjobs.remove(best);
-            worldchunkactivejobs.add(job);
-            TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
-            TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
+            else
+            {
+                cachewrite = worldchunkcachewrites.remove(0);
+                worldchunkactivecachewrites.add(cachewrite);
+                TracyPlot("Chunks/Queued cache writes", int64_t(worldchunkcachewrites.length()));
+            }
         }
         SDL_UnlockMutex(worldchunkmutex);
+
+        if(cachewrite)
+        {
+            ZoneScopedN("Chunks/Cache write job");
+            ZoneTextF("%d_%d", cachewrite->x, cachewrite->y);
+            writeworldchunkcache(*cachewrite);
+            SDL_LockMutex(worldchunkmutex);
+            worldchunkactivecachewrites.removeobj(cachewrite);
+            delete cachewrite;
+            SDL_CondBroadcast(worldchunkcond);
+            SDL_UnlockMutex(worldchunkmutex);
+            continue;
+        }
 
         {
             ZoneScopedN("Chunks/Worker job");
@@ -1150,6 +1177,7 @@ static void shutdownworldchunkloader()
         SDL_LockMutex(worldchunkmutex);
         stopworldchunkthread = true;
         loopv(worldchunkactivejobs) SDL_AtomicSet(&worldchunkactivejobs[i]->cancelled, 1);
+        loopv(worldchunkactivecachewrites) SDL_AtomicSet(&worldchunkactivecachewrites[i]->cancelled, 1);
         SDL_CondBroadcast(worldchunkcond);
         SDL_UnlockMutex(worldchunkmutex);
         {
@@ -1161,7 +1189,10 @@ static void shutdownworldchunkloader()
 
     loopv(worldchunkjobs) delete worldchunkjobs[i];
     worldchunkjobs.setsize(0);
+    loopv(worldchunkcachewrites) delete worldchunkcachewrites[i];
+    worldchunkcachewrites.setsize(0);
     ASSERT(worldchunkactivejobs.empty());
+    ASSERT(worldchunkactivecachewrites.empty());
     loopv(worldchunkresults)
     {
         {
@@ -1207,6 +1238,56 @@ static void setworldchunkgenerationstopped(bool stopped)
 
 ICOMMAND(stopchunkgen, "", (), setworldchunkgenerationstopped(!stopworldchunkgeneration));
 
+static void queueworldchunkcachewrite(int x, int y, int seed, ullong worldgenhash, bool remip, vector<uchar> &payload)
+{
+    if(!generatedchunkcache || !worldfolder[0] || payload.empty() || !startworldchunkloader()) return;
+    uint id = ++worldchunkcachewriteid;
+    if(!id) id = ++worldchunkcachewriteid;
+    worldchunkcachewritejob *write = new worldchunkcachewritejob(x, y, seed, worldgenhash, remip, id);
+    worldchunkcachefilename(write->filename, sizeof(write->filename), worldfolder, x, y);
+    write->payload.move(payload);
+    SDL_LockMutex(worldchunkmutex);
+    if(worldchunkcachewrites.length() >= WORLD_MAX_PREPARED_CHUNKS)
+    {
+        SDL_UnlockMutex(worldchunkmutex);
+        delete write;
+        return;
+    }
+    worldchunkcachewrites.add(write);
+    TracyPlot("Chunks/Queued cache writes", int64_t(worldchunkcachewrites.length()));
+    SDL_CondSignal(worldchunkcond);
+    SDL_UnlockMutex(worldchunkmutex);
+}
+
+static void clearworldchunkcache()
+{
+    if(!worldfolder[0])
+    {
+        conoutf(CON_WARN, "no streamed world is loaded");
+        return;
+    }
+    if(worldchunkmutex)
+    {
+        SDL_LockMutex(worldchunkmutex);
+        loopv(worldchunkcachewrites) delete worldchunkcachewrites[i];
+        worldchunkcachewrites.setsize(0);
+        loopv(worldchunkactivecachewrites) SDL_AtomicSet(&worldchunkactivecachewrites[i]->cancelled, 1);
+        while(!worldchunkactivecachewrites.empty()) SDL_CondWait(worldchunkcond, worldchunkmutex);
+        SDL_UnlockMutex(worldchunkmutex);
+    }
+    const int removed = removeworldchunkcachefiles(worldfolder);
+    conoutf("removed %d disposable generated chunk cache files for %s; player diffs were preserved", removed, worldfolder);
+}
+
+static void worldchunkcachestats()
+{
+    if(!worldfolder[0]) conoutf(CON_WARN, "no streamed world is loaded");
+    else reportworldchunkcachestats(worldfolder);
+}
+
+COMMAND(clearworldchunkcache, "");
+COMMAND(worldchunkcachestats, "");
+
 static int acquireworldchunksync(int x, int y, int &generated)
 {
     int index = findworldchunk(x, y);
@@ -1221,23 +1302,38 @@ static int acquireworldchunksync(int x, int y, int &generated)
     string diffpath;
     diffpath[0] = '\0';
     if(found && fileexists(found, "r")) copystring(diffpath, diffname);
-    cube *root = game::generateworldchunk(x, y);
     vector<worldscatterinstance> scatter;
-    game::generateworldscatter(root, x, y, scatter);
+    string cachefilename;
+    worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, x, y);
+    int cachefamilies = 0, cacheerror = 0;
+    cube *root = generatedchunkcache && worldfolder[0] ? loadworldchunkcache(cachefilename, x, y, game::getworldseed(),
+                                                                           game::worldgenerationparameterhash(), chunkremip != 0, scatter, false,
+                                                                           cachefamilies, cacheerror) : NULL;
+    if(!root)
+    {
+        ZoneScopedN("Chunks/Generate uncached");
+        root = game::generateworldchunk(x, y);
+        if(root) game::generateworldscatter(root, x, y, scatter);
+        generated++;
+        vector<uchar> cachepayload;
+        if(generatedchunkcache && worldfolder[0] && root && serializeworldchunkcache(root, scatter, cachepayload))
+            queueworldchunkcachewrite(x, y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, cachepayload);
+    }
+    if(root) setworldleavesalpha(root, leavesalpha != 0);
     bool loaded = diffpath[0] != '\0';
     if(root && loaded)
     {
         int families = 0;
         ullong revision = 0, canonicalhash = 0;
+        worldchunkdirtybounds dirty;
         applyworldchunkdiff(root, x, y, diffpath, scatter, false, families,
-                            revision, canonicalhash);
-        if(chunkremip) remipworldchunk(root, false, families);
+                            revision, canonicalhash, &dirty);
+        if(chunkremip && dirty.valid) remipworldchunkbounded(root, false, families, NULL, &dirty);
         worldchunkdiffstate *state = findworldchunkdiffstate(x, y, true);
         state->revision = revision;
         worldeditrevision = max(worldeditrevision, revision);
         state->canonicalhash = hashworldchunk(root);
     }
-    else generated++;
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, root, false, loaded));
     indexworldchunk(worldchunks.length() - 1);
     chunk.scatter.move(scatter);
@@ -1289,6 +1385,7 @@ static int queueworldchunk(int x, int y)
     uint request = ++worldchunkrequest;
     if(!request) request = ++worldchunkrequest;
     worldchunkjob *job = new worldchunkjob(x, y, worldchunkepoch, request);
+    if(generatedchunkcache && worldfolder[0]) worldchunkcachefilename(job->cachefilename, sizeof(job->cachefilename), worldfolder, x, y);
     defformatstring(chunkfile, "media/map/%s/chunks/%d_%d_%d.diff",
                     worldfolder, x, y, WORLD_DIFF_Z);
     path(chunkfile);
@@ -1299,7 +1396,7 @@ static int queueworldchunk(int x, int y)
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, NULL, true));
     indexworldchunk(worldchunks.length() - 1);
     chunk.request = request;
-    chunk.generating = !job->filename[0];
+    chunk.generating = true;
     SDL_LockMutex(worldchunkmutex);
     worldchunkjobs.add(job);
     TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
@@ -1445,7 +1542,7 @@ static int processworldchunkresults()
     if(worldchunkworkers.empty()) return 0;
     ZoneScopedN("Chunks/Process worker results");
 
-    int handled = 0, published = 0, loaded = 0, generated = 0, optimized = 0;
+    int handled = 0, published = 0, cached = 0, generated = 0, optimized = 0;
     while(handled < asyncchunkloads)
     {
         worldchunkjob *job = NULL;
@@ -1493,7 +1590,7 @@ static int processworldchunkresults()
         {
             ZoneScopedN("Chunks/Publish worker result");
             ZoneTextF("%d_%d %s families %d", job->x, job->y,
-                      job->loaded ? "disk" : "generated", job->families);
+                      job->cached ? "cache" : "generated", job->families);
             ZoneValue(job->families);
             worldchunk &chunk = worldchunks[index];
             chunk.root = job->root;
@@ -1515,6 +1612,7 @@ static int processworldchunkresults()
                 }
             }
             chunk.loading = false;
+            chunk.generating = false;
             chunk.saved = job->loaded;
             chunk.dirty = false;
             worldchunkdiffstate *diffstate = findworldchunkdiffstate(chunk.x, chunk.y, true);
@@ -1522,20 +1620,22 @@ static int processworldchunkresults()
             worldeditrevision = max(worldeditrevision, job->revision);
             diffstate->canonicalhash = job->canonicalhash;
             allocnodes += job->families;
-            if(!job->loaded && job->filename[0])
-                conoutf(CON_WARN, "asynchronous load of chunk %d_%d failed at stage %d; regenerated it",
+            if(!job->cached && job->loaderror)
+                conoutf(CON_WARN, "generated chunk cache %d_%d failed validation at stage %d; regenerated it",
                         job->x, job->y, job->loaderror);
-            if(job->loaded) loaded++; else generated++;
+            if(job->cached) cached++; else generated++;
             optimized += job->optimized;
             addworldsectionvisibilitychunk(chunk.x, chunk.y);
+            if(!job->cachepayload.empty())
+                queueworldchunkcachewrite(job->x, job->y, job->seed, job->worldgenhash, job->remip, job->cachepayload);
             published++;
         }
         delete job;
     }
 
     if(published)
-        conoutf(CON_DEBUG, "prepared %d chunks asynchronously (%d loaded, %d generated, %d octree families remipped)",
-                published, loaded, generated, optimized);
+        conoutf(CON_DEBUG, "prepared %d chunks asynchronously (%d cache hits, %d generated, %d octree families remipped)",
+                published, cached, generated, optimized);
     return published;
 }
 
@@ -2047,15 +2147,23 @@ static const cube *lookupworldmipneighbour(cube *root, int orient, const ivec &c
 }
 
 static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
-                            bool prepared, int &families, int &merged)
+                            bool prepared, int &families, int &merged, const worldchunkdirtybounds *dirty)
 {
     cube *children = c.children;
     if(!children) return true;
 
     bool perfect = true;
-    loopi(8) if(!remipworldchunk(children[i], ivec(i, co, size), size >> 1, root,
-                                 prepared, families, merged))
-        perfect = false;
+    loopi(8)
+    {
+        const ivec childorigin(i, co, size), childend = ivec(childorigin).add(size);
+        if(dirty && (childend.x <= dirty->minimum.x || childend.y <= dirty->minimum.y || childend.z <= dirty->minimum.z ||
+                     childorigin.x >= dirty->maximum.x || childorigin.y >= dirty->maximum.y || childorigin.z >= dirty->maximum.z))
+        {
+            perfect = false;
+            continue;
+        }
+        if(!remipworldchunk(children[i], childorigin, size >> 1, root, prepared, families, merged, dirty)) perfect = false;
+    }
 
     solidfaces(c);
     loopi(6) c.texture[i] = getmippedtexture(c, i);
@@ -2131,16 +2239,24 @@ static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
     return true;
 }
 
-int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled)
+static int remipworldchunkbounded(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled, const worldchunkdirtybounds *dirty)
 {
     int merged = 0;
     loopi(8)
     {
         if(cancelled && SDL_AtomicGet(cancelled)) break;
-        remipworldchunk(root[i], ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE),
-                        WORLD_CHUNK_ROOT_SIZE >> 1, root, prepared, families, merged);
+        const ivec origin(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), end = ivec(origin).add(WORLD_CHUNK_ROOT_SIZE);
+        if(dirty && (end.x <= dirty->minimum.x || end.y <= dirty->minimum.y || end.z <= dirty->minimum.z || origin.x >= dirty->maximum.x ||
+                     origin.y >= dirty->maximum.y || origin.z >= dirty->maximum.z))
+            continue;
+        remipworldchunk(root[i], origin, WORLD_CHUNK_ROOT_SIZE >> 1, root, prepared, families, merged, dirty);
     }
     return merged;
+}
+
+int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled)
+{
+    return remipworldchunkbounded(root, prepared, families, cancelled, NULL);
 }
 
 static cube *prepareworldchunk(worldchunkjob &job)
@@ -2148,28 +2264,27 @@ static cube *prepareworldchunk(worldchunkjob &job)
     ZoneScopedN("Chunks/Prepare");
     ZoneTextF("%d_%d", job.x, job.y);
     if(SDL_AtomicGet(&job.cancelled)) return NULL;
+    cube *root = job.cachefilename[0] ? loadworldchunkcache(job.cachefilename, job.x, job.y, job.seed, job.worldgenhash, job.remip, job.scatter, true,
+                                                           job.families, job.loaderror) : NULL;
+    if(root) job.cached = true;
+    else
     {
-        ZoneScopedN("Chunks/Generate base and apply diff");
-        cube *root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized);
+        ZoneScopedN("Chunks/Generate uncached");
+        root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized);
         if(!root) return NULL;
         game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);
-        if(job.filename[0])
-        {
-            applyworldchunkdiff(root, job.x, job.y, job.filename, job.scatter,
-                                true, job.families,
-                                job.revision, job.canonicalhash);
-            if(job.remip)
-                job.optimized += remipworldchunk(root, true, job.families);
-            job.canonicalhash = hashworldchunk(root);
-            job.loaded = true;
-        }
-        else
-        {
-            job.loaded = false;
-            job.canonicalhash = hashworldchunk(root);
-        }
-        return root;
     }
+    setworldleavesalpha(root, job.leavesalpha);
+    if(!job.cached && job.cachefilename[0]) serializeworldchunkcache(root, job.scatter, job.cachepayload);
+    if(job.filename[0])
+    {
+        worldchunkdirtybounds dirty;
+        applyworldchunkdiff(root, job.x, job.y, job.filename, job.scatter, true, job.families, job.revision, job.canonicalhash, &dirty);
+        if(job.remip && dirty.valid) job.optimized += remipworldchunkbounded(root, true, job.families, NULL, &dirty);
+        job.loaded = true;
+    }
+    job.canonicalhash = hashworldchunk(root);
+    return root;
 }
 
 

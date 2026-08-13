@@ -117,6 +117,7 @@ VARP(maxchunkdist, 2, 3, WORLD_MAX_CHUNK_DIST);
 
 #define WORLDIO_MODULE_IMPLEMENTATION
 #include "../game/worldcontent.cpp"
+#include "worldcache.cpp"
 #include "worldstream.cpp"
 #include "../game/worldrender.cpp"
 #include "worldvisibility.cpp"
@@ -318,10 +319,26 @@ static bool loadworldchunks(const char *mname)
     copystring(worldfolder, mapname);
     if(!reconstructedworldscatterready)
     {
-        cube *base = game::generateworldchunk(currentx, currenty);
+        string cachefilename;
+        worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, currentx, currenty);
+        int cachefamilies = 0, cacheerror = 0;
+        cube *base = generatedchunkcache
+                         ? loadworldchunkcache(cachefilename, currentx, currenty, game::getworldseed(), game::worldgenerationparameterhash(),
+                                               chunkremip != 0, reconstructedworldscatter, false, cachefamilies, cacheerror)
+                         : NULL;
+        if(!base)
+        {
+            ZoneScopedN("Chunks/Generate uncached");
+            base = game::generateworldchunk(currentx, currenty);
+            if(base) game::generateworldscatter(base, currentx, currenty, reconstructedworldscatter);
+            vector<uchar> cachepayload;
+            if(generatedchunkcache && base && serializeworldchunkcache(base, reconstructedworldscatter, cachepayload))
+                queueworldchunkcachewrite(currentx, currenty, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0,
+                                          cachepayload);
+        }
         if(base)
         {
-            game::generateworldscatter(base, currentx, currenty, reconstructedworldscatter);
+            setworldleavesalpha(base, leavesalpha != 0);
             defformatstring(diffname, "media/map/%s/chunks/%d_%d_%d.diff",
                             worldfolder, currentx, currenty, WORLD_DIFF_Z);
             path(diffname);
@@ -785,13 +802,8 @@ static void createworld(const char *requestedname)
 
     freeocta(worldroot);
     worldroot = NULL;
-    activeworldchunk = worldchunks.length();
-    {
-        worldchunk &chunk =
-            worldchunks.add(worldchunk(0, 0, game::generateworldchunk(0, 0)));
-            indexworldchunk(worldchunks.length() - 1);
-        game::generateworldscatter(chunk.root, 0, 0, chunk.scatter);
-    }
+    int generated = 0;
+    activeworldchunk = acquireworldchunksync(0, 0, generated);
     loadinitialworldchunks(0, 0);
 
     setvar("mapscale", WORLD_RUNTIME_SCALE, true, false);
@@ -1054,9 +1066,22 @@ static bool loadseedworld(const char *mname, const char *cname)
     setvar("mapsize", WORLD_CHUNK_MAP_SIZE, true, false);
     texmru.shrink(0);
     freeocta(worldroot);
-    worldroot = game::generateworldchunk(chunkx, chunky);
+    string cachefilename;
+    worldchunkcachefilename(cachefilename, sizeof(cachefilename), folder, chunkx, chunky);
+    int cachefamilies = 0, cacheerror = 0;
+    worldroot = generatedchunkcache ? loadworldchunkcache(cachefilename, chunkx, chunky, game::getworldseed(), game::worldgenerationparameterhash(),
+                                                          chunkremip != 0, reconstructedworldscatter, false, cachefamilies, cacheerror) : NULL;
+    if(!worldroot)
+    {
+        ZoneScopedN("Chunks/Generate uncached");
+        worldroot = game::generateworldchunk(chunkx, chunky);
+        if(worldroot) game::generateworldscatter(worldroot, chunkx, chunky, reconstructedworldscatter);
+        vector<uchar> cachepayload;
+        if(generatedchunkcache && worldroot && serializeworldchunkcache(worldroot, reconstructedworldscatter, cachepayload))
+            queueworldchunkcachewrite(chunkx, chunky, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, cachepayload);
+    }
     if(!worldroot) return false;
-    game::generateworldscatter(worldroot, chunkx, chunky, reconstructedworldscatter);
+    setworldleavesalpha(worldroot, leavesalpha != 0);
     reconstructedworldscatterready = true;
 
     defformatstring(diffrelative, "media/map/%s/chunks/%d_%d_%d.diff",
@@ -1067,10 +1092,11 @@ static bool loadseedworld(const char *mname, const char *cname)
     {
         int families = 0;
         ullong revision = 0, canonicalhash = 0;
+        worldchunkdirtybounds dirty;
         applyworldchunkdiff(worldroot, chunkx, chunky, diffrelative,
                             reconstructedworldscatter, false, families,
-                            revision, canonicalhash);
-        if(chunkremip) remipworldchunk(worldroot, false, families);
+                            revision, canonicalhash, &dirty);
+        if(chunkremip && dirty.valid) remipworldchunkbounded(worldroot, false, families, NULL, &dirty);
         worldchunkdiffstate *state = findworldchunkdiffstate(chunkx, chunky, true);
         state->revision = revision;
         worldeditrevision = max(worldeditrevision, revision);

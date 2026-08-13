@@ -299,6 +299,7 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\engine\worldcache.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worlddiff.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldedit.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldstream.cpp"><Filter>engine</Filter></None>

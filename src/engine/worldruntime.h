@@ -90,6 +90,37 @@ struct worlddiffnode
     }
 };
 
+struct worldchunkdirtybounds
+{
+    ivec minimum, maximum;
+    bool valid;
+
+    worldchunkdirtybounds() : minimum(0, 0, 0), maximum(0, 0, 0), valid(false) {}
+
+    void include(const worlddiffnode &node)
+    {
+        const ivec nodemin(node.x, node.y, node.z), nodemax = ivec(nodemin).add(node.size);
+        if(!valid)
+        {
+            minimum = nodemin;
+            maximum = nodemax;
+            valid = true;
+        }
+        else
+        {
+            minimum.min(nodemin);
+            maximum.max(nodemax);
+        }
+    }
+
+    void expandforrebuild()
+    {
+        if(!valid) return;
+        minimum.sub(1).max(0);
+        maximum.add(1).min(WORLD_CHUNK_MAP_SIZE);
+    }
+};
+
 struct worldeditrecord
 {
     int chunkx, chunky, chunkz, operation, author;
@@ -187,11 +218,14 @@ struct worldchunkjob
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     ullong revision, canonicalhash;
     uint epoch, request;
-    bool loaded, remip, leavesalpha, sectionstatesready;
+    bool loaded, cached, remip, leavesalpha, sectionstatesready;
     SDL_atomic_t cancelled;
     cube *root;
     vector<worldscatterinstance> scatter;
-    string filename;
+    vector<uchar> cachepayload;
+    string filename, cachefilename;
+    int seed;
+    ullong worldgenhash;
     worldgencontext *generation;
 
     worldchunkjob(int x, int y, uint epoch, uint request);

@@ -606,8 +606,9 @@ static void collectworldchunkoverrides(const cube &current, const cube &base,
 static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename,
                                 vector<worldscatterinstance> &scatter,
                                 bool prepared, int &families,
-                                ullong &revision, ullong &canonicalhash)
+                                ullong &revision, ullong &canonicalhash, worldchunkdirtybounds *dirty)
 {
+    ZoneScopedN("Chunks/Apply diff");
     revision = canonicalhash = 0;
     if(!filename || !*filename)
     {
@@ -697,7 +698,15 @@ static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename,
                 valid = false;
                 break;
             }
-            loopv(record.after) applyworlddiffnode(root, record.after[i], prepared, families);
+            loopv(record.after)
+            {
+                const worlddiffnode &node = record.after[i];
+                applyworlddiffnode(root, node, prepared, families);
+                if(dirty && node.size > 0 && node.size <= WORLD_CHUNK_MAP_SIZE && !(node.size & (node.size - 1)) && node.x >= 0 && node.y >= 0 &&
+                   node.z >= 0 && node.x <= WORLD_CHUNK_MAP_SIZE - node.size && node.y <= WORLD_CHUNK_MAP_SIZE - node.size &&
+                   node.z <= WORLD_CHUNK_MAP_SIZE - node.size)
+                    dirty->include(node);
+            }
             applyworldscatterchange(scatter, record.scatterbefore,
                                     record.scatterafter);
             revision = record.revision;
@@ -709,6 +718,7 @@ static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename,
         if(!game::validgeneratedworldscatter(root, scatter[i]))
             scatter.removeunordered(i);
     game::cacheworldscattertransforms(x, y, game::getworldscattermaxoffset(), scatter);
+    if(dirty) dirty->expandforrebuild();
     canonicalhash = hashworldchunk(root);
     if(expectedhash && canonicalhash != expectedhash)
     {
@@ -728,10 +738,25 @@ static bool compactworldchunkdiff(worldchunk &chunk)
     shutdownworlddiffwriter();
     if(worldchunkmounted(chunk) && !syncmountedworldchunk(chunk)) return false;
 
-    cube *base = game::generateworldchunk(chunk.x, chunk.y);
-    if(!base) return false;
+    string cachefilename;
+    worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, chunk.x, chunk.y);
     vector<worldscatterinstance> basescatter;
-    game::generateworldscatter(base, chunk.x, chunk.y, basescatter);
+    int cachefamilies = 0, cacheerror = 0;
+    cube *base = generatedchunkcache ? loadworldchunkcache(cachefilename, chunk.x, chunk.y, game::getworldseed(),
+                                                           game::worldgenerationparameterhash(), chunkremip != 0, basescatter, false,
+                                                           cachefamilies, cacheerror) : NULL;
+    if(!base)
+    {
+        ZoneScopedN("Chunks/Generate uncached");
+        base = game::generateworldchunk(chunk.x, chunk.y);
+        if(base) game::generateworldscatter(base, chunk.x, chunk.y, basescatter);
+        vector<uchar> cachepayload;
+        if(generatedchunkcache && base && serializeworldchunkcache(base, basescatter, cachepayload))
+            queueworldchunkcachewrite(chunk.x, chunk.y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0,
+                                      cachepayload);
+    }
+    if(!base) return false;
+    setworldleavesalpha(base, leavesalpha != 0);
     cube *savedroot = copyworldchunkforsave(chunk);
     int families = 0;
     if(chunkremip)
@@ -951,12 +976,29 @@ static void worlddiffcommand(char *action, char *xtext, char *ytext, char *ztext
                 continue;
             }
             ullong livehash = hashworldchunk(chunk.root);
-            cube *reconstructed = game::generateworldchunk(chunk.x, chunk.y);
+            string cachefilename;
+            worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, chunk.x, chunk.y);
+            int cachefamilies = 0, cacheerror = 0;
+            vector<worldscatterinstance> reconstructedscatter;
+            cube *reconstructed = generatedchunkcache ? loadworldchunkcache(cachefilename, chunk.x, chunk.y, game::getworldseed(),
+                                                                            game::worldgenerationparameterhash(), chunkremip != 0,
+                                                                            reconstructedscatter, false, cachefamilies, cacheerror) : NULL;
+            if(!reconstructed)
+            {
+                ZoneScopedN("Chunks/Generate uncached");
+                reconstructed = game::generateworldchunk(chunk.x, chunk.y);
+                if(reconstructed) game::generateworldscatter(reconstructed, chunk.x, chunk.y, reconstructedscatter);
+                vector<uchar> cachepayload;
+                if(generatedchunkcache && reconstructed && serializeworldchunkcache(reconstructed, reconstructedscatter, cachepayload))
+                    queueworldchunkcachewrite(chunk.x, chunk.y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0,
+                                              cachepayload);
+            }
             if(!reconstructed)
             {
                 failed++;
                 continue;
             }
+            setworldleavesalpha(reconstructed, leavesalpha != 0);
             defformatstring(relative, "media/map/%s/chunks/%d_%d_%d.diff",
                             worldfolder, chunk.x, chunk.y, WORLD_DIFF_Z);
             path(relative);
@@ -966,13 +1008,12 @@ static void worlddiffcommand(char *action, char *xtext, char *ytext, char *ztext
             if(found && fileexists(found, "r")) copystring(filename, relative);
             int families = 0;
             ullong revision = 0, reconstructedhash = 0;
-            vector<worldscatterinstance> reconstructedscatter;
-            game::generateworldscatter(reconstructed, chunk.x, chunk.y, reconstructedscatter);
+            worldchunkdirtybounds dirty;
             bool valid = applyworldchunkdiff(reconstructed, chunk.x, chunk.y,
                                              filename, reconstructedscatter,
                                              false, families,
-                                             revision, reconstructedhash);
-            if(chunkremip) remipworldchunk(reconstructed, false, families);
+                                             revision, reconstructedhash, &dirty);
+            if(chunkremip && dirty.valid) remipworldchunkbounded(reconstructed, false, families, NULL, &dirty);
             reconstructedhash = hashworldchunk(reconstructed);
             freeocta(reconstructed);
             if(!valid || livehash != reconstructedhash ||

@@ -173,6 +173,7 @@
 		F00000000000000000000012 /* worlddiff.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worlddiff.cpp; sourceTree = "<group>"; };
 		F00000000000000000000013 /* worldedit.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldedit.cpp; sourceTree = "<group>"; };
 		F00000000000000000000014 /* worldruntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = worldruntime.h; sourceTree = "<group>"; };
+		F00000000000000000000015 /* worldcache.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldcache.cpp; sourceTree = "<group>"; };
 		D1FCB12718832B7500AFC227 /* ai.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ai.cpp; sourceTree = "<group>"; };
 		D1FCB12818832B7500AFC227 /* ai.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ai.h; sourceTree = "<group>"; };
 		D1FCB12918832B7500AFC227 /* aiman.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = aiman.h; sourceTree = "<group>"; };
@@ -408,6 +409,7 @@
 				D1FCB12318832B7500AFC227 /* world.cpp */,
 				D1FCB12418832B7500AFC227 /* world.h */,
 				D1FCB12518832B7500AFC227 /* worldio.cpp */,
+				F00000000000000000000015 /* worldcache.cpp */,
 				F00000000000000000000012 /* worlddiff.cpp */,
 				F00000000000000000000013 /* worldedit.cpp */,
 				F00000000000000000000014 /* worldruntime.h */,

@@ -1146,6 +1146,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\engine\worldcache.cpp" />
     <None Include="..\engine\worlddiff.cpp" />
     <None Include="..\engine\worldedit.cpp" />
     <None Include="..\engine\worldstream.cpp" />

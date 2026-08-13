@@ -210,6 +210,7 @@
 		<Unit filename="../engine/worlddef.cpp" />
 		<Unit filename="../engine/worlddef.h" />
 		<Unit filename="../engine/worldio.cpp" />
+		<Unit filename="../engine/worldcache.cpp"><Option compile="0" link="0" /></Unit>
 		<Unit filename="../engine/worlddiff.cpp"><Option compile="0" link="0" /></Unit>
 		<Unit filename="../engine/worldedit.cpp"><Option compile="0" link="0" /></Unit>
 		<Unit filename="../engine/worldruntime.h" />
