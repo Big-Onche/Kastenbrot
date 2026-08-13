@@ -320,11 +320,10 @@ static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, con
         center.add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, 0));
         if(!queueworldchunkvaupdate(center)) continue;
 
-        // Faces can only change inside the moved section or immediately across
-        // its boundary. Invalidating all six neighboring sections rebuilt up to
-        // seven times the required render data for every streaming operation.
-        bbmins[numregions] = ivec(center).sub(1).max(0);
-        bbmaxs[numregions] = ivec(center).add(WORLD_SECTION_SIZE + 1).min(
+        // changedstreaming() adds the face-neighbour halo, so a section edge
+        // also invalidates the immediately adjacent section VA.
+        bbmins[numregions] = center;
+        bbmaxs[numregions] = ivec(center).add(WORLD_SECTION_SIZE).min(
             ivec(worldsize, worldsize, WORLD_MAP_SIZE));
         numregions++;
     }

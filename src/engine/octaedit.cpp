@@ -5,7 +5,7 @@ extern int outline;
 bool boxoutline = false;
 
 void boxs(int orient, vec o, const vec &s, float size)
-{   
+{
     int d = dimension(orient), dc = dimcoord(orient);
     float f = boxoutline ? (dc>0 ? 0.2f : -0.2f) : 0;
     o[D[d]] += dc * s[D[d]] + f;
@@ -567,6 +567,14 @@ void tryedit()
 
 static bool haschanged = false;
 
+static bool dirtygeometrybounds(const ivec &bbmin, const ivec &bbmax, ivec &dirtymin, ivec &dirtymax)
+{
+    if(bbmin.x >= bbmax.x || bbmin.y >= bbmax.y || bbmin.z >= bbmax.z) return false;
+    dirtymin = ivec(bbmin).sub(1).max(0);
+    dirtymax = ivec(bbmax).add(1).min(worldsize);
+    return dirtymin.x < dirtymax.x && dirtymin.y < dirtymax.y && dirtymin.z < dirtymax.z;
+}
+
 void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor, int size)
 {
     loopoctabox(cor, size, bbmin, bbmax)
@@ -598,8 +606,7 @@ void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor
     }
 }
 
-static void readystreamingchanges(const ivec *bbmins, const ivec *bbmaxs, int numregions,
-                                  cube *c, const ivec &cor, int size)
+static void readystreamingchanges(const ivec *bbmins, const ivec *bbmaxs, int numregions, cube *c, const ivec &cor, int size)
 {
     uchar possible = 0;
     loopj(numregions) possible |= octaboxoverlap(cor, size, bbmins[j], bbmaxs[j]);
@@ -669,9 +676,11 @@ void commitchanges(bool force)
 
 void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
+    ivec dirtymin, dirtymax;
+    if(!dirtygeometrybounds(bbmin, bbmax, dirtymin, dirtymax)) return;
     {
         ZoneScopedN("Geometry/Invalidate changed region");
-        readychanges(bbmin, bbmax, worldroot, ivec(0, 0, 0), worldsize/2);
+        readychanges(dirtymin, dirtymax, worldroot, ivec(0, 0, 0), worldsize/2);
     }
     haschanged = true;
 
@@ -687,11 +696,22 @@ void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
 void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit)
 {
     if(numregions <= 0) return;
-    loopi(numregions) markworldchunksdirty(bbmins[i], bbmaxs[i]);
+    vector<ivec> dirtymins, dirtymaxs;
+    dirtymins.reserve(numregions);
+    dirtymaxs.reserve(numregions);
+    loopi(numregions)
+    {
+        markworldchunksdirty(bbmins[i], bbmaxs[i]);
+        ivec dirtymin, dirtymax;
+        if(!dirtygeometrybounds(bbmins[i], bbmaxs[i], dirtymin, dirtymax)) continue;
+        dirtymins.add(dirtymin);
+        dirtymaxs.add(dirtymax);
+    }
+    if(dirtymins.empty()) return;
     {
         ZoneScopedN("Geometry/Invalidate streaming regions");
-        ZoneValue(numregions);
-        readystreamingchanges(bbmins, bbmaxs, numregions,
+        ZoneValue(dirtymins.length());
+        readystreamingchanges(dirtymins.getbuf(), dirtymaxs.getbuf(), dirtymins.length(),
                               worldroot, ivec(0, 0, 0), worldsize/2);
     }
     haschanged = true;
@@ -702,11 +722,9 @@ void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bo
 void changed(const block3 &sel, bool commit)
 {
     if(sel.s.iszero()) return;
-    markworldchunksdirty(sel.o, ivec(sel.s).mul(sel.grid).add(sel.o));
-    readychanges(ivec(sel.o).sub(1), ivec(sel.s).mul(sel.grid).add(sel.o).add(1), worldroot, ivec(0, 0, 0), worldsize/2);
-    haschanged = true;
-
-    if(commit) commitchanges();
+    const ivec bbmax = ivec(sel.s).mul(sel.grid).add(sel.o);
+    markworldchunksdirty(sel.o, bbmax);
+    changedgeometry(sel.o, bbmax, commit);
 }
 
 //////////// copy and undo /////////////
@@ -903,7 +921,7 @@ static inline int countblock(cube *c, int n = 8)
     loopi(n) if(c[i].children) r += countblock(c[i].children); else ++r;
     return r;
 }
-                
+
 static int countblock(block3 *b) { return countblock(b->c(), b->size()); }
 
 void swapundo(undolist &a, undolist &b, int op)
@@ -931,7 +949,7 @@ void swapundo(undolist &a, undolist &b, int op)
                 break;
             }
         }
-    } 
+    }
     selinfo l = sel;
     while(!a.empty() && ts==a.last->timestamp)
     {
@@ -1033,7 +1051,7 @@ static void packvslots(cube &c, vector<uchar> &buf, vector<ushort> &used)
         {
             used.add(index);
             VSlot &vs = *vslots[index];
-            vslothdr &hdr = *(vslothdr *)buf.pad(sizeof(vslothdr));         
+            vslothdr &hdr = *(vslothdr *)buf.pad(sizeof(vslothdr));
             hdr.index = index;
             hdr.slot = vs.slot->index;
             lilswap(&hdr.index, 2);
@@ -1107,7 +1125,7 @@ static void unpackvslots(cube &c, ucharbuf &buf)
     else loopi(6)
     {
         ushort tex = c.texture[i];
-        loopvj(unpackingvslots) if(unpackingvslots[j].index == tex) { c.texture[i] = unpackingvslots[j].vslot->index; break; } 
+        loopvj(unpackingvslots) if(unpackingvslots[j].index == tex) { c.texture[i] = unpackingvslots[j].vslot->index; break; }
     }
 }
 
@@ -1131,7 +1149,7 @@ static void unpackvslots(block3 &b, ucharbuf &buf)
 
     unpackingvslots.setsize(0);
 }
- 
+
 static bool compresseditinfo(const uchar *inbuf, int inlen, uchar *&outbuf, int &outlen)
 {
     uLongf len = compressBound(inlen);
@@ -1211,7 +1229,7 @@ bool packundo(undoblock *u, int &inlen, uchar *&outbuf, int &outlen)
             entity &e = *(entity *)buf.pad(sizeof(entity));
             e = ue[i].e;
             lilswap(&e.o.x, 3);
-            lilswap(&e.attr1, 5); 
+            lilswap(&e.attr1, 5);
         }
     }
     else
@@ -1275,7 +1293,7 @@ bool unpackundo(const uchar *inbuf, int inlen, int outlen)
 bool packundo(int op, int &inlen, uchar *&outbuf, int &outlen)
 {
     switch(op)
-    { 
+    {
         case EDIT_UNDO: return !undos.empty() && packundo(undos.last, inlen, outbuf, outlen);
         case EDIT_REDO: return !redos.empty() && packundo(redos.last, inlen, outbuf, outlen);
         default: return false;
@@ -1653,7 +1671,7 @@ struct vslotref
     ~vslotref() { editingvslots.pop(); }
 };
 #define editingvslot(...) vslotref vslotrefs[] = { __VA_ARGS__ }; (void)vslotrefs;
- 
+
 void compacteditvslots()
 {
     loopv(editingvslots) if(*editingvslots[i]) compactvslot(*editingvslots[i]);
@@ -2348,7 +2366,7 @@ bool mpeditvslot(int delta, int allfaces, selinfo &sel, ucharbuf &buf)
     mpeditvslot(delta, ds, allfaces, sel, false);
     return true;
 }
- 
+
 VAR(allfaces, 0, 0, 1);
 VAR(usevdelta, 1, 0, 0);
 
@@ -2587,7 +2605,7 @@ int shouldpacktex(int index)
     }
     return 0;
 }
-        
+
 bool mpedittex(int tex, int allfaces, selinfo &sel, ucharbuf &buf)
 {
     if(!unpacktex(tex, buf)) return false;

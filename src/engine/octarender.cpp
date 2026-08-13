@@ -1193,19 +1193,26 @@ vtxarray *newva(const ivec &o, int size)
 
 void destroyva(vtxarray *va, bool reparent)
 {
+    vtxarray *parent = va->parent;
     wverts -= va->verts;
     wtris -= va->tris + va->blends + va->alphatris + va->decaltris;
     allocva--;
     valist.removeobj(va);
-    if(!va->parent) varoot.removeobj(va);
+    if(!parent) varoot.removeobj(va);
     if(reparent)
     {
-        if(va->parent) va->parent->children.removeobj(va);
+        if(parent) parent->children.removeobj(va);
         loopv(va->children)
         {
             vtxarray *child = va->children[i];
-            child->parent = va->parent;
-            if(child->parent) child->parent->children.add(child);
+            child->parent = parent;
+            if(parent) parent->children.add(child);
+            else varoot.add(child);
+        }
+        while(parent)
+        {
+            parent->bbmin = parent->bbmax = ivec(-1, -1, -1);
+            parent = parent->parent;
         }
     }
     if(va->vbuf) destroyvbo(va->vbuf);
@@ -1277,18 +1284,30 @@ void updatevabb(vtxarray *va, bool force)
 
 void updatevabbs(bool force)
 {
-    if(force)
+    worldmin = nogimin = ivec(worldsize, worldsize, worldsize);
+    worldmax = nogimax = ivec(0, 0, 0);
+    loopv(varoot) updatevabb(varoot[i], force);
+    if(!force)
     {
-        worldmin = nogimin = ivec(worldsize, worldsize, worldsize);
-        worldmax = nogimax = ivec(0, 0, 0);
-        loopv(varoot) updatevabb(varoot[i], true);
-        if(worldmin.x >= worldmax.x)
+        // Cached VAs return early from updatevabb(). Their aggregate bounds are
+        // still valid, so fold them into the world bounds without recomputing
+        // any unrelated VA hierarchy.
+        loopv(varoot)
         {
-            worldmin = ivec(0, 0, 0);
-            worldmax = ivec(worldsize, worldsize, worldsize);
+            worldmin.min(varoot[i]->bbmin);
+            worldmax.max(varoot[i]->bbmax);
+        }
+        loopv(valist)
+        {
+            nogimin.min(valist[i]->nogimin);
+            nogimax.max(valist[i]->nogimax);
         }
     }
-    else loopv(varoot) updatevabb(varoot[i]);
+    if(worldmin.x >= worldmax.x)
+    {
+        worldmin = ivec(0, 0, 0);
+        worldmax = ivec(worldsize, worldsize, worldsize);
+    }
 }
 
 struct mergedface

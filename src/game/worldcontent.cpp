@@ -449,10 +449,7 @@ void worldwaterchanged(const ivec &minimum, const ivec &maximum)
     localmaximum.o = maximum;
     worldselectiontolocal(localminimum);
     worldselectiontolocal(localmaximum);
-    ivec bbmin = ivec(localminimum.o).sub(WORLD_BLOCK_SIZE).max(0),
-         bbmax = ivec(localmaximum.o).add(WORLD_BLOCK_SIZE).min(worldsize);
-    if(bbmin.x >= bbmax.x || bbmin.y >= bbmax.y || bbmin.z >= bbmax.z) return;
-    changedgeometry(bbmin, bbmax);
+    changedgeometry(localminimum.o, localmaximum.o);
 }
 
 VARFP(leavesalpha, 0, 1, 1, updateleavesalpha());

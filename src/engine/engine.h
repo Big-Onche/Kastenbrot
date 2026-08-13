@@ -420,7 +420,7 @@ extern void commitworldedit();
 extern void cancelworldedit();
 extern void setworldeditauthor(int author);
 extern void setworldeditrevision(uint revision);
-// Invalidates render geometry without recording a persistent world edit.
+// Invalidates a half-open world-space region plus its face-neighbour halo without recording a persistent world edit.
 extern void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit = true);
 extern void changed(const ivec &bbmin, const ivec &bbmax, bool commit = true);
 extern void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit = true);
