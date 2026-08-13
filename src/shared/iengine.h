@@ -420,6 +420,7 @@ extern void mpeditent(int i, const vec &o, int type, int attr1, int attr2, int a
 extern vec getselpos();
 extern int getworldsize();
 extern float getworldskyexposure(const vec &position);
+extern void bindworldskylight();
 extern int getworldlightlevel(const vec &position);
 extern void updateworldchunks(bool force = false);
 extern int getmapversion();

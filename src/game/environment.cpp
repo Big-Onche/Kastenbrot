@@ -22,7 +22,6 @@ namespace game
         static const int CYCLE_MILLIS = DAY_MILLIS + NIGHT_MILLIS;
         static const float START_HOUR = 8.0f;
         static const float MAX_SUN_PITCH = 70.0f;
-        static const int NO_SKY_AMBIENT_COLOR = 0x0A0A0A;
         static const int NO_SKY_FOG_COLOR = 0x000000;
         static const int DAY_FOG_COLOR = 0x8099B3;
         static const int DAY_AMBIENT_COLOR = 0x5A5A6E;
@@ -146,8 +145,7 @@ namespace game
             bvec newSunlight = interpolatecolor(from->sunlightcolor, to->sunlightcolor, blend);
             const bvec timeFog = interpolatecolor(from->fogcolor, to->fogcolor, blend);
             const bvec timeAmbient = interpolatecolor(from->ambientcolor, to->ambientcolor, blend);
-            bvec newAmbient, newFog;
-            newAmbient.lerp(bvec::hexcolor(NO_SKY_AMBIENT_COLOR), timeAmbient, skyexposure);
+            bvec newAmbient = timeAmbient, newFog;
             newFog.lerp(bvec::hexcolor(NO_SKY_FOG_COLOR), timeFog, skyexposure);
             float newSunlightScale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
             const float overcast = currentovercastblend();

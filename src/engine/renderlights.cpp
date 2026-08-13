@@ -2958,6 +2958,7 @@ static void bindlighttexs(int msaapass = 0, bool transparent = false)
         glActiveTexture_(GL_TEXTURE11);
         glBindTexture(GL_TEXTURE_RECTANGLE, smfilter ? shadowfiltertex : shadowcolortex);
     }
+    bindworldskylight();
     glActiveTexture_(GL_TEXTURE0);
 }
 
