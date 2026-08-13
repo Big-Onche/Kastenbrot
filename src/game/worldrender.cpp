@@ -377,9 +377,8 @@ bool getworldscatterentityedit(int id, int &type, ivec &support, int &orient)
 
 int getworldlightlevel(const vec &position)
 {
-    const float skyexposure = getworldskyexposure(position),
-                ambientlevel = game::environment::getambientlightlevel();
-    float level = clamp(skyexposure * (sunlightscale * 16.0f + ambientlevel), 0.0f, 16.0f);
+    const float ambientlevel = game::environment::getambientlightlevel();
+    float level = clamp(sunlightscale * 16.0f + ambientlevel, 0.0f, 16.0f);
     loopv(worldchunks)
     {
         const worldchunk &chunk = worldchunks[i];

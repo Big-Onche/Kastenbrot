@@ -1,4 +1,519 @@
 #include "engine.h"
+#include "worldruntime.h"
+
+VARFP(ddgi, 0, 1, 1, { cleardeferredlightshaders(); clearradiancehintscache(); invalidateddgi(); });
+FVARP(ddgistrength, 0.0f, 1.0f, 4.0f);
+FVARP(ddgitemporal, 0.01f, 0.15f, 1.0f);
+FVARP(ddgibouncestrength, 0.0f, 0.12f, 0.5f);
+FVARP(ddgiambientfloor, 0.0f, 0.03f, 1.0f);
+FVARP(ddgiedgefade, 0.25f, 2.0f, 4.0f);
+
+#ifndef __APPLE__
+namespace
+{
+    enum
+    {
+        DDGI_OCC_CELL_BLOCKS = 4,
+        DDGI_OCC_CELL_SIZE = WORLD_BLOCK_SIZE * DDGI_OCC_CELL_BLOCKS,
+        DDGI_OCC_X = 32,
+        DDGI_OCC_Y = 32,
+        DDGI_OCC_Z = 64,
+        DDGI_PROBE_CELL_BLOCKS = 8,
+        DDGI_PROBE_SPACING = WORLD_BLOCK_SIZE * DDGI_PROBE_CELL_BLOCKS,
+        DDGI_PROBE_X = DDGI_OCC_X / 2,
+        DDGI_PROBE_Y = DDGI_OCC_Y / 2,
+        DDGI_PROBE_Z = DDGI_OCC_Z / 2,
+        DDGI_COEFFICIENT_TEXTURES = 3
+    };
+
+    struct ddgidirtybox
+    {
+        ivec minimum, maximum;
+
+        ddgidirtybox(const ivec &minimum, const ivec &maximum) : minimum(minimum), maximum(maximum) {}
+    };
+
+    static GLuint ddgioccupancy = 0, ddgiprobes[2][DDGI_COEFFICIENT_TEXTURES] = {{ 0 }};
+    static GLuint ddgiskyprogram = 0, ddgibounceprogram = 0;
+    static ivec ddgioccmin(0, 0, 0), ddgipreviousprobemin(INT_MIN, INT_MIN, INT_MIN);
+    static vector<ddgidirtybox> ddgidirtyboxes;
+    static bool ddgivalid = false, ddgiready = false, ddgiforceupload = true;
+    static int ddgiprobeset = 0, ddgiphase = 0;
+
+}
+
+namespace
+{
+    static const char *ddgiskycs = R"GLSL(#version 430 core
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(binding = 0, rgba16f) writeonly uniform image3D outputR;
+layout(binding = 1, rgba16f) writeonly uniform image3D outputG;
+layout(binding = 2, rgba16f) writeonly uniform image3D outputB;
+uniform usampler3D occupancyTexture;
+uniform sampler3D historyR, historyG, historyB;
+uniform ivec3 occupancyMinimum, probeMinimum, previousProbeMinimum;
+uniform int updatePhase, historyValid;
+uniform float temporalBlend;
+uniform vec3 skyColor;
+const ivec3 occupancyDimensions = ivec3(32, 32, 64);
+const ivec3 probeDimensions = ivec3(16, 16, 32);
+const float occupancyCellSize = 64.0;
+const float probeSpacing = 128.0;
+const vec3 rayDirections[8] = vec3[8](
+    vec3(0.557, 0.000, 0.830), vec3(-0.557, 0.000, 0.830), vec3(0.000, 0.557, 0.830), vec3(0.000, -0.557, 0.830),
+    vec3(0.408, 0.408, 0.816), vec3(-0.408, 0.408, 0.816), vec3(0.408, -0.408, 0.816), vec3(-0.408, -0.408, 0.816));
+
+ivec3 positiveModulo(ivec3 value, ivec3 divisor)
+{
+    return ivec3(mod(vec3(value), vec3(divisor)));
+}
+
+bool occupied(vec3 worldPosition)
+{
+    ivec3 cell = ivec3(floor(worldPosition / occupancyCellSize));
+    if(any(lessThan(cell, occupancyMinimum)) || any(greaterThanEqual(cell, occupancyMinimum + occupancyDimensions))) return false;
+    return texelFetch(occupancyTexture, positiveModulo(cell, occupancyDimensions), 0).r != 0u;
+}
+
+bool seesSky(vec3 origin, vec3 direction)
+{
+    for(float distance = occupancyCellSize * 0.75; distance < occupancyCellSize * 32.0; distance += occupancyCellSize)
+        if(occupied(origin + direction * distance)) return false;
+    return true;
+}
+
+void storeCoefficients(ivec3 target, vec4 red, vec4 green, vec4 blue)
+{
+    imageStore(outputR, target, red);
+    imageStore(outputG, target, green);
+    imageStore(outputB, target, blue);
+}
+
+void main()
+{
+    ivec3 localProbe = ivec3(gl_GlobalInvocationID);
+    if(any(greaterThanEqual(localProbe, probeDimensions))) return;
+    ivec3 worldProbe = probeMinimum + localProbe;
+    ivec3 target = positiveModulo(worldProbe, probeDimensions);
+    bool hadHistory = historyValid != 0 && all(greaterThanEqual(worldProbe, previousProbeMinimum)) &&
+                      all(lessThan(worldProbe, previousProbeMinimum + probeDimensions));
+    vec4 oldR = hadHistory ? texelFetch(historyR, target, 0) : vec4(0.0);
+    vec4 oldG = hadHistory ? texelFetch(historyG, target, 0) : vec4(0.0);
+    vec4 oldB = hadHistory ? texelFetch(historyB, target, 0) : vec4(0.0);
+    int hash = worldProbe.x * 3 + worldProbe.y * 5 + worldProbe.z * 7;
+    if((hash & 7) != updatePhase)
+    {
+        storeCoefficients(target, oldR, oldG, oldB);
+        return;
+    }
+
+    vec3 probePosition = (vec3(worldProbe) + vec3(0.5)) * probeSpacing;
+    float visibleRays = 0.0;
+    vec3 visibleDirection = vec3(0.0);
+    for(int ray = 0; ray < 8; ++ray) if(seesSky(probePosition, rayDirections[ray]))
+    {
+        visibleRays += 1.0;
+        visibleDirection += rayDirections[ray];
+    }
+    float visibility = visibleRays / 8.0;
+    vec3 constantCoefficient = skyColor * visibility * 0.70;
+    vec3 directionalShape = visibleDirection * (0.45 / 8.0);
+    vec4 newR = vec4(constantCoefficient.r, directionalShape * skyColor.r);
+    vec4 newG = vec4(constantCoefficient.g, directionalShape * skyColor.g);
+    vec4 newB = vec4(constantCoefficient.b, directionalShape * skyColor.b);
+    float blend = hadHistory ? temporalBlend : 1.0;
+    storeCoefficients(target, mix(oldR, newR, blend), mix(oldG, newG, blend), mix(oldB, newB, blend));
+}
+)GLSL";
+
+    static const char *ddgibouncecs = R"GLSL(#version 430 core
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(binding = 0, rgba16f) writeonly uniform image3D outputR;
+layout(binding = 1, rgba16f) writeonly uniform image3D outputG;
+layout(binding = 2, rgba16f) writeonly uniform image3D outputB;
+uniform usampler3D occupancyTexture;
+uniform sampler3D inputR, inputG, inputB;
+uniform ivec3 occupancyMinimum, probeMinimum;
+uniform int updatePhase;
+uniform float bounceStrength;
+const ivec3 occupancyDimensions = ivec3(32, 32, 64);
+const ivec3 probeDimensions = ivec3(16, 16, 32);
+const float occupancyCellSize = 64.0;
+const float probeSpacing = 128.0;
+const ivec3 neighbors[6] = ivec3[6](ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 1, 0), ivec3(0, -1, 0),
+                                              ivec3(0, 0, 1), ivec3(0, 0, -1));
+
+ivec3 positiveModulo(ivec3 value, ivec3 divisor)
+{
+    return ivec3(mod(vec3(value), vec3(divisor)));
+}
+
+bool occupied(vec3 worldPosition)
+{
+    ivec3 cell = ivec3(floor(worldPosition / occupancyCellSize));
+    if(any(lessThan(cell, occupancyMinimum)) || any(greaterThanEqual(cell, occupancyMinimum + occupancyDimensions))) return true;
+    return texelFetch(occupancyTexture, positiveModulo(cell, occupancyDimensions), 0).r != 0u;
+}
+
+bool connectionBlocked(vec3 origin, vec3 direction)
+{
+    return occupied(origin + direction * (probeSpacing * 0.25)) || occupied(origin + direction * (probeSpacing * 0.75));
+}
+
+void main()
+{
+    ivec3 localProbe = ivec3(gl_GlobalInvocationID);
+    if(any(greaterThanEqual(localProbe, probeDimensions))) return;
+    ivec3 worldProbe = probeMinimum + localProbe;
+    ivec3 target = positiveModulo(worldProbe, probeDimensions);
+    vec4 centerR = texelFetch(inputR, target, 0), centerG = texelFetch(inputG, target, 0), centerB = texelFetch(inputB, target, 0);
+    int hash = worldProbe.x * 3 + worldProbe.y * 5 + worldProbe.z * 7;
+    if((hash & 7) != updatePhase)
+    {
+        imageStore(outputR, target, centerR);
+        imageStore(outputG, target, centerG);
+        imageStore(outputB, target, centerB);
+        return;
+    }
+
+    vec3 probePosition = (vec3(worldProbe) + vec3(0.5)) * probeSpacing;
+    vec4 sumR = vec4(0.0), sumG = vec4(0.0), sumB = vec4(0.0);
+    float weight = 0.0;
+    for(int index = 0; index < 6; ++index)
+    {
+        ivec3 neighbor = worldProbe + neighbors[index];
+        if(any(lessThan(neighbor, probeMinimum)) || any(greaterThanEqual(neighbor, probeMinimum + probeDimensions))) continue;
+        vec3 direction = vec3(neighbors[index]);
+        if(connectionBlocked(probePosition, direction)) continue;
+        ivec3 source = positiveModulo(neighbor, probeDimensions);
+        sumR += texelFetch(inputR, source, 0);
+        sumG += texelFetch(inputG, source, 0);
+        sumB += texelFetch(inputB, source, 0);
+        weight += 1.0;
+    }
+    if(weight > 0.0)
+    {
+        sumR /= weight;
+        sumG /= weight;
+        sumB /= weight;
+        centerR = mix(centerR, sumR, bounceStrength);
+        centerG = mix(centerG, sumG, bounceStrength);
+        centerB = mix(centerB, sumB, bounceStrength);
+    }
+    imageStore(outputR, target, max(centerR, vec4(0.0)));
+    imageStore(outputG, target, max(centerG, vec4(0.0)));
+    imageStore(outputB, target, max(centerB, vec4(0.0)));
+}
+)GLSL";
+
+    static GLuint compileddgiprogram(const char *name, const char *source)
+    {
+        GLuint shader = glCreateShader_(GL_COMPUTE_SHADER);
+        glShaderSource_(shader, 1, &source, NULL);
+        glCompileShader_(shader);
+        GLint compiled = GL_FALSE;
+        glGetShaderiv_(shader, GL_COMPILE_STATUS, &compiled);
+        if(!compiled)
+        {
+            char log[4096] = { 0 };
+            glGetShaderInfoLog_(shader, sizeof(log), NULL, log);
+            conoutf(CON_ERROR, "DDGI compute shader %s failed: %s", name, log);
+            glDeleteShader_(shader);
+            return 0;
+        }
+        GLuint program = glCreateProgram_();
+        glAttachShader_(program, shader);
+        glLinkProgram_(program);
+        glDeleteShader_(shader);
+        GLint linked = GL_FALSE;
+        glGetProgramiv_(program, GL_LINK_STATUS, &linked);
+        if(!linked)
+        {
+            char log[4096] = { 0 };
+            glGetProgramInfoLog_(program, sizeof(log), NULL, log);
+            conoutf(CON_ERROR, "DDGI compute program %s failed: %s", name, log);
+            glDeleteProgram_(program);
+            return 0;
+        }
+        return program;
+    }
+
+    static int ddgiposmod(int value, int divisor)
+    {
+        int result = value % divisor;
+        return result < 0 ? result + divisor : result;
+    }
+
+    static int ddgifloordiv(int value, int divisor)
+    {
+        int result = value / divisor;
+        return value < 0 && value % divisor ? result - 1 : result;
+    }
+
+    static bool ddgiopaqueat(const ivec &cell)
+    {
+        const ivec start = ivec(cell).mul(DDGI_OCC_CELL_SIZE), end = ivec(start).add(DDGI_OCC_CELL_SIZE);
+        for(int z = start.z; z < end.z; z += WORLD_BLOCK_SIZE)
+        for(int y = start.y; y < end.y; y += WORLD_BLOCK_SIZE)
+        for(int x = start.x; x < end.x; x += WORLD_BLOCK_SIZE)
+        {
+            const ivec sample(x + WORLD_BLOCK_SIZE / 2, y + WORLD_BLOCK_SIZE / 2, z + WORLD_BLOCK_SIZE / 2);
+            if(!insideworld(sample)) continue;
+            const cube &c = lookupcube(sample);
+            if(!isempty(c) && (c.material&MATF_VOLUME) != MAT_GLASS && !(c.material&MAT_ALPHA)) return true;
+        }
+        return false;
+    }
+
+    static void uploadddgibox(const ivec &minimum, const ivec &maximum)
+    {
+        if(minimum.x >= maximum.x || minimum.y >= maximum.y || minimum.z >= maximum.z) return;
+        vector<uchar> row;
+        row.pad(maximum.x - minimum.x);
+        glBindTexture(GL_TEXTURE_3D, ddgioccupancy);
+        for(int z = minimum.z; z < maximum.z; ++z) for(int y = minimum.y; y < maximum.y; ++y)
+        {
+            for(int x = minimum.x; x < maximum.x; ++x) row[x - minimum.x] = ddgiopaqueat(ivec(x, y, z)) ? 255 : 0;
+            int uploaded = 0;
+            while(uploaded < row.length())
+            {
+                int physicalx = ddgiposmod(minimum.x + uploaded, DDGI_OCC_X);
+                int count = min(row.length() - uploaded, DDGI_OCC_X - physicalx);
+                glTexSubImage3D_(GL_TEXTURE_3D, 0, physicalx, ddgiposmod(y, DDGI_OCC_Y), ddgiposmod(z, DDGI_OCC_Z), count, 1, 1,
+                                 GL_RED_INTEGER, GL_UNSIGNED_BYTE, row.getbuf() + uploaded);
+                uploaded += count;
+            }
+        }
+    }
+
+    static void uploadmovedddgislabs(const ivec &oldminimum, const ivec &newminimum)
+    {
+        const ivec oldmaximum = ivec(oldminimum).add(ivec(DDGI_OCC_X, DDGI_OCC_Y, DDGI_OCC_Z));
+        const ivec newmaximum = ivec(newminimum).add(ivec(DDGI_OCC_X, DDGI_OCC_Y, DDGI_OCC_Z));
+        const ivec overlapminimum(max(oldminimum.x, newminimum.x), max(oldminimum.y, newminimum.y), max(oldminimum.z, newminimum.z));
+        const ivec overlapmaximum(min(oldmaximum.x, newmaximum.x), min(oldmaximum.y, newmaximum.y), min(oldmaximum.z, newmaximum.z));
+        if(overlapminimum.x >= overlapmaximum.x || overlapminimum.y >= overlapmaximum.y || overlapminimum.z >= overlapmaximum.z)
+        {
+            uploadddgibox(newminimum, newmaximum);
+            return;
+        }
+        uploadddgibox(newminimum, ivec(overlapminimum.x, newmaximum.y, newmaximum.z));
+        uploadddgibox(ivec(overlapmaximum.x, newminimum.y, newminimum.z), newmaximum);
+        uploadddgibox(ivec(overlapminimum.x, newminimum.y, newminimum.z), ivec(overlapmaximum.x, overlapminimum.y, newmaximum.z));
+        uploadddgibox(ivec(overlapminimum.x, overlapmaximum.y, newminimum.z), ivec(overlapmaximum.x, newmaximum.y, newmaximum.z));
+        uploadddgibox(ivec(overlapminimum.x, overlapminimum.y, newminimum.z), ivec(overlapmaximum.x, overlapmaximum.y, overlapminimum.z));
+        uploadddgibox(ivec(overlapminimum.x, overlapminimum.y, overlapmaximum.z), ivec(overlapmaximum.x, overlapmaximum.y, newmaximum.z));
+    }
+
+    static bool initddgi()
+    {
+        if(ddgioccupancy) return ddgiskyprogram && ddgibounceprogram;
+        if(!hasCompute || glversion < 430) return false;
+        ddgiskyprogram = compileddgiprogram("sky visibility", ddgiskycs);
+        ddgibounceprogram = compileddgiprogram("bounce", ddgibouncecs);
+        if(!ddgiskyprogram || !ddgibounceprogram)
+        {
+            if(ddgiskyprogram) glDeleteProgram_(ddgiskyprogram);
+            if(ddgibounceprogram) glDeleteProgram_(ddgibounceprogram);
+            ddgiskyprogram = ddgibounceprogram = 0;
+            return false;
+        }
+
+        glGenTextures(1, &ddgioccupancy);
+        glBindTexture(GL_TEXTURE_3D, ddgioccupancy);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
+        glTexImage3D_(GL_TEXTURE_3D, 0, GL_R8UI, DDGI_OCC_X, DDGI_OCC_Y, DDGI_OCC_Z, 0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, NULL);
+        loopj(2) loopi(DDGI_COEFFICIENT_TEXTURES)
+        {
+            glGenTextures(1, &ddgiprobes[j][i]);
+            glBindTexture(GL_TEXTURE_3D, ddgiprobes[j][i]);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
+            glTexImage3D_(GL_TEXTURE_3D, 0, GL_RGBA16F, DDGI_PROBE_X, DDGI_PROBE_Y, DDGI_PROBE_Z, 0, GL_RGBA, GL_FLOAT, NULL);
+        }
+        glBindTexture(GL_TEXTURE_3D, 0);
+        ddgiforceupload = true;
+        return true;
+    }
+
+    static void bindddgiinputtextures(int probeset)
+    {
+        glActiveTexture_(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, ddgioccupancy);
+        loopi(DDGI_COEFFICIENT_TEXTURES)
+        {
+            glActiveTexture_(GL_TEXTURE1 + i);
+            glBindTexture(GL_TEXTURE_3D, ddgiprobes[probeset][i]);
+        }
+        glActiveTexture_(GL_TEXTURE0);
+    }
+
+    static void bindddgioutputimages(int probeset)
+    {
+        loopi(DDGI_COEFFICIENT_TEXTURES)
+            glBindImageTexture_(i, ddgiprobes[probeset][i], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+    }
+
+    static void setddgicommonuniforms(GLuint program, const ivec &probeminimum)
+    {
+        glUniform1i_(glGetUniformLocation_(program, "occupancyTexture"), 0);
+        glUniform1i_(glGetUniformLocation_(program, ddgiskyprogram == program ? "historyR" : "inputR"), 1);
+        glUniform1i_(glGetUniformLocation_(program, ddgiskyprogram == program ? "historyG" : "inputG"), 2);
+        glUniform1i_(glGetUniformLocation_(program, ddgiskyprogram == program ? "historyB" : "inputB"), 3);
+        glUniform3i_(glGetUniformLocation_(program, "occupancyMinimum"), ddgioccmin.x, ddgioccmin.y, ddgioccmin.z);
+        glUniform3i_(glGetUniformLocation_(program, "probeMinimum"), probeminimum.x, probeminimum.y, probeminimum.z);
+        glUniform1i_(glGetUniformLocation_(program, "updatePhase"), ddgiphase);
+    }
+
+    static void dispatchddgi(const ivec &probeminimum)
+    {
+        timer *gputimer = begintimer("ddgi");
+        const int skyoutput = 1 - ddgiprobeset;
+        Shader::lastshader = NULL;
+        glUseProgram_(ddgiskyprogram);
+        bindddgiinputtextures(ddgiprobeset);
+        bindddgioutputimages(skyoutput);
+        setddgicommonuniforms(ddgiskyprogram, probeminimum);
+        glUniform3i_(glGetUniformLocation_(ddgiskyprogram, "previousProbeMinimum"), ddgipreviousprobemin.x, ddgipreviousprobemin.y,
+                     ddgipreviousprobemin.z);
+        glUniform1i_(glGetUniformLocation_(ddgiskyprogram, "historyValid"), ddgivalid ? 1 : 0);
+        glUniform1f_(glGetUniformLocation_(ddgiskyprogram, "temporalBlend"), ddgitemporal);
+        glUniform3f_(glGetUniformLocation_(ddgiskyprogram, "skyColor"), ambient.x * ambientscale / 255.0f, ambient.y * ambientscale / 255.0f,
+                     ambient.z * ambientscale / 255.0f);
+        glDispatchCompute_((DDGI_PROBE_X + 3) / 4, (DDGI_PROBE_Y + 3) / 4, (DDGI_PROBE_Z + 3) / 4);
+        glMemoryBarrier_(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+        int input = skyoutput, output = ddgiprobeset;
+        loopi(2)
+        {
+            glUseProgram_(ddgibounceprogram);
+            bindddgiinputtextures(input);
+            bindddgioutputimages(output);
+            setddgicommonuniforms(ddgibounceprogram, probeminimum);
+            glUniform1f_(glGetUniformLocation_(ddgibounceprogram, "bounceStrength"), ddgibouncestrength);
+            glDispatchCompute_((DDGI_PROBE_X + 3) / 4, (DDGI_PROBE_Y + 3) / 4, (DDGI_PROBE_Z + 3) / 4);
+            glMemoryBarrier_(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+            swap(input, output);
+        }
+        ddgiprobeset = input;
+        glUseProgram_(0);
+        Shader::lastshader = NULL;
+        endtimer(gputimer);
+    }
+
+}
+
+bool ddgienabled()
+{
+    return ddgi && hasCompute && ddgiready;
+}
+
+void invalidateddgi()
+{
+    ddgiforceupload = true;
+    ddgivalid = ddgiready = false;
+    ddgidirtyboxes.setsize(0);
+    ddgipreviousprobemin = ivec(INT_MIN, INT_MIN, INT_MIN);
+}
+
+void markddgioccupancydirty(const ivec &bbmin, const ivec &bbmax)
+{
+    if(ddgiforceupload || bbmin.x >= bbmax.x || bbmin.y >= bbmax.y || bbmin.z >= bbmax.z) return;
+    if(ddgidirtyboxes.length() >= 64)
+    {
+        ddgiforceupload = true;
+        ddgidirtyboxes.setsize(0);
+        return;
+    }
+    ddgidirtyboxes.add(ddgidirtybox(bbmin, bbmax));
+}
+
+void cleanupddgi()
+{
+    if(ddgioccupancy) glDeleteTextures(1, &ddgioccupancy);
+    ddgioccupancy = 0;
+    loopj(2) loopi(DDGI_COEFFICIENT_TEXTURES) if(ddgiprobes[j][i]) glDeleteTextures(1, &ddgiprobes[j][i]);
+    memset(ddgiprobes, 0, sizeof(ddgiprobes));
+    if(ddgiskyprogram) glDeleteProgram_(ddgiskyprogram);
+    if(ddgibounceprogram) glDeleteProgram_(ddgibounceprogram);
+    ddgiskyprogram = ddgibounceprogram = 0;
+    invalidateddgi();
+}
+
+void updateddgi()
+{
+    ZoneScopedN("DDGI Update");
+    if(!ddgi || !camera1 || !worldroot || !initddgi()) return;
+    ivec centered(int(floorf(camera1->o.x / DDGI_PROBE_SPACING)) * 2 - DDGI_OCC_X / 2,
+                  int(floorf(camera1->o.y / DDGI_PROBE_SPACING)) * 2 - DDGI_OCC_Y / 2,
+                  int(floorf(camera1->o.z / DDGI_PROBE_SPACING)) * 2 - DDGI_OCC_Z / 2);
+    if(ddgiforceupload || !ddgivalid)
+        uploadddgibox(centered, ivec(centered).add(ivec(DDGI_OCC_X, DDGI_OCC_Y, DDGI_OCC_Z)));
+    else if(centered != ddgioccmin)
+        uploadmovedddgislabs(ddgioccmin, centered);
+    ddgioccmin = centered;
+
+    loopv(ddgidirtyboxes)
+    {
+        const ddgidirtybox &dirty = ddgidirtyboxes[i];
+        ivec minimum(ddgifloordiv(dirty.minimum.x, DDGI_OCC_CELL_SIZE), ddgifloordiv(dirty.minimum.y, DDGI_OCC_CELL_SIZE),
+                     ddgifloordiv(dirty.minimum.z, DDGI_OCC_CELL_SIZE));
+        ivec maximum(ddgifloordiv(dirty.maximum.x - 1, DDGI_OCC_CELL_SIZE) + 1, ddgifloordiv(dirty.maximum.y - 1, DDGI_OCC_CELL_SIZE) + 1,
+                     ddgifloordiv(dirty.maximum.z - 1, DDGI_OCC_CELL_SIZE) + 1);
+        minimum.x = max(minimum.x, ddgioccmin.x);
+        minimum.y = max(minimum.y, ddgioccmin.y);
+        minimum.z = max(minimum.z, ddgioccmin.z);
+        maximum.x = min(maximum.x, ddgioccmin.x + DDGI_OCC_X);
+        maximum.y = min(maximum.y, ddgioccmin.y + DDGI_OCC_Y);
+        maximum.z = min(maximum.z, ddgioccmin.z + DDGI_OCC_Z);
+        uploadddgibox(minimum, maximum);
+    }
+    ddgidirtyboxes.setsize(0);
+    ddgiforceupload = false;
+
+    const ivec probeminimum(ddgioccmin.x / 2, ddgioccmin.y / 2, ddgioccmin.z / 2);
+    dispatchddgi(probeminimum);
+    ddgipreviousprobemin = probeminimum;
+    ddgivalid = ddgiready = true;
+    ddgiphase = (ddgiphase + 1) & 7;
+}
+
+void bindddgitextures()
+{
+    if(!ddgienabled()) return;
+    loopi(DDGI_COEFFICIENT_TEXTURES)
+    {
+        glActiveTexture_(GL_TEXTURE12 + i);
+        glBindTexture(GL_TEXTURE_3D, ddgiprobes[ddgiprobeset][i]);
+    }
+    glActiveTexture_(GL_TEXTURE0);
+}
+
+void setddgiglobals()
+{
+    const ivec probeminimum(ddgioccmin.x / 2, ddgioccmin.y / 2, ddgioccmin.z / 2);
+    const float ambientfactor = 2.0f * ldrscaleb * ambientscale * (1.0f - ddgiambientfloor);
+    GLOBALPARAMF(ddgiclip, float(probeminimum.x), float(probeminimum.y), float(probeminimum.z), ddgienabled() ? 1.0f : 0.0f);
+    GLOBALPARAMF(ddgiparams, float(DDGI_PROBE_SPACING), 2.0f * ldrscaleb * 255.0f * ddgistrength, ddgiedgefade,
+                 ddgienabled() ? 1.0f : 0.0f);
+    GLOBALPARAMF(ddgifallback, ambient.x * ambientfactor, ambient.y * ambientfactor, ambient.z * ambientfactor);
+}
+#else
+bool ddgienabled() { return false; }
+void invalidateddgi() {}
+void markddgioccupancydirty(const ivec &bbmin, const ivec &bbmax) { (void)bbmin; (void)bbmax; }
+void cleanupddgi() {}
+void updateddgi() {}
+void bindddgitextures() {}
+void setddgiglobals() {}
+#endif
 
 int gw = -1, gh = -1, bloomw = -1, bloomh = -1, lasthdraccum = 0;
 GLuint gfbo = 0, gdepthtex = 0, gcolortex = 0, gnormaltex = 0, gglowtex = 0, gdepthrb = 0, gstencilrb = 0;
@@ -2492,7 +3007,7 @@ void radiancehints::bindparams()
 
 bool useradiancehints()
 {
-    return !sunlight.iszero() && csmshadowmap && gi && giscale && gidist;
+    return !(ddgi && hasCompute) && !sunlight.iszero() && csmshadowmap && gi && giscale && gidist;
 }
 
 FVAR(avatarshadowdist, 0, 12, 100);
@@ -2685,6 +3200,7 @@ Shader *loaddeferredlightshader(const char *type = NULL)
     }
     if(!minimap)
     {
+        if(ddgi && hasCompute) sun[sunlen++] = 'i';
         if(avatar && ao) sun[sunlen++] = 'a';
         if(lighttilebatch && (!usecsm || batchsunlight > (userh ? 1 : 0))) sun[sunlen++] = 'b';
     }
@@ -2951,6 +3467,7 @@ static void bindlighttexs(int msaapass = 0, bool transparent = false)
         glActiveTexture_(GL_TEXTURE6 + i);
         glBindTexture(GL_TEXTURE_3D, rhtex[i]);
     }
+    bindddgitextures();
     if(smalpha && alphashadow)
     {
         glActiveTexture_(GL_TEXTURE10);
@@ -2980,8 +3497,12 @@ static inline void setlightglobals(bool transparent = false)
     float lightscale = 2.0f*ldrscaleb;
     if(!drawtex && editmode && fullbright)
         GLOBALPARAMF(lightscale, fullbrightlevel*lightscale, fullbrightlevel*lightscale, fullbrightlevel*lightscale, 255*lightscale);
+    else if(ddgienabled())
+        GLOBALPARAMF(lightscale, ambient.x*lightscale*ambientscale*ddgiambientfloor, ambient.y*lightscale*ambientscale*ddgiambientfloor,
+                     ambient.z*lightscale*ambientscale*ddgiambientfloor, 255*lightscale);
     else
         GLOBALPARAMF(lightscale, ambient.x*lightscale*ambientscale, ambient.y*lightscale*ambientscale, ambient.z*lightscale*ambientscale, 255*lightscale);
+    setddgiglobals();
 
     if(csm.rendered)
     {
@@ -5330,6 +5851,7 @@ void shadesky()
 
 void shadegbuffer()
 {
+    if(!drawtex) updateddgi();
     if(msaasamples && !msaalight && !drawtex) resolvemsaadepth();
     GLERROR;
 
