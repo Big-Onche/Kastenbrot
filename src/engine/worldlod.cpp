@@ -82,15 +82,16 @@ struct worldlodjob
 {
     worldlodkey key;
     int priority;
-    float distance;
+    float distance, alignment;
     uint epoch;
     SDL_atomic_t cancelled;
     worldlodcpumesh mesh;
     double generationmillis, samplingmillis, buildmillis;
     bool succeeded;
 
-    worldlodjob(const worldlodkey &key, int priority, float distance, uint epoch)
-        : key(key), priority(priority), distance(distance), epoch(epoch), generationmillis(0), samplingmillis(0), buildmillis(0), succeeded(false)
+    worldlodjob(const worldlodkey &key, int priority, float distance, float alignment, uint epoch)
+        : key(key), priority(priority), distance(distance), alignment(alignment), epoch(epoch), generationmillis(0), samplingmillis(0),
+          buildmillis(0), succeeded(false)
     {
         SDL_AtomicSet(&cancelled, 0);
     }
@@ -154,9 +155,21 @@ static worldlodkey currentworldlodkey(int x, int y, int lod)
                        game::worldgenerationparameterhash());
 }
 
+static bool worldlodpriorityless(int apriority, float adistance, float aalignment, int bpriority, float bdistance, float balignment)
+{
+    if(apriority != bpriority) return apriority < bpriority;
+    if(apriority == 1)
+    {
+        if(aalignment != balignment) return aalignment > balignment;
+        return adistance < bdistance;
+    }
+    if(adistance != bdistance) return adistance < bdistance;
+    return aalignment > balignment;
+}
+
 static bool worldlodjobless(const worldlodjob &a, const worldlodjob &b)
 {
-    return a.priority < b.priority || (a.priority == b.priority && a.distance < b.distance);
+    return worldlodpriorityless(a.priority, a.distance, a.alignment, b.priority, b.distance, b.alignment);
 }
 
 static vec2 worldlodtexcoord(const vec &position, int orient)
@@ -687,26 +700,25 @@ static ullong currentworldlodsettings()
     return hash;
 }
 
-static bool pendingworldlodjob(const worldlodkey &key)
+static bool queueworldlodjob(const worldlodkey &key, int priority, float distance, float alignment = 0)
 {
-    bool pending = false;
-    SDL_LockMutex(worldlodmutex);
-    loopv(worldlodjobs) if(worldlodjobs[i]->key == key) { pending = true; break; }
-    if(!pending) loopv(worldlodactivejobs) if(worldlodactivejobs[i]->key == key) { pending = true; break; }
-    if(!pending) loopv(worldlodresults) if(worldlodresults[i]->key == key) { pending = true; break; }
-    SDL_UnlockMutex(worldlodmutex);
-    return pending;
-}
-
-static bool queueworldlodjob(const worldlodkey &key, int priority, float distance)
-{
-    if(findworldlodcache(key) >= 0 || !startworldlodworkers() || pendingworldlodjob(key)) return false;
+    if(findworldlodcache(key) >= 0 || !startworldlodworkers()) return false;
     bool queued = false;
     SDL_LockMutex(worldlodmutex);
+    loopv(worldlodjobs) if(worldlodjobs[i]->key == key)
+    {
+        worldlodjobs[i]->priority = priority;
+        worldlodjobs[i]->distance = distance;
+        worldlodjobs[i]->alignment = alignment;
+        SDL_UnlockMutex(worldlodmutex);
+        return false;
+    }
+    loopv(worldlodactivejobs) if(worldlodactivejobs[i]->key == key) { SDL_UnlockMutex(worldlodmutex); return false; }
+    loopv(worldlodresults) if(worldlodresults[i]->key == key) { SDL_UnlockMutex(worldlodmutex); return false; }
     const int outstanding = worldlodjobs.length() + worldlodactivejobs.length() + worldlodresults.length();
     if(outstanding < worldlodpendinglimit)
     {
-        worldlodjobs.add(new worldlodjob(key, priority, distance, worldlodepoch));
+        worldlodjobs.add(new worldlodjob(key, priority, distance, alignment, worldlodepoch));
         worldlodcachemisses++;
         queued = true;
         SDL_CondSignal(worldlodcond);
@@ -800,6 +812,41 @@ static float worldloddistance(int x, int y, const vec &focus)
                 dx = focus.x < minx ? minx - focus.x : focus.x > maxx ? focus.x - maxx : 0.0f,
                 dy = focus.y < miny ? miny - focus.y : focus.y > maxy ? focus.y - maxy : 0.0f;
     return sqrtf(dx * dx + dy * dy);
+}
+
+struct worldlodcandidate
+{
+    worldlodkey key;
+    int priority;
+    float distance, alignment;
+
+    worldlodcandidate(const worldlodkey &key = worldlodkey(), int priority = 2, float distance = 0, float alignment = 0)
+        : key(key), priority(priority), distance(distance), alignment(alignment) {}
+};
+
+static worldlodcandidate makeworldlodcandidate(const worldlodselection &selection)
+{
+    const vec center((selection.x - worldfirstchunkx + 0.5f) * WORLD_CHUNK_SIZE,
+                     (selection.y - worldfirstchunky + 0.5f) * WORLD_CHUNK_SIZE, camera1->o.z),
+              delta = vec(center).sub(camera1->o);
+    const float directionlength = sqrtf(camdir.x * camdir.x + camdir.y * camdir.y), deltalength = sqrtf(delta.x * delta.x + delta.y * delta.y),
+                alignment = directionlength > 1e-4f && deltalength > 1e-4f
+                          ? (camdir.x * delta.x + camdir.y * delta.y) / (directionlength * deltalength) : 0;
+    const ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
+    const bool visible = !viewfrustumvalid() || isvisiblebb(origin, ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)) < VFC_FOGGED;
+    // Close the ring around the camera first, then fill the frustum from its center outward, and finally cover nearby off-screen chunks.
+    const float centerradius = worldlodneardistance * WORLD_BLOCK_SIZE + WORLD_CHUNK_SIZE;
+    const int priority = selection.distance <= centerradius ? 0 : visible ? 1 : 2;
+    return worldlodcandidate(currentworldlodkey(selection.x, selection.y, selection.desired), priority, selection.distance, alignment);
+}
+
+static bool sortworldlodcandidates(const worldlodcandidate &a, const worldlodcandidate &b)
+{
+    if(worldlodpriorityless(a.priority, a.distance, a.alignment, b.priority, b.distance, b.alignment)) return true;
+    if(worldlodpriorityless(b.priority, b.distance, b.alignment, a.priority, a.distance, a.alignment)) return false;
+    if(a.key.y != b.key.y) return a.key.y < b.key.y;
+    if(a.key.x != b.key.x) return a.key.x < b.key.x;
+    return a.key.lod < b.key.lod;
 }
 
 static int desiredworldlod(int previous, float distance)
@@ -902,7 +949,7 @@ static void updateworldlods(int chunkx, int chunky)
     }
 
     loopv(worldlodcache) worldlodcache[i].active = false;
-    int active1 = 0, active2 = 0, missing = 0;
+    int active1 = 0, active2 = 0, missing = 0, centerjobs = 0, visiblejobs = 0, surroundingjobs = 0;
     loopv(worldlodselections)
     {
         worldlodselection &selection = worldlodselections[i];
@@ -939,17 +986,20 @@ static void updateworldlods(int chunkx, int chunky)
     if(missing > 0)
     {
         canceloptionalworldlodjobs();
+        vector<worldlodcandidate> candidates;
         loopv(worldlodselections)
         {
             const worldlodselection &selection = worldlodselections[i];
             if(selection.lastseen != totalmillis || selection.desired <= 0) continue;
             const worldlodkey key = currentworldlodkey(selection.x, selection.y, selection.desired);
             if(findworldlodcache(key) >= 0) continue;
-            ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
-            const bool visible = !viewfrustumvalid() || isvisiblebb(origin, ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)) < VFC_FOGGED;
-            const int priority = selection.desired == 1 ? 0 : visible ? 1 : 3;
-            queueworldlodjob(key, priority, selection.distance);
+            worldlodcandidate &candidate = candidates.add(makeworldlodcandidate(selection));
+            if(candidate.priority == 0) centerjobs++;
+            else if(candidate.priority == 1) visiblejobs++;
+            else surroundingjobs++;
         }
+        if(candidates.length() > 1) candidates.sort(sortworldlodcandidates);
+        loopv(candidates) queueworldlodjob(candidates[i].key, candidates[i].priority, candidates[i].distance, candidates[i].alignment);
     }
     else
     {
@@ -962,7 +1012,7 @@ static void updateworldlods(int chunkx, int chunky)
             int lod = 0;
             if(selection.desired == 1 && selection.distance > (worldlodfardistance - 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 2;
             else if(selection.desired == 2 && selection.distance < (worldlodfardistance + 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 1;
-            if(lod && queueworldlodjob(currentworldlodkey(selection.x, selection.y, lod), 2, selection.distance)) prefetchbudget--;
+            if(lod && queueworldlodjob(currentworldlodkey(selection.x, selection.y, lod), 3, selection.distance)) prefetchbudget--;
         }
     }
 
@@ -980,6 +1030,9 @@ static void updateworldlods(int chunkx, int chunky)
     TracyPlot("LOD/Active LOD1 chunks", int64_t(active1));
     TracyPlot("LOD/Active LOD2 chunks", int64_t(active2));
     TracyPlot("LOD/Missing required chunks", int64_t(missing));
+    TracyPlot("LOD/Center-priority jobs", int64_t(centerjobs));
+    TracyPlot("LOD/Frustum-priority jobs", int64_t(visiblejobs));
+    TracyPlot("LOD/Surrounding jobs", int64_t(surroundingjobs));
     TracyPlot("LOD/Queued jobs", int64_t(queued));
     TracyPlot("LOD/Cache hits", int64_t(worldlodcachehits));
     TracyPlot("LOD/Cache misses", int64_t(worldlodcachemisses));
