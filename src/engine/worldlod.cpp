@@ -71,10 +71,11 @@ struct worldlodchunk
     GLuint vbo, ebo;
     int vertices, terrainindices, waterindices, topfaces, sidefaces, lastused;
     vec bbmin, bbmax;
+    bool active;
 
     worldlodchunk(const worldlodkey &key = worldlodkey())
         : key(key), vbo(0), ebo(0), vertices(0), terrainindices(0), waterindices(0), topfaces(0), sidefaces(0), lastused(0), bbmin(0, 0, 0),
-          bbmax(0, 0, 0) {}
+          bbmax(0, 0, 0), active(false) {}
 };
 
 struct worldlodjob
@@ -115,6 +116,7 @@ static uint worldlodepoch = 1;
 static ullong worldlodsettings = 0;
 static int worldlodcachehits = 0, worldlodcachemisses = 0;
 static int worldlodrendervertices = 0, worldlodrendertriangles = 0, worldlodrendertopfaces = 0, worldlodrendersidefaces = 0;
+static int worldlodmissingchunks = 0;
 static double worldlodlastgeneration = 0, worldlodlastupload = 0;
 
 static int worldlodtopmaterial(int material)
@@ -668,6 +670,7 @@ static void clearworldlods()
     worldlodsettings = 0;
     worldlodlastgeneration = worldlodlastupload = 0;
     worldlodrendervertices = worldlodrendertriangles = worldlodrendertopfaces = worldlodrendersidefaces = 0;
+    worldlodmissingchunks = 0;
     ++worldlodepoch;
 }
 
@@ -695,18 +698,50 @@ static bool pendingworldlodjob(const worldlodkey &key)
     return pending;
 }
 
-static void queueworldlodjob(const worldlodkey &key, int priority, float distance)
+static bool queueworldlodjob(const worldlodkey &key, int priority, float distance)
 {
-    if(findworldlodcache(key) >= 0 || !startworldlodworkers() || pendingworldlodjob(key)) return;
+    if(findworldlodcache(key) >= 0 || !startworldlodworkers() || pendingworldlodjob(key)) return false;
+    bool queued = false;
     SDL_LockMutex(worldlodmutex);
     const int outstanding = worldlodjobs.length() + worldlodactivejobs.length() + worldlodresults.length();
     if(outstanding < worldlodpendinglimit)
     {
         worldlodjobs.add(new worldlodjob(key, priority, distance, worldlodepoch));
         worldlodcachemisses++;
+        queued = true;
         SDL_CondSignal(worldlodcond);
     }
     SDL_UnlockMutex(worldlodmutex);
+    return queued;
+}
+
+static bool requiredworldlodjob(const worldlodjob &job)
+{
+    loopv(worldlodselections)
+    {
+        const worldlodselection &selection = worldlodselections[i];
+        if(selection.lastseen == totalmillis && selection.x == job.key.x && selection.y == job.key.y && selection.desired == job.key.lod) return true;
+    }
+    return false;
+}
+
+static void canceloptionalworldlodjobs()
+{
+    if(!worldlodmutex) return;
+    SDL_LockMutex(worldlodmutex);
+    for(int i = worldlodjobs.length() - 1; i >= 0; --i) if(!requiredworldlodjob(*worldlodjobs[i])) delete worldlodjobs.remove(i);
+    loopv(worldlodactivejobs) if(!requiredworldlodjob(*worldlodactivejobs[i])) SDL_AtomicSet(&worldlodactivejobs[i]->cancelled, 1);
+    for(int i = worldlodresults.length() - 1; i >= 0; --i) if(!requiredworldlodjob(*worldlodresults[i])) delete worldlodresults.remove(i);
+    SDL_UnlockMutex(worldlodmutex);
+}
+
+static int worldlodoutstandingjobs()
+{
+    if(!worldlodmutex) return 0;
+    SDL_LockMutex(worldlodmutex);
+    const int outstanding = worldlodjobs.length() + worldlodactivejobs.length() + worldlodresults.length();
+    SDL_UnlockMutex(worldlodmutex);
+    return outstanding;
 }
 
 static void processworldlodresults()
@@ -795,15 +830,6 @@ static bool worldlodrequiresvoxel(const worldchunk &chunk)
     return index < 0 || worldlodselections[index].desired == 0;
 }
 
-static bool activeworldlodcacheentry(int cacheindex)
-{
-    if(!worldlodcache.inrange(cacheindex)) return false;
-    const worldlodkey &key = worldlodcache[cacheindex].key;
-    loopv(worldlodselections) if(worldlodselections[i].active == key.lod && worldlodselections[i].x == key.x && worldlodselections[i].y == key.y)
-        return true;
-    return false;
-}
-
 static void pruneworldlodcache()
 {
     while(worldlodcache.length() > worldlodcachelimit)
@@ -811,7 +837,7 @@ static void pruneworldlodcache()
         int oldest = -1;
         loopv(worldlodcache)
         {
-            if(activeworldlodcacheentry(i)) continue;
+            if(worldlodcache[i].active) continue;
             if(oldest < 0 || worldlodcache[i].lastused < worldlodcache[oldest].lastused) oldest = i;
         }
         if(oldest < 0) break;
@@ -875,41 +901,69 @@ static void updateworldlods(int chunkx, int chunky)
         if(toucheslod0) worldlodselections[selectionindex].desired = 1;
     }
 
-    int active1 = 0, active2 = 0;
+    loopv(worldlodcache) worldlodcache[i].active = false;
+    int active1 = 0, active2 = 0, missing = 0;
     loopv(worldlodselections)
     {
         worldlodselection &selection = worldlodselections[i];
         if(selection.lastseen != totalmillis) continue;
+        if(selection.active > 0)
+        {
+            const int activeindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
+            if(activeindex >= 0) worldlodcache[activeindex].active = true;
+        }
         if(selection.desired == 0)
         {
             if(worldlodfullready(selection.x, selection.y)) selection.active = 0;
-            continue;
-        }
-
-        const worldlodkey key = currentworldlodkey(selection.x, selection.y, selection.desired);
-        int cacheindex = findworldlodcache(key);
-        if(cacheindex >= 0)
-        {
-            if(selection.active != selection.desired) worldlodcachehits++;
-            selection.active = selection.desired;
-            worldlodcache[cacheindex].lastused = totalmillis;
-            const int chunkindex = findworldchunk(selection.x, selection.y);
-            if(worldchunks.inrange(chunkindex) && worldchunkmounted(worldchunks[chunkindex])) unmountworldchunk(worldchunks[chunkindex]);
         }
         else
         {
+            const worldlodkey key = currentworldlodkey(selection.x, selection.y, selection.desired);
+            const int cacheindex = findworldlodcache(key);
+            if(cacheindex >= 0)
+            {
+                if(selection.active != selection.desired) worldlodcachehits++;
+                selection.active = selection.desired;
+                worldlodcache[cacheindex].lastused = totalmillis;
+                worldlodcache[cacheindex].active = true;
+                const int chunkindex = findworldchunk(selection.x, selection.y);
+                if(worldchunks.inrange(chunkindex) && worldchunkmounted(worldchunks[chunkindex])) unmountworldchunk(worldchunks[chunkindex]);
+            }
+            else missing++;
+        }
+        if(selection.active == 1) active1++;
+        else if(selection.active == 2) active2++;
+    }
+    worldlodmissingchunks = missing;
+
+    if(missing > 0)
+    {
+        canceloptionalworldlodjobs();
+        loopv(worldlodselections)
+        {
+            const worldlodselection &selection = worldlodselections[i];
+            if(selection.lastseen != totalmillis || selection.desired <= 0) continue;
+            const worldlodkey key = currentworldlodkey(selection.x, selection.y, selection.desired);
+            if(findworldlodcache(key) >= 0) continue;
             ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
             const bool visible = !viewfrustumvalid() || isvisiblebb(origin, ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)) < VFC_FOGGED;
             const int priority = selection.desired == 1 ? 0 : visible ? 1 : 3;
             queueworldlodjob(key, priority, selection.distance);
         }
-
-        if(selection.desired == 1 && selection.distance > (worldlodfardistance - 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE)
-            queueworldlodjob(currentworldlodkey(selection.x, selection.y, 2), 2, selection.distance);
-        else if(selection.desired == 2 && selection.distance < (worldlodfardistance + 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE)
-            queueworldlodjob(currentworldlodkey(selection.x, selection.y, 1), 2, selection.distance);
-        if(selection.active == 1) active1++;
-        else if(selection.active == 2) active2++;
+    }
+    else
+    {
+        int prefetchbudget = max(worldlodcachelimit - worldlodcache.length() - worldlodoutstandingjobs(), 0);
+        loopv(worldlodselections)
+        {
+            if(prefetchbudget <= 0) break;
+            const worldlodselection &selection = worldlodselections[i];
+            if(selection.lastseen != totalmillis || selection.desired <= 0) continue;
+            int lod = 0;
+            if(selection.desired == 1 && selection.distance > (worldlodfardistance - 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 2;
+            else if(selection.desired == 2 && selection.distance < (worldlodfardistance + 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 1;
+            if(lod && queueworldlodjob(currentworldlodkey(selection.x, selection.y, lod), 2, selection.distance)) prefetchbudget--;
+        }
     }
 
     for(int i = worldlodselections.length() - 1; i >= 0; --i)
@@ -925,6 +979,7 @@ static void updateworldlods(int chunkx, int chunky)
     }
     TracyPlot("LOD/Active LOD1 chunks", int64_t(active1));
     TracyPlot("LOD/Active LOD2 chunks", int64_t(active2));
+    TracyPlot("LOD/Missing required chunks", int64_t(missing));
     TracyPlot("LOD/Queued jobs", int64_t(queued));
     TracyPlot("LOD/Cache hits", int64_t(worldlodcachehits));
     TracyPlot("LOD/Cache misses", int64_t(worldlodcachemisses));
@@ -1037,6 +1092,7 @@ ICOMMAND(getdebuglodqueued, "", (),
     }
     intret(count);
 });
+ICOMMAND(getdebuglodmissing, "", (), intret(worldlodmissingchunks));
 ICOMMAND(getdebuglodcachehits, "", (), intret(worldlodcachehits));
 ICOMMAND(getdebuglodcachemisses, "", (), intret(worldlodcachemisses));
 ICOMMAND(getdebuglodvertices, "", (), intret(worldlodrendervertices));
