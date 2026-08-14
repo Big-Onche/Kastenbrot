@@ -565,15 +565,6 @@ static int worldchunksectionviewclass(const worldchunk &chunk, int tile, int sec
     return isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) < VFC_FOGGED ? 1 : 0;
 }
 
-static bool worldchunksectionrequired(worldchunk &chunk, int tile, int section, int playerradius)
-{
-    if(!worldlodrequiresvoxel(chunk)) return false;
-    if(drawfullchunk || worldchunksectionnearplayer(chunk, tile, section, playerradius))
-        return true;
-    const uint tilebit = 1U << tile;
-    return (chunk.visibletiles[section] & tilebit) && worldchunksectionviewclass(chunk, tile, section) != 0;
-}
-
 extern int csmfarplane;
 
 static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int tile, int section)
@@ -586,23 +577,20 @@ static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int ti
     return focus->dist_to_bb(bbmin, bbmax) <= max(calcfogcull(), float(csmfarplane));
 }
 
-static bool worldchunksectionoccluded(const worldchunk &chunk, int tile, int section)
-{
-    int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
-    ivec origin = ivec(worldchunkorigin(chunk)).add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE)),
-         actualorigin;
-    int actualsize;
-    const cube &c = lookupcube(origin, -WORLD_SECTION_SIZE, actualorigin, actualsize);
-    return actualorigin == origin && actualsize == WORLD_SECTION_SIZE && c.ext && isvaoccluded(c.ext->va);
-}
-
 static bool worldchunksectionresidentrequired(worldchunk &chunk, int tile, int section, int playerradius)
 {
     if(!worldlodrequiresvoxel(chunk)) return false;
     if(drawfullchunk || worldchunksectionnearplayer(chunk, tile, section, playerradius)) return true;
     const uint tilebit = 1U << tile;
-    return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section) &&
-           !worldchunksectionoccluded(chunk, tile, section);
+    return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section);
+}
+
+static bool worldchunksectionmountwanted(worldchunk &chunk, int tile, int section)
+{
+    if(!worldlodrequiresvoxel(chunk)) return false;
+    if(drawfullchunk) return true;
+    const uint tilebit = 1U << tile;
+    return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section);
 }
 
 static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, int section)
@@ -617,7 +605,13 @@ static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, 
         double delta = focus[i] < bbmin[i] ? bbmin[i] - focus[i] : focus[i] > bbmax[i] ? focus[i] - bbmax[i] : 0;
         distance += static_cast<long long>(delta * delta);
     }
-    return (worldchunksectionviewclass(chunk, tile, section) == 1 ? 1LL<<60 : 0) + distance;
+    int viewclass = worldchunksectionviewclass(chunk, tile, section);
+    if(viewclass != 2) return (1LL << 61) + distance;
+
+    vec direction = vec(bbmin).add(vec(bbmax)).mul(0.5f).sub(focus);
+    float magnitude = direction.magnitude(), alignment = magnitude > 1e-3f ? direction.dot(camdir) / magnitude : 1.0f;
+    long long angularscore = static_cast<long long>(clamp((1.0f - alignment) * 32767.5f, 0.0f, 65535.0f));
+    return (angularscore << 40) + min(distance, (1LL << 40) - 1);
 }
 
 struct worldsectioncandidate
@@ -626,76 +620,12 @@ struct worldsectioncandidate
     long long score;
 };
 
-static bool worldchunksectionwithinnearload(const worldchunk &chunk, int tile, int section)
-{
-    if(!player) return false;
-    int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
-    ivec bbmin = ivec(worldchunkorigin(chunk)).add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE)),
-         bbmax = ivec(bbmin).add(WORLD_SECTION_SIZE);
-    float squareddistance = 0;
-    loopi(3)
-    {
-        float delta = player->o[i] < bbmin[i] ? bbmin[i] - player->o[i] : player->o[i] > bbmax[i] ? player->o[i] - bbmax[i] : 0;
-        squareddistance += delta * delta;
-    }
-    const int distance = WORLD_NEAR_RENDER_BLOCKS * WORLD_BLOCK_SIZE;
-    return squareddistance < float(distance * distance);
-}
-
-static int findworldchunknearmountsections(int chunkx, int chunky, worldsectioncandidate *candidates, int maxcandidates)
-{
-    if(!player || maxcandidates <= 0) return 0;
-    int focusx = int(floorf(player->o.x / WORLD_SECTION_SIZE)),
-        focusy = int(floorf(player->o.y / WORLD_SECTION_SIZE)),
-        focusz = clamp(int(floorf(player->o.z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1),
-        numcandidates = 0;
-
-    for(int radius = 0; radius <= WORLD_NEAR_RENDER_SECTION_RADIUS; ++radius)
-    for(int dz = -radius; dz <= radius; ++dz)
-    for(int dy = -radius; dy <= radius; ++dy)
-    for(int dx = -radius; dx <= radius; ++dx)
-    {
-        if(max(max(abs(dx), abs(dy)), abs(dz)) != radius) continue;
-        int sectionx = focusx + dx, sectiony = focusy + dy, section = focusz + dz;
-        if(sectionx < 0 || sectionx >= WORLD_RUNTIME_SIZE / WORLD_SECTION_SIZE ||
-           sectiony < 0 || sectiony >= WORLD_RUNTIME_SIZE / WORLD_SECTION_SIZE ||
-           section < 0 || section >= WORLD_SECTION_LAYERS)
-            continue;
-        int chunkindex = findworldchunk(worldfirstchunkx + sectionx / WORLD_SECTION_COLUMNS,
-                                        worldfirstchunky + sectiony / WORLD_SECTION_COLUMNS);
-        if(!worldchunks.inrange(chunkindex)) continue;
-        worldchunk &chunk = worldchunks[chunkindex];
-        if(chunk.loading || chunk.corrupted || !chunk.root || !worldchunkinview(chunk, chunkx, chunky)) continue;
-        int tile = (sectiony % WORLD_SECTION_COLUMNS) * WORLD_SECTION_COLUMNS + sectionx % WORLD_SECTION_COLUMNS;
-        if((chunk.mountedtiles[section] & (1U << tile)) || !worldchunksectionwithinnearload(chunk, tile, section) ||
-           !worldchunksectionrequired(chunk, tile, section, 1))
-            continue;
-        worldsectioncandidate &candidate = candidates[numcandidates++];
-        candidate.chunkindex = chunkindex;
-        candidate.tile = tile;
-        candidate.section = section;
-        candidate.score = 0;
-        if(numcandidates >= maxcandidates) return numcandidates;
-    }
-    return numcandidates;
-}
-
 static int findworldchunkmountsections(int chunkx, int chunky,
                                        worldsectioncandidate *candidates, int maxcandidates)
 {
     ZoneScopedN("Chunks/Select render sections");
     if(maxcandidates <= 0) return 0;
-    int numcandidates = findworldchunknearmountsections(chunkx, chunky, candidates, maxcandidates);
-    if(numcandidates >= maxcandidates)
-    {
-        ZoneValue(numcandidates);
-        return numcandidates;
-    }
-
-    const vec *nearfocus = player ? &player->o : camera1 ? &camera1->o : NULL;
-    int focusx = nearfocus ? int(floorf(nearfocus->x / WORLD_SECTION_SIZE)) : INT_MIN,
-        focusy = nearfocus ? int(floorf(nearfocus->y / WORLD_SECTION_SIZE)) : INT_MIN,
-        focusz = nearfocus ? clamp(int(floorf(nearfocus->z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1) : INT_MIN;
+    int numcandidates = 0;
     const uint alltiles = (1U << WORLD_SECTION_TILES) - 1;
     loopv(worldchunks)
     {
@@ -703,25 +633,13 @@ static int findworldchunkmountsections(int chunkx, int chunky,
         if(chunk.loading || chunk.corrupted || !chunk.root || worldchunkfullymounted(chunk) ||
            !worldchunkinview(chunk, chunkx, chunky))
             continue;
-        int chunksectionx = (chunk.x - worldfirstchunkx) * WORLD_SECTION_COLUMNS,
-            chunksectiony = (chunk.y - worldfirstchunky) * WORLD_SECTION_COLUMNS;
         loopk(WORLD_SECTION_LAYERS)
         {
             uint pendingtiles = (drawfullchunk ? alltiles : chunk.visibletiles[k]) & ~chunk.mountedtiles[k];
-            if(nearfocus && abs(k - focusz) <= 1)
-            {
-                loopj(WORLD_SECTION_TILES)
-                {
-                    int sectionx = chunksectionx + j % WORLD_SECTION_COLUMNS,
-                        sectiony = chunksectiony + j / WORLD_SECTION_COLUMNS;
-                    if(abs(sectionx - focusx) <= 1 && abs(sectiony - focusy) <= 1) pendingtiles |= 1U << j;
-                }
-                pendingtiles &= ~chunk.mountedtiles[k];
-            }
             if(!pendingtiles) continue;
             loopj(WORLD_SECTION_TILES) if(pendingtiles & (1U << j))
             {
-                if(!worldchunksectionrequired(chunk, j, k, 1) || worldchunksectionwithinnearload(chunk, j, k)) continue;
+                if(!worldchunksectionmountwanted(chunk, j, k)) continue;
                 long long score = worldchunksectionmountscore(chunk, j, k);
                 int insert = numcandidates;
                 while(insert > 0 && score < candidates[insert - 1].score) --insert;

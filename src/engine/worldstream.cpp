@@ -6,6 +6,7 @@ static void invalidateworldsectionvisibility();
 static void addworldsectionvisibilitychunk(int x, int y);
 static ivec worldorientnormal(int orient);
 static int processworldchunkchanges(int chunkx, int chunky);
+static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeometry = true);
 static int worldcubesectionstate(const cube &c);
 static void setworldchunksectioncontent(worldchunk &chunk, int tile, int section, bool content);
 static void setworldchunksectionopaque(worldchunk &chunk, int tile, int section, bool opaque);
@@ -1651,6 +1652,7 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
     reprioritizeworldchunkqueue(chunkx, chunky, aheadx, aheady);
     processworldchunkresults();
     queueworldchunkview(chunkx, chunky, aheadx, aheady);
+    mountworldchunksafetyregion(chunkx, chunky);
     processworldchunkchanges(chunkx, chunky);
     pruneworldchunkcache(chunkx, chunky, INT_MAX);
     activeworldchunk = findworldchunk(chunkx, chunky);
@@ -1692,16 +1694,26 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
     conoutf(CON_DEBUG, "rebased chunk window around %d_%d", chunkx, chunky);
 }
 
-static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeometry = true)
+static bool worldchunksafetysectionbounds(int &minx, int &maxx, int &miny, int &maxy, int &minz, int &maxz)
 {
-    if(!player) return;
+    if(!player) return false;
+    minx = int(floorf((player->o.x - WORLD_SECTION_SIZE * 0.5f) / WORLD_SECTION_SIZE));
+    miny = int(floorf((player->o.y - WORLD_SECTION_SIZE * 0.5f) / WORLD_SECTION_SIZE));
+    maxx = minx + 1;
+    maxy = miny + 1;
+    int playersection = clamp(int(floorf(player->o.z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1);
+    minz = max(playersection - 1, 0);
+    maxz = min(playersection + 1, int(WORLD_SECTION_LAYERS) - 1);
+    return true;
+}
+
+static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeometry)
+{
+    int minx, maxx, miny, maxy, minz, maxz;
+    if(!worldchunksafetysectionbounds(minx, maxx, miny, maxy, minz, maxz)) return;
     ZoneScopedN("Chunks/Mount safety region");
     ZoneTextF("%d_%d", chunkx, chunky);
-    int playertilex = int(player->o.x) / WORLD_SECTION_SIZE,
-        playertiley = int(player->o.y) / WORLD_SECTION_SIZE,
-        playersection = clamp(int(player->o.z) / WORLD_SECTION_SIZE,
-                              0, int(WORLD_SECTION_LAYERS) - 1),
-        changedsections = 0;
+    int changedsections = 0;
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
@@ -1713,11 +1725,9 @@ static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeome
             int x = j % WORLD_SECTION_COLUMNS, y = j / WORLD_SECTION_COLUMNS,
                 worldtilex = (chunk.x - worldfirstchunkx) * WORLD_SECTION_COLUMNS + x,
                 worldtiley = (chunk.y - worldfirstchunky) * WORLD_SECTION_COLUMNS + y;
-            if(worldtilex != playertilex || worldtiley != playertiley) continue;
+            if(worldtilex < minx || worldtilex > maxx || worldtiley < miny || worldtiley > maxy) continue;
             int sections[3], numsections = 0;
-            for(int section = max(playersection - 1, 0);
-                section <= min(playersection + 1, int(WORLD_SECTION_LAYERS) - 1);
-                ++section)
+            for(int section = minz; section <= maxz; ++section)
             {
                 if(!mountworldchunktile(chunk, section, j)) continue;
                 sections[numsections++] = section;
