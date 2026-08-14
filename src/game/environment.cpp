@@ -15,11 +15,15 @@ namespace game
 
     namespace environment
     {
+        VAR(skyexposurelerp, 1, 50, 60000);
+
         static const int DAY_MILLIS = 10 * 60 * 1000;
         static const int NIGHT_MILLIS = 10 * 60 * 1000;
         static const int CYCLE_MILLIS = DAY_MILLIS + NIGHT_MILLIS;
         static const float START_HOUR = 8.0f;
         static const float MAX_SUN_PITCH = 70.0f;
+        static const int NO_SKY_AMBIENT_COLOR = 0x0A0A0A;
+        static const int NO_SKY_FOG_COLOR = 0x000000;
         static const int DAY_FOG_COLOR = 0x8099B3;
         static const int DAY_AMBIENT_COLOR = 0x5A5A6E;
         static const int NIGHT_FOG_COLOR = 0x0A1026;
@@ -48,6 +52,7 @@ namespace game
 
         static double cyclemillis = START_HOUR * CYCLE_MILLIS / 24.0;
         static bool initialized = false, timefrozen = false;
+        static float skyexposure = 1.0f, targetskyexposure = 1.0f;
         static float worldambientlightlevel = 0.0f;
 
         static float smoothstep(float value)
@@ -110,6 +115,19 @@ namespace game
             newSunlightScale *= sunlightscale;
         }
 
+        static void updateskyexposure()
+        {
+            if(camera1) targetskyexposure = getworldskyexposure(camera1->o);
+        }
+
+        static void smoothskyexposure()
+        {
+            if(curtime <= 0 || skyexposure == targetskyexposure) return;
+            const float amount = 1.0f - expf(-float(curtime) / skyexposurelerp);
+            skyexposure = interpolate(skyexposure, targetskyexposure, amount);
+            if(fabsf(skyexposure - targetskyexposure) < 1e-4f) skyexposure = targetskyexposure;
+        }
+
         static void applylighting(bool resetengine)
         {
             const float hour = float(cyclemillis * 24.0 / CYCLE_MILLIS);
@@ -128,7 +146,9 @@ namespace game
             bvec newSunlight = interpolatecolor(from->sunlightcolor, to->sunlightcolor, blend);
             const bvec timeFog = interpolatecolor(from->fogcolor, to->fogcolor, blend);
             const bvec timeAmbient = interpolatecolor(from->ambientcolor, to->ambientcolor, blend);
-            bvec newAmbient = timeAmbient, newFog = timeFog;
+            bvec newAmbient, newFog;
+            newAmbient.lerp(bvec::hexcolor(NO_SKY_AMBIENT_COLOR), timeAmbient, skyexposure);
+            newFog.lerp(bvec::hexcolor(NO_SKY_FOG_COLOR), timeFog, skyexposure);
             float newSunlightScale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
             const float overcast = currentovercastblend();
             bvec worldAmbient = timeAmbient;
@@ -168,12 +188,15 @@ namespace game
             cyclemillis = START_HOUR * CYCLE_MILLIS / 24.0;
             initialized = true;
             timefrozen = false;
+            skyexposure = targetskyexposure = 1.0f;
             applylighting(true);
         }
 
         void update()
         {
             if(!initialized) reset();
+            updateskyexposure();
+            smoothskyexposure();
             if(!timefrozen && curtime > 0)
             {
                 cyclemillis += curtime;

@@ -487,9 +487,6 @@ extern PFNGLUNIFORM4IVPROC               glUniform4iv_;
 extern PFNGLUNIFORMMATRIX2FVPROC         glUniformMatrix2fv_;
 extern PFNGLUNIFORMMATRIX3FVPROC         glUniformMatrix3fv_;
 extern PFNGLUNIFORMMATRIX4FVPROC         glUniformMatrix4fv_;
-extern PFNGLDISPATCHCOMPUTEPROC          glDispatchCompute_;
-extern PFNGLBINDIMAGETEXTUREPROC         glBindImageTexture_;
-extern PFNGLMEMORYBARRIERPROC            glMemoryBarrier_;
 extern PFNGLBINDATTRIBLOCATIONPROC       glBindAttribLocation_;
 extern PFNGLGETACTIVEUNIFORMPROC         glGetActiveUniform_;
 extern PFNGLENABLEVERTEXATTRIBARRAYPROC  glEnableVertexAttribArray_;
@@ -843,3 +840,4 @@ extern PFNGLGETDEBUGMESSAGELOGPROC glGetDebugMessageLog_;
 
 // GL_ARB_copy_image
 extern PFNGLCOPYIMAGESUBDATAPROC glCopyImageSubData_;
+

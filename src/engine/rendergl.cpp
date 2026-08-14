@@ -3,7 +3,6 @@
 #include "engine.h"
 
 bool hasVAO = false, hasTR = false, hasTSW = false, hasPBO = false, hasFBO = false, hasAFBO = false, hasDS = false, hasTF = false, hasCBF = false, hasS3TC = false, hasFXT1 = false, hasLATC = false, hasRGTC = false, hasAF = false, hasFBB = false, hasFBMS = false, hasTMS = false, hasMSS = false, hasFBMSBS = false, hasUBO = false, hasMBR = false, hasDB2 = false, hasDBB = false, hasTG = false, hasTQ = false, hasPF = false, hasTRG = false, hasTI = false, hasHFV = false, hasHFP = false, hasDBT = false, hasDC = false, hasDBGO = false, hasEGPU4 = false, hasGPU4 = false, hasGPU5 = false, hasBFE = false, hasEAL = false, hasCR = false, hasOQ2 = false, hasES2 = false, hasES3 = false, hasCB = false, hasCI = false, hasTS = false;
-bool hasCompute = false;
 bool mesa = false, intel = false, amd = false, nvidia = false;
 
 int hasstencil = 0;
@@ -133,9 +132,6 @@ PFNGLUNIFORM4IVPROC               glUniform4iv_               = NULL;
 PFNGLUNIFORMMATRIX2FVPROC         glUniformMatrix2fv_         = NULL;
 PFNGLUNIFORMMATRIX3FVPROC         glUniformMatrix3fv_         = NULL;
 PFNGLUNIFORMMATRIX4FVPROC         glUniformMatrix4fv_         = NULL;
-PFNGLDISPATCHCOMPUTEPROC          glDispatchCompute_          = NULL;
-PFNGLBINDIMAGETEXTUREPROC         glBindImageTexture_         = NULL;
-PFNGLMEMORYBARRIERPROC            glMemoryBarrier_            = NULL;
 PFNGLBINDATTRIBLOCATIONPROC       glBindAttribLocation_       = NULL;
 PFNGLGETACTIVEUNIFORMPROC         glGetActiveUniform_         = NULL;
 PFNGLENABLEVERTEXATTRIBARRAYPROC  glEnableVertexAttribArray_  = NULL;
@@ -986,13 +982,6 @@ void gl_checkextensions()
 
     if(glversion >= 430)
     {
-#ifndef __APPLE__
-        glDispatchCompute_ =      (PFNGLDISPATCHCOMPUTEPROC) getprocaddress("glDispatchCompute");
-        glBindImageTexture_ =     (PFNGLBINDIMAGETEXTUREPROC)getprocaddress("glBindImageTexture");
-        glMemoryBarrier_ =        (PFNGLMEMORYBARRIERPROC)   getprocaddress("glMemoryBarrier");
-        hasCompute = glDispatchCompute_ && glBindImageTexture_ && glMemoryBarrier_;
-#endif
-
         glDebugMessageControl_ =  (PFNGLDEBUGMESSAGECONTROLPROC) getprocaddress("glDebugMessageControl");
         glDebugMessageInsert_ =   (PFNGLDEBUGMESSAGEINSERTPROC)  getprocaddress("glDebugMessageInsert");
         glDebugMessageCallback_ = (PFNGLDEBUGMESSAGECALLBACKPROC)getprocaddress("glDebugMessageCallback");
@@ -3037,7 +3026,6 @@ void gl_drawframe()
 
 void cleanupgl()
 {
-    cleanupddgi();
     clearminimap();
     cleanuptimers();
     cleanupscreenquad();

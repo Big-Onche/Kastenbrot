@@ -1952,6 +1952,53 @@ namespace server
         return (color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f) * (1.25f * 16.0f / 255.0f);
     }
 
+    static bool servercelldirectsky(const ivec &cell)
+    {
+        if(cell.x < 0 || cell.y < 0 || cell.x >= SERVER_WORLD_MAP_SIZE || cell.y >= SERVER_WORLD_MAP_SIZE || cell.z < 0 ||
+           cell.z >= SERVER_WORLD_MAP_SIZE || serverblocksolid(cell)) return false;
+        for(int z = cell.z + SERVER_WORLD_BLOCK_SIZE; z < SERVER_WORLD_MAP_SIZE; z += SERVER_WORLD_BLOCK_SIZE)
+            if(serverblocksolid(ivec(cell.x, cell.y, z))) return false;
+        return true;
+    }
+
+    static int serverskylightlevel(const vec &position)
+    {
+        struct skynode
+        {
+            ivec cell;
+            int distance;
+
+            skynode(const ivec &cell, int distance) : cell(cell), distance(distance) {}
+        };
+        static const ivec directions[] =
+        {
+            ivec(SERVER_WORLD_BLOCK_SIZE, 0, 0), ivec(-SERVER_WORLD_BLOCK_SIZE, 0, 0),
+            ivec(0, SERVER_WORLD_BLOCK_SIZE, 0), ivec(0, -SERVER_WORLD_BLOCK_SIZE, 0),
+            ivec(0, 0, SERVER_WORLD_BLOCK_SIZE), ivec(0, 0, -SERVER_WORLD_BLOCK_SIZE)
+        };
+        const ivec start = serverblockat(position);
+        if(serverblocksolid(start)) return 0;
+        vector<skynode> queue;
+        hashtable<ivec, int> visited(1 << 12);
+        queue.add(skynode(start, 0));
+        visited[start] = 0;
+        loopv(queue)
+        {
+            const skynode node = queue[i];
+            if(servercelldirectsky(node.cell)) return 16 - node.distance;
+            if(node.distance >= 15) continue;
+            loopj(int(sizeof(directions) / sizeof(directions[0])))
+            {
+                const ivec next = ivec(node.cell).add(directions[j]);
+                if(next.x < 0 || next.y < 0 || next.z < 0 || next.x >= SERVER_WORLD_MAP_SIZE || next.y >= SERVER_WORLD_MAP_SIZE ||
+                   next.z >= SERVER_WORLD_MAP_SIZE || visited.access(next) || serverblocksolid(next)) continue;
+                visited[next] = node.distance + 1;
+                queue.add(skynode(next, node.distance + 1));
+            }
+        }
+        return 0;
+    }
+
     static int serverequippeditem(const clientinfo &ci)
     {
         if(servercreative()) return ci.selectedcreative;
@@ -1961,7 +2008,8 @@ namespace server
 
     static int serverlightlevel(const vec &position)
     {
-        float level = serversunlightintensity() * 16.0f + serverambientlightlevel();
+        const float skyexposure = serverskylightlevel(position) / 16.0f;
+        float level = skyexposure * (serversunlightintensity() * 16.0f + serverambientlightlevel());
         loopv(serverworldactions)
         {
             const serverworldaction &state = *serverworldactions[i];

@@ -122,7 +122,6 @@ static inline bool pvsoccluded(const ivec &bborigin, int size)
 // rendergl
 extern bool hasVAO, hasTR, hasTSW, hasPBO, hasFBO, hasAFBO, hasDS, hasTF, hasCBF, hasS3TC, hasFXT1, hasLATC, hasRGTC, hasAF, hasFBB, hasFBMS, hasTMS, hasMSS, hasFBMSBS, hasUBO, hasMBR, hasDB2, hasDBB, hasTG, hasTQ, hasPF, hasTRG, hasTI, hasHFV, hasHFP, hasDBT, hasDC, hasDBGO, hasEGPU4, hasGPU4, hasGPU5, hasBFE, hasEAL, hasCR, hasOQ2, hasES2, hasES3, hasCB, hasCI, hasTS;
 extern int glversion, glslversion, glcompat;
-extern bool hasCompute;
 extern int maxdrawbufs, maxdualdrawbufs;
 
 enum { DRAWTEX_NONE = 0, DRAWTEX_ENVMAP, DRAWTEX_MINIMAP, DRAWTEX_MODELPREVIEW };
@@ -347,13 +346,6 @@ extern vector<vec2> msaapositions;
 enum { AA_UNUSED = 0, AA_LUMA, AA_MASKED, AA_SPLIT, AA_SPLIT_LUMA, AA_SPLIT_MASKED };
 
 extern void cleanupgbuffer();
-extern void updateddgi();
-extern void cleanupddgi();
-extern void invalidateddgi();
-extern void markddgioccupancydirty(const ivec &bbmin, const ivec &bbmax);
-extern bool ddgienabled();
-extern void bindddgitextures();
-extern void setddgiglobals();
 extern void initgbuffer();
 extern bool usepacknorm();
 extern void maskgbuffer(const char *mask);

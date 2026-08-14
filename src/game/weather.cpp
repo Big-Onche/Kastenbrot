@@ -401,7 +401,7 @@ namespace game
             absolute.z -= player1->eyeheight;
             const float playerheight = worldpositionheight(absolute.z);
             worldpositiontoabsolute(absolute);
-            const float intensity = samplecurrentprecipitation(absolute.x, absolute.y);
+            const float intensity = samplecurrentprecipitation(absolute.x, absolute.y) * clamp(getworldskyexposure(camera1->o), 0.0f, 1.0f);
             if(intensity <= 1e-3f)
             {
                 rainbudget = snowbudget = 0.0f;
