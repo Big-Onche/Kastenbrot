@@ -119,6 +119,7 @@ VARP(maxchunkdist, 2, 3, WORLD_MAX_CHUNK_DIST);
 #include "../game/worldcontent.cpp"
 #include "worldcache.cpp"
 #include "worldstream.cpp"
+#include "worldlod.cpp"
 #include "../game/worldrender.cpp"
 #include "worldvisibility.cpp"
 #include "worldedit.cpp"

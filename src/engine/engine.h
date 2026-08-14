@@ -465,6 +465,7 @@ extern void restorevfcP();
 extern bool viewfrustumvalid();
 extern bool isvaoccluded(const vtxarray *va);
 extern void rendergeom();
+extern void renderworldlods();
 extern int findalphavas();
 extern void renderrefractmask();
 extern void renderalphageom(int side);

@@ -7,6 +7,23 @@ struct worldgencontext;
 struct worldscatterinstance;
 template<class T> struct vector;
 
+enum worldsurfacematerial
+{
+    WORLD_SURFACE_GRASS = 0,
+    WORLD_SURFACE_STONE,
+    WORLD_SURFACE_SAND,
+    WORLD_SURFACE_SNOW,
+    WORLD_SURFACE_DIRT
+};
+
+struct worldsurfacesample
+{
+    int height, waterheight, material;
+    bool water;
+
+    worldsurfacesample() : height(0), waterheight(0), material(WORLD_SURFACE_GRASS), water(false) {}
+};
+
 namespace game
 {
     extern int getworldseed();
@@ -16,6 +33,8 @@ namespace game
     extern void saveworldsettings(stream *f);
     extern worldgencontext *createworldgeneration(bool prepared, bool remip, SDL_atomic_t *cancelled = NULL);
     extern void destroyworldgeneration(worldgencontext *generation);
+    extern bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height);
+    extern bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface);
     extern cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized);
     extern void generateworldscatter(worldgencontext *generation, cube *root, int chunkx, int chunky, vector<worldscatterinstance> &scatter);
     extern void generateworldscatter(cube *root, int chunkx, int chunky, vector<worldscatterinstance> &scatter);

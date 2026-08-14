@@ -2262,6 +2262,7 @@ void rendergeom()
     if(multipassing) glDepthFunc(GL_LESS);
 
     cleanupgeom(cur);
+    renderworldlods();
 
     if(!doOQ)
     {

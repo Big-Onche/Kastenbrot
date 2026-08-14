@@ -567,6 +567,7 @@ static int worldchunksectionviewclass(const worldchunk &chunk, int tile, int sec
 
 static bool worldchunksectionrequired(worldchunk &chunk, int tile, int section, int playerradius)
 {
+    if(!worldlodrequiresvoxel(chunk)) return false;
     if(drawfullchunk || worldchunksectionnearplayer(chunk, tile, section, playerradius))
         return true;
     const uint tilebit = 1U << tile;
@@ -597,6 +598,7 @@ static bool worldchunksectionoccluded(const worldchunk &chunk, int tile, int sec
 
 static bool worldchunksectionresidentrequired(worldchunk &chunk, int tile, int section, int playerradius)
 {
+    if(!worldlodrequiresvoxel(chunk)) return false;
     if(drawfullchunk || worldchunksectionnearplayer(chunk, tile, section, playerradius)) return true;
     const uint tilebit = 1U << tile;
     return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section) &&

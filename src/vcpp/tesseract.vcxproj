@@ -1150,6 +1150,7 @@
     <None Include="..\engine\worlddiff.cpp" />
     <None Include="..\engine\worldedit.cpp" />
     <None Include="..\engine\worldstream.cpp" />
+    <None Include="..\engine\worldlod.cpp" />
     <None Include="..\engine\worldvisibility.cpp" />
     <None Include="..\game\worldcontent.cpp" />
     <None Include="..\game\worldrender.cpp" />

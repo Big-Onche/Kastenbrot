@@ -303,6 +303,7 @@
     <None Include="..\engine\worlddiff.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldedit.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldstream.cpp"><Filter>engine</Filter></None>
+    <None Include="..\engine\worldlod.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldvisibility.cpp"><Filter>engine</Filter></None>
     <None Include="..\game\worldcontent.cpp"><Filter>game</Filter></None>
     <None Include="..\game\worldrender.cpp"><Filter>game</Filter></None>

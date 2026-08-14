@@ -1963,6 +1963,36 @@ namespace game
         delete generation;
     }
 
+    bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height)
+    {
+        if(!generation || generation->iscanceled()) return false;
+        height = generation->generator.height(blockx, blocky);
+        return !generation->iscanceled();
+    }
+
+    bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface)
+    {
+        if(!generation || generation->iscanceled()) return false;
+        const int height = generation->generator.height(blockx, blocky),
+                  biome = generation->generator.biome(blockx, blocky, height);
+        const int beachminimum = generation->settings.sealevel + min(generation->settings.beachminheight, generation->settings.beachmaxheight),
+                  beachmaximum = generation->settings.sealevel + max(generation->settings.beachminheight, generation->settings.beachmaxheight);
+        const bool cliff = generation->generator.cliff(blockx, blocky, height),
+                   rock = generation->generator.rock(blockx, blocky, height),
+                   beach = height >= beachminimum && height <= beachmaximum && generation->generator.beach(blockx, blocky);
+
+        surface.height = height;
+        surface.waterheight = generation->settings.sealevel;
+        surface.water = height < surface.waterheight;
+        if(cliff) surface.material = WORLD_SURFACE_STONE;
+        else if(rock) surface.material = biome == WORLD_BIOME_SNOW ? WORLD_SURFACE_SNOW : WORLD_SURFACE_STONE;
+        else if(beach || biome == WORLD_BIOME_DESERT) surface.material = WORLD_SURFACE_SAND;
+        else if(biome == WORLD_BIOME_OCEAN) surface.material = WORLD_SURFACE_DIRT;
+        else if(biome == WORLD_BIOME_SNOW) surface.material = WORLD_SURFACE_SNOW;
+        else surface.material = WORLD_SURFACE_GRASS;
+        return !generation->iscanceled();
+    }
+
     cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized)
     {
         if(!generation) return NULL;
