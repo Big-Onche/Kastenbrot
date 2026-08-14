@@ -595,6 +595,7 @@ static bool worldchunksectionmountwanted(worldchunk &chunk, int tile, int sectio
 
 static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, int section)
 {
+    static const long long tierstride = 1LL << 60;
     const vec &focus = camera1 ? camera1->o : player ? player->o : vec(0, 0, 0);
     int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
     ivec bbmin = ivec(worldchunkorigin(chunk)).add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE)),
@@ -606,12 +607,17 @@ static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, 
         distance += static_cast<long long>(delta * delta);
     }
     int viewclass = worldchunksectionviewclass(chunk, tile, section);
-    if(viewclass != 2) return (1LL << 61) + distance;
+    if(viewclass != 2) return 2 * tierstride + min(distance, tierstride - 1);
 
     vec direction = vec(bbmin).add(vec(bbmax)).mul(0.5f).sub(focus);
     float magnitude = direction.magnitude(), alignment = magnitude > 1e-3f ? direction.dot(camdir) / magnitude : 1.0f;
     long long angularscore = static_cast<long long>(clamp((1.0f - alignment) * 32767.5f, 0.0f, 65535.0f));
-    return (angularscore << 40) + min(distance, (1LL << 40) - 1);
+    float raydistance = 0;
+    int rayorient = -1;
+    bool cameraaxis = rayboxintersect(vec(bbmin), vec(WORLD_SECTION_SIZE, WORLD_SECTION_SIZE, WORLD_SECTION_SIZE), focus, camdir,
+                                      raydistance, rayorient) && raydistance >= 0;
+    long long distancescore = min(distance, (tierstride - 1) >> 16);
+    return (cameraaxis ? 0 : tierstride) + (distancescore << 16) + angularscore;
 }
 
 struct worldsectioncandidate

@@ -5,9 +5,9 @@
 VARP(worldlod, 0, 1, 1);
 VARP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS);
 VARP(worldlod2resolution, 4, 16, WORLD_CHUNK_BLOCKS);
-VAR(worldlodneardistance, 16, 256, 4096); // blocks from the chunk AABB
-VAR(worldlodfardistance, 32, 768, 4096);
-VAR(worldlodmaxdistance, 64, 1024, 4096);
+VAR(worldlodneardistance, 16, 192, 4096); // blocks from the chunk AABB
+VAR(worldlodfardistance, 32, 512, 4096);
+VAR(worldlodmaxdistance, 64, 768, 4096);
 VARP(worldlodhysteresis, 0, 16, 512);
 VARP(worldlodskirtdepth, 1, 4, 64);
 VARP(worldlodthreads, 1, 2, 4);
