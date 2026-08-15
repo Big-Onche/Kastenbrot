@@ -602,22 +602,92 @@ static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int ti
     return focus->dist_to_bb(bbmin, bbmax) <= max(calcfogcull(), float(csmfarplane));
 }
 
-static bool worldchunksectionresidentrequired(worldchunk &chunk, int tile, int section, int playerradius)
+static int worldchunksectiongeometrymask(const worldchunk &chunk, int tile, int section)
 {
-    if(!worldlodrequiresvoxel(chunk)) return false;
-    if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER) return worldchunksectionnearplayer(chunk, tile, section, playerradius);
-    if(drawfullchunk || worldchunksectionnearplayer(chunk, tile, section, playerradius)) return true;
-    const uint tilebit = 1U << tile;
-    return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section);
+    const uchar flags = chunk.renderdata.flags[section][tile];
+    if(flags&SECTION_NO_RENDER) return 0;
+    int mask = 0;
+    if(flags&(SECTION_EXTERIOR | SECTION_WATER)) mask |= 1 << WORLD_VA_EXTERIOR;
+    if(flags&SECTION_INTERIOR) mask |= 1 << WORLD_VA_INTERIOR;
+    return mask;
 }
 
-static bool worldchunksectionmountwanted(worldchunk &chunk, int tile, int section)
+static bool worldplayerincave()
 {
-    if(!worldlodrequiresvoxel(chunk)) return false;
-    if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER) return false;
-    if(drawfullchunk) return true;
+    const vec *focus = camera1 ? &camera1->o : player ? &player->o : NULL;
+    if(!focus) return false;
+    const int chunkx = worldfirstchunkx + int(floorf(focus->x / WORLD_CHUNK_SIZE)),
+              chunky = worldfirstchunky + int(floorf(focus->y / WORLD_CHUNK_SIZE)),
+              chunkindex = findworldchunk(chunkx, chunky);
+    if(!worldchunks.inrange(chunkindex)) return false;
+    const worldchunk &chunk = worldchunks[chunkindex];
+    if(chunk.loading || chunk.corrupted || !chunk.root) return false;
+    const ivec chunkorigin = worldchunkorigin(chunk);
+    const int tilex = clamp(int(floorf((focus->x - chunkorigin.x) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
+              tiley = clamp(int(floorf((focus->y - chunkorigin.y) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
+              tile = tiley * WORLD_SECTION_COLUMNS + tilex,
+              section = clamp(int(floorf(focus->z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1);
+    const uchar flags = chunk.renderdata.flags[section][tile];
+    if(!(flags&SECTION_INTERIOR)) return false;
+    return !(flags&(SECTION_EXTERIOR | SECTION_WATER));
+}
+
+static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section, bool cavemode)
+{
+    if(!worldlodrequiresvoxel(chunk)) return 0;
+    const int available = worldchunksectiongeometrymask(chunk, tile, section);
+    if(!available) return 0;
+    if(drawfullchunk) return available;
     const uint tilebit = 1U << tile;
-    return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section);
+    if(!(chunk.visibletiles[section] & tilebit)) return 0;
+    if(cavemode)
+        return worldchunksectionnearplayer(chunk, tile, section, chunkinteriorradius) ? available & (1 << WORLD_VA_INTERIOR) : 0;
+    return worldchunksectionwithinresidentrange(chunk, tile, section) ? available & (1 << WORLD_VA_EXTERIOR) : 0;
+}
+
+static void updateworldsectionresidencywanted()
+{
+    ZoneScopedN("Chunks/Update wanted VA residency");
+    const bool cavemode = worldplayerincave();
+    loopv(worldchunks)
+    {
+        worldchunk &chunk = worldchunks[i];
+        if(chunk.loading || chunk.corrupted || !chunk.root) continue;
+        loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+        {
+            worldsectionvaresidency &residency = chunk.varesidency[section][tile];
+            const int wanted = worldchunksectionwantedmask(chunk, tile, section, cavemode);
+            if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER)
+            {
+                if(worldsectionvaactive(residency)) worldvanorenderskipsframe++;
+                memclear(residency);
+                continue;
+            }
+            loopk(WORLD_VA_GEOMETRY_COUNT)
+            {
+                const bool requested = (wanted & (1 << k)) != 0;
+                if(requested)
+                {
+                    residency.lastwanted[k] = totalmillis;
+                    if(residency.state[k] == EVICTABLE) residency.state[k] = RESIDENT;
+                    else if(residency.state[k] == NOT_RESIDENT)
+                        residency.state[k] = worldsectionvaphysicalresident(residency) ? RESIDENT : PENDING_BUILD;
+                }
+                else if(residency.state[k] == RESIDENT) residency.state[k] = EVICTABLE;
+                else if(residency.state[k] == PENDING_BUILD) residency.state[k] = NOT_RESIDENT;
+                else if(residency.state[k] == EVICTABLE && totalmillis - residency.lastwanted[k] >= chunkvaevictiongrace)
+                {
+                    int keep = -1;
+                    loopl(WORLD_VA_GEOMETRY_COUNT) if(l != k && residency.state[l] == RESIDENT) { keep = l; break; }
+                    if(keep >= 0)
+                    {
+                        residency.state[k] = NOT_RESIDENT;
+                    }
+                }
+            }
+        }
+    }
+    TracyPlot("Chunks/Cave residency mode", int64_t(cavemode ? 1 : 0));
 }
 
 static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, int section)
@@ -633,18 +703,10 @@ static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, 
         double delta = focus[i] < bbmin[i] ? bbmin[i] - focus[i] : focus[i] > bbmax[i] ? focus[i] - bbmax[i] : 0;
         distance += static_cast<long long>(delta * delta);
     }
-    int viewclass = worldchunksectionviewclass(chunk, tile, section);
-    if(viewclass != 2) return 2 * tierstride + min(distance, tierstride - 1);
-
-    vec direction = vec(bbmin).add(vec(bbmax)).mul(0.5f).sub(focus);
-    float magnitude = direction.magnitude(), alignment = magnitude > 1e-3f ? direction.dot(camdir) / magnitude : 1.0f;
-    long long angularscore = static_cast<long long>(clamp((1.0f - alignment) * 32767.5f, 0.0f, 65535.0f));
-    float raydistance = 0;
-    int rayorient = -1;
-    bool cameraaxis = rayboxintersect(vec(bbmin), vec(WORLD_SECTION_SIZE, WORLD_SECTION_SIZE, WORLD_SECTION_SIZE), focus, camdir,
-                                      raydistance, rayorient) && raydistance >= 0;
-    long long distancescore = min(distance, (tierstride - 1) >> 16);
-    return (cameraaxis ? 0 : tierstride) + (distancescore << 16) + angularscore;
+    const bool containscamera = focus.x >= bbmin.x && focus.x < bbmax.x && focus.y >= bbmin.y && focus.y < bbmax.y &&
+                                focus.z >= bbmin.z && focus.z < bbmax.z;
+    const int tier = containscamera ? 0 : worldchunksectionviewclass(chunk, tile, section) == 2 ? 1 : 2;
+    return tier * tierstride + min(distance, tierstride - 1);
 }
 
 struct worldsectioncandidate
@@ -659,20 +721,19 @@ static int findworldchunkmountsections(int chunkx, int chunky,
     ZoneScopedN("Chunks/Select render sections");
     if(maxcandidates <= 0) return 0;
     int numcandidates = 0;
-    const uint alltiles = (1U << WORLD_SECTION_TILES) - 1;
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
-        if(chunk.loading || chunk.corrupted || !chunk.root || worldchunkfullymounted(chunk) ||
-           !worldchunkinview(chunk, chunkx, chunky))
+        if(chunk.loading || chunk.corrupted || !chunk.root || !worldchunkinview(chunk, chunkx, chunky))
             continue;
         loopk(WORLD_SECTION_LAYERS)
         {
-            uint pendingtiles = (drawfullchunk ? alltiles : chunk.visibletiles[k]) & ~chunk.mountedtiles[k];
-            if(!pendingtiles) continue;
-            loopj(WORLD_SECTION_TILES) if(pendingtiles & (1U << j))
+            loopj(WORLD_SECTION_TILES)
             {
-                if(!worldchunksectionmountwanted(chunk, j, k)) continue;
+                const worldsectionvaresidency &residency = chunk.varesidency[k][j];
+                bool pending = false;
+                loopl(WORLD_VA_GEOMETRY_COUNT) if(residency.state[l] == PENDING_BUILD) { pending = true; break; }
+                if(!pending) continue;
                 long long score = worldchunksectionmountscore(chunk, j, k);
                 int insert = numcandidates;
                 while(insert > 0 && score < candidates[insert - 1].score) --insert;
@@ -721,13 +782,8 @@ static int findworldchunkcachedsections(int chunkx, int chunky,
                                         worldsectioncandidate *candidates, int maxcandidates)
 {
     if(drawfullchunk || maxcandidates <= 0) return 0;
-    ZoneScopedN("Chunks/Select non-visible sections for caching");
-    vec focus = camera1 ? camera1->o : player ? player->o : vec(0, 0, 0);
-    int focusx = int(floorf(focus.x / WORLD_SECTION_SIZE)),
-        focusy = int(floorf(focus.y / WORLD_SECTION_SIZE)),
-        focusz = clamp(int(floorf(focus.z / WORLD_SECTION_SIZE)),
-                       0, int(WORLD_SECTION_LAYERS) - 1),
-        numcandidates = 0;
+    ZoneScopedN("Chunks/Select evictable VAs");
+    int numcandidates = 0;
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
@@ -740,15 +796,25 @@ static int findworldchunkcachedsections(int chunkx, int chunky,
             if(!mountedtiles) continue;
             loopj(WORLD_SECTION_TILES) if(mountedtiles & (1U << j))
             {
-                int x = j % WORLD_SECTION_COLUMNS, y = j / WORLD_SECTION_COLUMNS,
-                    sectionx = (chunk.x - worldfirstchunkx) * WORLD_SECTION_COLUMNS + x,
-                    sectiony = (chunk.y - worldfirstchunky) * WORLD_SECTION_COLUMNS + y,
-                    dx = sectionx - focusx, dy = sectiony - focusy;
-                if(worldchunksectionresidentrequired(chunk, j, k, 2)) continue;
-                int dz = k - focusz;
-                long long distance = (long long)dx * dx + (long long)dy * dy +
-                                     (long long)dz * dz,
-                          score = distance;
+                const worldsectionvaresidency &residency = chunk.varesidency[k][j];
+                bool evictable = true, hascachedgeometry = false;
+                loopl(WORLD_VA_GEOMETRY_COUNT)
+                {
+                    if(residency.state[l] == RESIDENT || residency.state[l] == PENDING_BUILD || residency.state[l] == PENDING_UPLOAD)
+                    {
+                        evictable = false;
+                        break;
+                    }
+                    if(residency.state[l] != EVICTABLE) continue;
+                    hascachedgeometry = true;
+                    if(totalmillis - residency.lastwanted[l] < chunkvaevictiongrace)
+                    {
+                        evictable = false;
+                        break;
+                    }
+                }
+                if(!evictable || !hascachedgeometry) continue;
+                const long long score = worldchunksectionmountscore(chunk, j, k);
                 int insert = numcandidates;
                 while(insert > 0 && score > candidates[insert - 1].score) --insert;
                 if(insert >= maxcandidates) continue;
@@ -765,6 +831,18 @@ static int findworldchunkcachedsections(int chunkx, int chunky,
     }
     ZoneValue(numcandidates);
     return numcandidates;
+}
+
+static bool evictworldchunksectionva(worldchunk &chunk, int tile, int section)
+{
+    worldsectionvaresidency &residency = chunk.varesidency[section][tile];
+    bool evictable = false;
+    loopi(WORLD_VA_GEOMETRY_COUNT) if(residency.state[i] == EVICTABLE) { evictable = true; break; }
+    if(!evictable) return false;
+    clearworldsectionvaresidency(chunk, tile, section);
+    queueworldchunksectionupdates(chunk, tile, &section, 1);
+    worldvaevictionsframe++;
+    return true;
 }
 
 static int processworldchunkvaupdates()
@@ -784,6 +862,15 @@ static int processworldchunkvaupdates()
         ZoneScopedN("Chunks/Commit invalidated VA updates");
         ZoneValue(pending);
         commitchanges();
+    }
+    loopv(worldchunkvaupdates)
+    {
+        worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdates[i]);
+        if(!owner) continue;
+        const int chunkindex = findworldchunk(owner->chunkx, owner->chunky);
+        if(!worldchunks.inrange(chunkindex)) continue;
+        worldsectionvaresidency &residency = worldchunks[chunkindex].varesidency[owner->section][owner->tile];
+        loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_UPLOAD) residency.state[j] = RESIDENT;
     }
     worldchunkvaupdates.setsize(0);
     worldchunkvaupdateset.clear();
@@ -805,7 +892,10 @@ static int processworldchunkchanges(int chunkx, int chunky)
 {
     ZoneScopedN("Chunks/Process geometry changes");
     ZoneTextF("focus %d_%d", chunkx, chunky);
+    resetworldvauploadstats();
+    worldvaevictionsframe = worldvanorenderskipsframe = 0;
     updateworldsectionvisibility(chunkx, chunky);
+    updateworldsectionresidencywanted();
     Uint64 phasestart = SDL_GetPerformanceCounter();
     const Uint64 frequency = SDL_GetPerformanceFrequency();
     int changedcolumns = 0, unloaded = 0, unloadedsections = 0,
@@ -844,8 +934,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
                 if(unloaded && elapsed >= chunkcleanupbudget) break;
                 worldsectioncandidate &candidate = candidates[i];
                 worldchunk &chunk = worldchunks[candidate.chunkindex];
-                if(!unmountworldchunktile(chunk, candidate.section, candidate.tile)) continue;
-                queueworldchunksectionupdates(chunk, candidate.tile, &candidate.section, 1);
+                if(!evictworldchunksectionva(chunk, candidate.tile, candidate.section)) continue;
                 unloadedsections++;
                 unloaded++;
                 changedcolumns++;
@@ -869,7 +958,16 @@ static int processworldchunkchanges(int chunkx, int chunky)
             if(mounted && elapsed >= chunkpublishbudget) break;
             worldsectioncandidate &candidate = candidates[i];
             worldchunk &chunk = worldchunks[candidate.chunkindex];
-            if(!mountworldchunktile(chunk, candidate.section, candidate.tile)) continue;
+            mountworldchunktile(chunk, candidate.section, candidate.tile);
+            if(!(chunk.mountedtiles[candidate.section] & (1U << candidate.tile))) continue;
+            worldsectionvaresidency &residency = chunk.varesidency[candidate.section][candidate.tile];
+            bool queued = false;
+            loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_BUILD)
+            {
+                residency.state[j] = PENDING_UPLOAD;
+                queued = true;
+            }
+            if(!queued) continue;
             queueworldchunksectionupdates(chunk, candidate.tile, &candidate.section, 1);
             mountedsections++;
             mounted++;
@@ -880,6 +978,28 @@ static int processworldchunkchanges(int chunkx, int chunky)
     }
 
     processworldchunkvaupdates();
+    int residentexterior = 0, residentinterior = 0, pendingbuilds = 0, pendinguploads = 0;
+    loopv(worldchunks) loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+    {
+        const worldsectionvaresidency &residency = worldchunks[i].varesidency[section][tile];
+        if(residency.state[WORLD_VA_EXTERIOR] == RESIDENT || residency.state[WORLD_VA_EXTERIOR] == EVICTABLE) residentexterior++;
+        if(residency.state[WORLD_VA_INTERIOR] == RESIDENT || residency.state[WORLD_VA_INTERIOR] == EVICTABLE) residentinterior++;
+        loopj(WORLD_VA_GEOMETRY_COUNT)
+        {
+            if(residency.state[j] == PENDING_BUILD) pendingbuilds++;
+            else if(residency.state[j] == PENDING_UPLOAD) pendinguploads++;
+        }
+    }
+    int uploadedbytes = 0, uploadedvertices = 0;
+    getworldvauploadstats(uploadedbytes, uploadedvertices);
+    TracyPlot("Chunks/Resident exterior VAs", int64_t(residentexterior));
+    TracyPlot("Chunks/Resident interior VAs", int64_t(residentinterior));
+    TracyPlot("Chunks/Pending VA builds", int64_t(pendingbuilds));
+    TracyPlot("Chunks/Pending VA uploads", int64_t(pendinguploads));
+    TracyPlot("Chunks/VA evictions", int64_t(worldvaevictionsframe));
+    TracyPlot("Chunks/NO_RENDER skips", int64_t(worldvanorenderskipsframe));
+    TracyPlot("Chunks/VA uploaded bytes", int64_t(uploadedbytes));
+    TracyPlot("Chunks/VA uploaded vertices", int64_t(uploadedvertices));
     return changedcolumns;
 }
 

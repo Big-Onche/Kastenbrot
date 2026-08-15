@@ -158,11 +158,6 @@ static worldlodkey currentworldlodkey(int x, int y, int lod)
 static bool worldlodpriorityless(int apriority, float adistance, float aalignment, int bpriority, float bdistance, float balignment)
 {
     if(apriority != bpriority) return apriority < bpriority;
-    if(apriority == 1)
-    {
-        if(aalignment != balignment) return aalignment > balignment;
-        return adistance < bdistance;
-    }
     if(adistance != bdistance) return adistance < bdistance;
     return aalignment > balignment;
 }
@@ -834,9 +829,10 @@ static worldlodcandidate makeworldlodcandidate(const worldlodselection &selectio
                           ? (camdir.x * delta.x + camdir.y * delta.y) / (directionlength * deltalength) : 0;
     const ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
     const bool visible = !viewfrustumvalid() || isvisiblebb(origin, ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)) < VFC_FOGGED;
-    // Close the ring around the camera first, then fill the frustum from its center outward, and finally cover nearby off-screen chunks.
-    const float centerradius = worldlodneardistance * WORLD_BLOCK_SIZE + WORLD_CHUNK_SIZE;
-    const int priority = selection.distance <= centerradius ? 0 : visible ? 1 : 2;
+    const int camerachunkx = worldfirstchunkx + int(floorf(camera1->o.x / WORLD_CHUNK_SIZE)),
+              camerachunky = worldfirstchunky + int(floorf(camera1->o.y / WORLD_CHUNK_SIZE));
+    // The camera chunk is first, followed by frustum-intersecting chunks nearest-first, then surrounding chunks nearest-first.
+    const int priority = selection.x == camerachunkx && selection.y == camerachunky ? 0 : visible ? 1 : 2;
     return worldlodcandidate(currentworldlodkey(selection.x, selection.y, selection.desired), priority, selection.distance, alignment);
 }
 

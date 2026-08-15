@@ -216,6 +216,7 @@ extern void clearworldchunks();
 extern void closeproceduralworld(bool save);
 extern int getworldsectionsize();
 extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section);
+extern bool worldsectionvaenabled(const ivec &origin, int size);
 extern bool isworldleafcube(const cube &c);
 extern int getmippedtexture(const cube &p, int orient);
 extern void forcemip(cube &c, bool fixtex = true);
@@ -246,6 +247,8 @@ extern int calcmergedsize(int orient, const ivec &co, int size, const vertinfo *
 extern void invalidatemerges(cube &c, const ivec &co, int size, bool msg);
 extern void calcmerges();
 extern void calcmerges(const ivec &origin, int size);
+extern void resetworldvauploadstats();
+extern void getworldvauploadstats(int &bytes, int &vertices);
 extern int mergefaces(int orient, facebounds *m, int sz);
 extern void mincubeface(const cube &cu, int orient, const ivec &o, int size, const facebounds &orig, facebounds &cf, ushort nmat = MAT_AIR, ushort matmask = MATF_VOLUME);
 extern void remip();

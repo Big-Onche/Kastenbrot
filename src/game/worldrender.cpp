@@ -472,9 +472,7 @@ bool getworldchesthit(const vec &origin, const vec &direction, float reach, int 
 
 int getworldlightlevel(const vec &position)
 {
-    const float skyexposure = getworldskyexposure(position),
-                ambientlevel = game::environment::getambientlightlevel();
-    float level = clamp(skyexposure * (sunlightscale * 16.0f + ambientlevel), 0.0f, 16.0f);
+    float level = clamp(game::environment::getambientlightlevel(), 0.0f, 16.0f);
     loopv(worldchunks)
     {
         const worldchunk &chunk = worldchunks[i];

@@ -59,6 +59,28 @@ enum
     SECTION_NO_RENDER = 1 << 5
 };
 
+enum
+{
+    NOT_RESIDENT = 0,
+    PENDING_BUILD,
+    PENDING_UPLOAD,
+    RESIDENT,
+    EVICTABLE
+};
+
+enum
+{
+    WORLD_VA_EXTERIOR = 0,
+    WORLD_VA_INTERIOR,
+    WORLD_VA_GEOMETRY_COUNT
+};
+
+struct worldsectionvaresidency
+{
+    uchar state[WORLD_VA_GEOMETRY_COUNT];
+    int lastwanted[WORLD_VA_GEOMETRY_COUNT];
+};
+
 struct worldsectionrenderdata
 {
     uchar flags[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
@@ -193,6 +215,7 @@ struct worldchunk
           reachablefaces[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
+    worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint request;
     bool loading, generating, saved, dirty, corrupted;
 
@@ -209,6 +232,7 @@ struct worldchunk
         memclear(portalcellmasks);
         memclear(reachablefaces);
         memclear(visibletiles);
+        memclear(varesidency);
     }
 };
 

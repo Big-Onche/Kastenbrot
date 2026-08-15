@@ -25,6 +25,18 @@ enum
 static vector<uchar> vbodata[NUMVBO];
 static vector<vtxarray *> vbovas[NUMVBO];
 static int vbosize[NUMVBO];
+static int worldvauploadbytes = 0, worldvauploadvertices = 0;
+
+void resetworldvauploadstats()
+{
+    worldvauploadbytes = worldvauploadvertices = 0;
+}
+
+void getworldvauploadstats(int &bytes, int &vertices)
+{
+    bytes = worldvauploadbytes;
+    vertices = worldvauploadvertices;
+}
 
 void destroyvbo(GLuint vbo)
 {
@@ -51,6 +63,8 @@ void genvbo(int type, void *buf, int len, vtxarray **vas, int numva)
     glBindBuffer_(target, vbo);
     glBufferData_(target, len, buf, GL_STATIC_DRAW);
     glBindBuffer_(target, 0);
+    worldvauploadbytes += len;
+    if(type == VBO_VBUF) worldvauploadvertices += len / int(sizeof(vertex));
 
     vboinfo &vbi = vbos[vbo];
     vbi.uses = numva;
@@ -1589,6 +1603,7 @@ int updateva(cube *c, const ivec &co, int size, int csi,
         ivec o(i, co, size);
         vamergemax = 0;
         vahasmerges = 0;
+        if(worldsectionsize > 0 && size == worldsectionsize && !worldsectionvaenabled(o, size)) continue;
         if(c[i].ext && c[i].ext->va)
         {
             varoot.add(c[i].ext->va);
