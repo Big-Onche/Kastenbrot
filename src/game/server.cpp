@@ -585,7 +585,8 @@ namespace server
     {
         string safe;
         int n = 0;
-        for(const char *s = serverworld; *s && n < int(sizeof(safe)) - 1; ++s)
+        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
             if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
         safe[n] = '\0';
         if(!safe[0]) copystring(safe, "multiplayer");
@@ -1080,7 +1081,8 @@ namespace server
     {
         string safe;
         int n = 0;
-        for(const char *s = serverworld; *s && n < int(sizeof(safe)) - 1; ++s)
+        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
             if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
         safe[n] = '\0';
         if(!safe[0]) copystring(safe, "multiplayer");
@@ -1228,7 +1230,8 @@ namespace server
     {
         string safe;
         int n = 0;
-        for(const char *s = serverworld; *s && n < int(sizeof(safe)) - 1; ++s)
+        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
             if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
         safe[n] = '\0';
         if(!safe[0]) copystring(safe, "multiplayer");
@@ -1501,7 +1504,12 @@ namespace server
         const ivec target = ci.chesttarget;
         ci.chestopen = false;
         sendcheststate(ci, chestinstance(), false);
-        if(!chesthasviewers(target)) sendchestanimation(target, false);
+        if(!chesthasviewers(target))
+        {
+            sendchestanimation(target, false);
+            if(chestsdirty && !saveserverchests(true))
+                conoutf(CON_ERROR, "could not save authoritative chest state after closing chest");
+        }
     }
 
     static void syncchestviewers(const chestinstance &chest)
@@ -4689,6 +4697,15 @@ namespace server
         }
         syncfurnaceviewers(*furnace);
         return true;
+    }
+
+    void servershutdown()
+    {
+        if(!journalinitialized) return;
+        if(furnacesdirty && !saveserverfurnaces(true))
+            conoutf(CON_ERROR, "could not save authoritative furnace state during server shutdown");
+        if(chestsdirty && !saveserverchests(true))
+            conoutf(CON_ERROR, "could not save authoritative chest state during server shutdown");
     }
 
     static bool rejectchestaction(clientinfo &ci, uint requestid, const char *reason, bool violation = false, bool malicious = false)

@@ -767,6 +767,7 @@ static void applypreparedworldspawn()
     player->resetinterp();
 }
 
+static bool saveworldstate();
 void saveworld();
 
 static void createworld(const char *requestedname)
@@ -870,7 +871,25 @@ static void loadworldcommand(const char *requested)
         return;
     }
 
+    // load_world() releases the currently mounted chunks. Persist the active
+    // offline world before that happens, including its chest snapshot.
+    if(game::islocalworld() && !worldchunks.empty() && activeworldchunk >= 0)
+    {
+        if(!saveworldstate())
+        {
+            conoutf(CON_ERROR, "could not save the active world; refusing to replace it with %s", folder);
+            return;
+        }
+        // Reload in case the requested world is also the active world whose
+        // metadata was just updated by saveworldstate().
+        if(!loadworldmetadata(folder, chunkx, chunky, spawn, metadata))
+        {
+            conoutf(CON_ERROR, "could not reload saved world metadata for %s", folder);
+            return;
+        }
+    }
     game::resetfurnaces();
+    game::resetchests();
     game::beginlocalworld();
     game::loadworldseed(metadata.seed);
     game::loadsurvivalinventory(metadata.inventoryitems, metadata.inventorycounts, metadata.inventorydurabilities, game::SURVIVAL_USABLE_SLOTS, metadata.inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability);
@@ -929,15 +948,15 @@ void startnetworkworld(int seed)
 
 ICOMMAND(loadworld, "s", (char *name), loadworldcommand(name));
 
-void saveworld()
+static bool saveworldstate()
 {
     if(worldchunks.empty() || activeworldchunk < 0)
     {
         conoutf(CON_ERROR, "no procedural world is active; use newworld first");
-        return;
+        return false;
     }
 
-    if(!saveworldconfig()) return;
+    if(!saveworldconfig()) return false;
     flushworlddiffjournals(true);
     loopv(worldchunkdiffstates) if(!worldchunkdiffstates[i]->journal.empty())
     {
@@ -975,16 +994,16 @@ void saveworld()
         entryx = worldchunks[entry].x;
         entryy = worldchunks[entry].y;
     }
-    if(!saveworldmetadata(entryx, entryy)) return;
+    if(!saveworldmetadata(entryx, entryy)) return false;
     if(!game::savelocalfurnaces(worldfolder))
     {
         conoutf(CON_ERROR, "could not save furnace state for world %s", worldfolder);
-        return;
+        return false;
     }
     if(!game::savelocalchests(worldfolder))
     {
         conoutf(CON_ERROR, "could not save chest state for world %s", worldfolder);
-        return;
+        return false;
     }
 
     int released = 0;
@@ -1005,6 +1024,12 @@ void saveworld()
         setmapfilenames(name);
     }
     conoutf("saved world %s: %d chunk journals queued, %d unchanged, %d ready; released %d cached chunks", worldfolder, written, unchanged, ready, released);
+    return true;
+}
+
+void saveworld()
+{
+    saveworldstate();
 }
 
 void closeproceduralworld(bool save)
@@ -1014,6 +1039,7 @@ void closeproceduralworld(bool save)
     // diff writer and generation workers before releasing their state.
     if(save && !worldchunks.empty() && activeworldchunk >= 0) saveworld();
     game::resetfurnaces();
+    game::resetchests();
     clearworldchunks();
     resetmap();
     freeocta(worldroot);

@@ -965,6 +965,7 @@ namespace game
     static bool furnaceopen = false, synchronizedfurnacecooking = false;
     static int furnacesyncmillis = 0;
     static vector<chestinstance *> localchests;
+    static vector<ivec> localchestrestorepending;
     static chestinstance synchronizedchest;
     static ivec openchesttarget(0, 0, 0);
     static bool chestopen = false;
@@ -1240,6 +1241,8 @@ namespace game
 
     static void removelocalchest(const ivec &target, bool dropcontents = true)
     {
+        const int pending = localchestrestorepending.find(target);
+        if(pending >= 0) localchestrestorepending.removeunordered(pending);
         loopv(localchests) if(localchests[i]->target == target)
         {
             chestinstance *chest = localchests[i];
@@ -1501,6 +1504,7 @@ namespace game
         openchesttarget = ivec(0, 0, 0);
         chestopen = false;
         chestvisuals.setsize(0);
+        localchestrestorepending.setsize(0);
     }
 
     static void updatechests()
@@ -1520,7 +1524,28 @@ namespace game
             worldselectiontolocal(support);
             if(!support.validate() || !worldselectionready(support)) continue;
             const int type = getworldscatterindexat(support.o, WORLD_ORIENT_TOP);
-            if(type < 0 || getworldscatteritem(type) != chest.worlditem) removelocalchest(chest.target);
+            const int pending = localchestrestorepending.find(chest.target);
+            if(type < 0)
+            {
+                if(pending >= 0)
+                {
+                    // The inventory snapshot is the authoritative load-time
+                    // record. Repair a missing scatter journal entry once its
+                    // chunk is ready instead of discarding all chest contents.
+                    const int worldindex = getworlditemindex(chest.worlditem);
+                    if(worldindex >= 0 && editworldscatter(worldindex, support.o, WORLD_ORIENT_TOP, true))
+                    {
+                        localchestrestorepending.removeunordered(pending);
+                        setchestvisual(chest.target, chest.yaw);
+                    }
+                }
+                else removelocalchest(chest.target);
+            }
+            else if(getworldscatteritem(type) == chest.worlditem)
+            {
+                if(pending >= 0) localchestrestorepending.removeunordered(pending);
+            }
+            else removelocalchest(chest.target, false);
         }
         if(!chestopen || !player1) return;
         vec position = player1->o;
@@ -1668,6 +1693,15 @@ namespace game
         return true;
     }
 
+    static bool replacechestfile(const char *temporary, const char *finalname)
+    {
+#ifdef WIN32
+        return MoveFileEx(temporary, finalname, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+        return rename(temporary, finalname) == 0;
+#endif
+    }
+
     static bool writefurnacestack(stream &file, int item, int count, int durability)
     {
         return writefurnacestring(file, count > 0 ? getinventoryitemid(item) : "") &&
@@ -1766,7 +1800,11 @@ namespace game
     {
         if(!world || !world[0]) return false;
         defformatstring(name, "media/map/%s/world.chests", world);
-        stream *file = openrawfile(path(name), "wb");
+        defformatstring(tempname, "%s.tmp", name);
+        string finalpath, temppath;
+        copystring(finalpath, findfile(name, "wb"));
+        copystring(temppath, findfile(tempname, "wb"));
+        stream *file = openrawfile(tempname, "wb");
         if(!file) return false;
         bool ok = file->write("CCCH", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(localchests.length()));
         loopv(localchests) if(ok)
@@ -1777,13 +1815,19 @@ namespace game
             loopj(CHEST_SLOTS_MAX) if(ok)
                 ok = writefurnacestack(*file, chest.items[j], chest.counts[j], chest.durabilities[j]);
         }
+        if(ok) ok = file->flush();
         delete file;
-        return ok;
+        if(!ok || !replacechestfile(temppath, finalpath))
+        {
+            remove(temppath);
+            return false;
+        }
+        return true;
     }
 
     bool loadlocalchests(const char *world)
     {
-        localchests.deletecontents();
+        resetchests();
         if(!world || !world[0]) return false;
         defformatstring(name, "media/map/%s/world.chests", world);
         stream *file = openrawfile(path(name), "rb");
@@ -1808,6 +1852,7 @@ namespace game
             if(ok)
             {
                 localchests.add(chest);
+                localchestrestorepending.add(target);
                 setchestvisual(target, yaw);
             }
             else delete chest;
@@ -1815,7 +1860,7 @@ namespace game
         }
         if(ok) ok = file->tell() == file->size();
         delete file;
-        if(!ok) localchests.deletecontents();
+        if(!ok) resetchests();
         return ok;
     }
 

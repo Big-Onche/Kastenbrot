@@ -155,6 +155,7 @@ void delclient(client *c)
 
 void cleanupserver()
 {
+    server::servershutdown();
     if(serverhost) enet_host_destroy(serverhost);
     serverhost = NULL;
 
