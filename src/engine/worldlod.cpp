@@ -518,18 +518,23 @@ static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Ui
             const worldlodcolumn &column = samples[(y + 1) * stride + x + 1],
                                  &left = samples[(y + 1) * stride + x], &right = samples[(y + 1) * stride + x + 2],
                                  &back = samples[y * stride + x + 1], &front = samples[(y + 2) * stride + x + 1];
+            const int skirtdepth = job.key.skirtdepth,
+                      leftheight = x ? left.height : min(left.height, column.height) - skirtdepth,
+                      rightheight = x + 1 < resolution ? right.height : min(right.height, column.height) - skirtdepth,
+                      backheight = y ? back.height : min(back.height, column.height) - skirtdepth,
+                      frontheight = y + 1 < resolution ? front.height : min(front.height, column.height) - skirtdepth;
             const float x0 = x * WORLD_CHUNK_SIZE / float(resolution), x1 = (x + 1) * WORLD_CHUNK_SIZE / float(resolution),
                         y0 = y * WORLD_CHUNK_SIZE / float(resolution), y1 = (y + 1) * WORLD_CHUNK_SIZE / float(resolution),
                         top = WORLD_GROUND_HEIGHT + column.height * WORLD_BLOCK_SIZE;
-            if(column.height > left.height)
-                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + left.height * WORLD_BLOCK_SIZE, top, O_LEFT, column.material);
-            if(column.height > right.height)
-                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + right.height * WORLD_BLOCK_SIZE, top, O_RIGHT, column.material);
-            if(column.height > back.height)
-                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + back.height * WORLD_BLOCK_SIZE, top, O_BACK, column.material);
-            if(column.height > front.height)
-                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + front.height * WORLD_BLOCK_SIZE, top, O_FRONT, column.material);
-            minimumheight = min(minimumheight, min(column.height, min(min(left.height, right.height), min(back.height, front.height))));
+            if(column.height > leftheight)
+                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + leftheight * WORLD_BLOCK_SIZE, top, O_LEFT, column.material);
+            if(column.height > rightheight)
+                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + rightheight * WORLD_BLOCK_SIZE, top, O_RIGHT, column.material);
+            if(column.height > backheight)
+                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + backheight * WORLD_BLOCK_SIZE, top, O_BACK, column.material);
+            if(column.height > frontheight)
+                addworldlodcolumnside(mesh, x0, y0, x1, y1, WORLD_GROUND_HEIGHT + frontheight * WORLD_BLOCK_SIZE, top, O_FRONT, column.material);
+            minimumheight = min(minimumheight, min(column.height, min(min(leftheight, rightheight), min(backheight, frontheight))));
             maximumheight = max(maximumheight, column.height);
             waterheight = max(waterheight, column.waterheight);
         }
