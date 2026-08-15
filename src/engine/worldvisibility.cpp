@@ -612,43 +612,67 @@ static int worldchunksectiongeometrymask(const worldchunk &chunk, int tile, int 
     return mask;
 }
 
-static bool worldplayerincave()
+static int worldsectionrenderflagsat(const vec &focus)
 {
-    const vec *focus = camera1 ? &camera1->o : player ? &player->o : NULL;
-    if(!focus) return false;
-    const int chunkx = worldfirstchunkx + int(floorf(focus->x / WORLD_CHUNK_SIZE)),
-              chunky = worldfirstchunky + int(floorf(focus->y / WORLD_CHUNK_SIZE)),
+    const int chunkx = worldfirstchunkx + int(floorf(focus.x / WORLD_CHUNK_SIZE)),
+              chunky = worldfirstchunky + int(floorf(focus.y / WORLD_CHUNK_SIZE)),
               chunkindex = findworldchunk(chunkx, chunky);
-    if(!worldchunks.inrange(chunkindex)) return false;
+    if(!worldchunks.inrange(chunkindex)) return 0;
     const worldchunk &chunk = worldchunks[chunkindex];
-    if(chunk.loading || chunk.corrupted || !chunk.root) return false;
+    if(chunk.loading || chunk.corrupted || !chunk.root) return 0;
     const ivec chunkorigin = worldchunkorigin(chunk);
-    const int tilex = clamp(int(floorf((focus->x - chunkorigin.x) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
-              tiley = clamp(int(floorf((focus->y - chunkorigin.y) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
+    const int tilex = clamp(int(floorf((focus.x - chunkorigin.x) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
+              tiley = clamp(int(floorf((focus.y - chunkorigin.y) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
               tile = tiley * WORLD_SECTION_COLUMNS + tilex,
-              section = clamp(int(floorf(focus->z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1);
-    const uchar flags = chunk.renderdata.flags[section][tile];
-    if(!(flags&SECTION_INTERIOR)) return false;
-    return !(flags&(SECTION_EXTERIOR | SECTION_WATER));
+              section = clamp(int(floorf(focus.z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1);
+    return chunk.renderdata.flags[section][tile];
 }
 
-static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section, bool cavemode)
+static int worldplayersectionrenderflags(bool &nearentrance)
+{
+    static const int directions[][3] =
+    {
+        { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+    };
+    nearentrance = false;
+    const vec *focus = camera1 ? &camera1->o : player ? &player->o : NULL;
+    if(!focus) return 0;
+    const int flags = worldsectionrenderflagsat(*focus);
+    nearentrance = (flags&SECTION_CAVE_ENTRANCE) != 0;
+    loopi(6) if(!nearentrance)
+    {
+        vec neighbor(*focus);
+        neighbor.x += directions[i][0] * WORLD_SECTION_SIZE;
+        neighbor.y += directions[i][1] * WORLD_SECTION_SIZE;
+        neighbor.z += directions[i][2] * WORLD_SECTION_SIZE;
+        nearentrance = (worldsectionrenderflagsat(neighbor)&SECTION_CAVE_ENTRANCE) != 0;
+    }
+    return flags;
+}
+
+static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section, bool cavemode, bool entrancemode)
 {
     if(!worldlodrequiresvoxel(chunk)) return 0;
     const int available = worldchunksectiongeometrymask(chunk, tile, section);
     if(!available) return 0;
     if(drawfullchunk) return available;
+    const bool nearplayer = worldchunksectionnearplayer(chunk, tile, section, chunkinteriorradius);
+    if(cavemode) return nearplayer ? available & (1 << WORLD_VA_INTERIOR) : 0;
+
+    int wanted = 0;
     const uint tilebit = 1U << tile;
-    if(!(chunk.visibletiles[section] & tilebit)) return 0;
-    if(cavemode)
-        return worldchunksectionnearplayer(chunk, tile, section, chunkinteriorradius) ? available & (1 << WORLD_VA_INTERIOR) : 0;
-    return worldchunksectionwithinresidentrange(chunk, tile, section) ? available & (1 << WORLD_VA_EXTERIOR) : 0;
+    if((chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section))
+        wanted |= available & (1 << WORLD_VA_EXTERIOR);
+    if(entrancemode && nearplayer) wanted |= available & (1 << WORLD_VA_INTERIOR);
+    return wanted;
 }
 
 static void updateworldsectionresidencywanted()
 {
     ZoneScopedN("Chunks/Update wanted VA residency");
-    const bool cavemode = worldplayerincave();
+    bool entrancemode;
+    const int playerflags = worldplayersectionrenderflags(entrancemode);
+    const bool cavemode = (playerflags&SECTION_INTERIOR) && !(playerflags&(SECTION_EXTERIOR | SECTION_WATER));
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
@@ -656,7 +680,7 @@ static void updateworldsectionresidencywanted()
         loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
         {
             worldsectionvaresidency &residency = chunk.varesidency[section][tile];
-            const int wanted = worldchunksectionwantedmask(chunk, tile, section, cavemode);
+            const int wanted = worldchunksectionwantedmask(chunk, tile, section, cavemode, entrancemode);
             if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER)
             {
                 if(worldsectionvaactive(residency)) worldvanorenderskipsframe++;
@@ -688,6 +712,7 @@ static void updateworldsectionresidencywanted()
         }
     }
     TracyPlot("Chunks/Cave residency mode", int64_t(cavemode ? 1 : 0));
+    TracyPlot("Chunks/Cave entrance residency mode", int64_t(entrancemode ? 1 : 0));
 }
 
 static long long worldchunksectionmountscore(const worldchunk &chunk, int tile, int section)

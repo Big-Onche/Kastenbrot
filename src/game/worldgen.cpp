@@ -870,6 +870,12 @@ static cube &lookupworldgenblock(worldgencontext &ctx, cube *root, const ivec &p
     }
 }
 
+static void markworldgentreeblock(worldgencontext &ctx, const ivec &position)
+{
+    uchar &flags = worldgensectionflags(ctx, position.x / WORLD_BLOCK_SIZE, position.y / WORLD_BLOCK_SIZE, position.z / WORLD_BLOCK_SIZE);
+    flags = (flags | SECTION_EXTERIOR) & ~(SECTION_FULLY_SOLID | SECTION_NO_RENDER);
+}
+
 enum
 {
     WORLD_CARVE_NONE = 0,
@@ -1844,23 +1850,38 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
         loopv(leaves)
         {
             cube &c = lookupworldgenblock(ctx, root, leaves[i]);
-            if(isempty(c) && c.material == MAT_AIR) setworldcubetype(c, ctx, leafcube, leavesalpha ? MAT_ALPHA : MAT_AIR);
+            if(isempty(c) && c.material == MAT_AIR)
+            {
+                setworldcubetype(c, ctx, leafcube, leavesalpha ? MAT_ALPHA : MAT_AIR);
+                markworldgentreeblock(ctx, leaves[i]);
+            }
         }
         loopv(needles)
         {
             cube &c = lookupworldgenblock(ctx, root, needles[i]);
-            if(isempty(c) && c.material == MAT_AIR) setworldcubetype(c, ctx, needlescube, leavesalpha ? MAT_ALPHA : MAT_AIR);
+            if(isempty(c) && c.material == MAT_AIR)
+            {
+                setworldcubetype(c, ctx, needlescube, leavesalpha ? MAT_ALPHA : MAT_AIR);
+                markworldgentreeblock(ctx, needles[i]);
+            }
         }
         loopv(wood)
         {
             cube &c = lookupworldgenblock(ctx, root, wood[i]);
             if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
+            {
                 setworldcubetype(c, ctx, woodcube);
+                markworldgentreeblock(ctx, wood[i]);
+            }
         }
         loopv(pinewood)
         {
             cube &c = lookupworldgenblock(ctx, root, pinewood[i]);
-            if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture) setworldcubetype(c, ctx, pinewoodcube);
+            if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
+            {
+                setworldcubetype(c, ctx, pinewoodcube);
+                markworldgentreeblock(ctx, pinewood[i]);
+            }
         }
     }
     return !ctx.iscanceled();
