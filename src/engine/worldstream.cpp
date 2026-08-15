@@ -1080,7 +1080,7 @@ static int worldchunkloader(void *)
 #ifdef TRACY_ENABLE
     tracy::SetThreadName("World chunk loader");
 #endif
-    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_LOW);
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_NORMAL);
     for(;;)
     {
         SDL_LockMutex(worldchunkmutex);
