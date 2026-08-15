@@ -7,7 +7,7 @@ PLATFORM= $(shell uname -s | tr '[:lower:]' '[:upper:]')
 PLATFORM_ARCH= $(shell uname -m)
 PLATFORM_PREFIX= native
 
-INCLUDES= -Ishared -Iengine -Igame -Ienet/include
+INCLUDES= -Ishared -Iengine -Igame -Ienet/include -Iinclude
 
 STRIP=
 ifeq (,$(findstring -g,$(CXXFLAGS)))
@@ -45,7 +45,7 @@ WINBIN=../bin
 override CXX+= -m32
 override WINDRES+= -F pe-i386
 endif
-CLIENT_INCLUDES= $(INCLUDES) -Iinclude
+CLIENT_INCLUDES= $(INCLUDES)
 STD_LIBS= -static-libgcc -static-libstdc++
 CLIENT_LIBS= -mwindows $(STD_LIBS) -L$(WINBIN) -L$(WINLIB) -lSDL2 -lSDL2_image -lSDL2_mixer -lzlib1 -lopengl32 -lenet -lws2_32 -lwinmm
 else	
@@ -53,7 +53,7 @@ ifneq (,$(findstring DARWIN,$(PLATFORM)))
 OSXMIN= 10.9
 override CC+= -arch x86_64 -mmacosx-version-min=$(OSXMIN)
 override CXX+= -arch x86_64 -mmacosx-version-min=$(OSXMIN)
-CLIENT_INCLUDES= $(INCLUDES) -Iinclude
+CLIENT_INCLUDES= $(INCLUDES)
 CLIENT_LIBS= -F../sauerbraten.app/Contents/Frameworks/ -framework SDL2 -framework SDL2_image
 CLIENT_LIBS+= -framework SDL2_mixer -framework CoreAudio -framework AudioToolbox
 CLIENT_LIBS+= -framework AudioUnit -framework OpenGL -framework Cocoa -lz -Lenet -lenet
@@ -171,6 +171,7 @@ SERVER_OBJS= \
 	standalone/game/world.o
 
 SERVER_PCH= standalone/shared/cube.h.gch standalone/engine/engine.h.gch standalone/game/game.h.gch
+STANDALONE_DIRS= standalone/shared standalone/engine standalone/game
 
 MASTER_OBJS= \
 	standalone/shared/crypto.o \
@@ -202,6 +203,10 @@ $(filter engine/%,$(CLIENT_OBJS)): $(filter engine/%,$(CLIENT_PCH))
 $(filter game/%,$(CLIENT_OBJS)): $(filter game/%,$(CLIENT_PCH))
 
 $(filter-out standalone/shared/%,$(SERVER_PCH)): $(filter standalone/shared/%,$(SERVER_PCH))
+$(SERVER_PCH) $(SERVER_MASTER_OBJS): | $(STANDALONE_DIRS)
+$(STANDALONE_DIRS):
+	mkdir -p $@
+
 $(SERVER_PCH): standalone/%.h.gch: %.h
 	$(CXX) $(CXXFLAGS) -x c++-header -o $@.tmp $<
 	$(MV) $@.tmp $@

@@ -4,6 +4,14 @@
 
 namespace server
 {
+    static void decodedirection(int yaw, int pitch, vec &direction)
+    {
+        const float pitchcos = cosf(RAD*pitch);
+        direction = vec(-sinf(RAD*yaw)*pitchcos,
+                         cosf(RAD*yaw)*pitchcos,
+                         sinf(RAD*pitch));
+    }
+
     enum
     {
         SURVIVAL_HOTBAR_SLOTS = game::SURVIVAL_HOTBAR_SLOTS,
@@ -5358,7 +5366,7 @@ namespace server
                 dir = p.get();
                 dir |= p.get()<<8;
                 vec velocity, falling;
-                vecfromyawpitch(dir%360, clamp(dir/360, 0, 180) - 90, 1, 0, velocity);
+                decodedirection(dir%360, clamp(dir/360, 0, 180) - 90, velocity);
                 velocity.mul(mag / DVELF);
                 if(flags&(1<<4))
                 {
@@ -5368,7 +5376,7 @@ namespace server
                     {
                         dir = p.get();
                         dir |= p.get()<<8;
-                        vecfromyawpitch(dir%360, clamp(dir/360, 0, 180) - 90, 1, 0, falling);
+                        decodedirection(dir%360, clamp(dir/360, 0, 180) - 90, falling);
                     }
                     else falling = vec(0, 0, -1);
                     falling.mul(mag / DVELF);
