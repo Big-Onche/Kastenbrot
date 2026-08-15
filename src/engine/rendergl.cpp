@@ -1880,7 +1880,7 @@ void debugquad(float x, float y, float w, float h, float tx, float ty, float tw,
     HUDQUAD(x, y, x+w, y+h, tx, ty+th, tx+tw, ty);
 }
 
-VARR(fog, 16, 8000, 1000024);
+VARR(fog, 16, 12500, 1000024);
 CVARR(fogcolour, 0x8099B3);
 VAR(fogoverlay, 0, 1, 1);
 

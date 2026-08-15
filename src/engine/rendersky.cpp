@@ -178,9 +178,9 @@ void drawenvoverlay(Texture *overlay = NULL, float tx = 0, float ty = 0)
     xtraverts += gle::end();
 }
 
-FVARR(fogdomeheight, -1, -0.5f, 1);
+FVARR(fogdomeheight, -1, -0.2f, 1);
 FVARR(fogdomemin, 0, 0, 1);
-FVARR(fogdomemax, 0, 0, 1);
+FVARR(fogdomemax, 0, 0.5, 1);
 VARR(fogdomecap, 0, 1, 1);
 FVARR(fogdomeclip, 0, 1, 1);
 CVARR(fogdomecolour, 0);
@@ -372,7 +372,7 @@ void cleanupsky()
 VARR(atmo, 0, 1, 1);
 FVARR(atmoplanetsize, 1e-3f, 1, 1e3f);
 FVARR(atmoheight, 1e-3f, 1, 1e3f);
-FVARR(atmobright, 0, 3, 16);
+FVARR(atmobright, 0, 4, 16);
 CVAR1R(atmosunlight, 0);
 FVARR(atmosunlightscale, 0, 1, 16);
 CVAR1R(atmosundisk, 0);

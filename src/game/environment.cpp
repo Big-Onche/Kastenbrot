@@ -24,7 +24,7 @@ namespace game
         static const float MAX_SUN_PITCH = 70.0f;
         static const int NO_SKY_AMBIENT_COLOR = 0x0A0A0A;
         static const int NO_SKY_FOG_COLOR = 0x000000;
-        static const int DAY_FOG_COLOR = 0x8099B3;
+        static const int DAY_FOG_COLOR = 0xC0E0F5;
         static const int DAY_AMBIENT_COLOR = 0x5A5A6E;
         static const int NIGHT_FOG_COLOR = 0x0A1026;
         static const int NIGHT_AMBIENT_COLOR = 0x080C20;
