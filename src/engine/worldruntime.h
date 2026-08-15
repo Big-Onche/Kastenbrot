@@ -78,7 +78,6 @@ enum
 struct worldsectionvaresidency
 {
     uchar state[WORLD_VA_GEOMETRY_COUNT];
-    int lastwanted[WORLD_VA_GEOMETRY_COUNT];
 };
 
 struct worldsectionrenderdata

@@ -692,22 +692,12 @@ static void updateworldsectionresidencywanted()
                 const bool requested = (wanted & (1 << k)) != 0;
                 if(requested)
                 {
-                    residency.lastwanted[k] = totalmillis;
                     if(residency.state[k] == EVICTABLE) residency.state[k] = RESIDENT;
                     else if(residency.state[k] == NOT_RESIDENT)
                         residency.state[k] = worldsectionvaphysicalresident(residency) ? RESIDENT : PENDING_BUILD;
                 }
                 else if(residency.state[k] == RESIDENT) residency.state[k] = EVICTABLE;
                 else if(residency.state[k] == PENDING_BUILD) residency.state[k] = NOT_RESIDENT;
-                else if(residency.state[k] == EVICTABLE && totalmillis - residency.lastwanted[k] >= chunkvaevictiongrace)
-                {
-                    int keep = -1;
-                    loopl(WORLD_VA_GEOMETRY_COUNT) if(l != k && residency.state[l] == RESIDENT) { keep = l; break; }
-                    if(keep >= 0)
-                    {
-                        residency.state[k] = NOT_RESIDENT;
-                    }
-                }
             }
         }
     }
@@ -803,73 +793,6 @@ static bool findworldchunkunloadcolumn(int chunkx, int chunky, int &chunkindex, 
     return chunkindex >= 0;
 }
 
-static int findworldchunkcachedsections(int chunkx, int chunky,
-                                        worldsectioncandidate *candidates, int maxcandidates)
-{
-    if(drawfullchunk || maxcandidates <= 0) return 0;
-    ZoneScopedN("Chunks/Select evictable VAs");
-    int numcandidates = 0;
-    loopv(worldchunks)
-    {
-        worldchunk &chunk = worldchunks[i];
-        if(chunk.loading || chunk.corrupted || !chunk.root || !worldchunkmounted(chunk) ||
-           !worldchunkinview(chunk, chunkx, chunky))
-            continue;
-        loopk(WORLD_SECTION_LAYERS)
-        {
-            uint mountedtiles = chunk.mountedtiles[k];
-            if(!mountedtiles) continue;
-            loopj(WORLD_SECTION_TILES) if(mountedtiles & (1U << j))
-            {
-                const worldsectionvaresidency &residency = chunk.varesidency[k][j];
-                bool evictable = true, hascachedgeometry = false;
-                loopl(WORLD_VA_GEOMETRY_COUNT)
-                {
-                    if(residency.state[l] == RESIDENT || residency.state[l] == PENDING_BUILD || residency.state[l] == PENDING_UPLOAD)
-                    {
-                        evictable = false;
-                        break;
-                    }
-                    if(residency.state[l] != EVICTABLE) continue;
-                    hascachedgeometry = true;
-                    if(totalmillis - residency.lastwanted[l] < chunkvaevictiongrace)
-                    {
-                        evictable = false;
-                        break;
-                    }
-                }
-                if(!evictable || !hascachedgeometry) continue;
-                const long long score = worldchunksectionmountscore(chunk, j, k);
-                int insert = numcandidates;
-                while(insert > 0 && score > candidates[insert - 1].score) --insert;
-                if(insert >= maxcandidates) continue;
-                int newcount = min(numcandidates + 1, maxcandidates);
-                for(int move = newcount - 1; move > insert; --move)
-                    candidates[move] = candidates[move - 1];
-                candidates[insert].chunkindex = i;
-                candidates[insert].tile = j;
-                candidates[insert].section = k;
-                candidates[insert].score = score;
-                numcandidates = newcount;
-            }
-        }
-    }
-    ZoneValue(numcandidates);
-    return numcandidates;
-}
-
-static bool evictworldchunksectionva(worldchunk &chunk, int tile, int section)
-{
-    worldsectionvaresidency &residency = chunk.varesidency[section][tile];
-    bool evictable = false;
-    loopi(WORLD_VA_GEOMETRY_COUNT) if(residency.state[i] == EVICTABLE) { evictable = true; break; }
-    if(!evictable) return false;
-    clearworldsectionvaresidency(chunk, tile, section);
-    queueworldchunksectionupdates(chunk, tile, &section, 1);
-    worldvaevictionsframe++;
-    return true;
-}
-
 static int processworldchunkvaupdates()
 {
     int pending = worldchunkvaupdates.length();
@@ -927,8 +850,8 @@ static int processworldchunkchanges(int chunkx, int chunky)
         unloadtarget = WORLD_MAX_COLUMN_CHANGES,
         cleanupstagelimit = worldchunkstagelimit(chunkcleanupbudget);
 
-    // Cleanup has its own budget and always runs before publication. This
-    // prevents rapid movement from leaving a growing trail of live geometry.
+    // Cleanup only unmounts chunks outside maxchunkdist. Section VAs inside
+    // that radius remain cached across cave/exterior mode changes.
     {
         ZoneScopedN("Chunks/Unload columns");
         while(unloaded < unloadtarget && unloadedsections < cleanupstagelimit)
@@ -946,24 +869,6 @@ static int processworldchunkchanges(int chunkx, int chunky)
             unloadedsections += numsections;
             unloaded++;
             changedcolumns++;
-        }
-        if(unloadedsections < cleanupstagelimit)
-        {
-            worldsectioncandidate candidates[WORLD_MAX_SECTION_BATCH];
-            int numcandidates = findworldchunkcachedsections(
-                chunkx, chunky, candidates,
-                min(cleanupstagelimit - unloadedsections, int(WORLD_MAX_SECTION_BATCH)));
-            loopi(numcandidates)
-            {
-                double elapsed = (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency;
-                if(unloaded && elapsed >= chunkcleanupbudget) break;
-                worldsectioncandidate &candidate = candidates[i];
-                worldchunk &chunk = worldchunks[candidate.chunkindex];
-                if(!evictworldchunksectionva(chunk, candidate.tile, candidate.section)) continue;
-                unloadedsections++;
-                unloaded++;
-                changedcolumns++;
-            }
         }
         ZoneValue(unloaded);
     }

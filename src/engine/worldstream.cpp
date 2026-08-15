@@ -173,7 +173,6 @@ VARP(chunkcleanupbudget, 1, 6, 33);
 VARP(chunksectionbatch, 1, 1, WORLD_MAX_SECTION_BATCH);
 VARP(chunkvastagelimit, 1, 6, 16);
 VARP(chunkinteriorradius, 1, 2, 8);
-VARP(chunkvaevictiongrace, 0, 1500, 60000);
 VARP(drawfullchunk, 0, 0, 1);
 
 static cube *prepareworldchunk(worldchunkjob &job);
@@ -909,7 +908,10 @@ static int unmountworldchunkcolumnbatch(worldchunk &chunk, int tile, int *sectio
             best = i;
             bestdist = dist;
         }
-        if(best < 0 || !unmountworldchunktile(chunk, best, tile)) break;
+        if(best < 0) break;
+        const bool hadresidentva = worldsectionvaactive(chunk.varesidency[best][tile]);
+        if(!unmountworldchunktile(chunk, best, tile)) break;
+        if(hadresidentva) worldvaevictionsframe++;
         sections[unmounted++] = best;
     }
     ZoneValue(unmounted);
