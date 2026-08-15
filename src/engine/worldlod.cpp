@@ -52,8 +52,9 @@ struct worldlodcpumesh
     vector<uint> indices;
     int terrainindices, waterindices, topfaces, sidefaces;
     vec bbmin, bbmax;
+    float waterheight;
 
-    worldlodcpumesh() : terrainindices(0), waterindices(0), topfaces(0), sidefaces(0), bbmin(0, 0, 0), bbmax(0, 0, 0) {}
+    worldlodcpumesh() : terrainindices(0), waterindices(0), topfaces(0), sidefaces(0), bbmin(0, 0, 0), bbmax(0, 0, 0), waterheight(0) {}
 };
 
 struct worldlodkey
@@ -77,11 +78,12 @@ struct worldlodchunk
     GLuint vbo, ebo;
     int vertices, terrainindices, waterindices, topfaces, sidefaces, lastused;
     vec bbmin, bbmax;
+    float waterheight;
     bool active;
 
     worldlodchunk(const worldlodkey &key = worldlodkey())
         : key(key), vbo(0), ebo(0), vertices(0), terrainindices(0), waterindices(0), topfaces(0), sidefaces(0), lastused(0), bbmin(0, 0, 0),
-          bbmax(0, 0, 0), active(false) {}
+          bbmax(0, 0, 0), waterheight(0), active(false) {}
 };
 
 struct worldlodjob
@@ -646,6 +648,7 @@ static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Ui
             addworldlodtop(mesh, x0, y0, x1, y1, top, WORLD_LOD_WATER);
         }
         mesh.waterindices = mesh.indices.length() - mesh.terrainindices;
+        mesh.waterheight = mesh.waterindices ? WORLD_GROUND_HEIGHT + waterheight * WORLD_BLOCK_SIZE : 0;
         mesh.bbmin = vec(0, 0, WORLD_GROUND_HEIGHT + minimumheight * WORLD_BLOCK_SIZE);
         mesh.bbmax = vec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_GROUND_HEIGHT + max(maximumheight, waterheight) * WORLD_BLOCK_SIZE);
     }
@@ -819,6 +822,7 @@ static bool buildworldlodmesh(worldlodjob &job)
             }
         }
         mesh.waterindices = mesh.indices.length() - mesh.terrainindices;
+        mesh.waterheight = waterz;
         mesh.bbmin = vec(0, 0, minimumz - skirtdepth);
         mesh.bbmax = vec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, max(maximumz, waterz));
     }
@@ -1060,6 +1064,7 @@ static void processworldlodresults()
             chunk.sidefaces = job->mesh.sidefaces;
             chunk.bbmin = job->mesh.bbmin;
             chunk.bbmax = job->mesh.bbmax;
+            chunk.waterheight = job->mesh.waterheight;
             chunk.lastused = totalmillis;
             const int selectionindex = findworldlodselection(job->key.x, job->key.y);
             if(worldlodselections.inrange(selectionindex) && worldlodselections[selectionindex].desired == job->key.lod)
@@ -1527,8 +1532,8 @@ void renderworldlods()
         gle::enabletexcoord0();
         gle::enablecolor();
         LOCALPARAM(lodmeshoffset, vec(origin));
+        glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
         const int indices = chunk.terrainindices + chunk.waterindices;
-        glDrawElements(GL_TRIANGLES, indices, GL_UNSIGNED_INT, 0);
         vertices += chunk.vertices;
         triangles += indices / 3;
         topfaces += chunk.topfaces;
@@ -1550,6 +1555,92 @@ void renderworldlods()
     TracyPlot("LOD/Triangles", int64_t(triangles));
     TracyPlot("LOD/Top faces", int64_t(topfaces));
     TracyPlot("LOD/Side faces", int64_t(sidefaces));
+}
+
+static bool visibleworldlodwater(const worldlodselection &selection, worldlodchunk *&chunk, ivec &origin)
+{
+    if(selection.active < 1) return false;
+    const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
+    if(cacheindex < 0) return false;
+    chunk = &worldlodcache[cacheindex];
+    if(!chunk->waterindices) return false;
+    origin = ivec((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE,
+                  (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
+    const ivec bbmin(origin.x, origin.y, int(chunk->waterheight - WATER_OFFSET)),
+               bbmax(origin.x + WORLD_CHUNK_SIZE, origin.y + WORLD_CHUNK_SIZE, int(chunk->waterheight));
+    return isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) < VFC_FOGGED;
+}
+
+bool hasworldlodwater()
+{
+    if(!worldlod || !camera1) return false;
+    loopv(worldlodselections)
+    {
+        worldlodchunk *chunk;
+        ivec origin;
+        if(visibleworldlodwater(worldlodselections[i], chunk, origin)) return true;
+    }
+    return false;
+}
+
+bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2)
+{
+    if(!worldlod || !camera1) return false;
+    bool found = false;
+    loopv(worldlodselections)
+    {
+        worldlodchunk *chunk;
+        ivec origin;
+        if(!visibleworldlodwater(worldlodselections[i], chunk, origin)) continue;
+        float csx1, csy1, csx2, csy2;
+        const ivec bbmin(origin.x, origin.y, int(chunk->waterheight - WATER_OFFSET)),
+                   bbmax(origin.x + WORLD_CHUNK_SIZE, origin.y + WORLD_CHUNK_SIZE, int(chunk->waterheight));
+        if(!calcbbscissor(bbmin, bbmax, csx1, csy1, csx2, csy2)) continue;
+        sx1 = min(sx1, csx1); sy1 = min(sy1, csy1);
+        sx2 = max(sx2, csx2); sy2 = max(sy2, csy2);
+        found = true;
+    }
+    return found;
+}
+
+static void drawworldlodwater(bool split, bool below)
+{
+    // The fixed LOD plane stays in the chunk's compact VBO; only its trailing index range is resubmitted here.
+    bool drew = false;
+    loopv(worldlodselections)
+    {
+        worldlodchunk *chunk;
+        ivec origin;
+        if(!visibleworldlodwater(worldlodselections[i], chunk, origin)) continue;
+        if(split && below != (camera1->o.z < chunk->waterheight - WATER_OFFSET)) continue;
+        if(!drew)
+        {
+            gle::enablevertex();
+            drew = true;
+        }
+        gle::bindvbo(chunk->vbo);
+        gle::bindebo(chunk->ebo);
+        const worldlodvertex *pointer = 0;
+        gle::vertexpointer(sizeof(worldlodvertex), pointer->position.v);
+        LOCALPARAMF(watermeshoffset, float(origin.x), float(origin.y), -WATER_OFFSET);
+        glDrawElements(GL_TRIANGLES, chunk->waterindices, GL_UNSIGNED_INT,
+                       (const void *)(size_t(chunk->terrainindices) * sizeof(uint)));
+        glde++;
+    }
+    if(!drew) return;
+    gle::disablevertex();
+    gle::clearebo();
+    gle::clearvbo();
+}
+
+void renderworldlodwater(bool below)
+{
+    drawworldlodwater(true, below);
+}
+
+void renderworldlodwatermask()
+{
+    drawworldlodwater(false, false);
 }
 
 ICOMMAND(getdebuglod1chunks, "", (),

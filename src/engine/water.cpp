@@ -1305,10 +1305,13 @@ void renderwaterfalls()
 
 void renderwater()
 {
+    const bool lodwater = hasworldlodwater();
+    if(lodwater) preloadwatershaders(true);
     loopk(4)
     {
         vector<materialsurface> &surfs = watersurfs[k];
-        if(surfs.empty()) continue;
+        const bool renderlod = k == 0 && lodwater;
+        if(surfs.empty() && !renderlod) continue;
 
         MatSlot &wslot = lookupmaterialslot(MAT_WATER+k);
 
@@ -1377,6 +1380,7 @@ void renderwater()
         if(drawtex != DRAWTEX_MINIMAP) SETWATERSHADER(below, underwater);
 
         aboveshader->set();
+        LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
         loopv(surfs)
         {
             materialsurface &m = surfs[i];
@@ -1384,10 +1388,12 @@ void renderwater()
             renderwater(m);
         }
         flushwater();
+        if(renderlod) renderworldlodwater(false);
 
         if(belowshader)
         {
             belowshader->set();
+            LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
             loopv(surfs)
             {
                 materialsurface &m = surfs[i];
@@ -1395,6 +1401,7 @@ void renderwater()
                 renderwater(m);
             }
             flushwater();
+            if(renderlod) renderworldlodwater(true);
         }
     }
 }
