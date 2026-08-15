@@ -5,6 +5,7 @@ struct cube;
 struct stream;
 struct worldgencontext;
 struct worldscatterinstance;
+struct worldsectionrenderdata;
 template<class T> struct vector;
 
 enum worldsurfacematerial
@@ -35,10 +36,10 @@ namespace game
     extern void destroyworldgeneration(worldgencontext *generation);
     extern bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height);
     extern bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface);
-    extern cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized);
+    extern cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized, worldsectionrenderdata *renderdata = NULL);
     extern void generateworldscatter(worldgencontext *generation, cube *root, int chunkx, int chunky, vector<worldscatterinstance> &scatter);
     extern void generateworldscatter(cube *root, int chunkx, int chunky, vector<worldscatterinstance> &scatter);
-    extern cube *generateworldchunk(int chunkx, int chunky);
+    extern cube *generateworldchunk(int chunkx, int chunky, worldsectionrenderdata *renderdata = NULL);
     extern void freeworldchunk(cube *root);
     extern bool validgeneratedworldscatter(const cube *root, const worldscatterinstance &scatter);
     extern void cacheworldscattertransform(int chunkx, int chunky, float maxoffset, const worldscatterinstance &scatter);

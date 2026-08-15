@@ -741,17 +741,18 @@ static bool compactworldchunkdiff(worldchunk &chunk)
     string cachefilename;
     worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, chunk.x, chunk.y);
     vector<worldscatterinstance> basescatter;
+    worldsectionrenderdata baserenderdata;
     int cachefamilies = 0, cacheerror = 0;
     cube *base = generatedchunkcache ? loadworldchunkcache(cachefilename, chunk.x, chunk.y, game::getworldseed(),
                                                            game::worldgenerationparameterhash(), chunkremip != 0, basescatter, false,
-                                                           cachefamilies, cacheerror) : NULL;
+                                                           cachefamilies, cacheerror, &baserenderdata) : NULL;
     if(!base)
     {
         ZoneScopedN("Chunks/Generate uncached");
-        base = game::generateworldchunk(chunk.x, chunk.y);
+        base = game::generateworldchunk(chunk.x, chunk.y, &baserenderdata);
         if(base) game::generateworldscatter(base, chunk.x, chunk.y, basescatter);
         vector<uchar> cachepayload;
-        if(generatedchunkcache && base && serializeworldchunkcache(base, basescatter, cachepayload))
+        if(generatedchunkcache && base && serializeworldchunkcache(base, basescatter, cachepayload, &baserenderdata))
             queueworldchunkcachewrite(chunk.x, chunk.y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0,
                                       cachepayload);
     }
@@ -980,16 +981,19 @@ static void worlddiffcommand(char *action, char *xtext, char *ytext, char *ztext
             worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, chunk.x, chunk.y);
             int cachefamilies = 0, cacheerror = 0;
             vector<worldscatterinstance> reconstructedscatter;
+            worldsectionrenderdata reconstructedrenderdata;
             cube *reconstructed = generatedchunkcache ? loadworldchunkcache(cachefilename, chunk.x, chunk.y, game::getworldseed(),
                                                                             game::worldgenerationparameterhash(), chunkremip != 0,
-                                                                            reconstructedscatter, false, cachefamilies, cacheerror) : NULL;
+                                                                            reconstructedscatter, false, cachefamilies, cacheerror,
+                                                                            &reconstructedrenderdata) : NULL;
             if(!reconstructed)
             {
                 ZoneScopedN("Chunks/Generate uncached");
-                reconstructed = game::generateworldchunk(chunk.x, chunk.y);
+                reconstructed = game::generateworldchunk(chunk.x, chunk.y, &reconstructedrenderdata);
                 if(reconstructed) game::generateworldscatter(reconstructed, chunk.x, chunk.y, reconstructedscatter);
                 vector<uchar> cachepayload;
-                if(generatedchunkcache && reconstructed && serializeworldchunkcache(reconstructed, reconstructedscatter, cachepayload))
+                if(generatedchunkcache && reconstructed && serializeworldchunkcache(reconstructed, reconstructedscatter, cachepayload,
+                                                                                     &reconstructedrenderdata))
                     queueworldchunkcachewrite(chunk.x, chunk.y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0,
                                               cachepayload);
             }

@@ -324,33 +324,32 @@ static bool loadworldchunks(const char *mname)
         worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, currentx, currenty);
         int cachefamilies = 0, cacheerror = 0;
         cube *base = generatedchunkcache
-                         ? loadworldchunkcache(cachefilename, currentx, currenty, game::getworldseed(), game::worldgenerationparameterhash(),
-                                               chunkremip != 0, reconstructedworldscatter, false, cachefamilies, cacheerror)
+                         ? loadworldchunkcache(cachefilename, currentx, currenty, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, reconstructedworldscatter, false, cachefamilies, cacheerror, &reconstructedworldrenderdata)
                          : NULL;
         if(!base)
         {
             ZoneScopedN("Chunks/Generate uncached");
-            base = game::generateworldchunk(currentx, currenty);
+            base = game::generateworldchunk(currentx, currenty, &reconstructedworldrenderdata);
             if(base) game::generateworldscatter(base, currentx, currenty, reconstructedworldscatter);
             vector<uchar> cachepayload;
-            if(generatedchunkcache && base && serializeworldchunkcache(base, reconstructedworldscatter, cachepayload))
+            if(generatedchunkcache && base && serializeworldchunkcache(base, reconstructedworldscatter, cachepayload,
+                                                                       &reconstructedworldrenderdata))
                 queueworldchunkcachewrite(currentx, currenty, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0,
                                           cachepayload);
         }
         if(base)
         {
             setworldleavesalpha(base, leavesalpha != 0);
-            defformatstring(diffname, "media/map/%s/chunks/%d_%d_%d.diff",
-                            worldfolder, currentx, currenty, WORLD_DIFF_Z);
+            defformatstring(diffname, "media/map/%s/chunks/%d_%d_%d.diff", worldfolder, currentx, currenty, WORLD_DIFF_Z);
             path(diffname);
             const char *found = findfile(diffname, "rb");
             if(found && fileexists(found, "r"))
             {
                 int families = 0;
                 ullong revision = 0, canonicalhash = 0;
-                applyworldchunkdiff(base, currentx, currenty, diffname,
-                                    reconstructedworldscatter, false, families,
-                                    revision, canonicalhash);
+                worldchunkdirtybounds dirty;
+                applyworldchunkdiff(base, currentx, currenty, diffname, reconstructedworldscatter, false, families, revision, canonicalhash, &dirty);
+                reclassifyworldchunkrenderdata(NULL, base, reconstructedworldrenderdata, dirty);
             }
             freeocta(base);
         }
@@ -361,6 +360,7 @@ static bool loadworldchunks(const char *mname)
         worldchunks.add(worldchunk(currentx, currenty, currentroot, false, true));
     indexworldchunk(worldchunks.length() - 1);
     currentchunk.scatter.move(reconstructedworldscatter);
+    currentchunk.renderdata = reconstructedworldrenderdata;
     loadinitialworldchunks(currentx, currenty);
 
     worldfirstchunkx = currentx - WORLD_RUNTIME_CENTER;
@@ -395,9 +395,7 @@ bool save_world(const char *mname)
     hdr.version = MAPVERSION;
     hdr.worldsize = worldsize;
     hdr.chunkx = hdr.chunky = INT_MIN;
-    const char *forwardslash = strrchr(mname, '/'), *backslash = strrchr(mname, '\\'),
-               *basename = !forwardslash ? backslash :
-                           !backslash || forwardslash > backslash ? forwardslash : backslash;
+    const char *forwardslash = strrchr(mname, '/'), *backslash = strrchr(mname, '\\'), *basename = !forwardslash ? backslash : !backslash || forwardslash > backslash ? forwardslash : backslash;
     basename = basename ? basename + 1 : mname;
     chunkcoords(basename, hdr.chunkx, hdr.chunky);
     lilswap(&hdr.version, 4);
@@ -461,8 +459,7 @@ static bool replaceworldmetadatafile(const char *temporary, const char *finalnam
 
 static bool saveworldmetadata(int chunkx, int chunky)
 {
-    if(activeworldmetadata.valid &&
-       activeworldmetadata.worldgenversion != WORLDGEN_VERSION)
+    if(activeworldmetadata.valid && activeworldmetadata.worldgenversion != WORLDGEN_VERSION)
     {
         conoutf(CON_ERROR,
                 "refusing to change worldgen version %d to %d for existing world %s",
@@ -486,18 +483,15 @@ static bool saveworldmetadata(int chunkx, int chunky)
     activeworldmetadata.saveformatversion = WORLD_SAVE_FORMAT_VERSION;
     activeworldmetadata.gamemode = game::gamemode;
     activeworldmetadata.playerhealth = clamp(game::getlocalplayerhealth(), 0.0f, float(game::PLAYER_MAX_HEALTH));
-    game::getlocalplayermotion(activeworldmetadata.playervelocity, activeworldmetadata.playerfalling,
-                               activeworldmetadata.playerfalldistance, activeworldmetadata.playerphysstate);
+    game::getlocalplayermotion(activeworldmetadata.playervelocity, activeworldmetadata.playerfalling, activeworldmetadata.playerfalldistance, activeworldmetadata.playerphysstate);
     bool ok = f->printf("CUBECRAFT_WORLD 5\n") > 0;
     if(ok) ok = f->printf("world_seed %d\n", activeworldmetadata.seed) > 0;
     if(ok) ok = f->printf("worldgen_version %d\n", activeworldmetadata.worldgenversion) > 0;
     if(ok) ok = f->printf("worldgen_parameter_hash " WORLD_ULL_FORMAT "\n", activeworldmetadata.parameterhash) > 0;
     if(ok) ok = f->printf("save_format_version %d\n", activeworldmetadata.saveformatversion) > 0;
     if(ok) ok = f->printf("player_health %.9g\n", activeworldmetadata.playerhealth) > 0;
-    if(ok) ok = f->printf("player_velocity %.9g %.9g %.9g\n", activeworldmetadata.playervelocity.x, activeworldmetadata.playervelocity.y,
-                          activeworldmetadata.playervelocity.z) > 0;
-    if(ok) ok = f->printf("player_falling %.9g %.9g %.9g\n", activeworldmetadata.playerfalling.x, activeworldmetadata.playerfalling.y,
-                          activeworldmetadata.playerfalling.z) > 0;
+    if(ok) ok = f->printf("player_velocity %.9g %.9g %.9g\n", activeworldmetadata.playervelocity.x, activeworldmetadata.playervelocity.y, activeworldmetadata.playervelocity.z) > 0;
+    if(ok) ok = f->printf("player_falling %.9g %.9g %.9g\n", activeworldmetadata.playerfalling.x, activeworldmetadata.playerfalling.y, activeworldmetadata.playerfalling.z) > 0;
     if(ok) ok = f->printf("player_fall_distance %.9g\n", activeworldmetadata.playerfalldistance) > 0;
     if(ok) ok = f->printf("player_physics_state %d\n", activeworldmetadata.playerphysstate) > 0;
     if(ok) ok = game::savesurvivalinventory(f);
@@ -520,8 +514,7 @@ static bool saveworldmetadata(int chunkx, int chunky)
     return true;
 }
 
-static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
-                              worldspawnmetadata &spawn, worlddiffmetadata &metadata)
+static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky, worldspawnmetadata &spawn, worlddiffmetadata &metadata)
 {
     chunkx = chunky = 0;
     spawn = worldspawnmetadata();
@@ -544,16 +537,13 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
         }
         if(sscanf(line, "game_mode %d", &metadata.gamemode) == 1) continue;
         if(sscanf(line, "player_health %f", &metadata.playerhealth) == 1) continue;
-        if(sscanf(line, "player_velocity %f %f %f", &metadata.playervelocity.x, &metadata.playervelocity.y,
-                  &metadata.playervelocity.z) == 3) continue;
-        if(sscanf(line, "player_falling %f %f %f", &metadata.playerfalling.x, &metadata.playerfalling.y,
-                  &metadata.playerfalling.z) == 3) continue;
+        if(sscanf(line, "player_velocity %f %f %f", &metadata.playervelocity.x, &metadata.playervelocity.y, &metadata.playervelocity.z) == 3) continue;
+        if(sscanf(line, "player_falling %f %f %f", &metadata.playerfalling.x, &metadata.playerfalling.y, &metadata.playerfalling.z) == 3) continue;
         if(sscanf(line, "player_fall_distance %f", &metadata.playerfalldistance) == 1) continue;
         if(sscanf(line, "player_physics_state %d", &metadata.playerphysstate) == 1) continue;
         ullong inventoryid;
         char inventoryidtext[32];
-        if(sscanf(line, "inventory_cursor %31s %d %d", inventoryidtext, &metadata.inventorycursorcount,
-                  &metadata.inventorycursordurability) >= 2)
+        if(sscanf(line, "inventory_cursor %31s %d %d", inventoryidtext, &metadata.inventorycursorcount, &metadata.inventorycursordurability) >= 2)
         {
             if(!parseworldpersistentid(inventoryidtext, inventoryid)) continue;
             metadata.inventorycursoritem = getinventoryitempersistentindex(inventoryid);
@@ -600,13 +590,10 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
     }
     delete f;
 
-    metadata.valid = metarevision >= 3 && metarevision <= 5 && metadata.seed >= 0 &&
-                     metadata.worldgenversion > 0 && metadata.saveformatversion > 0;
+    metadata.valid = metarevision >= 3 && metarevision <= 5 && metadata.seed >= 0 && metadata.worldgenversion > 0 && metadata.saveformatversion > 0;
     if(!metadata.valid)
     {
-        conoutf(CON_ERROR,
-                "world %s uses legacy metadata without a pinned generator; explicit migration is required",
-                folder);
+        conoutf(CON_ERROR, "world %s uses legacy metadata without a pinned generator; explicit migration is required", folder);
         return false;
     }
     if(metadata.saveformatversion != WORLD_SAVE_FORMAT_VERSION)
@@ -617,9 +604,7 @@ static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky,
     }
     if(metadata.worldgenversion != WORLDGEN_VERSION)
     {
-        conoutf(CON_ERROR,
-                "world %s requires worldgen version %d, but this build provides version %d",
-                folder, metadata.worldgenversion, WORLDGEN_VERSION);
+        conoutf(CON_ERROR, "world %s requires worldgen version %d, but this build provides version %d", folder, metadata.worldgenversion, WORLDGEN_VERSION);
         return false;
     }
     if(!game::validgamemode(metadata.gamemode)) metadata.gamemode = 0;
@@ -724,8 +709,7 @@ static bool prepareworldspawn(const worldspawnmetadata &saved)
         player->resetinterp();
     }
 
-    const int material = lookupmaterial(vec(player->o.x, player->o.y,
-                                            max(player->o.z - player->eyeheight + 1, 0.0f)));
+    const int material = lookupmaterial(vec(player->o.x, player->o.y, max(player->o.z - player->eyeheight + 1, 0.0f)));
     if(!saved.valid && isliquid(material & MATF_VOLUME))
     {
         conoutf(CON_ERROR, "refusing to finish loading with the player spawn in water");
@@ -923,8 +907,10 @@ void startnetworkworld(int seed)
     worldroot = NULL;
     activeworldchunk = worldchunks.length();
     {
-        worldchunk &chunk = worldchunks.add(worldchunk(0, 0, game::generateworldchunk(0, 0)));
+        worldsectionrenderdata renderdata;
+        worldchunk &chunk = worldchunks.add(worldchunk(0, 0, game::generateworldchunk(0, 0, &renderdata)));
         indexworldchunk(worldchunks.length() - 1);
+        chunk.renderdata = renderdata;
         game::generateworldscatter(chunk.root, 0, 0, chunk.scatter);
     }
     loadinitialworldchunks(0, 0);
@@ -1104,15 +1090,15 @@ static bool loadseedworld(const char *mname, const char *cname)
     string cachefilename;
     worldchunkcachefilename(cachefilename, sizeof(cachefilename), folder, chunkx, chunky);
     int cachefamilies = 0, cacheerror = 0;
-    worldroot = generatedchunkcache ? loadworldchunkcache(cachefilename, chunkx, chunky, game::getworldseed(), game::worldgenerationparameterhash(),
-                                                          chunkremip != 0, reconstructedworldscatter, false, cachefamilies, cacheerror) : NULL;
+    worldroot = generatedchunkcache ? loadworldchunkcache(cachefilename, chunkx, chunky, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, reconstructedworldscatter, false, cachefamilies, cacheerror, &reconstructedworldrenderdata) : NULL;
     if(!worldroot)
     {
         ZoneScopedN("Chunks/Generate uncached");
-        worldroot = game::generateworldchunk(chunkx, chunky);
+        worldroot = game::generateworldchunk(chunkx, chunky, &reconstructedworldrenderdata);
         if(worldroot) game::generateworldscatter(worldroot, chunkx, chunky, reconstructedworldscatter);
         vector<uchar> cachepayload;
-        if(generatedchunkcache && worldroot && serializeworldchunkcache(worldroot, reconstructedworldscatter, cachepayload))
+        if(generatedchunkcache && worldroot && serializeworldchunkcache(worldroot, reconstructedworldscatter, cachepayload,
+                                                                        &reconstructedworldrenderdata))
             queueworldchunkcachewrite(chunkx, chunky, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, cachepayload);
     }
     if(!worldroot) return false;
@@ -1132,6 +1118,7 @@ static bool loadseedworld(const char *mname, const char *cname)
                             reconstructedworldscatter, false, families,
                             revision, canonicalhash, &dirty);
         if(chunkremip && dirty.valid) remipworldchunkbounded(worldroot, false, families, NULL, &dirty);
+        reclassifyworldchunkrenderdata(NULL, worldroot, reconstructedworldrenderdata, dirty);
         worldchunkdiffstate *state = findworldchunkdiffstate(chunkx, chunky, true);
         state->revision = revision;
         worldeditrevision = max(worldeditrevision, revision);

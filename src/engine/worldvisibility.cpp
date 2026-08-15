@@ -149,8 +149,15 @@ static bool prepareworldchunksectionstates(worldchunkjob &job)
             if(SDL_AtomicGet(&job.cancelled)) return false;
             int x = j % WORLD_SECTION_COLUMNS, y = j / WORLD_SECTION_COLUMNS;
             ivec pos(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, i * WORLD_SECTION_SIZE);
-            int state = classifyworldsection(lookupworldchunkrootcube(static_cast<const cube *>(job.root), pos, WORLD_SECTION_SIZE),
-                                             job.portals[i][j], job.portalcellmasks[i][j]);
+            int state;
+            if(job.renderdata.flags[i][j]&SECTION_NO_RENDER)
+            {
+                state = WORLD_SECTION_CONTENT | WORLD_SECTION_OPAQUE;
+                memset(job.portals[i][j], 0, sizeof(job.portals[i][j]));
+                memset(job.portalcellmasks[i][j], 0, sizeof(job.portalcellmasks[i][j]));
+            }
+            else state = classifyworldsection(lookupworldchunkrootcube(static_cast<const cube *>(job.root), pos, WORLD_SECTION_SIZE),
+                                              job.portals[i][j], job.portalcellmasks[i][j]);
             if(state&WORLD_SECTION_CONTENT) content |= 1U << j;
             if(state&WORLD_SECTION_OPAQUE) opaque |= 1U << j;
         }
@@ -166,6 +173,14 @@ static int worldchunksectionstate(worldchunk &chunk, int tile, int section)
     if((chunk.contentknown[section] & tilebit) && (chunk.opaqueknown[section] & tilebit))
         return (chunk.contenttiles[section] & tilebit ? WORLD_SECTION_CONTENT : 0) |
                (chunk.opaquetiles[section] & tilebit ? WORLD_SECTION_OPAQUE : 0);
+    if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER)
+    {
+        chunk.contentknown[section] |= tilebit;
+        chunk.contenttiles[section] |= tilebit;
+        chunk.opaqueknown[section] |= tilebit;
+        chunk.opaquetiles[section] |= tilebit;
+        return WORLD_SECTION_CONTENT | WORLD_SECTION_OPAQUE;
+    }
     int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
     ivec pos(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE,
              section * WORLD_SECTION_SIZE);
@@ -223,6 +238,15 @@ static const uchar *worldchunksectionportals(worldchunk &chunk, int tile, int se
 {
     const uint tilebit = 1U << tile;
     if(chunk.portalsknown[section] & tilebit) return chunk.portals[section][tile];
+
+    if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER)
+    {
+        uchar portals[WORLD_SECTION_FACE_COUNT] = { 0 };
+        uint facemasks[WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
+        memclear(facemasks);
+        cacheworldchunksectionclassification(chunk, tile, section, WORLD_SECTION_CONTENT | WORLD_SECTION_OPAQUE, portals, facemasks);
+        return chunk.portals[section][tile];
+    }
 
     int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
     ivec pos(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE);
@@ -316,6 +340,7 @@ static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, con
     int numregions = 0;
     loopi(numsections)
     {
+        if(chunk.renderdata.flags[sections[i]][tile]&SECTION_NO_RENDER) continue;
         ivec center = worldchunkorigin(chunk, sections[i] * WORLD_SECTION_SIZE);
         center.add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, 0));
         if(!queueworldchunkvaupdate(center)) continue;
@@ -580,6 +605,7 @@ static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int ti
 static bool worldchunksectionresidentrequired(worldchunk &chunk, int tile, int section, int playerradius)
 {
     if(!worldlodrequiresvoxel(chunk)) return false;
+    if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER) return worldchunksectionnearplayer(chunk, tile, section, playerradius);
     if(drawfullchunk || worldchunksectionnearplayer(chunk, tile, section, playerradius)) return true;
     const uint tilebit = 1U << tile;
     return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section);
@@ -588,6 +614,7 @@ static bool worldchunksectionresidentrequired(worldchunk &chunk, int tile, int s
 static bool worldchunksectionmountwanted(worldchunk &chunk, int tile, int section)
 {
     if(!worldlodrequiresvoxel(chunk)) return false;
+    if(chunk.renderdata.flags[section][tile]&SECTION_NO_RENDER) return false;
     if(drawfullchunk) return true;
     const uint tilebit = 1U << tile;
     return (chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section);

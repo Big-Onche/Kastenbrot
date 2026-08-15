@@ -49,6 +49,25 @@ enum
     WORLD_SECTION_OPAQUE = 1 << 1
 };
 
+enum
+{
+    SECTION_EXTERIOR = 1 << 0,
+    SECTION_INTERIOR = 1 << 1,
+    SECTION_CAVE_ENTRANCE = 1 << 2,
+    SECTION_WATER = 1 << 3,
+    SECTION_FULLY_SOLID = 1 << 4,
+    SECTION_NO_RENDER = 1 << 5
+};
+
+struct worldsectionrenderdata
+{
+    uchar flags[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
+
+    worldsectionrenderdata() { clear(); }
+
+    void clear() { memclear(flags); }
+};
+
 struct worldscatterinstance
 {
     int x, y, z, type, orient;
@@ -173,6 +192,7 @@ struct worldchunk
     uchar portals[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT],
           reachablefaces[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
+    worldsectionrenderdata renderdata;
     uint request;
     bool loading, generating, saved, dirty, corrupted;
 
@@ -214,6 +234,7 @@ struct worldchunkjob
     uint contenttiles[WORLD_SECTION_LAYERS], opaquetiles[WORLD_SECTION_LAYERS];
     uchar portals[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
+    worldsectionrenderdata renderdata;
     ullong revision, canonicalhash;
     uint epoch, request;
     bool loaded, cached, remip, leavesalpha, sectionstatesready;

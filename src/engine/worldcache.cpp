@@ -4,7 +4,7 @@
 
 enum
 {
-    WORLD_CHUNK_CACHE_FORMAT_VERSION = 1,
+    WORLD_CHUNK_CACHE_FORMAT_VERSION = 2,
     WORLD_CHUNK_CACHE_HEADER_SIZE = 48,
     WORLD_CHUNK_CACHE_MAX_PAYLOAD = 512 << 20
 };
@@ -122,7 +122,8 @@ static void serializeworldcachecube(const cube &c, vector<uchar> &out)
     out.add(uchar(c.material >> 8));
 }
 
-static bool serializeworldchunkcache(cube *root, const vector<worldscatterinstance> &scatter, vector<uchar> &payload)
+static bool serializeworldchunkcache(cube *root, const vector<worldscatterinstance> &scatter, vector<uchar> &payload,
+                                     const worldsectionrenderdata *renderdata)
 {
     ZoneScopedN("Chunks/Cache serialize");
     payload.setsize(0);
@@ -138,6 +139,8 @@ static bool serializeworldchunkcache(cube *root, const vector<worldscatterinstan
         worldcacheput64(payload, getworldscatterpersistentid(instance.type));
         worldcacheput32(payload, uint(instance.orient));
     }
+    if(!renderdata) return false;
+    payload.put(&renderdata->flags[0][0], sizeof(renderdata->flags));
     return payload.length() > 0 && payload.length() <= WORLD_CHUNK_CACHE_MAX_PAYLOAD;
 }
 
@@ -182,7 +185,8 @@ static bool deserializeworldcachecube(worldcachereader &reader, cube &c, int siz
     return true;
 }
 
-static cube *deserializeworldchunkcache(const uchar *data, int length, vector<worldscatterinstance> &scatter, bool prepared, int &families)
+static cube *deserializeworldchunkcache(const uchar *data, int length, vector<worldscatterinstance> &scatter, bool prepared, int &families,
+                                        worldsectionrenderdata *renderdata)
 {
     ZoneScopedN("Chunks/Cache deserialize");
     worldcachereader reader(data, length);
@@ -219,12 +223,25 @@ static cube *deserializeworldchunkcache(const uchar *data, int length, vector<wo
             break;
         scatter.add(instance);
     }
-    if(scatter.length() != int(count) || reader.remaining())
+    worldsectionrenderdata cachedrenderdata;
+    if(scatter.length() != int(count) || !reader.read(&cachedrenderdata.flags[0][0], sizeof(cachedrenderdata.flags)) || reader.remaining())
     {
         scatter.setsize(0);
         freeworldcachetree(root, prepared);
         return NULL;
     }
+    const int validflags = SECTION_EXTERIOR | SECTION_INTERIOR | SECTION_CAVE_ENTRANCE | SECTION_WATER | SECTION_FULLY_SOLID | SECTION_NO_RENDER;
+    loopi(WORLD_SECTION_LAYERS) loopj(WORLD_SECTION_TILES)
+    {
+        const int flags = cachedrenderdata.flags[i][j];
+        if((flags&~validflags) || ((flags&SECTION_NO_RENDER) && !(flags&SECTION_FULLY_SOLID)))
+        {
+            scatter.setsize(0);
+            freeworldcachetree(root, prepared);
+            return NULL;
+        }
+    }
+    if(renderdata) *renderdata = cachedrenderdata;
     return root;
 }
 
@@ -235,11 +252,13 @@ static void worldchunkcachefilename(char *name, size_t length, const char *folde
 }
 
 static cube *loadworldchunkcache(const char *filename, int x, int y, int seed, ullong worldgenhash, bool remip,
-                                  vector<worldscatterinstance> &scatter, bool prepared, int &families, int &error)
+                                  vector<worldscatterinstance> &scatter, bool prepared, int &families, int &error,
+                                  worldsectionrenderdata *renderdata)
 {
     ZoneScopedN("Chunks/Cache lookup");
     error = 0;
     scatter.setsize(0);
+    if(!renderdata) return NULL;
     const char *found = findfile(filename, "rb");
     if(!found || !fileexists(found, "r")) return NULL;
     string foundpath;
@@ -300,7 +319,7 @@ static cube *loadworldchunkcache(const char *filename, int x, int y, int seed, u
         remove(foundpath);
         return NULL;
     }
-    cube *root = deserializeworldchunkcache(payload.getbuf(), payload.length(), scatter, prepared, families);
+    cube *root = deserializeworldchunkcache(payload.getbuf(), payload.length(), scatter, prepared, families, renderdata);
     if(!root)
     {
         error = 7;

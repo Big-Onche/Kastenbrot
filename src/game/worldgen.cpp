@@ -66,6 +66,7 @@ struct worldgencontext
     uchar cliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar reliefcliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar rockmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
+    worldsectionrenderdata renderdata;
     vector<worldcavesegment> cavesegments;
     vector<worldcavechamber> cavechambers;
     int seed;
@@ -266,6 +267,81 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
         }
     }
     return !ctx.iscanceled();
+}
+
+static uchar &worldgensectionflags(worldgencontext &ctx, int blockx, int blocky, int blockz)
+{
+    const int tile = blocky / WORLD_SECTION_BLOCKS * WORLD_SECTION_COLUMNS + blockx / WORLD_SECTION_BLOCKS,
+              section = clamp(blockz / WORLD_SECTION_BLOCKS, 0, int(WORLD_SECTION_LAYERS) - 1);
+    return ctx.renderdata.flags[section][tile];
+}
+
+static void markworldgencarvedsection(worldgencontext &ctx, int blockx, int blocky, int blockz, bool entrance)
+{
+    static const int directions[][3] =
+    {
+        { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+    };
+    uchar &flags = worldgensectionflags(ctx, blockx, blocky, blockz);
+    flags = (flags | SECTION_INTERIOR) & ~SECTION_FULLY_SOLID;
+    if(entrance) flags |= SECTION_CAVE_ENTRANCE;
+    loopi(6)
+    {
+        const int coordinate = i < 2 ? blockx : i < 4 ? blocky : blockz,
+                  direction = directions[i][i / 2];
+        if((direction < 0 && coordinate % WORLD_SECTION_BLOCKS) ||
+           (direction > 0 && coordinate % WORLD_SECTION_BLOCKS != WORLD_SECTION_BLOCKS - 1))
+            continue;
+        const int neighborx = blockx + directions[i][0], neighbory = blocky + directions[i][1], neighborz = blockz + directions[i][2];
+        if(neighborx < 0 || neighborx >= WORLD_CHUNK_BLOCKS || neighbory < 0 || neighbory >= WORLD_CHUNK_BLOCKS ||
+           neighborz < 0 || neighborz >= WORLD_HEIGHT_BLOCKS)
+            continue;
+        uchar &neighborflags = worldgensectionflags(ctx, neighborx, neighbory, neighborz);
+        neighborflags |= SECTION_INTERIOR;
+        if(entrance) neighborflags |= SECTION_CAVE_ENTRANCE;
+    }
+}
+
+static void markworldgenexteriorshell(worldgencontext &ctx, int chunkx, int chunky)
+{
+    static const int directions[][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+    const int sealevel = clamp(ctx.settings.sealevel - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
+    ctx.renderdata.clear();
+    loopi(WORLD_SECTION_LAYERS) loopj(WORLD_SECTION_TILES) ctx.renderdata.flags[i][j] = SECTION_FULLY_SOLID;
+
+    loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+    {
+        const int surface = clamp(ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0,
+                                  int(WORLD_HEIGHT_BLOCKS));
+        if(surface > 0) worldgensectionflags(ctx, x, y, surface - 1) |= SECTION_EXTERIOR;
+
+        const int tile = y / WORLD_SECTION_BLOCKS * WORLD_SECTION_COLUMNS + x / WORLD_SECTION_BLOCKS;
+        loop(section, WORLD_SECTION_LAYERS)
+        {
+            const int sectiontop = (section + 1) * WORLD_SECTION_BLOCKS;
+            if(surface < sectiontop) ctx.renderdata.flags[section][tile] &= ~SECTION_FULLY_SOLID;
+        }
+
+        if(surface < sealevel)
+        {
+            const int first = surface / WORLD_SECTION_BLOCKS,
+                      last = (sealevel - 1) / WORLD_SECTION_BLOCKS;
+            for(int section = first; section <= last; ++section) ctx.renderdata.flags[section][tile] |= SECTION_WATER;
+        }
+
+        loopi(4)
+        {
+            const int neighborx = x + directions[i][0], neighbory = y + directions[i][1];
+            int neighborheight;
+            if(neighborx >= 0 && neighborx < WORLD_CHUNK_BLOCKS && neighbory >= 0 && neighbory < WORLD_CHUNK_BLOCKS)
+                neighborheight = ctx.heightmap[neighbory * WORLD_CHUNK_BLOCKS + neighborx];
+            else neighborheight = generateworldheight(ctx, chunkx, chunky, neighborx, neighbory);
+            const int neighborsurface = clamp(neighborheight / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
+            if(surface <= neighborsurface) continue;
+            for(int section = neighborsurface / WORLD_SECTION_BLOCKS; section <= (surface - 1) / WORLD_SECTION_BLOCKS; ++section)
+                ctx.renderdata.flags[section][tile] |= SECTION_EXTERIOR;
+        }
+    }
 }
 
 static int worldheight(const worldgencontext &ctx, int localx, int localy)
@@ -794,7 +870,14 @@ static cube &lookupworldgenblock(worldgencontext &ctx, cube *root, const ivec &p
     }
 }
 
-enum { WORLD_CARVE_NONE, WORLD_CARVE_AIR, WORLD_CARVE_LAVA };
+enum
+{
+    WORLD_CARVE_NONE = 0,
+    WORLD_CARVE_AIR = 1 << 0,
+    WORLD_CARVE_LAVA = 1 << 1,
+    WORLD_CARVE_ENTRANCE = 1 << 2,
+    WORLD_CARVE_TYPE = WORLD_CARVE_AIR | WORLD_CARVE_LAVA
+};
 
 static int worldcarveindex(int x, int y, int blockz)
 {
@@ -1295,7 +1378,10 @@ static void carveworldcavesegment(const worldgencontext &ctx, uchar *carvemap, i
         {
             if(!segment.entrance && surface - z < mindepth) continue;
             if(worldcavesegmentcontains(ctx, segment, float(chunkstartx + x) + 0.5f, float(chunkstarty + y) + 0.5f, z + 0.5f))
-                carvemap[worldcarveindex(x, y, z - WORLD_MIN_HEIGHT)] = WORLD_CARVE_AIR;
+            {
+                uchar &carve = carvemap[worldcarveindex(x, y, z - WORLD_MIN_HEIGHT)];
+                carve = WORLD_CARVE_AIR | (carve&WORLD_CARVE_ENTRANCE) | (segment.entrance ? WORLD_CARVE_ENTRANCE : 0);
+            }
         }
     }
 }
@@ -1320,7 +1406,10 @@ static void carveworldcavechamber(const worldgencontext &ctx, uchar *carvemap, i
                   localzmax = min(zmax, surface - mindepth);
         for(int z = zmin; z <= localzmax; ++z)
             if(worldcavechambercontains(ctx, chamber, float(chunkstartx + x) + 0.5f, float(chunkstarty + y) + 0.5f, z + 0.5f))
-                carvemap[worldcarveindex(x, y, z - WORLD_MIN_HEIGHT)] = WORLD_CARVE_AIR;
+            {
+                uchar &carve = carvemap[worldcarveindex(x, y, z - WORLD_MIN_HEIGHT)];
+                carve = WORLD_CARVE_AIR | (carve&WORLD_CARVE_ENTRANCE);
+            }
     }
 }
 
@@ -1471,8 +1560,8 @@ static bool generateworldlavalakes(worldgencontext &ctx, uchar *carvemap, int ch
                 if(horizontal + dz * dz > boundary) continue;
 
                 uchar &carve = carvemap[worldcarveindex(x, y, logicalz - WORLD_MIN_HEIGHT)];
-                if(logicalz <= lavalevel) carve = WORLD_CARVE_LAVA;
-                else if(carve == WORLD_CARVE_NONE) carve = WORLD_CARVE_AIR;
+                if(logicalz <= lavalevel) carve = WORLD_CARVE_LAVA | (carve&WORLD_CARVE_ENTRANCE);
+                else if(!(carve&WORLD_CARVE_TYPE)) carve = WORLD_CARVE_AIR | (carve&WORLD_CARVE_ENTRANCE);
             }
         }
     }
@@ -1503,18 +1592,32 @@ static bool placeworldcaves(worldgencontext &ctx, cube *root, int chunkx, int ch
         ZoneScopedN("Chunks/Apply cave map");
         const int bottomlayers = clamp(ctx.settings.bottomlavalayers, 0, int(WORLD_HEIGHT_BLOCKS));
         loop(z, bottomlayers) loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
-            carve[worldcarveindex(x, y, z)] = WORLD_CARVE_LAVA;
+        {
+            uchar &carveflags = carve[worldcarveindex(x, y, z)];
+            carveflags = WORLD_CARVE_LAVA | (carveflags&WORLD_CARVE_ENTRANCE);
+        }
 
         loop(z, WORLD_HEIGHT_BLOCKS)
         {
             if(ctx.iscanceled()) return false;
             loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
             {
-                const uchar type = carve[worldcarveindex(x, y, z)];
+                const uchar carveflags = carve[worldcarveindex(x, y, z)], type = carveflags&WORLD_CARVE_TYPE;
                 if(type == WORLD_CARVE_NONE) continue;
                 cube &c = lookupworldgenblock(ctx, root, ivec(x * WORLD_BLOCK_SIZE, y * WORLD_BLOCK_SIZE, z * WORLD_BLOCK_SIZE));
-                if(type == WORLD_CARVE_LAVA) setworldcubematerial(c, MAT_LAVA);
-                else if(!isempty(c) && c.material == MAT_AIR) setworldcubematerial(c, MAT_AIR);
+                bool affected = false;
+                if(type == WORLD_CARVE_LAVA)
+                {
+                    setworldcubematerial(c, MAT_LAVA);
+                    affected = true;
+                }
+                else if(!isempty(c) && c.material == MAT_AIR)
+                {
+                    setworldcubematerial(c, MAT_AIR);
+                    affected = true;
+                }
+                if(!affected) continue;
+                markworldgencarvedsection(ctx, x, y, z, (carveflags&WORLD_CARVE_ENTRANCE) != 0);
             }
         }
     }
@@ -1770,6 +1873,7 @@ static cube *generateworldchunk(int chunkx, int chunky, worldgencontext &ctx)
     {
         ZoneScopedN("Chunks/Generate height and biomes");
         if(!generateworldheightmap(ctx, chunkx, chunky)) return NULL;
+        markworldgenexteriorshell(ctx, chunkx, chunky);
     }
     cube *root;
     {
@@ -1791,6 +1895,12 @@ static cube *generateworldchunk(int chunkx, int chunky, worldgencontext &ctx)
             freepreparedworldchunk(root);
             return NULL;
         }
+    }
+    loopi(WORLD_SECTION_LAYERS) loopj(WORLD_SECTION_TILES)
+    {
+        uchar &flags = ctx.renderdata.flags[i][j];
+        if((flags&SECTION_FULLY_SOLID) && !(flags&(SECTION_EXTERIOR | SECTION_INTERIOR | SECTION_WATER))) flags |= SECTION_NO_RENDER;
+        else flags &= ~SECTION_NO_RENDER;
     }
     {
         ZoneScopedN("Chunks/Generate ores");
@@ -1827,13 +1937,15 @@ static cube *generateworldchunk(int chunkx, int chunky, worldgencontext &ctx)
     return root;
 }
 
-static cube *generateworldchunk(int chunkx, int chunky)
+static cube *generateworldchunk(int chunkx, int chunky, worldsectionrenderdata *renderdata)
 {
     ZoneScopedN("Chunks/Generate synchronous");
     ZoneTextF("%d_%d", chunkx, chunky);
     const game::worldsettings settings;
     worldgencontext ctx(game::getworldseed(), worldgentextures, false, chunkremip != 0, settings);
-    return generateworldchunk(chunkx, chunky, ctx);
+    cube *root = generateworldchunk(chunkx, chunky, ctx);
+    if(root && renderdata) *renderdata = ctx.renderdata;
+    return root;
 }
 
 static bool dryworldspawnblock(const game::worldgenerator &generator, const game::worldsettings &settings, int x, int y)
@@ -1993,12 +2105,13 @@ namespace game
         return !generation->iscanceled();
     }
 
-    cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized)
+    cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized, worldsectionrenderdata *renderdata)
     {
         if(!generation) return NULL;
         cube *root = ::generateworldchunk(chunkx, chunky, *generation);
         families = generation->families;
         optimized = generation->optimized;
+        if(root && renderdata) *renderdata = generation->renderdata;
         return root;
     }
 
@@ -2018,9 +2131,9 @@ namespace game
         ::generateworldscatter(root, chunkx, chunky, settings, scatter);
     }
 
-    cube *generateworldchunk(int chunkx, int chunky)
+    cube *generateworldchunk(int chunkx, int chunky, worldsectionrenderdata *renderdata)
     {
-        return ::generateworldchunk(chunkx, chunky);
+        return ::generateworldchunk(chunkx, chunky, renderdata);
     }
 
     void freeworldchunk(cube *root)

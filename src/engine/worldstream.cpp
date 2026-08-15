@@ -44,6 +44,7 @@ worldchunkjob::~worldchunkjob()
 
 static vector<worldchunk> worldchunks;
 static vector<worldscatterinstance> reconstructedworldscatter;
+static worldsectionrenderdata reconstructedworldrenderdata;
 static bool reconstructedworldscatterready = false;
 static vector<worldchunkjob *> worldchunkjobs, worldchunkactivejobs, worldchunkresults;
 static vector<worldchunkcachewritejob *> worldchunkcachewrites, worldchunkactivecachewrites;
@@ -535,6 +536,7 @@ void clearworldchunks()
     }
     worldchunks.setsize(0);
     reconstructedworldscatter.setsize(0);
+    reconstructedworldrenderdata.clear();
     reconstructedworldscatterready = false;
     worldchunkdiffstates.deletecontents();
     worldredostack.deletecontents();
@@ -794,6 +796,122 @@ static bool worldchunkfullymounted(const worldchunk &chunk)
     return true;
 }
 
+static bool worldsectionfullysolid(const cube &c)
+{
+    if(c.children)
+    {
+        loopi(8) if(!worldsectionfullysolid(c.children[i])) return false;
+        return true;
+    }
+    return isentirelysolid(c) && !isliquid(c.material&MATF_VOLUME);
+}
+
+static bool worldsectionhaswater(const cube &c)
+{
+    if(c.children)
+    {
+        loopi(8) if(worldsectionhaswater(c.children[i])) return true;
+        return false;
+    }
+    return (c.material&MATF_VOLUME) == MAT_WATER;
+}
+
+static const cube &worldsectioncube(const worldchunk *chunk, const cube *root, int tile, int section)
+{
+    const int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
+    const ivec pos(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE);
+    if(chunk && (chunk->mountedtiles[section] & (1U << tile)))
+        return lookupcube(ivec(worldchunkorigin(*chunk)).add(pos), WORLD_SECTION_SIZE);
+    return lookupworldchunkrootcube(root, pos, WORLD_SECTION_SIZE);
+}
+
+static void reclassifyworldchunkrenderdata(worldchunk *chunk, cube *root, worldsectionrenderdata &renderdata,
+                                           const worldchunkdirtybounds &dirty)
+{
+    if(!root || !dirty.valid) return;
+    static const int directions[][3] =
+    {
+        { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
+    };
+    bool affected[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES], changed[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
+    memclear(affected);
+    memclear(changed);
+    const int minx = clamp(dirty.minimum.x / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_COLUMNS) - 1),
+              maxx = clamp((dirty.maximum.x - 1) / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_COLUMNS) - 1),
+              miny = clamp(dirty.minimum.y / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_COLUMNS) - 1),
+              maxy = clamp((dirty.maximum.y - 1) / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_COLUMNS) - 1),
+              minz = clamp(dirty.minimum.z / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_LAYERS) - 1),
+              maxz = clamp((dirty.maximum.z - 1) / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_LAYERS) - 1);
+    for(int z = minz; z <= maxz; ++z) for(int y = miny; y <= maxy; ++y) for(int x = minx; x <= maxx; ++x)
+    {
+        const int tile = y * WORLD_SECTION_COLUMNS + x;
+        affected[z][tile] = changed[z][tile] = true;
+        loopi(6)
+        {
+            const int nx = x + directions[i][0], ny = y + directions[i][1], nz = z + directions[i][2];
+            if(nx < 0 || nx >= WORLD_SECTION_COLUMNS || ny < 0 || ny >= WORLD_SECTION_COLUMNS || nz < 0 || nz >= WORLD_SECTION_LAYERS)
+                continue;
+            affected[nz][ny * WORLD_SECTION_COLUMNS + nx] = true;
+        }
+    }
+
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES) if(affected[section][tile])
+    {
+        uchar &flags = renderdata.flags[section][tile];
+        const cube &sectioncube = worldsectioncube(chunk, root, tile, section);
+        const bool fullysolid = worldsectionfullysolid(sectioncube);
+        flags &= ~(SECTION_WATER | SECTION_FULLY_SOLID | SECTION_NO_RENDER);
+        if(worldsectionhaswater(sectioncube)) flags |= SECTION_WATER;
+        if(fullysolid)
+        {
+            flags |= SECTION_FULLY_SOLID;
+            flags &= ~(SECTION_INTERIOR | SECTION_CAVE_ENTRANCE);
+        }
+        else if(changed[section][tile]) flags |= SECTION_INTERIOR;
+    }
+
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES) if(affected[section][tile])
+    {
+        uchar &flags = renderdata.flags[section][tile];
+        if(!(flags&SECTION_FULLY_SOLID)) continue;
+        const int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
+        bool exposed = false;
+        loopi(6)
+        {
+            const int nx = x + directions[i][0], ny = y + directions[i][1], nz = section + directions[i][2];
+            if(nx < 0 || nx >= WORLD_SECTION_COLUMNS || ny < 0 || ny >= WORLD_SECTION_COLUMNS || nz < 0 || nz >= WORLD_SECTION_LAYERS)
+            {
+                exposed = true;
+                break;
+            }
+            const int neighbortile = ny * WORLD_SECTION_COLUMNS + nx;
+            if(!worldsectionfullysolid(worldsectioncube(chunk, root, neighbortile, nz)))
+            {
+                exposed = true;
+                break;
+            }
+        }
+        if(exposed && !(flags&SECTION_EXTERIOR)) flags |= SECTION_INTERIOR;
+        if(!(flags&(SECTION_EXTERIOR | SECTION_INTERIOR | SECTION_WATER))) flags |= SECTION_NO_RENDER;
+    }
+}
+
+int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section)
+{
+    const int index = findworldchunk(chunkx, chunky);
+    if(!worldchunks.inrange(index) || tile < 0 || tile >= WORLD_SECTION_TILES || section < 0 || section >= WORLD_SECTION_LAYERS) return 0;
+    return worldchunks[index].renderdata.flags[section][tile];
+}
+
+static void invalidateworldchunksectionstate(worldchunk &chunk, int x, int y, int section)
+{
+    if(x < 0 || x >= WORLD_SECTION_COLUMNS || y < 0 || y >= WORLD_SECTION_COLUMNS || section < 0 || section >= WORLD_SECTION_LAYERS) return;
+    const uint tilebit = 1U << (y * WORLD_SECTION_COLUMNS + x);
+    chunk.contentknown[section] &= ~tilebit;
+    chunk.opaqueknown[section] &= ~tilebit;
+    chunk.portalsknown[section] &= ~tilebit;
+}
+
 void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
 {
     if(suppressworldchunkdirty || worldchunks.empty()) return;
@@ -816,11 +934,20 @@ void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
             maxz = clamp((bbmax.z - 1) / WORLD_SECTION_SIZE, 0, int(WORLD_SECTION_LAYERS) - 1);
         for(int z = minz; z <= maxz; ++z) for(int y = miny; y <= maxy; ++y) for(int x = minx; x <= maxx; ++x)
         {
-            uint tilebit = 1U << (y * WORLD_SECTION_COLUMNS + x);
-            chunk.contentknown[z] &= ~tilebit;
-            chunk.opaqueknown[z] &= ~tilebit;
-            chunk.portalsknown[z] &= ~tilebit;
+            invalidateworldchunksectionstate(chunk, x, y, z);
+            invalidateworldchunksectionstate(chunk, x - 1, y, z);
+            invalidateworldchunksectionstate(chunk, x + 1, y, z);
+            invalidateworldchunksectionstate(chunk, x, y - 1, z);
+            invalidateworldchunksectionstate(chunk, x, y + 1, z);
+            invalidateworldchunksectionstate(chunk, x, y, z - 1);
+            invalidateworldchunksectionstate(chunk, x, y, z + 1);
         }
+        worldchunkdirtybounds renderdirty;
+        renderdirty.minimum = ivec(bbmin).sub(origin).max(0);
+        renderdirty.maximum = ivec(bbmax).sub(origin).min(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE));
+        renderdirty.valid = renderdirty.minimum.x < renderdirty.maximum.x && renderdirty.minimum.y < renderdirty.maximum.y &&
+                            renderdirty.minimum.z < renderdirty.maximum.z;
+        reclassifyworldchunkrenderdata(&chunk, chunk.root, chunk.renderdata, renderdirty);
         chunk.dirty = true;
         visibilitychanged = true;
     }
@@ -1292,6 +1419,32 @@ static void worldchunkcachestats()
 COMMAND(clearworldchunkcache, "");
 COMMAND(worldchunkcachestats, "");
 
+static void worldsectionrenderstats()
+{
+    int exterior = 0, interior = 0, mixed = 0, interioronly = 0, entrances = 0, fullysolid = 0, norender = 0;
+    loopv(worldchunks)
+    {
+        const worldchunk &chunk = worldchunks[i];
+        if(chunk.loading || !chunk.root) continue;
+        loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+        {
+            const uchar flags = chunk.renderdata.flags[section][tile];
+            if(flags&SECTION_EXTERIOR) exterior++;
+            if(flags&SECTION_INTERIOR) interior++;
+            if((flags&(SECTION_EXTERIOR | SECTION_INTERIOR)) == (SECTION_EXTERIOR | SECTION_INTERIOR)) mixed++;
+            if((flags&SECTION_INTERIOR) && !(flags&SECTION_EXTERIOR)) interioronly++;
+            if(flags&SECTION_CAVE_ENTRANCE) entrances++;
+            if(flags&SECTION_FULLY_SOLID) fullysolid++;
+            if(flags&SECTION_NO_RENDER) norender++;
+        }
+    }
+    conoutf(CON_DEBUG,
+            "section render classes: exterior %d, interior %d, mixed %d, interior-only %d, cave entrances %d, fully-solid %d, no-render %d",
+            exterior, interior, mixed, interioronly, entrances, fullysolid, norender);
+}
+
+COMMAND(worldsectionrenderstats, "");
+
 static int acquireworldchunksync(int x, int y, int &generated)
 {
     int index = findworldchunk(x, y);
@@ -1310,17 +1463,18 @@ static int acquireworldchunksync(int x, int y, int &generated)
     string cachefilename;
     worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, x, y);
     int cachefamilies = 0, cacheerror = 0;
+    worldsectionrenderdata renderdata;
     cube *root = generatedchunkcache && worldfolder[0] ? loadworldchunkcache(cachefilename, x, y, game::getworldseed(),
                                                                            game::worldgenerationparameterhash(), chunkremip != 0, scatter, false,
-                                                                           cachefamilies, cacheerror) : NULL;
+                                                                           cachefamilies, cacheerror, &renderdata) : NULL;
     if(!root)
     {
         ZoneScopedN("Chunks/Generate uncached");
-        root = game::generateworldchunk(x, y);
+        root = game::generateworldchunk(x, y, &renderdata);
         if(root) game::generateworldscatter(root, x, y, scatter);
         generated++;
         vector<uchar> cachepayload;
-        if(generatedchunkcache && worldfolder[0] && root && serializeworldchunkcache(root, scatter, cachepayload))
+        if(generatedchunkcache && worldfolder[0] && root && serializeworldchunkcache(root, scatter, cachepayload, &renderdata))
             queueworldchunkcachewrite(x, y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, cachepayload);
     }
     if(root) setworldleavesalpha(root, leavesalpha != 0);
@@ -1333,6 +1487,7 @@ static int acquireworldchunksync(int x, int y, int &generated)
         applyworldchunkdiff(root, x, y, diffpath, scatter, false, families,
                             revision, canonicalhash, &dirty);
         if(chunkremip && dirty.valid) remipworldchunkbounded(root, false, families, NULL, &dirty);
+        reclassifyworldchunkrenderdata(NULL, root, renderdata, dirty);
         worldchunkdiffstate *state = findworldchunkdiffstate(x, y, true);
         state->revision = revision;
         worldeditrevision = max(worldeditrevision, revision);
@@ -1341,6 +1496,7 @@ static int acquireworldchunksync(int x, int y, int &generated)
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, root, false, loaded));
     indexworldchunk(worldchunks.length() - 1);
     chunk.scatter.move(scatter);
+    chunk.renderdata = renderdata;
     addworldsectionvisibilitychunk(x, y);
     return worldchunks.length() - 1;
 }
@@ -1599,6 +1755,7 @@ static int processworldchunkresults()
             worldchunk &chunk = worldchunks[index];
             chunk.root = job->root;
             chunk.scatter.move(job->scatter);
+            chunk.renderdata = job->renderdata;
             bool leavesalphamatches = job->leavesalpha == (leavesalpha != 0);
             if(!leavesalphamatches) setworldleavesalpha(chunk.root, leavesalpha != 0);
             if(job->sectionstatesready)
@@ -2278,23 +2435,23 @@ static cube *prepareworldchunk(worldchunkjob &job)
     ZoneScopedN("Chunks/Prepare");
     ZoneTextF("%d_%d", job.x, job.y);
     if(SDL_AtomicGet(&job.cancelled)) return NULL;
-    cube *root = job.cachefilename[0] ? loadworldchunkcache(job.cachefilename, job.x, job.y, job.seed, job.worldgenhash, job.remip, job.scatter, true,
-                                                           job.families, job.loaderror) : NULL;
+    cube *root = job.cachefilename[0] ? loadworldchunkcache(job.cachefilename, job.x, job.y, job.seed, job.worldgenhash, job.remip, job.scatter, true, job.families, job.loaderror, &job.renderdata) : NULL;
     if(root) job.cached = true;
     else
     {
         ZoneScopedN("Chunks/Generate uncached");
-        root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized);
+        root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized, &job.renderdata);
         if(!root) return NULL;
         game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);
     }
     setworldleavesalpha(root, job.leavesalpha);
-    if(!job.cached && job.cachefilename[0]) serializeworldchunkcache(root, job.scatter, job.cachepayload);
+    if(!job.cached && job.cachefilename[0]) serializeworldchunkcache(root, job.scatter, job.cachepayload, &job.renderdata);
     if(job.filename[0])
     {
         worldchunkdirtybounds dirty;
         applyworldchunkdiff(root, job.x, job.y, job.filename, job.scatter, true, job.families, job.revision, job.canonicalhash, &dirty);
         if(job.remip && dirty.valid) job.optimized += remipworldchunkbounded(root, true, job.families, NULL, &dirty);
+        reclassifyworldchunkrenderdata(NULL, root, job.renderdata, dirty);
         job.loaded = true;
     }
     job.canonicalhash = hashworldchunk(root);
