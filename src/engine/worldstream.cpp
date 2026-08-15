@@ -73,6 +73,8 @@ static float worldchunkvelocityx = 0, worldchunkvelocityy = 0;
 static int lastworldchunkmotion = -1;
 static vector<int> worldchunkvaupdates;
 static hashset<int> worldchunkvaupdateset(1<<14);
+static vector<ivec> worldchunkvapendingbuilds;
+static hashset<int> worldchunkvapendingbuildset(1<<14);
 static hashtable<int, worldsectionowner> worldsectionowners(1<<15);
 static hashtable<ivec, int> worldchunkindices(1<<14);
 static vector<ivec> worldsectionvisibilityadditions;
@@ -82,6 +84,7 @@ static int worldsectionvisibilitychunkx = INT_MIN, worldsectionvisibilitychunky 
 static ivec worldsectionvisibilityfocus(INT_MIN, INT_MIN, INT_MIN);
 static float worldchunkvasectionmillis = 2.0f;
 static int worldvaevictionsframe = 0, worldvanorenderskipsframe = 0;
+static int worldvaresidentcounts[WORLD_VA_GEOMETRY_COUNT], worldvapendingbuildcount = 0, worldvapendinguploadcount = 0;
 static worlddiffmetadata activeworldmetadata;
 static int worldeditauthor = -1, lastworlddiffflush = 0;
 static ullong worldeditrevision = 0, incomingworldeditrevision = 0;
@@ -164,16 +167,16 @@ static void updateleavesalpha()
 
 VARP(asyncchunkloads, 2, 4, 4);
 VARP(chunkthreads, 0, 0, 16);
-VARP(generatedchunkcache, 0, 1, 1);
-VARP(chunkcachedist, 0, 0, 0);
-VARP(chunkpendinglimit, 4, 8, 16);
-VARP(chunklookahead, 0, 2, 8);
-VARP(chunkpublishbudget, 2, 6, 33);
-VARP(chunkcleanupbudget, 1, 6, 33);
-VARP(chunksectionbatch, 1, 1, WORLD_MAX_SECTION_BATCH);
-VARP(chunkvastagelimit, 1, 6, 16);
-VARP(chunkinteriorradius, 1, 2, 8);
-VARP(drawfullchunk, 0, 0, 1);
+VAR(generatedchunkcache, 0, 1, 1);
+VAR(chunkcachedist, 0, 0, 0);
+VAR(chunkpendinglimit, 4, 8, 16);
+VAR(chunklookahead, 0, 2, 8);
+VAR(chunkpublishbudget, 2, 3, 33);
+VAR(chunkcleanupbudget, 1, 3, 33);
+VAR(chunksectionbatch, 1, 1, WORLD_MAX_SECTION_BATCH);
+VAR(chunkvastagelimit, 1, 3, 16);
+VAR(chunkinteriorradius, 1, 2, 8);
+VAR(drawfullchunk, 0, 0, 1);
 
 static cube *prepareworldchunk(worldchunkjob &job);
 static cube *newpreparedfamily(int &families);
@@ -330,6 +333,10 @@ void clearworldchunks()
     shutdownworldchunkloader();
     worldchunkvaupdates.setsize(0);
     worldchunkvaupdateset.clear();
+    worldchunkvapendingbuilds.setsize(0);
+    worldchunkvapendingbuildset.clear();
+    memclear(worldvaresidentcounts);
+    worldvapendingbuildcount = worldvapendinguploadcount = 0;
     worldsectionowners.clear();
     worldchunkindices.clear();
     invalidateworldsectionvisibility();
@@ -716,9 +723,76 @@ static bool worldsectionvaphysicalresident(const worldsectionvaresidency &reside
     return false;
 }
 
+static void setworldsectionvaresidencystate(worldsectionvaresidency &residency, int geometry, int state)
+{
+    const int oldstate = residency.state[geometry];
+    if(oldstate == state) return;
+    if(oldstate == PENDING_BUILD) worldvapendingbuildcount--;
+    else if(oldstate == PENDING_UPLOAD) worldvapendinguploadcount--;
+    else if(oldstate == RESIDENT || oldstate == EVICTABLE) worldvaresidentcounts[geometry]--;
+    residency.state[geometry] = state;
+    if(state == PENDING_BUILD) worldvapendingbuildcount++;
+    else if(state == PENDING_UPLOAD) worldvapendinguploadcount++;
+    else if(state == RESIDENT || state == EVICTABLE) worldvaresidentcounts[geometry]++;
+}
+
+static void resetworldsectionvaresidency(worldsectionvaresidency &residency)
+{
+    loopi(WORLD_VA_GEOMETRY_COUNT) setworldsectionvaresidencystate(residency, i, NOT_RESIDENT);
+}
+
+static void dirtyworldchunkvaresidency(worldchunk &chunk, int tile, int section)
+{
+    if(tile < 0 || tile >= WORLD_SECTION_TILES || section < 0 || section >= WORLD_SECTION_LAYERS) return;
+    chunk.varesidencydirtytiles[section] |= 1U << tile;
+    chunk.varesidencydirty = true;
+}
+
+static void dirtyallworldchunkvaresidency(worldchunk &chunk)
+{
+    const uint alltiles = (1U << WORLD_SECTION_TILES) - 1;
+    loopi(WORLD_SECTION_LAYERS) chunk.varesidencydirtytiles[i] = alltiles;
+    chunk.varesidencydirty = true;
+}
+
+static int worldchunksectionvakey(int chunkx, int chunky, int tile, int section)
+{
+    const int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
+    return worldchunkvaupdatekey(ivec((chunkx - worldfirstchunkx) * WORLD_CHUNK_SIZE + x * WORLD_SECTION_SIZE,
+                                     (chunky - worldfirstchunky) * WORLD_CHUNK_SIZE + y * WORLD_SECTION_SIZE,
+                                     section * WORLD_SECTION_SIZE));
+}
+
+static int worldchunksectionvakey(const worldchunk &chunk, int tile, int section)
+{
+    return worldchunksectionvakey(chunk.x, chunk.y, tile, section);
+}
+
+static void queueworldchunkvapendingbuild(const worldchunk &chunk, int tile, int section)
+{
+    const int key = worldchunksectionvakey(chunk, tile, section);
+    if(worldchunkvapendingbuildset.access(key)) return;
+    worldchunkvapendingbuildset.add(key);
+    worldchunkvapendingbuilds.add(ivec(chunk.x, chunk.y, section * WORLD_SECTION_TILES + tile));
+}
+
+static void removeworldchunkvapendingbuild(const worldchunk &chunk, int tile, int section)
+{
+    const int key = worldchunksectionvakey(chunk, tile, section);
+    if(!worldchunkvapendingbuildset.access(key)) return;
+    worldchunkvapendingbuildset.remove(key);
+    loopv(worldchunkvapendingbuilds) if(worldchunkvapendingbuilds[i] == ivec(chunk.x, chunk.y, section * WORLD_SECTION_TILES + tile))
+    {
+        worldchunkvapendingbuilds.removeunordered(i);
+        break;
+    }
+}
+
 static void clearworldsectionvaresidency(worldchunk &chunk, int tile, int section)
 {
-    memclear(chunk.varesidency[section][tile]);
+    removeworldchunkvapendingbuild(chunk, tile, section);
+    resetworldsectionvaresidency(chunk.varesidency[section][tile]);
+    dirtyworldchunkvaresidency(chunk, tile, section);
 }
 
 bool worldsectionvaenabled(const ivec &origin, int size)
@@ -740,10 +814,12 @@ bool worldsectionvaenabled(const ivec &origin, int size)
 static void invalidateworldchunksectionstate(worldchunk &chunk, int x, int y, int section)
 {
     if(x < 0 || x >= WORLD_SECTION_COLUMNS || y < 0 || y >= WORLD_SECTION_COLUMNS || section < 0 || section >= WORLD_SECTION_LAYERS) return;
-    const uint tilebit = 1U << (y * WORLD_SECTION_COLUMNS + x);
+    const int tile = y * WORLD_SECTION_COLUMNS + x;
+    const uint tilebit = 1U << tile;
     chunk.contentknown[section] &= ~tilebit;
     chunk.opaqueknown[section] &= ~tilebit;
     chunk.portalsknown[section] &= ~tilebit;
+    dirtyworldchunkvaresidency(chunk, tile, section);
 }
 
 void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
@@ -1678,6 +1754,8 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
     invalidateworldsectionvisibility();
     worldchunkvaupdates.setsize(0);
     worldchunkvaupdateset.clear();
+    worldchunkvapendingbuilds.setsize(0);
+    worldchunkvapendingbuildset.clear();
     clearworldscattererentities();
     loopv(worldchunks) if(worldchunkmounted(worldchunks[i])) unmountworldchunk(worldchunks[i]);
     if(worldsectionowners.numelems)

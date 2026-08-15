@@ -839,6 +839,13 @@ static void deleteworldlodchunk(worldlodchunk &chunk)
 static void clearworldlods()
 {
     ZoneScopedN("LOD/Clear");
+    loopv(worldchunks)
+    {
+        worldchunk &chunk = worldchunks[i];
+        if(chunk.varesidencylod == 1) continue;
+        chunk.varesidencylod = 1;
+        dirtyallworldchunkvaresidency(chunk);
+    }
     shutdownworldlodworkers();
     loopv(worldlodcache) deleteworldlodchunk(worldlodcache[i]);
     worldlodcache.setsize(0);
@@ -1112,6 +1119,18 @@ static void updateworldlods(int chunkx, int chunky)
         if(toucheslod0) worldlodselections[selectionindex].desired = 1;
     }
 
+    loopv(worldlodselections) if(worldlodselections[i].lastseen == totalmillis)
+    {
+        const worldlodselection &selection = worldlodselections[i];
+        const int chunkindex = findworldchunk(selection.x, selection.y);
+        if(!worldchunks.inrange(chunkindex)) continue;
+        worldchunk &chunk = worldchunks[chunkindex];
+        const int requiresvoxel = selection.desired == 0 ? 1 : 0;
+        if(chunk.varesidencylod == requiresvoxel) continue;
+        chunk.varesidencylod = requiresvoxel;
+        dirtyallworldchunkvaresidency(chunk);
+    }
+
     loopv(worldlodcache) worldlodcache[i].active = false;
     int active1 = 0, active2 = 0, missing = 0, centerjobs = 0, visiblejobs = 0, surroundingjobs = 0;
     loopv(worldlodselections)
@@ -1180,8 +1199,16 @@ static void updateworldlods(int chunkx, int chunky)
         }
     }
 
-    for(int i = worldlodselections.length() - 1; i >= 0; --i)
-        if(worldlodselections[i].lastseen != totalmillis) worldlodselections.removeunordered(i);
+    for(int i = worldlodselections.length() - 1; i >= 0; --i) if(worldlodselections[i].lastseen != totalmillis)
+    {
+        const int chunkindex = findworldchunk(worldlodselections[i].x, worldlodselections[i].y);
+        if(worldchunks.inrange(chunkindex) && worldchunks[chunkindex].varesidencylod != 1)
+        {
+            worldchunks[chunkindex].varesidencylod = 1;
+            dirtyallworldchunkvaresidency(worldchunks[chunkindex]);
+        }
+        worldlodselections.removeunordered(i);
+    }
     pruneworldlodcache();
 
     int queued = 0;

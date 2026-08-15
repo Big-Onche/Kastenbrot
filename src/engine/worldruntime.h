@@ -215,11 +215,13 @@ struct worldchunk
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
-    uint request;
-    bool loading, generating, saved, dirty, corrupted;
+    uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request;
+    int varesidencylod;
+    bool varesidencydirty, loading, generating, saved, dirty, corrupted;
 
     worldchunk(int x, int y, cube *root, bool loading = false, bool saved = false)
-        : x(x), y(y), root(root), request(0), loading(loading), generating(false), saved(saved), dirty(false), corrupted(false)
+        : x(x), y(y), root(root), request(0), varesidencylod(-1), varesidencydirty(true), loading(loading), generating(false), saved(saved),
+          dirty(false), corrupted(false)
     {
         memclear(mountedtiles);
         memclear(contentknown);
@@ -232,6 +234,7 @@ struct worldchunk
         memclear(reachablefaces);
         memclear(visibletiles);
         memclear(varesidency);
+        loopi(WORLD_SECTION_LAYERS) varesidencydirtytiles[i] = (1U << WORLD_SECTION_TILES) - 1;
     }
 };
 
