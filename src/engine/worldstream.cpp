@@ -184,7 +184,7 @@ static int worldchunkloader(void *);
 static void shutdownworldchunkloader();
 static void updateworldscatterers();
 static void clearworldscattererentities();
-static void updateworldlods(int chunkx, int chunky);
+static void updateworldlods(int chunkx, int chunky, bool force = false);
 static void clearworldlods();
 static int findworldchunk(int x, int y);
 int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled = NULL);
@@ -1990,7 +1990,7 @@ void updateworldchunks(bool force)
            absolutey = double(worldfirstchunky) * WORLD_CHUNK_SIZE + (player ? player->o.y : 0);
     updateworldchunkprediction(chunkx, chunky, absolutex, absolutey);
     if(!force) processworldchunkupdates(chunkx, chunky, worldchunkaheadx, worldchunkaheady);
-    updateworldlods(chunkx, chunky);
+    updateworldlods(chunkx, chunky, force);
     if(!force && chunkx == lastplayerchunkx && chunky == lastplayerchunky &&
        maxchunkdist == lastchunkdist)
     {
