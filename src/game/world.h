@@ -113,6 +113,7 @@ namespace game
         int biome(int x, int y, int height) const;
         bool cliff(int x, int y, int height) const;
         bool rock(int x, int y, int height) const;
+        bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;
         int treeblock(int x, int y, int z) const;
     };
 

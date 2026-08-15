@@ -747,6 +747,17 @@ namespace game
         return true;
     }
 
+    bool worldgenerator::tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const
+    {
+        queriedworldtree tree;
+        if(!queryworldtree(*this, x, y, tree)) return false;
+        base = tree.base;
+        height = tree.height;
+        shape = tree.shape;
+        pine = tree.pine;
+        return true;
+    }
+
     static bool regularworldtreeleaf(const queriedworldtree &tree, int x, int y, int z)
     {
         const int level = z - tree.base, dx = x - tree.x, dy = y - tree.y;

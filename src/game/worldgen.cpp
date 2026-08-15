@@ -2126,6 +2126,12 @@ namespace game
         return !generation->iscanceled();
     }
 
+    bool sampleworldtree(worldgencontext *generation, int blockx, int blocky, int &base, int &height, uint &shape, bool &pine)
+    {
+        if(!generation || generation->iscanceled()) return false;
+        return generation->generator.tree(blockx, blocky, base, height, shape, pine) && !generation->iscanceled();
+    }
+
     cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized, worldsectionrenderdata *renderdata)
     {
         if(!generation) return NULL;
