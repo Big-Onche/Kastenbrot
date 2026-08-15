@@ -491,20 +491,24 @@ static bool sampleworldlodcolumn(worldgencontext *generation, const worldlodkey 
               endx = int(ceil(double(cellx + 1) * WORLD_CHUNK_BLOCKS / key.resolution)) - 1,
               beginy = int(floor(double(celly) * WORLD_CHUNK_BLOCKS / key.resolution)),
               endy = int(ceil(double(celly + 1) * WORLD_CHUNK_BLOCKS / key.resolution)) - 1;
-    bool selected = false;
+    int selectedx = beginx, selectedy = beginy, selectedheight = INT_MIN;
     for(int y = beginy; y <= endy; ++y) for(int x = beginx; x <= endx; ++x)
     {
-        worldsurfacesample surface;
-        if(!game::sampleterrainsurface(generation, key.x * WORLD_CHUNK_BLOCKS + x, key.y * WORLD_CHUNK_BLOCKS + y, surface)) return false;
-        if(!selected || surface.height > column.height)
+        int height;
+        if(!game::sampleterrainheight(generation, key.x * WORLD_CHUNK_BLOCKS + x, key.y * WORLD_CHUNK_BLOCKS + y, height)) return false;
+        if(height > selectedheight)
         {
-            column.height = surface.height;
-            column.waterheight = surface.waterheight;
-            column.material = surface.material;
-            selected = true;
+            selectedx = x;
+            selectedy = y;
+            selectedheight = height;
         }
     }
-    return selected;
+    worldsurfacesample surface;
+    if(!game::sampleterrainsurface(generation, key.x * WORLD_CHUNK_BLOCKS + selectedx, key.y * WORLD_CHUNK_BLOCKS + selectedy, surface)) return false;
+    column.height = surface.height;
+    column.waterheight = surface.waterheight;
+    column.material = surface.material;
+    return true;
 }
 
 static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Uint64 frequency)

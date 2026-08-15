@@ -72,6 +72,7 @@ struct worldgencontext
     int seed;
     vector<worldgencubetextures> cubetextures;
     mutable hashtable<const char *, int> cubeids;
+    hashtable<ivec, int> surfaceheightcache;
     int errorcube;
     bool prepared, remip;
     int families, optimized;
@@ -79,7 +80,8 @@ struct worldgencontext
 
     worldgencontext(int seed, const vector<worldgencubetextures> &cubetextures, bool prepared, bool remip,
                     const game::worldsettings &settings, SDL_atomic_t *cancelled = NULL)
-        : generator(seed, settings), settings(settings), seed(seed), cubetextures(cubetextures), cubeids(64), errorcube(-1),
+        : generator(seed, settings), settings(settings), seed(seed), cubetextures(cubetextures), cubeids(64), surfaceheightcache(1 << 12),
+          errorcube(-1),
           prepared(prepared), remip(remip), families(0), optimized(0), cancelled(cancelled)
     {
         loopv(this->cubetextures) cubeids[this->cubetextures[i].id] = i;
@@ -2096,23 +2098,76 @@ namespace game
         delete generation;
     }
 
-    bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height)
+    static bool sampleterrainheightcached(worldgencontext *generation, int blockx, int blocky, int &height)
     {
         if(!generation || generation->iscanceled()) return false;
+        const ivec position(blockx, blocky, 0);
+        int *cached = generation->surfaceheightcache.access(position);
+        if(cached)
+        {
+            height = *cached;
+            return true;
+        }
         height = generation->generator.height(blockx, blocky);
+        if(generation->iscanceled()) return false;
+        generation->surfaceheightcache.access(position, height);
+        return true;
+    }
+
+    // Match worldgenerator::beach while sharing expensive height samples and remaining responsive to cancelled LOD jobs.
+    static bool sampleterrainbeach(worldgencontext *generation, int blockx, int blocky, bool &beach)
+    {
+        beach = false;
+        if(generation->settings.coastwidth <= 0) return true;
+
+        const float width = generation->generator.beachtransitionwidth(blockx, blocky);
+        const int maximumcost = int(floorf(width * 3.0f + 0.5f)),
+                  searchradius = int(ceilf(generation->generator.maxbeachtransitionwidth())) + 1,
+                  sealevel = generation->settings.sealevel;
+        for(int dy = -searchradius; dy <= searchradius; ++dy)
+        {
+            if(generation->iscanceled()) return false;
+            for(int dx = -searchradius; dx <= searchradius; ++dx)
+            {
+                const int diagonal = min(abs(dx), abs(dy)), straight = max(abs(dx), abs(dy)) - diagonal,
+                          cost = diagonal * 4 + straight * 3;
+                if(cost > maximumcost) continue;
+                const int samplex = blockx + dx, sampley = blocky + dy;
+                int center, neighbor;
+                if(!sampleterrainheightcached(generation, samplex, sampley, center)) return false;
+                const bool water = center < sealevel;
+                static const int directions[][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+                loopi(4)
+                {
+                    if(!sampleterrainheightcached(generation, samplex + directions[i][0], sampley + directions[i][1], neighbor)) return false;
+                    if((neighbor < sealevel) != water)
+                    {
+                        beach = true;
+                        return true;
+                    }
+                }
+            }
+        }
         return !generation->iscanceled();
+    }
+
+    bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height)
+    {
+        return sampleterrainheightcached(generation, blockx, blocky, height);
     }
 
     bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface)
     {
         if(!generation || generation->iscanceled()) return false;
-        const int height = generation->generator.height(blockx, blocky),
-                  biome = generation->generator.biome(blockx, blocky, height);
+        int height;
+        if(!sampleterrainheightcached(generation, blockx, blocky, height)) return false;
+        const int biome = generation->generator.biome(blockx, blocky, height);
         const int beachminimum = generation->settings.sealevel + min(generation->settings.beachminheight, generation->settings.beachmaxheight),
                   beachmaximum = generation->settings.sealevel + max(generation->settings.beachminheight, generation->settings.beachmaxheight);
         const bool cliff = generation->generator.cliff(blockx, blocky, height),
-                   rock = generation->generator.rock(blockx, blocky, height),
-                   beach = height >= beachminimum && height <= beachmaximum && generation->generator.beach(blockx, blocky);
+                   rock = generation->generator.rock(blockx, blocky, height);
+        bool beach = false;
+        if(height >= beachminimum && height <= beachmaximum && !sampleterrainbeach(generation, blockx, blocky, beach)) return false;
 
         surface.height = height;
         surface.waterheight = generation->settings.sealevel;
