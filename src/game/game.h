@@ -68,7 +68,7 @@ enum
     N_INVENTORYSTATE, N_INVENTORYACTION, N_CRAFTSTATE, N_CRAFTACTION, N_WORLDACTION, N_WORLDAUTH, N_ACTIONRESULT,
     N_BREAKSTATE, N_DROPSETTINGS, N_DROPSPAWN, N_DROPDELETE, N_DROPPICKUP,
     N_FALLBLOCKSPAWN, N_FALLBLOCKUPDATE, N_FALLBLOCKDELETE,
-    N_FURNACESTATE, N_FURNACEACTION,
+    N_FURNACESTATE, N_FURNACEACTION, N_CHESTSTATE, N_CHESTACTION, N_CHESTANIM,
     N_NPCSPAWN, N_NPCDESPAWN, N_NPCSNAPSHOT, N_NPCEVENT, N_NPCATTACK,
     N_PLAYERSTATE, N_RESPAWN, N_FOODACTION, N_FOODSTATE,
     NUMMSG
@@ -107,6 +107,13 @@ enum
     FURNACE_ACTION_CLICK_FUEL,
     FURNACE_ACTION_CLICK_OUTPUT,
     FURNACE_ACTION_BAKE
+};
+
+enum
+{
+    CHEST_ACTION_OPEN = 0,
+    CHEST_ACTION_CLOSE,
+    CHEST_ACTION_CLICK
 };
 
 enum
@@ -153,7 +160,7 @@ static const int msgsizes[] =
     N_INVENTORYSTATE, 0, N_INVENTORYACTION, 5, N_CRAFTSTATE, 0, N_CRAFTACTION, 7, N_WORLDACTION, 9, N_WORLDAUTH, 7,
     N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 11, N_DROPDELETE, 3, N_DROPPICKUP, 6,
     N_FALLBLOCKSPAWN, 7, N_FALLBLOCKUPDATE, 7, N_FALLBLOCKDELETE, 2,
-    N_FURNACESTATE, 0, N_FURNACEACTION, 7,
+    N_FURNACESTATE, 0, N_FURNACEACTION, 7, N_CHESTSTATE, 0, N_CHESTACTION, 7, N_CHESTANIM, 5,
     N_NPCSPAWN, 0, N_NPCDESPAWN, 3, N_NPCSNAPSHOT, 11, N_NPCEVENT, 0, N_NPCATTACK, 4,
     N_PLAYERSTATE, 10, N_RESPAWN, 1, N_FOODACTION, 2, N_FOODSTATE, 6,
     -1
@@ -162,7 +169,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 29
+#define PROTOCOL_VERSION 30
 
 enum
 {
@@ -471,9 +478,16 @@ namespace game
     extern void receivecraftstate(const int *items, const int *counts, const int *durabilities, int slots, int gridsize, int stationitem,
                                   int recipe, int outputitem, int outputcount);
     extern void receivefurnacestate(const furnaceinstance &furnace, bool open, bool cooking);
+    extern void receivecheststate(const chestinstance &chest, bool open);
+    extern void receivechestanimation(const ivec &target, bool open);
+    extern float getchestlidangle(const ivec &target);
+    extern int getchestyaw(const ivec &target);
     extern void resetfurnaces();
+    extern void resetchests();
     extern bool savelocalfurnaces(const char *world);
     extern bool loadlocalfurnaces(const char *world);
+    extern bool savelocalchests(const char *world);
+    extern bool loadlocalchests(const char *world);
     extern void receiveactionresult(uint requestid, int result, const char *reason);
     extern void receivebreakstate(int actor, uint requestid, int phase, int action, const ivec &target, int orient, int stage);
     extern int smoothmove, smoothdist;

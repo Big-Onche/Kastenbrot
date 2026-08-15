@@ -76,7 +76,18 @@ static void worldscattertransform(const worldchunk &chunk, const worldscatterins
         position = vec(origin.x + scatter.x + WORLD_BLOCK_SIZE * 0.5f,
                        origin.y + scatter.y + WORLD_BLOCK_SIZE * 0.5f,
                        float(scatter.z));
-        if(scatter.orient == O_TOP) return;
+        if(scatter.orient == O_TOP)
+        {
+            const int item = getworldscatteritem(scatter.type);
+            int slots = 0;
+            if(getworldchestconfig(item, slots))
+            {
+                const ivec target(chunk.x * WORLD_CHUNK_SIZE + scatter.x, chunk.y * WORLD_CHUNK_SIZE + scatter.y, scatter.z);
+                yaw = game::getchestyaw(target);
+                pitch = int(game::getchestlidangle(target) + 0.5f);
+            }
+            return;
+        }
 
         const ivec normal = worldorientnormal(scatter.orient);
         position.z += WORLD_BLOCK_SIZE * 0.25f;
@@ -220,6 +231,11 @@ static void updateworldscatterers()
     }
 }
 
+void updateworldchestanimations()
+{
+    updateworldscatterers();
+}
+
 void addworldtorchlights()
 {
     if(staticlightmaxdistance <= 0 || !camera1 || worldchunks.empty()) return;
@@ -325,12 +341,49 @@ bool isworldscatterentity(int id)
     return false;
 }
 
+static bool findworldscatterentity(int id, const worldchunk *&foundchunk, const worldscatterinstance *&foundscatter)
+{
+    loopv(worldgrassentities)
+    {
+        const worldgrassentity &active = worldgrassentities[i];
+        if(active.id != id) continue;
+        loopvj(worldchunks)
+        {
+            const worldchunk &chunk = worldchunks[j];
+            loopvk(chunk.scatter)
+            {
+                const worldscatterinstance &scatter = chunk.scatter[k];
+                if(worldscatterkey(chunk, scatter) != active.key) continue;
+                foundchunk = &chunk;
+                foundscatter = &scatter;
+                return true;
+            }
+        }
+        break;
+    }
+    return false;
+}
+
 bool getworldscatterentitybox(int id, vec &center, vec &radius)
 {
     if(!isworldscatterentity(id)) return false;
     const vector<extentity *> &ents = entities::getents();
     if(!ents.inrange(id)) return false;
     const extentity &e = *ents[id];
+
+    const worldchunk *chunk = NULL;
+    const worldscatterinstance *scatter = NULL;
+    if(findworldscatterentity(id, chunk, scatter))
+    {
+        int slots = 0;
+        if(getworldchestconfig(getworldscatteritem(scatter->type), slots))
+        {
+            center = vec(e.o).addz(WORLD_BLOCK_SIZE * 0.5f);
+            radius = vec(WORLD_BLOCK_SIZE * 0.5f);
+            return true;
+        }
+    }
+
     model *m = loadmapmodel(e.attr1);
     if(!m) return false;
 
@@ -348,28 +401,70 @@ bool getworldscatterentitybox(int id, vec &center, vec &radius)
 
 bool getworldscatterentityedit(int id, int &type, ivec &support, int &orient)
 {
-    loopv(worldgrassentities)
+    const worldchunk *chunk = NULL;
+    const worldscatterinstance *scatter = NULL;
+    if(!findworldscatterentity(id, chunk, scatter)) return false;
+    type = scatter->type;
+    orient = scatter->orient;
+    support = ivec(worldchunkorigin(*chunk)).add(ivec(scatter->x, scatter->y, scatter->z))
+        .sub(ivec(worldorientnormal(orient)).mul(WORLD_BLOCK_SIZE));
+    return true;
+}
+
+static bool worldrayboxdistance(const vec &minimum, const vec &size, const vec &origin, const vec &direction, float reach, float &distance)
+{
+    float nearbound = 0.0f, farbound = reach;
+    loopi(3)
     {
-        const worldgrassentity &active = worldgrassentities[i];
-        if(active.id != id) continue;
-        loopvj(worldchunks)
+        const float maximum = minimum[i] + size[i];
+        if(fabsf(direction[i]) <= 1e-6f)
         {
-            const worldchunk &chunk = worldchunks[j];
-            loopvk(chunk.scatter)
-            {
-                const worldscatterinstance &scatter = chunk.scatter[k];
-                if(worldscatterkey(chunk, scatter) != active.key) continue;
-                type = scatter.type;
-                orient = scatter.orient;
-                support = ivec(worldchunkorigin(chunk))
-                    .add(ivec(scatter.x, scatter.y, scatter.z))
-                    .sub(ivec(worldorientnormal(orient)).mul(
-                        WORLD_BLOCK_SIZE));
-                return true;
-            }
+            if(origin[i] < minimum[i] || origin[i] > maximum) return false;
+            continue;
+        }
+        float first = (minimum[i] - origin[i]) / direction[i], second = (maximum - origin[i]) / direction[i];
+        if(first > second) swap(first, second);
+        nearbound = max(nearbound, first);
+        farbound = min(farbound, second);
+        if(nearbound > farbound) return false;
+    }
+    distance = nearbound;
+    return farbound >= 0.0f && nearbound <= reach;
+}
+
+bool getworldchesthit(const vec &origin, const vec &direction, float reach, int &type, ivec &support, int &orient)
+{
+    float closest = reach;
+    bool found = false;
+    const float scattermaxoffset = game::getworldscattermaxoffset();
+    loopv(worldchunks)
+    {
+        const worldchunk &chunk = worldchunks[i];
+        if(chunk.loading || !chunk.root || !worldchunkmounted(chunk)) continue;
+        loopvj(chunk.scatter)
+        {
+            const worldscatterinstance &scatter = chunk.scatter[j];
+            if(!worldscattermounted(chunk, scatter)) continue;
+            int slots = 0;
+            if(!getworldchestconfig(getworldscatteritem(scatter.type), slots)) continue;
+
+            vec position;
+            int yaw, pitch, roll;
+            worldscattertransform(chunk, scatter, scattermaxoffset, position, yaw, pitch, roll);
+            float distance = 0;
+            const vec minimum = vec(position.x - WORLD_BLOCK_SIZE * 0.5f, position.y - WORLD_BLOCK_SIZE * 0.5f, position.z),
+                      size(WORLD_BLOCK_SIZE, WORLD_BLOCK_SIZE, WORLD_BLOCK_SIZE);
+            if(!worldrayboxdistance(minimum, size, origin, direction, closest, distance)) continue;
+
+            closest = distance;
+            type = scatter.type;
+            orient = scatter.orient;
+            support = ivec(worldchunkorigin(chunk)).add(ivec(scatter.x, scatter.y, scatter.z))
+                .sub(ivec(worldorientnormal(orient)).mul(WORLD_BLOCK_SIZE));
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
 

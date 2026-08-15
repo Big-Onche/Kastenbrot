@@ -46,10 +46,10 @@ namespace game
     struct predictedworldaction
     {
         uint requestid;
-        int action, orient, item;
+        int action, orient, item, yaw;
         ivec target;
 
-        predictedworldaction() : requestid(0), action(-1), orient(0), item(-1), target(0, 0, 0) {}
+        predictedworldaction() : requestid(0), action(-1), orient(0), item(-1), yaw(0), target(0, 0, 0) {}
     };
 
     static vector<predictedworldaction *> predictedworldactions;
@@ -100,6 +100,10 @@ namespace game
     static void setlocalsupportpersistent(const ivec &cell, bool persistent);
     static void resetlocalsupportblocks();
     static void updatefurnaces();
+    static void updatechests();
+    static void setchestvisual(const ivec &target, int yaw);
+    static void removechestvisual(const ivec &target);
+    static chestinstance *findlocalchest(const ivec &target);
     static void predictsurvivaldrops(int objectitem, uint requestid, const ivec &target, int action, int orient);
 #endif
 
@@ -170,6 +174,9 @@ namespace game
         return target;
     }
 
+    static int worldmountorient(int orient) { return ((orient % 6) + 6) % 6; }
+    static int worldplaceyaw(int orient) { return clamp(orient / 6, 0, 3) * 90; }
+
     static bool applyworldscatteraction(int item, const ivec &support, int orient, bool place)
     {
         const int type = getworlditemindex(item);
@@ -184,6 +191,8 @@ namespace game
 
     static bool applyworldaction(int action, const ivec &absolutetarget, int orient, int item)
     {
+        const int packed = orient;
+        orient = worldmountorient(orient);
         selinfo sel;
         worldactionselection(sel, absolutetarget, orient);
         worldselectiontolocal(sel);
@@ -213,7 +222,12 @@ namespace game
             case WORLD_ACTION_PLACE_SCATTER:
                 return getworlditemtype(item) == WORLD_ITEM_SCATTER && applyworldscatteraction(item, target, orient, true);
             case WORLD_ACTION_PLACE_ITEM:
-                return getworlditemtype(item) == WORLD_ITEM_PLACEABLE && applyworldscatteraction(item, target, orient, true);
+            {
+                if(getworlditemtype(item) != WORLD_ITEM_PLACEABLE || !applyworldscatteraction(item, target, orient, true)) return false;
+                int slots = 0;
+                if(getworldchestconfig(item, slots)) setchestvisual(worldactionplacecell(absolutetarget, orient), worldplaceyaw(packed));
+                return true;
+            }
             case WORLD_ACTION_BREAK_CUBE_START:
                 mpdelcube(sel, false);
                 waterterrainchanged(absolutetarget);
@@ -225,8 +239,13 @@ namespace game
                 }
                 return true;
             case WORLD_ACTION_BREAK_SCATTER_START:
-                return (getworlditemtype(item) == WORLD_ITEM_SCATTER || getworlditemtype(item) == WORLD_ITEM_PLACEABLE) &&
-                       applyworldscatteraction(item, target, orient, false);
+            {
+                if((getworlditemtype(item) != WORLD_ITEM_SCATTER && getworlditemtype(item) != WORLD_ITEM_PLACEABLE) ||
+                   !applyworldscatteraction(item, target, orient, false)) return false;
+                int slots = 0;
+                if(getworldchestconfig(item, slots)) removechestvisual(worldactionplacecell(absolutetarget, orient));
+                return true;
+            }
             default:
                 return false;
         }
@@ -245,10 +264,13 @@ namespace game
         }
         else if(prediction.action == WORLD_ACTION_PLACE_SCATTER || prediction.action == WORLD_ACTION_PLACE_ITEM)
         {
+            const int orient = worldmountorient(prediction.orient);
             selinfo sel;
-            worldactionselection(sel, prediction.target, prediction.orient);
+            worldactionselection(sel, prediction.target, orient);
             worldselectiontolocal(sel);
-            editworldscatter(getworlditemindex(prediction.item), sel.o, prediction.orient, false);
+            editworldscatter(getworlditemindex(prediction.item), sel.o, orient, false);
+            int slots = 0;
+            if(getworldchestconfig(prediction.item, slots)) removechestvisual(worldactionplacecell(prediction.target, orient));
         }
         else if(prediction.action == WORLD_ACTION_BREAK_CUBE_START)
         {
@@ -264,7 +286,13 @@ namespace game
             worldactionselection(sel, prediction.target, prediction.orient);
             worldselectiontolocal(sel);
             const int type = prediction.item >= 0 ? getworlditemindex(prediction.item) : getworldscatterindexat(sel.o, prediction.orient);
-            if(type >= 0) editworldscatter(type, sel.o, prediction.orient, true);
+            if(type >= 0)
+            {
+                editworldscatter(type, sel.o, prediction.orient, true);
+                int slots = 0;
+                if(getworldchestconfig(prediction.item, slots))
+                    setchestvisual(worldactionplacecell(prediction.target, prediction.orient), prediction.yaw);
+            }
         }
     }
 #endif
@@ -409,6 +437,7 @@ namespace game
         resetfallingblocks();
         resetlocalsupportblocks();
         resetfurnaces();
+        resetchests();
         nextworldrequestid = 1;
         resetsurvivalinventory();
         receiveserversettings(5000, 250, 1024, 128, 4000, 128);
@@ -686,6 +715,7 @@ namespace game
         updatefallingblocks();
         updatesupportblocks();
         updatefurnaces();
+        updatechests();
 #endif
         gets2c();
         c2sinfo();
@@ -934,6 +964,76 @@ namespace game
     static ivec openfurnacetarget(0, 0, 0);
     static bool furnaceopen = false, synchronizedfurnacecooking = false;
     static int furnacesyncmillis = 0;
+    static vector<chestinstance *> localchests;
+    static chestinstance synchronizedchest;
+    static ivec openchesttarget(0, 0, 0);
+    static bool chestopen = false;
+
+    struct chestvisual
+    {
+        ivec target;
+        int yaw, started;
+        float fromangle, toangle;
+
+        chestvisual(const ivec &target = ivec(0, 0, 0), int yaw = 0)
+            : target(target), yaw(yaw), started(lastmillis), fromangle(0), toangle(0) {}
+    };
+
+    static vector<chestvisual> chestvisuals;
+    static const int CHEST_LID_MILLIS = 250;
+
+    static chestvisual *findchestvisual(const ivec &target)
+    {
+        loopv(chestvisuals) if(chestvisuals[i].target == target) return &chestvisuals[i];
+        return NULL;
+    }
+
+    static float chestvisualangle(const chestvisual &visual)
+    {
+        const float progress = clamp((lastmillis - visual.started) / float(CHEST_LID_MILLIS), 0.0f, 1.0f);
+        return visual.fromangle + (visual.toangle - visual.fromangle) * progress;
+    }
+
+    static void setchestvisual(const ivec &target, int yaw)
+    {
+        chestvisual *visual = findchestvisual(target);
+        if(!visual) visual = &chestvisuals.add(chestvisual(target, yaw));
+        visual->yaw = ((yaw % 360) + 360) % 360;
+    }
+
+    static void removechestvisual(const ivec &target)
+    {
+        loopv(chestvisuals) if(chestvisuals[i].target == target)
+        {
+            chestvisuals.remove(i);
+            return;
+        }
+    }
+
+    int getchestyaw(const ivec &target)
+    {
+        chestvisual *visual = findchestvisual(target);
+        return visual ? visual->yaw : 0;
+    }
+
+    float getchestlidangle(const ivec &target)
+    {
+        chestvisual *visual = findchestvisual(target);
+        return visual ? chestvisualangle(*visual) : 0.0f;
+    }
+
+    void receivechestanimation(const ivec &target, bool open)
+    {
+        chestvisual *visual = findchestvisual(target);
+        if(!visual)
+        {
+            setchestvisual(target, 0);
+            visual = findchestvisual(target);
+        }
+        visual->fromangle = chestvisualangle(*visual);
+        visual->toangle = open ? 80.0f : 0.0f;
+        visual->started = lastmillis;
+    }
 
     enum
     {
@@ -949,7 +1049,7 @@ namespace game
     static void sendworldaction(uint requestid, int action, const ivec &localtarget, int orient, int item, int slot)
     {
         selinfo selection;
-        worldactionselection(selection, localtarget, orient);
+        worldactionselection(selection, localtarget, worldmountorient(orient));
         if(waitforserveredit()) worldselectiontoabsolute(selection);
         packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
         putint(p, N_WORLDACTION);
@@ -969,6 +1069,9 @@ namespace game
         prediction->target = absolutetarget;
         prediction->orient = orient;
         prediction->item = item;
+        int slots = 0;
+        if(getworldchestconfig(item, slots))
+            prediction->yaw = getchestyaw(worldactionplacecell(absolutetarget, worldmountorient(orient)));
         predictedworldactions.add(prediction);
     }
 
@@ -976,7 +1079,7 @@ namespace game
     {
         const uint requestid = newworldrequestid();
         selinfo selection;
-        worldactionselection(selection, localtarget, orient);
+        worldactionselection(selection, localtarget, worldmountorient(orient));
         if(waitforserveredit()) worldselectiontoabsolute(selection);
         addpredictedworldaction(requestid, action, selection.o, orient, item);
         sendworldaction(requestid, action, localtarget, orient, item, slot);
@@ -1118,6 +1221,49 @@ namespace game
 #endif
     }
 
+    static void requestchestaction(int action, int first = 0, int second = 0, int third = 0, int fourth = 0)
+    {
+#ifndef STANDALONE
+        if(waitforserveredit()) addmsg(N_CHESTACTION, "ri6", int(newworldrequestid()), action, first, second, third, fourth);
+#else
+        (void)action; (void)first; (void)second; (void)third; (void)fourth;
+#endif
+    }
+
+    static chestinstance *findlocalchest(const ivec &target)
+    {
+        loopv(localchests) if(localchests[i]->target == target) return localchests[i];
+        return NULL;
+    }
+
+    static void droplocalchestcontents(const chestinstance &chest);
+
+    static void removelocalchest(const ivec &target, bool dropcontents = true)
+    {
+        loopv(localchests) if(localchests[i]->target == target)
+        {
+            chestinstance *chest = localchests[i];
+            if(dropcontents) droplocalchestcontents(*chest);
+            if(chestopen && openchesttarget == target)
+            {
+                chestopen = false;
+#ifndef STANDALONE
+                execute("hideui chest");
+#endif
+            }
+            delete localchests.remove(i);
+            removechestvisual(target);
+            return;
+        }
+        removechestvisual(target);
+    }
+
+    static chestinstance *currentchest()
+    {
+        if(!chestopen) return NULL;
+        return waitforserveredit() ? &synchronizedchest : findlocalchest(openchesttarget);
+    }
+
     static furnaceinstance *findlocalfurnace(const ivec &target)
     {
         loopv(localfurnaces) if(localfurnaces[i]->target == target) return localfurnaces[i];
@@ -1238,7 +1384,7 @@ namespace game
         synchronizedfurnacecooking = cooking;
         furnacesyncmillis = lastmillis;
 #ifndef STANDALONE
-        if(open) execute("hideui survival_inventory; hideui crafting_table; showui furnace");
+        if(open) execute("hideui survival_inventory; hideui crafting_table; hideui chest; showui furnace");
         else execute("hideui furnace");
 #endif
     }
@@ -1271,6 +1417,12 @@ namespace game
         selinfo absolute = hit;
         worldselectiontoabsolute(absolute);
         openfurnacetarget = absolute.o;
+        if(chestopen)
+        {
+            if(waitforserveredit()) requestchestaction(CHEST_ACTION_CLOSE);
+            else receivechestanimation(openchesttarget, false);
+            chestopen = false;
+        }
         if(waitforserveredit())
         {
             requestfurnaceaction(FURNACE_ACTION_OPEN, absolute.o.x, absolute.o.y, absolute.o.z, 0);
@@ -1284,9 +1436,102 @@ namespace game
         }
         furnaceopen = true;
 #ifndef STANDALONE
-        execute("hideui survival_inventory; hideui crafting_table; showui furnace");
+        execute("hideui survival_inventory; hideui crafting_table; hideui chest; showui furnace");
 #endif
         return true;
+    }
+
+    static bool openworldchest(int type, const ivec &support, int orient)
+    {
+        const int item = getworldscatteritem(type);
+        int slots = 0;
+        if(!getworldchestconfig(item, slots)) return false;
+        selinfo selection;
+        worldactionselection(selection, support, orient);
+        worldselectiontoabsolute(selection);
+        const ivec target = worldactionplacecell(selection.o, orient);
+        if(furnaceopen)
+        {
+            if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_CLOSE);
+            furnaceopen = synchronizedfurnacecooking = false;
+        }
+        openchesttarget = target;
+        if(waitforserveredit())
+        {
+            requestchestaction(CHEST_ACTION_OPEN, target.x, target.y, target.z, 0);
+            return true;
+        }
+        chestinstance *chest = findlocalchest(target);
+        if(!chest)
+        {
+            chest = new chestinstance(target, item, slots, getchestyaw(target));
+            localchests.add(chest);
+        }
+        chestopen = true;
+        receivechestanimation(target, true);
+#ifndef STANDALONE
+        execute("hideui survival_inventory; hideui crafting_table; hideui furnace; showui chest");
+#endif
+        return true;
+    }
+
+    static bool openworldchest(const selinfo &hit)
+    {
+        // Mapmodel picking is optional: raycube only sees the supporting voxel when a chest is clicked from most angles.
+        const int type = getworldscatterindexat(hit.o, WORLD_ORIENT_TOP);
+        return type >= 0 && openworldchest(type, hit.o, WORLD_ORIENT_TOP);
+    }
+
+    void receivecheststate(const chestinstance &chest, bool open)
+    {
+        synchronizedchest = chest;
+        openchesttarget = chest.target;
+        chestopen = open;
+        if(open) setchestvisual(chest.target, chest.yaw);
+#ifndef STANDALONE
+        if(open) execute("hideui survival_inventory; hideui crafting_table; hideui furnace; showui chest");
+        else execute("hideui chest");
+#endif
+    }
+
+    void resetchests()
+    {
+        localchests.deletecontents();
+        synchronizedchest = chestinstance();
+        openchesttarget = ivec(0, 0, 0);
+        chestopen = false;
+        chestvisuals.setsize(0);
+    }
+
+    static void updatechests()
+    {
+        bool animating = false;
+        loopv(chestvisuals) if(lastmillis - chestvisuals[i].started < CHEST_LID_MILLIS)
+        {
+            animating = true;
+            break;
+        }
+        if(animating) updateworldchestanimations();
+        if(!waitforserveredit() && islocalworld()) for(int i = localchests.length() - 1; i >= 0; --i)
+        {
+            chestinstance &chest = *localchests[i];
+            selinfo support;
+            worldactionselection(support, ivec(chest.target).sub(ivec(0, 0, CREATIVE_GRID)), WORLD_ORIENT_TOP);
+            worldselectiontolocal(support);
+            if(!support.validate() || !worldselectionready(support)) continue;
+            const int type = getworldscatterindexat(support.o, WORLD_ORIENT_TOP);
+            if(type < 0 || getworldscatteritem(type) != chest.worlditem) removelocalchest(chest.target);
+        }
+        if(!chestopen || !player1) return;
+        vec position = player1->o;
+        worldpositiontoabsolute(position);
+        if(vec(openchesttarget).add(8).dist(position) <= 144.0f) return;
+        if(waitforserveredit()) requestchestaction(CHEST_ACTION_CLOSE);
+        else receivechestanimation(openchesttarget, false);
+        chestopen = false;
+#ifndef STANDALONE
+        execute("hideui chest");
+#endif
     }
 
     static int authoritativenpcsimulationmaxdist = 128;
@@ -1514,6 +1759,63 @@ namespace game
         if(ok) ok = file->tell() == file->size();
         delete file;
         if(!ok) localfurnaces.deletecontents();
+        return ok;
+    }
+
+    bool savelocalchests(const char *world)
+    {
+        if(!world || !world[0]) return false;
+        defformatstring(name, "media/map/%s/world.chests", world);
+        stream *file = openrawfile(path(name), "wb");
+        if(!file) return false;
+        bool ok = file->write("CCCH", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(localchests.length()));
+        loopv(localchests) if(ok)
+        {
+            chestinstance &chest = *localchests[i];
+            ok = file->putlil<int>(chest.target.x) && file->putlil<int>(chest.target.y) && file->putlil<int>(chest.target.z) &&
+                 writefurnacestring(*file, getinventoryitemid(chest.worlditem)) && file->putlil<int>(chest.yaw);
+            loopj(CHEST_SLOTS_MAX) if(ok)
+                ok = writefurnacestack(*file, chest.items[j], chest.counts[j], chest.durabilities[j]);
+        }
+        delete file;
+        return ok;
+    }
+
+    bool loadlocalchests(const char *world)
+    {
+        localchests.deletecontents();
+        if(!world || !world[0]) return false;
+        defformatstring(name, "media/map/%s/world.chests", world);
+        stream *file = openrawfile(path(name), "rb");
+        if(!file) return true;
+        char magic[4] = { 0, 0, 0, 0 };
+        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
+                   count = version == 1 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCCH", 4) && version == 1 && count <= 100000;
+        loopi(ok ? int(count) : 0)
+        {
+            ivec target;
+            target.x = file->getlil<int>(); target.y = file->getlil<int>(); target.z = file->getlil<int>();
+            string worlditemid;
+            ok = readfurnacestring(*file, worlditemid, sizeof(worlditemid));
+            const int worlditem = ok ? getinventoryitemindex(worlditemid) : -1;
+            int slots = 0;
+            ok = ok && getworldchestconfig(worlditem, slots);
+            const int yaw = ok ? file->getlil<int>() : 0;
+            chestinstance *chest = ok ? new chestinstance(target, worlditem, slots, yaw) : NULL;
+            loopj(CHEST_SLOTS_MAX) if(ok)
+                ok = readfurnacestack(*file, chest->items[j], chest->counts[j], chest->durabilities[j], INT_MAX);
+            if(ok)
+            {
+                localchests.add(chest);
+                setchestvisual(target, yaw);
+            }
+            else delete chest;
+            if(!ok) break;
+        }
+        if(ok) ok = file->tell() == file->size();
+        delete file;
+        if(!ok) localchests.deletecontents();
         return ok;
     }
 
@@ -1783,6 +2085,28 @@ namespace game
             drop->physicsmillis = lastmillis;
             drop->confirmed = !waitforserveredit();
             drop->o = worlddroporigin(target, action, orient);
+            worlddrops.add(drop);
+        }
+    }
+
+    static void droplocalchestcontents(const chestinstance &chest)
+    {
+        const int source = player1 ? player1->clientnum : -1;
+        loopi(chest.slots)
+        {
+            if(chest.items[i] < 0 || chest.counts[i] <= 0) continue;
+            while(worlddrops.length() >= maxdrop) delete worlddrops.remove(0);
+            worlddrop *drop = new worlddrop;
+            drop->id = 0x80000000U | nextlocaldropid++;
+            drop->source = source;
+            drop->item = chest.items[i];
+            drop->count = chest.counts[i];
+            drop->durability = chest.durabilities[i];
+            drop->owner = source;
+            drop->created = lastmillis;
+            drop->physicsmillis = lastmillis;
+            drop->confirmed = true;
+            drop->o = vec(chest.target).add(8);
             worlddrops.add(drop);
         }
     }
@@ -2477,7 +2801,7 @@ namespace game
     {
         deaththirdperson = thirdperson;
         thirdperson = 1;
-        execute("hideui survival_inventory; hideui crafting_table; hideui furnace; showui death_screen");
+        execute("hideui survival_inventory; hideui crafting_table; hideui furnace; hideui chest; showui death_screen");
     }
 
     static void hidedeathscreen()
@@ -2821,6 +3145,25 @@ namespace game
         return target;
     }
 
+    static bool openlookedatchest()
+    {
+        const vec origin = camera1 ? camera1->o : player1->o;
+        int type = -1, orient = WORLD_ORIENT_TOP;
+        ivec support;
+        if(getworldchesthit(origin, camdir, buildactionreach(), type, support, orient) && openworldchest(type, support, orient)) return true;
+
+        creativetarget target;
+        if(findcreativetarget(target) && target.type == CREATIVE_TARGET_SCATTER)
+        {
+            type = -1;
+            orient = WORLD_ORIENT_TOP;
+            if(getworldscatterentityedit(target.entity, type, support, orient) && openworldchest(type, support, orient)) return true;
+        }
+
+        selinfo hit;
+        return creativehit(hit) && openworldchest(hit);
+    }
+
     static bool creativeplayeroverlap(const ivec &cell)
     {
         if(!player1) return false;
@@ -2851,7 +3194,7 @@ namespace game
             requestcraftaction(CRAFT_ACTION_OPEN_TABLE, absolute.o.x, absolute.o.y, absolute.o.z, 0);
         }
 #ifndef STANDALONE
-        execute("hideui survival_inventory; showui crafting_table");
+        execute("hideui survival_inventory; hideui chest; showui crafting_table");
 #endif
         return true;
     }
@@ -2870,10 +3213,29 @@ namespace game
             if((type == WORLD_ITEM_PLACEABLE && hit.orient == WORLD_ORIENT_BOTTOM) ||
                (type == WORLD_ITEM_SCATTER && hit.orient != WORLD_ORIENT_TOP))
                 return;
+            int actionorient = hit.orient, chestslots = 0;
+            const bool chest = type == WORLD_ITEM_PLACEABLE && getworldchestconfig(selected, chestslots);
+            if(chest && hit.orient != WORLD_ORIENT_TOP) return;
+            if(chest && creativeplayeroverlap(worldactionplacecell(hit.o, hit.orient))) return;
+            if(chest)
+            {
+                const int yaw = player1 ? (int(floor((player1->yaw + 45.0f) / 90.0f)) % 4 + 4) % 4 : 0;
+                actionorient += yaw * 6;
+            }
             if(!editworldscatter(worldindex, hit.o, hit.orient, true)) return;
+            if(chest)
+            {
+                selinfo absolute = hit;
+                worldselectiontoabsolute(absolute);
+                const ivec chesttarget = worldactionplacecell(absolute.o, hit.orient);
+                const int chestyaw = worldplaceyaw(actionorient);
+                setchestvisual(chesttarget, chestyaw);
+                if(!waitforserveredit() && !findlocalchest(chesttarget))
+                    localchests.add(new chestinstance(chesttarget, selected, chestslots, chestyaw));
+            }
             if(waitforserveredit())
                 predictworldaction(type == WORLD_ITEM_PLACEABLE ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_SCATTER,
-                                   hit.o, hit.orient, selected, clampcreativehotbarslot());
+                                   hit.o, actionorient, selected, clampcreativehotbarslot());
             if(m_survival) consumesurvivalitem();
             player1->renderplacemillis = lastmillis;
             player1->renderplacetoggle = !player1->renderplacetoggle;
@@ -3218,6 +3580,16 @@ namespace game
                 }
                 if(removed)
                 {
+                    int chestslots = 0;
+                    if(getworldchestconfig(item, chestslots))
+                    {
+                        selinfo chestselection;
+                        worldactionselection(chestselection, support, mountorient);
+                        worldselectiontoabsolute(chestselection);
+                        const ivec chesttarget = worldactionplacecell(chestselection.o, mountorient);
+                        if(waitforserveredit()) removechestvisual(chesttarget);
+                        else removelocalchest(chesttarget);
+                    }
                     selinfo dropselection;
                     worldactionselection(dropselection, support, mountorient);
                     if(waitforserveredit()) worldselectiontoabsolute(dropselection);
@@ -3338,7 +3710,7 @@ namespace game
     {
         if(*down)
         {
-            if(!beginfooduse() && !(survivalenabled() && usesurvivalcornertool(TOOL_CORNER_PUSH_RIGHT))) creativeplace();
+            if(!openlookedatchest() && !beginfooduse() && !(survivalenabled() && usesurvivalcornertool(TOOL_CORNER_PUSH_RIGHT))) creativeplace();
         }
         else stopfooduse();
     });
@@ -3529,6 +3901,37 @@ namespace game
         if(!furnaceopen) return;
         if(waitforserveredit()) requestfurnaceaction(FURNACE_ACTION_CLOSE);
         furnaceopen = synchronizedfurnacecooking = false;
+    });
+    ICOMMAND(getchestslots, "", (),
+    {
+        chestinstance *chest = currentchest();
+        intret(chest ? chest->slots : 0);
+    });
+    ICOMMAND(getchestitem, "i", (int *slot),
+    {
+        chestinstance *chest = currentchest();
+        intret(chest && *slot >= 0 && *slot < chest->slots && chest->counts[*slot] > 0 ? chest->items[*slot] : -1);
+    });
+    ICOMMAND(getchestcount, "i", (int *slot),
+    {
+        chestinstance *chest = currentchest();
+        intret(chest && *slot >= 0 && *slot < chest->slots ? chest->counts[*slot] : 0);
+    });
+    ICOMMAND(chestslotclick, "ii", (int *slot, int *button),
+    {
+        chestinstance *chest = currentchest();
+        if(!chest || *slot < 0 || *slot >= chest->slots ||
+           (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
+        if(waitforserveredit()) requestchestaction(CHEST_ACTION_CLICK, *slot, *button);
+        else inventoryinstanceclick(inventorycursoritem, inventorycursorcount, inventorycursordurability,
+                                    chest->items[*slot], chest->counts[*slot], chest->durabilities[*slot], *button);
+    });
+    ICOMMAND(closechest, "", (),
+    {
+        if(!chestopen) return;
+        if(waitforserveredit()) requestchestaction(CHEST_ACTION_CLOSE);
+        else receivechestanimation(openchesttarget, false);
+        chestopen = false;
     });
     ICOMMAND(survivalinventoryclick, "ii", (int *slot, int *button),
     {

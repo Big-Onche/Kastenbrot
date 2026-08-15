@@ -237,6 +237,26 @@ extern bool matchfurnacerecipe(const int *items, const int *counts, int slots, i
 extern bool startfurnaceinstance(furnaceinstance &furnace);
 extern bool updatefurnaceinstance(furnaceinstance &furnace, int elapsed, bool &syncchanged);
 
+enum { CHEST_SLOTS_MAX = 27 };
+struct chestinstance
+{
+    ivec target;
+    int worlditem, slots, yaw;
+    int items[CHEST_SLOTS_MAX], counts[CHEST_SLOTS_MAX], durabilities[CHEST_SLOTS_MAX];
+
+    chestinstance(const ivec &target = ivec(0, 0, 0), int worlditem = -1, int slots = CHEST_SLOTS_MAX, int yaw = 0)
+        : target(target), worlditem(worlditem), slots(slots), yaw(yaw)
+    {
+        loopi(CHEST_SLOTS_MAX)
+        {
+            items[i] = -1;
+            counts[i] = durabilities[i] = 0;
+        }
+    }
+};
+extern bool getworldchestconfig(int item, int &slots);
+extern void updateworldchestanimations();
+
 enum { CRAFT_GRID_MAX = 9 };
 struct craftmatch
 {
@@ -293,6 +313,7 @@ extern void addworldtorchparticles();
 extern bool isworldscatterentity(int id);
 extern bool getworldscatterentitybox(int id, vec &center, vec &radius);
 extern bool getworldscatterentityedit(int id, int &type, ivec &support, int &orient);
+extern bool getworldchesthit(const vec &origin, const vec &direction, float reach, int &type, ivec &support, int &orient);
 extern bool editworldscatter(int type, const ivec &support, int orient, bool place);
 extern float rayent(const vec &o, const vec &ray, float radius, int mode,
                     int size, int &orient, int &ent);

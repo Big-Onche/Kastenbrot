@@ -532,6 +532,17 @@ int getinventorytoolmaxdurability(int index)
     return isinventorytool(index) ? inventoryitemdefinitions[index]->maxdurability : 0;
 }
 
+bool getworldchestconfig(int item, int &slots)
+{
+    if(inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->haschest)
+    {
+        slots = inventoryitemdefinitions[item]->chestslots;
+        return true;
+    }
+    slots = 0;
+    return false;
+}
+
 int getinventorytoolcornerpush(int index)
 {
     return isinventorytool(index) ? inventoryitemdefinitions[index]->toolcornerpush : TOOL_CORNER_PUSH_NONE;
@@ -968,6 +979,17 @@ bool isworldcubepushable(int index, int toolitem)
     formatstring(tagid, "pushable_with_%s", inventoryitemdefinitions[toolitem]->tooltype);
     const int tag = finditemtag(tagid);
     return tag >= 0 && itemhastag(getworldcubeitem(index), tag);
+}
+
+bool getworldchestconfig(int item, int &slots)
+{
+    if(inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->haschest)
+    {
+        slots = inventoryitemdefinitions[item]->chestslots;
+        return true;
+    }
+    slots = 0;
+    return false;
 }
 
 bool getworldcubefall(int index)

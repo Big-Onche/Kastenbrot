@@ -793,6 +793,7 @@ static void createworld(const char *requestedname)
     const int chosenworldseed = game::getconfiguredworldseed();
     game::resetsurvivalinventory();
     game::resetfurnaces();
+    game::resetchests();
     game::beginlocalworld();
     if(!emptymap(WORLD_RUNTIME_SCALE, true, activechunkname)) return;
     copystring(worldfolder, chosenfolder);
@@ -883,6 +884,7 @@ static void loadworldcommand(const char *requested)
     game::restorelocalplayerhealth(metadata.playerhealth);
     game::restorelocalplayermotion(metadata.playervelocity, metadata.playerfalling, metadata.playerfalldistance, metadata.playerphysstate);
     if(!game::loadlocalfurnaces(folder)) conoutf(CON_ERROR, "saved furnace data for world %s is corrupt", folder);
+    if(!game::loadlocalchests(folder)) conoutf(CON_ERROR, "saved chest data for world %s is corrupt", folder);
     applyloadworlddefaults = false;
     hasrequestedworldspawn = false;
 }
@@ -890,6 +892,7 @@ static void loadworldcommand(const char *requested)
 void startnetworkworld(int seed)
 {
     game::resetfurnaces();
+    game::resetchests();
     game::loadworldseed(seed);
     if(!emptymap(WORLD_RUNTIME_SCALE, true, "network/0_0", true, false)) return;
     worldfolder[0] = '\0';
@@ -976,6 +979,11 @@ void saveworld()
     if(!game::savelocalfurnaces(worldfolder))
     {
         conoutf(CON_ERROR, "could not save furnace state for world %s", worldfolder);
+        return;
+    }
+    if(!game::savelocalchests(worldfolder))
+    {
+        conoutf(CON_ERROR, "could not save chest state for world %s", worldfolder);
         return;
     }
 

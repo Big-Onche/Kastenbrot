@@ -62,6 +62,11 @@ namespace game
     extern void resetfurnaces();
     extern bool savelocalfurnaces(const char *world);
     extern bool loadlocalfurnaces(const char *world);
+    extern void resetchests();
+    extern bool savelocalchests(const char *world);
+    extern bool loadlocalchests(const char *world);
+    extern float getchestlidangle(const ivec &target);
+    extern int getchestyaw(const ivec &target);
     extern void forceedit(const char *name);
     extern bool ispaused();
     extern int scaletime(int t);

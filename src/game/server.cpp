@@ -126,12 +126,12 @@ namespace server
         uint ip;
         uint lastrequestid, breakrequestid, lastnpcattackrequest;
         bool connected, local, worldready, hasposition, positiondirty, inventoryloaded, inventorydirty, breakactive, breakdropeligible, furnaceopen,
-             dead, foodactive;
+             chestopen, dead, foodactive;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
         int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
             craftinggridsize, craftingstationitem, inventorycursordurability;
-        ivec positioncoords, breaktarget, craftingstationtarget, furnacetarget;
+        ivec positioncoords, breaktarget, craftingstationtarget, furnacetarget, chesttarget;
         vector<uchar> position;
         vector<uint> knownnpcs;
         vec o, velocity, falling;
@@ -155,9 +155,9 @@ namespace server
                        lastrequestid(0), breakrequestid(0), lastnpcattackrequest(0),
                        connected(false), local(false),
                        worldready(false), hasposition(false), positiondirty(false), inventoryloaded(false), inventorydirty(false),
-                       breakactive(false), breakdropeligible(true), furnaceopen(false), dead(false), foodactive(false),
+                       breakactive(false), breakdropeligible(true), furnaceopen(false), chestopen(false), dead(false), foodactive(false),
                        craftinggridsize(2), craftingstationitem(-1), inventorycursordurability(0),
-                       positioncoords(0, 0, 0), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0),
+                       positioncoords(0, 0, 0), breaktarget(0, 0, 0), craftingstationtarget(0, 0, 0), furnacetarget(0, 0, 0), chesttarget(0, 0, 0),
                        o(0, 0, 0), velocity(0, 0, 0), falling(0, 0, 0), getmap(NULL),
                        identitychallenge(NULL), identity(NULL)
         {
@@ -304,10 +304,11 @@ namespace server
     static vector<ivec> serverunsupportedpositions;
     static vector<serversupportcheck> serversupportchecks;
     static vector<furnaceinstance *> serverfurnaces;
+    static vector<chestinstance *> serverchests;
     static uint nextdropid = 1;
     static uint nextfallblockid = 1;
-    static bool furnacesdirty = false;
-    static int lastfurnacesave = 0;
+    static bool furnacesdirty = false, chestsdirty = false;
+    static int lastfurnacesave = 0, lastchestsave = 0;
     static serverworldaction *findworldaction(const ivec &target, int action);
     static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced = false);
     static void queueserverfallblockcheck(const ivec &cell);
@@ -315,6 +316,9 @@ namespace server
     static void sendfallblockspawn(int cn, const serverfallingblock &block);
     static bool loadserverfurnaces();
     static bool saveserverfurnaces(bool force = false);
+    static bool loadserverchests();
+    static bool saveserverchests(bool force = false);
+    static chestinstance *findserverchest(const ivec &target);
 
     vector<clientinfo *> clients;
     vector<serveredit *> worldhistory, worldredostack;
@@ -551,6 +555,9 @@ namespace server
         return cell;
     }
 
+    static int worldmountorient(int orient) { return ((orient % 6) + 6) % 6; }
+    static int worldplaceyaw(int orient) { return clamp(orient / 6, 0, 3) * 90; }
+
     static void updateservereditmetadata(serveredit &edit)
     {
         edit.hasselection = false;
@@ -560,10 +567,10 @@ namespace server
             const int action = getint(p);
             ivec target;
             target.x = getint(p); target.y = getint(p); target.z = getint(p);
-            const int orient = getint(p);
+            const int packed = getint(p), orient = worldmountorient(packed);
             const ullong itemid = getpersistentid(p);
             const int item = itemid ? getinventoryitempersistentindex(itemid) : -1;
-            if(!p.overread() && !p.remaining() && orient >= 0 && orient <= 5)
+            if(!p.overread() && !p.remaining() && packed >= 0 && packed < 24)
             {
                 setworldactionstate(worldactionstatecell(target, action, orient), action, orient, item, edit.author >= 0);
             }
@@ -650,6 +657,8 @@ namespace server
         serverunsupportedpositions.setsize(0);
         serversupportchecks.setsize(0);
         serverfurnaces.deletecontents();
+        serverchests.deletecontents();
+        furnacesdirty = chestsdirty = false;
         nextdropid = 1;
         nextfallblockid = 1;
         worldeditrevision = 0;
@@ -747,6 +756,7 @@ namespace server
         }
         conoutf("loaded %d authoritative world revisions for seed %d", worldhistory.length(), serverworldseed);
         if(!loadserverfurnaces()) serverworldready = false;
+        if(!loadserverchests()) serverworldready = false;
     }
 
     static bool ensureserverworld()
@@ -1214,6 +1224,96 @@ namespace server
         return ok;
     }
 
+    static void serverchestname(char *name, size_t len, const char *suffix = "")
+    {
+        string safe;
+        int n = 0;
+        for(const char *s = serverworld; *s && n < int(sizeof(safe)) - 1; ++s)
+            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
+        safe[n] = '\0';
+        if(!safe[0]) copystring(safe, "multiplayer");
+        snprintf(name, len, "media/map/%s/server.chests%s", safe, suffix ? suffix : "");
+        path(name);
+    }
+
+    static bool saveserverchests(bool force)
+    {
+        if(!force && !chestsdirty) return true;
+        string relative, temporary, finalpath, temppath;
+        serverchestname(relative, sizeof(relative));
+        serverchestname(temporary, sizeof(temporary), ".tmp");
+        copystring(finalpath, findfile(relative, "wb"));
+        copystring(temppath, findfile(temporary, "wb"));
+        stream *file = openrawfile(temporary, "wb");
+        if(!file) return false;
+        bool ok = file->write("CCSC", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(serverworldseed)) &&
+                  file->putlil<uint>(uint(serverchests.length()));
+        loopv(serverchests) if(ok)
+        {
+            chestinstance &chest = *serverchests[i];
+            ok = file->putlil<int>(chest.target.x) && file->putlil<int>(chest.target.y) && file->putlil<int>(chest.target.z) &&
+                 writeserverfurnacestring(*file, getinventoryitemid(chest.worlditem)) && file->putlil<int>(chest.yaw);
+            loopj(CHEST_SLOTS_MAX) if(ok)
+                ok = writeserverfurnacestack(*file, chest.items[j], chest.counts[j], chest.durabilities[j]);
+        }
+        delete file;
+        if(!ok || !replaceserveridentityfile(temppath, finalpath))
+        {
+            remove(temppath);
+            return false;
+        }
+        chestsdirty = false;
+        lastchestsave = max(totalmillis, 1);
+        return true;
+    }
+
+    static bool loadserverchests()
+    {
+        serverchests.deletecontents();
+        chestsdirty = false;
+        lastchestsave = max(totalmillis, 1);
+        string relative;
+        serverchestname(relative, sizeof(relative));
+        stream *file = openrawfile(relative, "rb");
+        if(!file) return true;
+        char magic[4] = { 0, 0, 0, 0 };
+        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
+                   seed = version == 1 ? file->getlil<uint>() : 0,
+                   count = version == 1 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCSC", 4) && version == 1 && seed == uint(serverworldseed) && count <= 100000;
+        loopi(ok ? int(count) : 0)
+        {
+            ivec target;
+            target.x = file->getlil<int>(); target.y = file->getlil<int>(); target.z = file->getlil<int>();
+            string worlditemid;
+            ok = readserverfurnacestring(*file, worlditemid, sizeof(worlditemid));
+            const int worlditem = ok ? getinventoryitemindex(worlditemid) : -1;
+            int slots = 0;
+            const bool configured = ok && getworldchestconfig(worlditem, slots);
+            const int yaw = ok ? file->getlil<int>() : 0;
+            chestinstance *chest = ok ? new chestinstance(target, worlditem, configured ? slots : CHEST_SLOTS_MAX, yaw) : NULL;
+            loopj(CHEST_SLOTS_MAX) if(ok)
+                ok = readserverfurnacestack(*file, chest->items[j], chest->counts[j], chest->durabilities[j], INT_MAX);
+            if(ok)
+            {
+                serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_ITEM);
+                if(configured && state && state->action == WORLD_ACTION_PLACE_ITEM && state->item == worlditem) serverchests.add(chest);
+                else delete chest;
+            }
+            else delete chest;
+            if(!ok) break;
+        }
+        if(ok) ok = file->tell() == file->size();
+        delete file;
+        if(!ok)
+        {
+            serverchests.deletecontents();
+            conoutf(CON_ERROR, "authoritative chest state is corrupt or incompatible");
+        }
+        else conoutf("loaded %d authoritative chest instances", serverchests.length());
+        return ok;
+    }
+
     static void sendinventory(clientinfo &ci)
     {
         packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
@@ -1332,6 +1432,85 @@ namespace server
             clientinfo *viewer = clients[i];
             if(viewer && viewer->connected && viewer->furnaceopen && viewer->furnacetarget == furnace.target)
                 sendfurnacestate(*viewer, furnace, true);
+        }
+    }
+
+    static chestinstance *findserverchest(const ivec &target)
+    {
+        loopv(serverchests) if(serverchests[i]->target == target) return serverchests[i];
+        return NULL;
+    }
+
+    static bool chestblockvalid(const chestinstance &chest)
+    {
+        serverworldaction *state = findworldaction(chest.target, WORLD_ACTION_PLACE_ITEM);
+        int slots = 0;
+        return state && state->action == WORLD_ACTION_PLACE_ITEM && state->item == chest.worlditem &&
+               getworldchestconfig(state->item, slots) && slots == chest.slots;
+    }
+
+    static bool chestaccessible(const clientinfo &ci, const chestinstance &chest)
+    {
+        return ci.hasposition && chestblockvalid(chest) && vec(chest.target).add(8).dist(ci.o) <= 144.0f;
+    }
+
+    static bool chesthasviewers(const ivec &target)
+    {
+        loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->chestopen && clients[i]->chesttarget == target) return true;
+        return false;
+    }
+
+    static void sendchestanimation(const ivec &target, bool open)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_CHESTANIM);
+        putint(p, target.x); putint(p, target.y); putint(p, target.z); putint(p, open ? 1 : 0);
+        ENetPacket *packet = p.finalize();
+        packet->referenceCount++;
+        const float range = max(dynamicentsmaxdistance, 1) * 16.0f;
+        loopv(clients)
+        {
+            clientinfo *recipient = clients[i];
+            if(!recipient || !recipient->connected || !recipient->worldready || !recipient->hasposition) continue;
+            if(vec(target).add(8).dist(recipient->o) <= range) sendpacket(recipient->clientnum, 1, packet);
+        }
+        if(--packet->referenceCount == 0) enet_packet_destroy(packet);
+    }
+
+    static void sendcheststate(clientinfo &ci, const chestinstance &chest, bool open)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_CHESTSTATE);
+        putint(p, open ? 1 : 0);
+        putint(p, chest.target.x); putint(p, chest.target.y); putint(p, chest.target.z);
+        putpersistentid(p, getinventoryitempersistentid(chest.worlditem));
+        putint(p, open ? chest.slots : 0);
+        putint(p, chest.yaw);
+        loopi(CHEST_SLOTS_MAX)
+        {
+            putpersistentid(p, getinventoryitempersistentid(open ? chest.items[i] : -1));
+            putint(p, open ? chest.counts[i] : 0);
+            putint(p, open ? chest.durabilities[i] : 0);
+        }
+        sendpacket(ci.clientnum, 1, p.finalize());
+    }
+
+    static void closechest(clientinfo &ci)
+    {
+        if(!ci.chestopen) return;
+        const ivec target = ci.chesttarget;
+        ci.chestopen = false;
+        sendcheststate(ci, chestinstance(), false);
+        if(!chesthasviewers(target)) sendchestanimation(target, false);
+    }
+
+    static void syncchestviewers(const chestinstance &chest)
+    {
+        loopv(clients)
+        {
+            clientinfo *viewer = clients[i];
+            if(viewer && viewer->connected && viewer->chestopen && viewer->chesttarget == chest.target)
+                sendcheststate(*viewer, chest, true);
         }
     }
 
@@ -1611,9 +1790,10 @@ namespace server
         }
     }
 
-    static void addfurnacecontentsdrop(clientinfo *owner, const ivec &target, int item, int count)
+    static void addcontainercontentsdrop(clientinfo *owner, const ivec &target, int item, int count, int durability = 0)
     {
         if(item < 0 || count <= 0) return;
+        if(!owner) owner = randomdropowner();
         while(serverdrops.length() >= maxdrop) removeserverdrop(0);
         serverdrop *drop = new serverdrop;
         if(!nextdropid || nextdropid > uint(INT_MAX)) nextdropid = 1;
@@ -1621,6 +1801,7 @@ namespace server
         drop->source = owner ? owner->clientnum : -1;
         drop->item = item;
         drop->count = count;
+        drop->durability = durability;
         drop->created = max(totalmillis, 1);
         drop->o = vec(target).add(8);
         if(owner) copystring(drop->ownerid, owner->playerid);
@@ -1634,13 +1815,28 @@ namespace server
         {
             furnaceinstance *furnace = serverfurnaces[i];
             loopj(FURNACE_INPUT_MAX)
-                addfurnacecontentsdrop(owner, target, furnace->inputitems[j], furnace->inputcounts[j]);
-            addfurnacecontentsdrop(owner, target, furnace->fuelitem, furnace->fuelcount);
-            addfurnacecontentsdrop(owner, target, furnace->outputitem, furnace->outputcount);
+                addcontainercontentsdrop(owner, target, furnace->inputitems[j], furnace->inputcounts[j], furnace->inputdurabilities[j]);
+            addcontainercontentsdrop(owner, target, furnace->fuelitem, furnace->fuelcount, furnace->fueldurability);
+            addcontainercontentsdrop(owner, target, furnace->outputitem, furnace->outputcount, furnace->outputdurability);
             loopvj(clients) if(clients[j] && clients[j]->furnaceopen && clients[j]->furnacetarget == target)
                 closefurnace(*clients[j]);
             delete serverfurnaces.remove(i);
             furnacesdirty = true;
+            return;
+        }
+    }
+
+    static void removeserverchest(const ivec &target, clientinfo *owner = NULL)
+    {
+        loopv(serverchests) if(serverchests[i]->target == target)
+        {
+            chestinstance *chest = serverchests[i];
+            loopj(chest->slots)
+                addcontainercontentsdrop(owner, target, chest->items[j], chest->counts[j], chest->durabilities[j]);
+            loopvj(clients) if(clients[j] && clients[j]->chestopen && clients[j]->chesttarget == target)
+                closechest(*clients[j]);
+            delete serverchests.remove(i);
+            chestsdirty = true;
             return;
         }
     }
@@ -3031,6 +3227,8 @@ namespace server
     {
         if(journalinitialized && furnacesdirty && !saveserverfurnaces(true))
             conoutf(CON_ERROR, "could not save authoritative furnace state before server reinitialization");
+        if(journalinitialized && chestsdirty && !saveserverchests(true))
+            conoutf(CON_ERROR, "could not save authoritative chest state before server reinitialization");
 #ifndef STANDALONE
         personaldrops = serverpersonaldrops;
         droptimeout = serverdroptimeout;
@@ -3068,6 +3266,7 @@ namespace server
             cancelbreak(*ci);
             cancelfooduse(*ci);
             ci->furnaceopen = false;
+            closechest(*ci);
             if(ci->connected && !saveinventory(*ci, true))
                 conoutf(CON_ERROR, "could not save survival inventory for player ID %s on disconnect", ci->playerid);
             if(ci->connected && !saveplayerstate(*ci, true))
@@ -3878,11 +4077,17 @@ namespace server
         if(!validnewrequest(ci, requestid, error)) return rejectaction(ci, requestid, error, requestid == ci.lastrequestid);
         if(action != WORLD_ACTION_PLACE_CUBE && action != WORLD_ACTION_PLACE_SCATTER && action != WORLD_ACTION_PLACE_ITEM)
             return rejectaction(ci, requestid, "invalid placement action", true, true);
+        const int packed = orient;
+        orient = worldmountorient(orient);
+        int chestslots = 0;
+        const bool chest = action == WORLD_ACTION_PLACE_ITEM && getworldchestconfig(item, chestslots);
+        if(packed < 0 || packed >= 24 || (!chest && packed != orient) || (chest && orient != WORLD_ORIENT_TOP))
+            return rejectaction(ci, requestid, "invalid placement orientation", true, true);
         if(!validactiontarget(ci, support, orient, error)) return rejectaction(ci, requestid, error, true);
         const ivec occupied = worldactionstatecell(support, action, orient);
         if(!validactiontarget(ci, occupied, orient, error)) return rejectaction(ci, requestid, error, true);
         if(!actionrate(ci, true)) return rejectaction(ci, requestid, "excessive placement rate", true);
-        if(action != WORLD_ACTION_PLACE_ITEM && (playeroccupies(occupied) || serverfallingblockoccupies(occupied)))
+        if((action != WORLD_ACTION_PLACE_ITEM || chest) && (playeroccupies(occupied) || serverfallingblockoccupies(occupied)))
             return rejectaction(ci, requestid, "");
         serverworldaction *state = findworldaction(occupied, action);
         serverworldaction *other = findworldaction(occupied, action == WORLD_ACTION_PLACE_CUBE
@@ -3905,9 +4110,14 @@ namespace server
         }
         if(!validactionitem(action, item))
             return rejectaction(ci, requestid, "invalid placed item type", true, true);
-        if(!acceptworldaction(ci, requestid, action, support, orient, item))
+        if(!acceptworldaction(ci, requestid, action, support, packed, item))
             return rejectaction(ci, requestid, "server could not persist the placement");
         setworldactionstate(occupied, action, orient, item, true);
+        if(chest && !findserverchest(occupied))
+        {
+            serverchests.add(new chestinstance(occupied, item, chestslots, worldplaceyaw(packed)));
+            chestsdirty = true;
+        }
         if(!servercreative())
         {
             if(--ci.inventorycounts[slot] <= 0)
@@ -4126,7 +4336,8 @@ namespace server
             return rejectaction(ci, requestid, "server could not persist the destruction");
         }
         setworldactionstate(occupied, action, ci.breakorient, item);
-        removeserverfurnace(target, &ci);
+        removeserverfurnace(occupied, &ci);
+        removeserverchest(occupied, &ci);
         if(!servercreative() && ci.breakdropeligible) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
         if(!servercreative() && ci.breaktoolitem >= 0)
         {
@@ -4263,6 +4474,7 @@ namespace server
         if(!validnewrequest(ci, requestid, error)) return rejectcraftaction(ci, requestid, error, requestid == ci.lastrequestid);
         if(servercreative()) return rejectcraftaction(ci, requestid, "crafting is disabled in creative mode");
         if(ci.breakactive) cancelbreak(ci);
+        if((action == CRAFT_ACTION_OPEN_PLAYER || action == CRAFT_ACTION_OPEN_TABLE) && ci.chestopen) closechest(ci);
         switch(action)
         {
             case CRAFT_ACTION_OPEN_PLAYER:
@@ -4420,6 +4632,7 @@ namespace server
                 serverfurnaces.add(furnace);
                 furnacesdirty = true;
             }
+            if(ci.chestopen) closechest(ci);
             ci.furnaceopen = true;
             ci.furnacetarget = target;
             sendactionresult(ci, requestid, true);
@@ -4475,6 +4688,76 @@ namespace server
             sendinventory(ci);
         }
         syncfurnaceviewers(*furnace);
+        return true;
+    }
+
+    static bool rejectchestaction(clientinfo &ci, uint requestid, const char *reason, bool violation = false, bool malicious = false)
+    {
+        const bool result = rejectaction(ci, requestid, reason, violation, malicious);
+        if(ci.chestopen)
+        {
+            chestinstance *chest = findserverchest(ci.chesttarget);
+            if(chest && chestaccessible(ci, *chest)) sendcheststate(ci, *chest, true);
+            else closechest(ci);
+        }
+        return result;
+    }
+
+    static bool handlechestaction(clientinfo &ci, uint requestid, int action, int first, int second, int third, int fourth)
+    {
+        (void)fourth;
+        const char *error = NULL;
+        if(!validnewrequest(ci, requestid, error)) return rejectchestaction(ci, requestid, error, requestid == ci.lastrequestid);
+        if(ci.breakactive) cancelbreak(ci);
+        if(action == CHEST_ACTION_CLOSE)
+        {
+            closechest(ci);
+            sendactionresult(ci, requestid, true);
+            return true;
+        }
+        if(action == CHEST_ACTION_OPEN)
+        {
+            const ivec target(first, second, third);
+            serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_ITEM);
+            int slots = 0;
+            if(!state || state->action != WORLD_ACTION_PLACE_ITEM || !getworldchestconfig(state->item, slots))
+                return rejectchestaction(ci, requestid, "the requested chest does not exist");
+            if(!ci.hasposition || vec(target).add(8).dist(ci.o) > 144.0f)
+                return rejectchestaction(ci, requestid, "the chest is out of reach");
+            chestinstance *chest = findserverchest(target);
+            if(!chest)
+            {
+                chest = new chestinstance(target, state->item, slots, 0);
+                serverchests.add(chest);
+                chestsdirty = true;
+            }
+            if(ci.chestopen && ci.chesttarget != target) closechest(ci);
+            if(ci.furnaceopen) closefurnace(ci);
+            const bool animate = !chesthasviewers(target);
+            ci.chestopen = true;
+            ci.chesttarget = target;
+            if(animate) sendchestanimation(target, true);
+            sendactionresult(ci, requestid, true);
+            sendinventory(ci);
+            sendcheststate(ci, *chest, true);
+            return true;
+        }
+
+        if(!ci.chestopen) return rejectchestaction(ci, requestid, "no chest is open");
+        chestinstance *chest = findserverchest(ci.chesttarget);
+        if(!chest || !chestaccessible(ci, *chest)) return rejectchestaction(ci, requestid, "the chest is no longer accessible");
+        if(action != CHEST_ACTION_CLICK || first < 0 || first >= chest->slots ||
+           (second != INVENTORY_CLICK_LEFT && second != INVENTORY_CLICK_RIGHT))
+            return rejectchestaction(ci, requestid, "invalid chest slot click", true, true);
+        if(!serverlimitedinventoryclick(ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability,
+                                        chest->items[first], chest->counts[first], chest->durabilities[first], second,
+                                        max(getinventoryitemmaxstack(ci.inventorycursoritem), 1)))
+            return rejectchestaction(ci, requestid, "the requested chest transfer could not be completed");
+        chestsdirty = true;
+        markinventorydirty(ci);
+        sendactionresult(ci, requestid, true);
+        sendinventory(ci);
+        syncchestviewers(*chest);
         return true;
     }
 
@@ -5382,6 +5665,14 @@ namespace server
                     if(ci && ci->connected && !p.overread()) handlefurnaceaction(*ci, requestid, action, first, second, third, fourth);
                     break;
                 }
+                case N_CHESTACTION:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    const uint requestid = uint(getint(p));
+                    const int action = getint(p), first = getint(p), second = getint(p), third = getint(p), fourth = getint(p);
+                    if(ci && ci->connected && !p.overread()) handlechestaction(*ci, requestid, action, first, second, third, fourth);
+                    break;
+                }
                 case N_WORLDACTION:
                 {
                     clientinfo *ci = getinfo(sender);
@@ -5629,10 +5920,29 @@ namespace server
             conoutf(CON_ERROR, "could not periodically save authoritative furnace state");
     }
 
+    static void updateserverchests()
+    {
+        for(int i = serverchests.length() - 1; i >= 0; --i)
+        {
+            chestinstance &chest = *serverchests[i];
+            if(!chestblockvalid(chest)) removeserverchest(chest.target);
+        }
+        loopv(clients)
+        {
+            clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->chestopen) continue;
+            chestinstance *chest = findserverchest(ci->chesttarget);
+            if(!chest || !chestaccessible(*ci, *chest)) closechest(*ci);
+        }
+        if(chestsdirty && totalmillis - lastchestsave >= 5000 && !saveserverchests())
+            conoutf(CON_ERROR, "could not periodically save authoritative chest state");
+    }
+
     void serverupdate()
     {
         if(!journalinitialized) return;
         updateserverfurnaces();
+        updateserverchests();
         updateserverfallingblocks();
         updateserversupportblocks();
         updateservernpcs();

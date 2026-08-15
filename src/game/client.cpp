@@ -1032,6 +1032,44 @@ namespace game
                 if(!p.overread()) receivefurnacestate(furnace, open, cooking);
                 break;
             }
+            case N_CHESTSTATE:
+            {
+                const bool open = getint(p) != 0;
+                ivec target;
+                target.x = getint(p); target.y = getint(p); target.z = getint(p);
+                const ullong worlditemid = getpersistentid(p);
+                const int worlditem = worlditemid ? getinventoryitempersistentindex(worlditemid) : -1,
+                          slots = getint(p), yaw = getint(p);
+                if((open && (slots < 1 || slots > CHEST_SLOTS_MAX)) || (!open && slots != 0))
+                {
+                    conoutf(CON_ERROR, "server sent an invalid chest state");
+                    disconnect();
+                    return;
+                }
+                chestinstance chest(target, worlditem, slots, yaw);
+                loopi(CHEST_SLOTS_MAX)
+                {
+                    const ullong itemid = getpersistentid(p);
+                    chest.items[i] = itemid ? getinventoryitempersistentindex(itemid) : -1;
+                    chest.counts[i] = getint(p);
+                    chest.durabilities[i] = getint(p);
+                    if(chest.counts[i] <= 0)
+                    {
+                        chest.items[i] = -1;
+                        chest.counts[i] = chest.durabilities[i] = 0;
+                    }
+                }
+                if(!p.overread()) receivecheststate(chest, open);
+                break;
+            }
+            case N_CHESTANIM:
+            {
+                ivec target;
+                target.x = getint(p); target.y = getint(p); target.z = getint(p);
+                const bool open = getint(p) != 0;
+                if(!p.overread()) receivechestanimation(target, open);
+                break;
+            }
             case N_ACTIONRESULT:
             {
                 const uint requestid = uint(getint(p));
