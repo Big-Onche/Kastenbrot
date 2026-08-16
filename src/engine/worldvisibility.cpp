@@ -322,33 +322,14 @@ static ivec worldchunkvaupdateorigin(int key)
     return ivec(x, y, z).mul(WORLD_SECTION_SIZE);
 }
 
-static ivec worldmeshdomainorigin(const ivec &origin)
-{
-    const int domainsize = getworldmeshdomainsize();
-    return domainsize > 0 ? ivec(origin).mask(~(domainsize - 1)) : origin;
-}
-
 static bool queueworldchunkvaupdate(const ivec &origin)
 {
-    int key = worldchunkvaupdatekey(worldmeshdomainorigin(origin));
+    int key = worldchunkvaupdatekey(origin);
     if(worldchunkvaupdateset.access(key)) return false;
     worldchunkvaupdateset.add(key);
     worldchunkvaupdates.add(key);
     TracyPlot("Chunks/Pending VA sections", int64_t(worldchunkvaupdates.length()));
     return true;
-}
-
-static void queueworldmeshdomainupdates(const ivec &bbmin, const ivec &bbmax)
-{
-    const int domainsize = getworldmeshdomainsize();
-    if(domainsize <= 0) return;
-    const ivec first = worldmeshdomainorigin(ivec(bbmin).max(0)),
-               last = worldmeshdomainorigin(ivec(bbmax).sub(1).min(
-                   ivec(worldsize - 1, worldsize - 1, WORLD_MAP_SIZE - 1)));
-    for(int z = first.z; z <= last.z; z += domainsize)
-    for(int y = first.y; y <= last.y; y += domainsize)
-    for(int x = first.x; x <= last.x; x += domainsize)
-        queueworldchunkvaupdate(ivec(x, y, z));
 }
 
 static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, const int *sections, int numsections)
@@ -362,16 +343,13 @@ static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, con
         if(chunk.renderdata.flags[sections[i]][tile]&SECTION_NO_RENDER) continue;
         ivec center = worldchunkorigin(chunk, sections[i] * WORLD_SECTION_SIZE);
         center.add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, 0));
+        if(!queueworldchunkvaupdate(center)) continue;
 
-        // Logical invalidation remains section-sized. The one-voxel halo can
-        // touch an adjacent mesh domain, so queue every aligned domain covered
-        // by it rather than widening the logical edit itself.
+        // changedstreaming() adds the face-neighbour halo, so a section edge
+        // also invalidates the immediately adjacent section VA.
         bbmins[numregions] = center;
         bbmaxs[numregions] = ivec(center).add(WORLD_SECTION_SIZE).min(
             ivec(worldsize, worldsize, WORLD_MAP_SIZE));
-        queueworldmeshdomainupdates(ivec(bbmins[numregions]).sub(1).max(0),
-                                    ivec(bbmaxs[numregions]).add(1).min(
-                                        ivec(worldsize, worldsize, WORLD_MAP_SIZE)));
         numregions++;
     }
     if(numregions)
@@ -901,10 +879,9 @@ static int processworldchunkvaupdates()
     ZoneValue(pending);
 
     Uint64 start = SDL_GetPerformanceCounter();
-    const int domainsize = getworldmeshdomainsize();
     {
-        ZoneScopedN("Chunks/Greedy mesh changed domains");
-        loopv(worldchunkvaupdates) calcmerges(worldchunkvaupdateorigin(worldchunkvaupdates[i]), domainsize);
+        ZoneScopedN("Chunks/Greedy mesh changed sections");
+        loopv(worldchunkvaupdates) calcmerges(worldchunkvaupdateorigin(worldchunkvaupdates[i]), WORLD_SECTION_SIZE);
     }
     {
         ZoneScopedN("Chunks/Commit invalidated VA updates");
@@ -913,19 +890,13 @@ static int processworldchunkvaupdates()
     }
     loopv(worldchunkvaupdates)
     {
-        const ivec origin = worldchunkvaupdateorigin(worldchunkvaupdates[i]);
-        for(int z = origin.z; z < origin.z + domainsize && z < WORLD_MAP_SIZE; z += WORLD_SECTION_SIZE)
-        for(int y = origin.y; y < origin.y + domainsize && y < worldsize; y += WORLD_SECTION_SIZE)
-        for(int x = origin.x; x < origin.x + domainsize && x < worldsize; x += WORLD_SECTION_SIZE)
-        {
-            worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdatekey(ivec(x, y, z)));
-            if(!owner) continue;
-            const int chunkindex = findworldchunk(owner->chunkx, owner->chunky);
-            if(!worldchunks.inrange(chunkindex)) continue;
-            worldsectionvaresidency &residency = worldchunks[chunkindex].varesidency[owner->section][owner->tile];
-            loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_UPLOAD)
-                setworldsectionvaresidencystate(residency, j, RESIDENT);
-        }
+        worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdates[i]);
+        if(!owner) continue;
+        const int chunkindex = findworldchunk(owner->chunkx, owner->chunky);
+        if(!worldchunks.inrange(chunkindex)) continue;
+        worldsectionvaresidency &residency = worldchunks[chunkindex].varesidency[owner->section][owner->tile];
+        loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_UPLOAD)
+            setworldsectionvaresidencystate(residency, j, RESIDENT);
     }
     worldchunkvaupdates.setsize(0);
     worldchunkvaupdateset.clear();

@@ -657,9 +657,7 @@ void commitchanges(bool force)
     inbetweenframes = false;
     {
         ZoneScopedN("Geometry/Rebuild octree render data");
-        setasyncworldmeshing(true);
         octarender();
-        setasyncworldmeshing(false);
     }
     inbetweenframes = true;
     {
@@ -680,9 +678,6 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
     ivec dirtymin, dirtymax;
     if(!dirtygeometrybounds(bbmin, bbmax, dirtymin, dirtymax)) return;
-    // Entity octree nodes referenced by in-flight packets are about to be
-    // recycled. Finish their CPU work and bounded uploads before invalidation.
-    flushworldmeshjobs();
     {
         ZoneScopedN("Geometry/Invalidate changed region");
         readychanges(dirtymin, dirtymax, worldroot, ivec(0, 0, 0), worldsize/2);
@@ -701,7 +696,6 @@ void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
 void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit)
 {
     if(numregions <= 0) return;
-    flushworldmeshjobs();
     vector<ivec> dirtymins, dirtymaxs;
     dirtymins.reserve(numregions);
     dirtymaxs.reserve(numregions);
@@ -3131,3 +3125,4 @@ EDITSTAT(glde, int, glde);
 EDITSTAT(geombatch, int, gbatches);
 EDITSTAT(oq, int, getnumqueries());
 EDITSTAT(pvs, int, getnumviewcells());
+

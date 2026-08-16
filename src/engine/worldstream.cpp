@@ -18,7 +18,6 @@ static void applyworldscatterchange(vector<worldscatterinstance> &scatter, const
 
 static bool worldchunkmounted(const worldchunk &chunk);
 static int worldchunkvaupdatekey(const ivec &origin);
-static ivec worldchunkvaupdateorigin(int key);
 
 VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generation/load
 
@@ -207,24 +206,9 @@ static ullong currentworldparameterhash();
 static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky, worldspawnmetadata &spawn, worlddiffmetadata &metadata);
 void setmapfilenames(const char *fname, const char *cname);
 
-// Logical residency remains WORLD_SECTION_SIZE (16 blocks). Mesh domains are
-// independently aligned groups of 1x, 2x, or 4x logical sections, allowing the
-// existing Cube merge generator to cross the former section/VA boundaries.
-static void worldmeshdomainscalechanged()
-{
-    calcmerges();
-    allchanged();
-}
-VARFP(worldmeshdomainscale, 0, 1, 2, worldmeshdomainscalechanged());
-
 int getworldsectionsize()
 {
     return worldchunks.empty() ? 0 : WORLD_SECTION_SIZE;
-}
-
-int getworldmeshdomainsize()
-{
-    return worldchunks.empty() ? 0 : WORLD_SECTION_SIZE * (1 << worldmeshdomainscale);
 }
 
 static cube sampleworldblockcube(const cube &source, const ivec &position, ivec &origin, int &size)
@@ -813,51 +797,18 @@ static void clearworldsectionvaresidency(worldchunk &chunk, int tile, int sectio
 
 bool worldsectionvaenabled(const ivec &origin, int size)
 {
-    const int domainsize = getworldmeshdomainsize();
-    if(size != domainsize || worldchunks.empty()) return true;
-
-    bool owned = false;
-    for(int z = origin.z; z < origin.z + domainsize && z < WORLD_MAP_SIZE; z += WORLD_SECTION_SIZE)
-    for(int y = origin.y; y < origin.y + domainsize && y < worldsize; y += WORLD_SECTION_SIZE)
-    for(int x = origin.x; x < origin.x + domainsize && x < worldsize; x += WORLD_SECTION_SIZE)
+    if(size != WORLD_SECTION_SIZE || worldchunks.empty()) return true;
+    worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdatekey(origin));
+    if(!owner) return true;
+    const int index = findworldchunk(owner->chunkx, owner->chunky);
+    if(!worldchunks.inrange(index)) return false;
+    const worldchunk &chunk = worldchunks[index];
+    if(chunk.renderdata.flags[owner->section][owner->tile]&SECTION_NO_RENDER)
     {
-        worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdatekey(ivec(x, y, z)));
-        if(!owner) continue;
-        owned = true;
-        const int index = findworldchunk(owner->chunkx, owner->chunky);
-        if(!worldchunks.inrange(index)) continue;
-        const worldchunk &chunk = worldchunks[index];
-        if(chunk.renderdata.flags[owner->section][owner->tile]&SECTION_NO_RENDER)
-        {
-            worldvanorenderskipsframe++;
-            continue;
-        }
-        if(worldsectionvaactive(chunk.varesidency[owner->section][owner->tile])) return true;
+        worldvanorenderskipsframe++;
+        return false;
     }
-    return !owned;
-}
-
-bool calcworldmeshmerges()
-{
-    const int domainsize = getworldmeshdomainsize();
-    if(domainsize <= 0 || worldchunks.empty()) return false;
-
-    hashset<int> domains(1<<12);
-    enumeratekt(worldsectionowners, int, key, worldsectionowner, owner,
-    {
-        const int index = findworldchunk(owner.chunkx, owner.chunky);
-        if(!worldchunks.inrange(index)) continue;
-        const worldchunk &chunk = worldchunks[index];
-        if(chunk.renderdata.flags[owner.section][owner.tile]&SECTION_NO_RENDER ||
-           !worldsectionvaactive(chunk.varesidency[owner.section][owner.tile]))
-            continue;
-        const ivec origin = worldchunkvaupdateorigin(key);
-        const ivec domain = ivec(origin).mask(~(domainsize - 1));
-        domains.add(worldchunkvaupdatekey(domain));
-    });
-    if(!domains.numelems) return false;
-    enumerate(domains, int, key, calcmerges(worldchunkvaupdateorigin(key), domainsize));
-    return true;
+    return worldsectionvaactive(chunk.varesidency[owner->section][owner->tile]);
 }
 
 static void invalidateworldchunksectionstate(worldchunk &chunk, int x, int y, int section)

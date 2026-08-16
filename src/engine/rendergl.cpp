@@ -2504,11 +2504,8 @@ void gl_drawview()
         ldrscaleb = ldrscale/255;
     }
 
-    {
-        ZoneScopedN("Render/Visibility");
-        visiblecubes();
-        updateclouds();
-    }
+    visiblecubes();
+    updateclouds();
 
     if(wireframe && editmode) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 

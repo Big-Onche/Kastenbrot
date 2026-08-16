@@ -86,70 +86,6 @@ struct occludequery
     int fragments;
 };
 
-enum
-{
-    MESH_RANGE_BLEND       = 1<<0,
-    MESH_RANGE_ALPHA_BACK  = 1<<1,
-    MESH_RANGE_ALPHA_FRONT = 1<<2,
-    MESH_RANGE_REFRACT     = 1<<3,
-    MESH_RANGE_SKY         = 1<<4,
-    MESH_RANGE_DECAL       = 1<<5
-};
-
-struct octaentities;
-
-// CPU-only output of the octree mesher. Indices remain local to the packet;
-// GPU residency is assigned later by either the validation or pooled backend.
-struct meshrange
-{
-    uint firstindex, indexcount, flags;
-    ushort texture, material, envmap, minvert, maxvert, reuse;
-    uchar orient, layer;
-
-    meshrange() : firstindex(0), indexcount(0), flags(0), texture(0), material(0),
-        envmap(0), minvert(0), maxvert(0), reuse(0), orient(0), layer(0) {}
-};
-
-struct meshpacket
-{
-    vector<vertex> vertices;
-    vector<uint> indices, skyindices, decalindices;
-    vector<meshrange> ranges, decalranges;
-    vector<materialsurface> materials;
-    vector<grasstri> grasstris;
-    vector<octaentities *> mapmodels, decals;
-    vec bbmin, bbmax;
-    vec alphamin, alphamax, refractmin, refractmax, skymin, skymax;
-    ivec nogimin, nogimax;
-    ullong checksum;
-
-    meshpacket() : bbmin(1e16f, 1e16f, 1e16f), bbmax(-1e16f, -1e16f, -1e16f),
-        alphamin(1e16f, 1e16f, 1e16f), alphamax(-1e16f, -1e16f, -1e16f),
-        refractmin(1e16f, 1e16f, 1e16f), refractmax(-1e16f, -1e16f, -1e16f),
-        skymin(1e16f, 1e16f, 1e16f), skymax(-1e16f, -1e16f, -1e16f),
-        nogimin(INT_MAX, INT_MAX, INT_MAX), nogimax(INT_MIN, INT_MIN, INT_MIN), checksum(0) {}
-};
-
-// Slice units are vertices for vertex slices and ushort elements for index slices.
-struct gpuslice
-{
-    uint offset, size;
-
-    gpuslice(uint offset = 0, uint size = 0) : offset(offset), size(size) {}
-};
-
-struct gpumesh
-{
-    gpuslice vertices, indices, skyindices, decalindices;
-    uint numverts, numindices;
-    GLuint vbuf, ebuf;
-    void *arena;
-    vector<meshrange> ranges;
-    ullong checksum;
-
-    gpumesh() : numverts(0), numindices(0), vbuf(0), ebuf(0), arena(NULL), checksum(0) {}
-};
-
 struct vtxarray;
 
 struct octaentities
@@ -189,13 +125,9 @@ struct vtxarray
     vector<vtxarray *> children;
     vtxarray *next, *rnext;  // linked list of visible VOBs
     vertex *vdata;           // vertex data
-    uint voffset, eoffset, skyoffset, decaloffset; // offsets into shared vertex/index data
+    ushort voffset, eoffset, skyoffset, decaloffset; // offset into vertex data
     ushort *edata, *skydata, *decaldata; // vertex indices
-    GLuint vbuf, ebuf, skybuf, decalbuf; // legacy ownership or pooled compatibility aliases
-    gpumesh *mesh;             // pooled GPU residency; NULL for the legacy backend
-    ullong meshchecksum;       // backend-independent packet checksum for validation
-    uint meshgeneration;       // rejects completed work for recycled/destroyed spatial nodes
-    bool meshpending;          // CPU packet build or bounded main-thread upload is outstanding
+    GLuint vbuf, ebuf, skybuf, decalbuf; // VBOs
     ushort minvert, maxvert; // DRE info
     elementset *texelems, *decalelems;   // List of element indices sets (range) per texture
     materialsurface *matbuf; // buffer of material surfaces
