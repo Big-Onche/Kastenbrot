@@ -690,7 +690,8 @@ VARFP(texcompress, 0, 1536, 1<<12, initwarning("texture quality", INIT_LOAD));
 VARFP(texcompressquality, -1, -1, 1, setuptexcompress());
 VARF(trilinear, 0, 1, 1, initwarning("texture filtering", INIT_LOAD));
 VARF(bilinear, 0, 1, 1, initwarning("texture filtering", INIT_LOAD));
-VARFP(aniso, 0, 0, 16, initwarning("texture filtering", INIT_LOAD));
+void updatetexturefilter();
+VARFP(aniso, 0, 0, 16, updatetexturefilter());
 void updategeometryfilter();
 VARFP(worldmodelfilter, 0, 0, 1, updategeometryfilter());
 
@@ -956,7 +957,7 @@ static void settexfilter(GLenum target, int filter, bool geometry = false)
 {
     bool linear = !geometry || worldmodelfilter;
     if(target==GL_TEXTURE_2D && hasAF && filter > 1)
-        glTexParameteri(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, linear && min(aniso, hwmaxaniso) > 0 ? min(aniso, hwmaxaniso) : 1);
+        glTexParameteri(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, min(aniso, hwmaxaniso) > 0 ? min(aniso, hwmaxaniso) : 1);
     glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter && bilinear && linear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(target, GL_TEXTURE_MIN_FILTER,
         filter > 1 ?
@@ -1302,13 +1303,14 @@ static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clam
     return t;
 }
 
-void updategeometryfilter()
+static void updatetexturefilter(bool geometryonly)
 {
     GLint oldtex = 0;
     bool changed = false;
     enumerate(textures, Texture, tex,
     {
-        if(!tex.id || !(tex.type&Texture::GEOMETRY)) continue;
+        const bool geometry = (tex.type&Texture::GEOMETRY)!=0;
+        if(!tex.id || (tex.type&Texture::TYPE)!=Texture::IMAGE || (geometryonly && !geometry)) continue;
         if(!changed)
         {
             glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex);
@@ -1316,9 +1318,19 @@ void updategeometryfilter()
         }
         glBindTexture(GL_TEXTURE_2D, tex.id);
         int filter = !tex.canreduce || reducefilter ? (tex.mipmap ? 2 : 1) : 0;
-        settexfilter(GL_TEXTURE_2D, filter, true);
+        settexfilter(GL_TEXTURE_2D, filter, geometry);
     });
     if(changed) glBindTexture(GL_TEXTURE_2D, oldtex);
+}
+
+void updatetexturefilter()
+{
+    updatetexturefilter(false);
+}
+
+void updategeometryfilter()
+{
+    updatetexturefilter(true);
 }
 
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN

@@ -470,6 +470,7 @@ extern bool viewfrustumvalid();
 extern bool isvaoccluded(const vtxarray *va);
 extern void rendergeom();
 extern void renderworldlods();
+extern void cleanupworldlods();
 extern bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2);
 extern bool hasworldlodwater();
 extern void renderworldlodwater(bool below = false);

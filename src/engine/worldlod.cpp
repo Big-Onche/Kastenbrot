@@ -962,6 +962,11 @@ static void clearworldlods()
     ++worldlodepoch;
 }
 
+void cleanupworldlods()
+{
+    clearworldlods();
+}
+
 static ullong currentworldlodsettings()
 {
     ullong hash = game::worldgenerationparameterhash() ^ ullong(uint(game::getworldseed())) ^ ullong(WORLDGEN_VERSION) << 32;

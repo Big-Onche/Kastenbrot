@@ -1952,6 +1952,7 @@ void renderva(renderstate &cur, vtxarray *va, int pass = RENDERPASS_GBUFFER, boo
 
 void cleanupva()
 {
+    cleanupworldlods();
     clearvas(worldroot);
     clearqueries();
     cleanupbb();
