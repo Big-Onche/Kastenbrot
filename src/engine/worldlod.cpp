@@ -9,6 +9,8 @@ VAR(worldlodneardistance, 16, 192, 4096); // blocks from the chunk AABB
 VAR(worldlodfardistance, 32, 512, 4096);
 VAR(worldlodmaxdistance, 64, 768, 4096);
 VARP(worldlodhysteresis, 0, 16, 512);
+VARP(worldlodditherdistance, 0, 64, 256); // transition width in blocks, centered on worldlodneardistance
+VARP(worldloddither, 0, 1, 1); // cross-fade rigid octree and LOD1 geometry
 VARP(worldlodskirtdepth, 1, 4, 64);
 VARP(worldlodthreads, 1, 2, 4);
 VARP(worldlodpendinglimit, 4, 32, 512);
@@ -108,11 +110,13 @@ struct worldlodjob
 struct worldlodselection
 {
     int x, y, desired, active, lastseen;
-    float distance;
+    float distance, dither;
 
     worldlodselection(int x = 0, int y = 0)
-        : x(x), y(y), desired(0), active(-1), lastseen(0), distance(0) {}
+        : x(x), y(y), desired(0), active(-1), lastseen(0), distance(0), dither(0) {}
 };
+
+static bool worldlodselectionrequiresvoxel(const worldlodselection &selection);
 
 static vector<worldlodchunk> worldlodcache;
 static vector<worldlodselection> worldlodselections;
@@ -962,7 +966,7 @@ static ullong currentworldlodsettings()
 {
     ullong hash = game::worldgenerationparameterhash() ^ ullong(uint(game::getworldseed())) ^ ullong(WORLDGEN_VERSION) << 32;
     const int values[] = { worldlod1resolution, worldlod2resolution, worldlodneardistance, worldlodfardistance, worldlodmaxdistance,
-                           worldlodhysteresis, worldlodskirtdepth, worldlodthreads };
+                           worldlodhysteresis, worldlodditherdistance, worldloddither, worldlodskirtdepth, worldlodthreads };
     loopi(sizeof(values) / sizeof(values[0]))
     {
         hash ^= uint(values[i]);
@@ -1073,7 +1077,8 @@ static void processworldlodresults()
                 selection.active = job->key.lod;
                 chunk.active = true;
                 const int worldchunkindex = findworldchunk(selection.x, selection.y);
-                if(worldchunks.inrange(worldchunkindex) && worldchunkmounted(worldchunks[worldchunkindex]))
+                if(worldchunks.inrange(worldchunkindex) && !worldlodselectionrequiresvoxel(selection) &&
+                   worldchunkmounted(worldchunks[worldchunkindex]))
                     unmountworldchunk(worldchunks[worldchunkindex]);
             }
             worldlodunprunablecache = cachewasunprunable && chunk.active ? worldlodcache.length() : -1;
@@ -1181,11 +1186,36 @@ static void reprioritizeworldlodjobs()
     SDL_UnlockMutex(worldlodmutex);
 }
 
+static void worldlodditherrange(float &start, float &end)
+{
+    const float center = worldlodneardistance * WORLD_BLOCK_SIZE,
+                half = worldlodditherdistance * WORLD_BLOCK_SIZE * 0.5f;
+    start = max(center - half, 0.0f);
+    end = max(center + half, start + 1.0f);
+}
+
+static float worldlodditherfactor(float distance)
+{
+    if(!worldlodditherdistance) return distance >= worldlodneardistance * WORLD_BLOCK_SIZE ? 1.0f : 0.0f;
+    float start, end;
+    worldlodditherrange(start, end);
+    return clamp((distance - start) / (end - start), 0.0f, 1.0f);
+}
+
+static float smoothworldloddither(float dither)
+{
+    dither = clamp(dither, 0.0f, 1.0f);
+    return dither * dither * (3.0f - 2.0f * dither);
+}
+
 static int desiredworldlod(int previous, float distance)
 {
-    const float nearthreshold = worldlodneardistance * WORLD_BLOCK_SIZE,
-                farthreshold = max(worldlodfardistance, worldlodneardistance + 1) * WORLD_BLOCK_SIZE,
-                hysteresis = worldlodhysteresis * WORLD_BLOCK_SIZE;
+    float ditherstart, ditherend;
+    worldlodditherrange(ditherstart, ditherend);
+    const float hysteresis = worldlodhysteresis * WORLD_BLOCK_SIZE,
+                nearthreshold = worldloddither && worldlodditherdistance ? max(min(ditherstart, ditherend) - hysteresis, 0.0f)
+                                                                         : worldlodneardistance * WORLD_BLOCK_SIZE,
+                farthreshold = max(worldlodfardistance, worldlodneardistance + 1) * WORLD_BLOCK_SIZE;
     switch(previous)
     {
         case 0: return distance > nearthreshold + hysteresis ? 1 : 0;
@@ -1200,13 +1230,34 @@ static int desiredworldlod(int previous, float distance)
 static bool worldlodfullready(int x, int y)
 {
     const int index = findworldchunk(x, y);
-    return worldchunks.inrange(index) && !worldchunks[index].loading && worldchunks[index].root && worldchunkmounted(worldchunks[index]);
+    if(!worldchunks.inrange(index)) return false;
+    const worldchunk &chunk = worldchunks[index];
+    if(chunk.loading || !chunk.root || !worldchunkmounted(chunk) || chunk.varesidencylod != 1 || chunk.varesidencydirty)
+        return false;
+
+    // Mounting moves CPU octree sections into the runtime world before their
+    // replacement VAs are built and uploaded. Keep LOD1 alive until every VA
+    // requested for the current view has completed that pipeline.
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+    {
+        const worldsectionvaresidency &residency = chunk.varesidency[section][tile];
+        loop(geometry, WORLD_VA_GEOMETRY_COUNT)
+            if(residency.state[geometry] == PENDING_BUILD || residency.state[geometry] == PENDING_UPLOAD)
+                return false;
+    }
+    return true;
+}
+
+static bool worldlodselectionrequiresvoxel(const worldlodselection &selection)
+{
+    if(selection.desired == 0 || selection.active <= 0) return true;
+    return selection.desired == 1 && worldloddither && selection.dither < 1.0f;
 }
 
 static bool worldlodrequiresvoxel(const worldchunk &chunk)
 {
     const int index = findworldlodselection(chunk.x, chunk.y);
-    return index < 0 || worldlodselections[index].desired == 0;
+    return index < 0 || worldlodselectionrequiresvoxel(worldlodselections[index]);
 }
 
 static void pruneworldlodcache()
@@ -1322,6 +1373,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         }
         worldlodselection &selection = worldlodselections[selectionindex];
         selection.distance = distance;
+        selection.dither = worldlodditherfactor(distance);
         selection.lastseen = totalmillis;
         selection.desired = desiredworldlod(selection.desired, distance);
     }
@@ -1351,7 +1403,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         const int chunkindex = findworldchunk(selection.x, selection.y);
         if(!worldchunks.inrange(chunkindex)) continue;
         worldchunk &chunk = worldchunks[chunkindex];
-        const int requiresvoxel = selection.desired == 0 ? 1 : 0;
+        const int requiresvoxel = worldlodselectionrequiresvoxel(selection) ? 1 : 0;
         if(chunk.varesidencylod == requiresvoxel) continue;
         chunk.varesidencylod = requiresvoxel;
         dirtyallworldchunkvaresidency(chunk);
@@ -1384,7 +1436,8 @@ static void updateworldlods(int chunkx, int chunky, bool force)
                 worldlodcache[cacheindex].lastused = totalmillis;
                 worldlodcache[cacheindex].active = true;
                 const int chunkindex = findworldchunk(selection.x, selection.y);
-                if(worldchunks.inrange(chunkindex) && worldchunkmounted(worldchunks[chunkindex])) unmountworldchunk(worldchunks[chunkindex]);
+                if(worldchunks.inrange(chunkindex) && !worldlodselectionrequiresvoxel(selection) && worldchunkmounted(worldchunks[chunkindex]))
+                    unmountworldchunk(worldchunks[chunkindex]);
             }
             else missing++;
         }
@@ -1498,6 +1551,14 @@ static void bindworldlodtextures()
     glActiveTexture_(GL_TEXTURE0);
 }
 
+static float worldlodrenderfade(const worldlodselection &selection)
+{
+    if(selection.active != 1 || !worldloddither || !worldlodditherdistance) return 1.0f;
+    float fade = smoothworldloddither(worldlodditherfactor(worldloddistance(selection.x, selection.y, camera1->o)));
+    if(fade < 1.0f && !worldlodfullready(selection.x, selection.y)) fade = 1.0f;
+    return fade;
+}
+
 void renderworldlods()
 {
     worldlodrendervertices = worldlodrendertriangles = worldlodrendertopfaces = worldlodrendersidefaces = 0;
@@ -1509,6 +1570,7 @@ void renderworldlods()
     bindworldlodtextures();
     LOCALPARAMF(loddebug, float(worldloddebug));
     int vertices = 0, triangles = 0, topfaces = 0, sidefaces = 0;
+    glDepthFunc(GL_LEQUAL);
     if(worldlodwireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     loopv(worldlodselections)
     {
@@ -1532,6 +1594,7 @@ void renderworldlods()
         gle::enabletexcoord0();
         gle::enablecolor();
         LOCALPARAM(lodmeshoffset, vec(origin));
+        LOCALPARAMF(lodfade, worldlodrenderfade(selection));
         glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
         const int indices = chunk.terrainindices + chunk.waterindices;
         vertices += chunk.vertices;
@@ -1541,6 +1604,7 @@ void renderworldlods()
         glde++;
     }
     if(worldlodwireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDepthFunc(GL_LESS);
     gle::disablevertex();
     gle::disablenormal();
     gle::disabletexcoord0();
@@ -1560,6 +1624,8 @@ void renderworldlods()
 static bool visibleworldlodwater(const worldlodselection &selection, worldlodchunk *&chunk, ivec &origin)
 {
     if(selection.active < 1) return false;
+    // While the octree is retained for the dither, keep its animated water as the sole liquid surface.
+    if(selection.active == 1 && worldlodselectionrequiresvoxel(selection) && worldlodfullready(selection.x, selection.y)) return false;
     const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
     if(cacheindex < 0) return false;
     chunk = &worldlodcache[cacheindex];
