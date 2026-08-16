@@ -1,5 +1,6 @@
 #include "game.h"
 #include "engine.h"
+#include "world.h"
 
 namespace game
 {
@@ -35,6 +36,22 @@ namespace game
         if(!cubecasecmp(name, "wandering") || !cubecasecmp(name, "wander")) return NPC_WANDERING;
         if(!cubecasecmp(name, "chase")) return NPC_CHASE;
         if(!cubecasecmp(name, "flee")) return NPC_FLEE;
+        return -1;
+    }
+
+    static int parsemodeltype(const char *name)
+    {
+        if(!cubecasecmp(name, "humanoid")) return NPC_MODEL_HUMANOID;
+        if(!cubecasecmp(name, "quadruped")) return NPC_MODEL_QUADRUPED;
+        return -1;
+    }
+
+    static int parsebiome(const char *name)
+    {
+        if(!cubecasecmp(name, "plains")) return WORLD_BIOME_PLAINS;
+        if(!cubecasecmp(name, "forest")) return WORLD_BIOME_FOREST;
+        if(!cubecasecmp(name, "desert")) return WORLD_BIOME_DESERT;
+        if(!cubecasecmp(name, "snow")) return WORLD_BIOME_SNOW;
         return -1;
     }
 
@@ -76,6 +93,60 @@ namespace game
         definition->fleedist = *fleedist;
     });
 
+    ICOMMAND(npcmodel, "ssfff", (char *id, char *type, float *radius, float *height, float *rootheight),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        const int modeltype = parsemodeltype(type);
+        if(!definition || modeltype < 0 || *radius <= 0 || *height <= 0 || *rootheight <= 0 || *rootheight >= *height)
+        {
+            conoutf(CON_ERROR, "invalid NPC model settings for %s", id[0] ? id : "<empty>");
+            return;
+        }
+        definition->modeltype = modeltype;
+        definition->radius = *radius;
+        definition->height = *height;
+        definition->rootheight = *rootheight;
+    });
+
+    ICOMMAND(npcnatural, "ssiif", (char *id, char *biome, int *groupmin, int *groupmax, float *chance),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        const int naturalbiome = parsebiome(biome);
+        if(!definition || naturalbiome < 0 || *groupmin <= 0 || *groupmax < *groupmin || *groupmax > 16 || *chance <= 0 || *chance > 1)
+        {
+            conoutf(CON_ERROR, "invalid natural spawn settings for NPC %s", id[0] ? id : "<empty>");
+            return;
+        }
+        definition->naturalbiome = naturalbiome;
+        definition->groupmin = *groupmin;
+        definition->groupmax = *groupmax;
+        definition->spawnchance = *chance;
+    });
+
+    ICOMMAND(npchitflee, "sffi", (char *id, float *speed, float *herdradius, int *duration),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        if(!definition || *speed < 1 || *herdradius < 0 || *duration <= 0)
+        {
+            conoutf(CON_ERROR, "invalid hit-flee settings for NPC %s", id[0] ? id : "<empty>");
+            return;
+        }
+        definition->fleespeed = *speed;
+        definition->herdradius = *herdradius;
+        definition->fleeonhitmillis = *duration;
+    });
+
+    ICOMMAND(npcdrop, "ssiif", (char *id, char *itemid, int *mincount, int *maxcount, float *chance),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        if(!definition || !itemid[0] || *mincount <= 0 || *maxcount < *mincount || *chance <= 0 || *chance > 1)
+        {
+            conoutf(CON_ERROR, "invalid drop settings for NPC %s", id[0] ? id : "<empty>");
+            return;
+        }
+        definition->drops.add(npcdropdefinition(itemid, *mincount, *maxcount, *chance));
+    });
+
     void loadnpcdefinitions()
     {
         clearnpcdefinitions();
@@ -88,13 +159,13 @@ namespace game
     struct npc : dynent
     {
         npcdefinition *definition;
-        int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext,
+        int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext, fleeuntil,
             renderlastmillis, staggeruntil, crawlstart, lastlimbhop, ragdollstart[6], ragdollend[6], partdetachedmillis[6], partlastblood[6];
         float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
         uint detachedparts;
-        bool frozen, wanderpaused, replicated;
+        bool frozen, wanderpaused, replicated, dropsspawned;
         int snapshotmillis, servertick, serverstateflags;
-        vec spawn, destination, serverposition, servervelocity;
+        vec spawn, destination, fleeorigin, serverposition, servervelocity;
         float serveryaw;
         physent *target;
         vector<characterhitbox> hitboxes;
@@ -102,17 +173,17 @@ namespace game
         npc(npcdefinition *definition, int instanceid)
             : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior), nextdecision(0),
               wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
-              renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
-              totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), replicated(false), snapshotmillis(0),
-              servertick(0),
-              serverstateflags(0), spawn(0, 0, 0), destination(0, 0, 0), serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL)
+              fleeuntil(0), renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
+              totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), replicated(false), dropsspawned(false),
+              snapshotmillis(0), servertick(0), serverstateflags(0), spawn(0, 0, 0), destination(0, 0, 0), fleeorigin(0, 0, 0),
+              serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
             maxspeed = definition->speed;
-            radius = xradius = yradius = 4.1f;
-            maxheight = eyeheight = 28.0f;
-            aboveeye = 2.0f;
+            radius = xradius = yradius = definition->radius;
+            maxheight = eyeheight = definition->height;
+            aboveeye = max(definition->height * 0.08f, 2.0f);
             loopi(6)
             {
                 ragdollstart[i] = ragdollend[i] = -1;
@@ -164,7 +235,7 @@ namespace game
         NUM_NPC_PARTS
     };
 
-    static const char * const npcparts[NUM_NPC_PARTS] =
+    static const char * const humanoidparts[NUM_NPC_PARTS] =
     {
         "torso", "head", "arm/left", "arm/right", "leg/left", "leg/right"
     };
@@ -174,12 +245,22 @@ namespace game
         NULL, "tag_head", "tag_left_arm", "tag_right_arm", "tag_left_leg", "tag_right_leg"
     };
 
+    static const char * const quadrupedparts[NUM_NPC_PARTS] =
+    {
+        "torso", "head", "leg/left_front", "leg/right_front", "leg/left_rear", "leg/right_rear"
+    };
+
+    static const char * const quadrupedtags[NUM_NPC_PARTS] =
+    {
+        NULL, "tag_head", "tag_left_leg_front", "tag_right_leg_front", "tag_left_leg_rear", "tag_right_leg_rear"
+    };
+
     static const char * const playerroot = "game/player";
     static const float HIP_HEIGHT = 11.25f;
     static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
     static vector<npc *> npcs;
     static vector<severedlimb *> severedlimbs;
-    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastnpcspawnattempt = 0;
+    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastnpcspawnattempt = 0, lastnaturalnpcspawnattempt = 0;
     static uint nextnpcattackrequest = 1;
 
     VARP(npcmaxdist, 1, 256, 4096);
@@ -221,12 +302,18 @@ namespace game
 
     static void npcmodelpath(const npcdefinition &definition, int part, string &path)
     {
-        formatstring(path, "%s/%s", definition.model, npcparts[part]);
+        const char * const *parts = definition.modeltype == NPC_MODEL_QUADRUPED ? quadrupedparts : humanoidparts;
+        formatstring(path, "%s/%s", definition.model, parts[part]);
     }
 
     static void humanoidmodelpath(const char *root, int part, string &path)
     {
-        formatstring(path, "%s/%s", root, npcparts[part]);
+        formatstring(path, "%s/%s", root, humanoidparts[part]);
+    }
+
+    static const char *npcparttag(const npcdefinition &definition, int part)
+    {
+        return definition.modeltype == NPC_MODEL_QUADRUPED ? quadrupedtags[part] : humanoidtags[part];
     }
 
     void preloadnpcs()
@@ -246,6 +333,7 @@ namespace game
         nextnpcid = 1;
         nextnpcattackrequest = 1;
         lastnpcspawnattempt = 0;
+        lastnaturalnpcspawnattempt = 0;
         cleardynentcache();
     }
 
@@ -341,7 +429,12 @@ namespace game
 
     static int npcremaininglegs(const npc &mob)
     {
-        int legs = 2;
+        int legs = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? 4 : 2;
+        if(mob.definition->modeltype == NPC_MODEL_QUADRUPED)
+        {
+            if(mob.detachedparts & (1U << HITBOX_LEFT_ARM)) --legs;
+            if(mob.detachedparts & (1U << HITBOX_RIGHT_ARM)) --legs;
+        }
         if(mob.detachedparts & (1U << HITBOX_LEFT_LEG)) --legs;
         if(mob.detachedparts & (1U << HITBOX_RIGHT_LEG)) --legs;
         return legs;
@@ -380,16 +473,24 @@ namespace game
 
     static void calcnpcpose(npc &mob, npcpose &pose)
     {
-        const int legs = npcremaininglegs(mob);
+        const bool quadruped = mob.definition->modeltype == NPC_MODEL_QUADRUPED;
+        const int legs = npcremaininglegs(mob), maximumlegs = quadruped ? 4 : 2;
         const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
-                    movement = clamp(gamespeed / max(STANDING_HEIGHT * 2.25f, 1.0f), 0.0f, 1.0f),
+                    movement = clamp(gamespeed / max(mob.definition->height * 2.25f, 1.0f), 0.0f, 1.0f),
                     stride = sinf(mob.renderstride) * movement,
                     smoothcrawl = legs ? 0.0f : clamp((lastmillis - mob.crawlstart) / 350.0f, 0.0f, 1.0f);
         pose.crawlprogress = smoothcrawl * smoothcrawl * (3.0f - 2.0f * smoothcrawl);
         pose.torsopitch = -90.0f * pose.crawlprogress;
         pose.headpitch = -30.0f * pose.crawlprogress;
         const bool zombiepose = !strcmp(mob.definition->id, "zombie") && legs > 0;
-        if(zombiepose)
+        if(quadruped)
+        {
+            pose.leftarmpitch = stride * 28.0f;
+            pose.rightarmpitch = -stride * 28.0f;
+            pose.leftlegpitch = -stride * 28.0f;
+            pose.rightlegpitch = stride * 28.0f;
+        }
+        else if(zombiepose)
         {
             pose.leftarmpitch = 80.0f - stride * 6.0f;
             pose.rightarmpitch = 80.0f + stride * 6.0f;
@@ -399,8 +500,11 @@ namespace game
             pose.leftarmpitch = -stride * 28.0f;
             pose.rightarmpitch = stride * 28.0f;
         }
-        pose.leftlegpitch = stride * 32.0f;
-        pose.rightlegpitch = -stride * 32.0f;
+        if(!quadruped)
+        {
+            pose.leftlegpitch = stride * 32.0f;
+            pose.rightlegpitch = -stride * 32.0f;
+        }
         const int attackelapsed = lastmillis - mob.lastattack;
         if(attackelapsed >= 0 && attackelapsed < CREATIVE_ARM_CYCLE)
         {
@@ -421,8 +525,8 @@ namespace game
             }
         }
 
-        float torsoheight = HIP_HEIGHT + fabsf(cosf(mob.renderstride)) * 0.45f * movement;
-        if(legs == 1)
+        float torsoheight = mob.definition->rootheight + fabsf(cosf(mob.renderstride)) * (quadruped ? 0.25f : 0.45f) * movement;
+        if(!quadruped && legs == 1)
         {
             const bool leftmissing = (mob.detachedparts & (1U << HITBOX_LEFT_LEG)) != 0;
             pose.torsoroll = (leftmissing ? -8.0f : 8.0f) * (0.65f + 0.35f * fabsf(sinf(mob.renderstride)));
@@ -440,6 +544,8 @@ namespace game
             pose.leftarmpitch += (leftarmtarget - pose.leftarmpitch) * pose.crawlprogress;
             pose.rightarmpitch += (rightarmtarget - pose.rightarmpitch) * pose.crawlprogress;
         }
+        else if(quadruped && legs < maximumlegs)
+            pose.torsoroll = ((mob.detachedparts & ((1U << HITBOX_LEFT_ARM) | (1U << HITBOX_LEFT_LEG))) ? -4.0f : 4.0f) * movement;
         pose.torsoorigin = mob.feetpos(torsoheight);
     }
 
@@ -467,14 +573,20 @@ namespace game
         npcpose pose;
         calcnpcpose(mob, pose);
         string torso;
-        humanoidmodelpath(mob.definition->model, NPC_PART_TORSO, torso);
-        if(modeltagposition(torso, humanoidtags[part], position, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll)) return true;
+        npcmodelpath(*mob.definition, NPC_PART_TORSO, torso);
+        if(modeltagposition(torso, npcparttag(*mob.definition, part), position, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll))
+            return true;
 
-        static const vec fallbackoffsets[NUM_NPC_PARTS] =
+        static const vec humanoidfallbacks[NUM_NPC_PARTS] =
         {
             vec(0, 0, 0), vec(0, 0, 12), vec(-6, 0, 10), vec(6, 0, 10), vec(-2, 0, 0), vec(2, 0, 0)
         };
-        position = vec(pose.torsoorigin).add(transformedmodelvector(fallbackoffsets[part], mob.yaw, pose.torsopitch, pose.torsoroll));
+        static const vec quadrupedfallbacks[NUM_NPC_PARTS] =
+        {
+            vec(0, 0, 0), vec(0, 9, 8), vec(-4, 7, 0), vec(4, 7, 0), vec(-4, -7, 0), vec(4, -7, 0)
+        };
+        const vec *fallbacks = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? quadrupedfallbacks : humanoidfallbacks;
+        position = vec(pose.torsoorigin).add(transformedmodelvector(fallbacks[part], mob.yaw, pose.torsopitch, pose.torsoroll));
         return true;
     }
 
@@ -546,11 +658,37 @@ namespace game
         npcpose pose;
         calcnpcpose(mob, pose);
         string torso;
-        humanoidmodelpath(mob.definition->model, NPC_PART_TORSO, torso);
+        npcmodelpath(*mob.definition, NPC_PART_TORSO, torso);
         vec origins[NUM_NPC_PARTS];
         bool found[NUM_NPC_PARTS] = { false };
-        modeltagpositions(torso, &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD], NUM_NPC_PARTS - NPC_PART_HEAD,
+        const char * const *tags = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? quadrupedtags : humanoidtags;
+        modeltagpositions(torso, &tags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD], NUM_NPC_PARTS - NPC_PART_HEAD,
                           pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
+
+        if(mob.definition->modeltype == NPC_MODEL_QUADRUPED)
+        {
+            origins[NPC_PART_TORSO] = pose.torsoorigin;
+            found[NPC_PART_TORSO] = true;
+            loopi(NUM_NPC_PARTS)
+            {
+                if(!found[i] || (i != NPC_PART_TORSO && mob.detachedparts & (1U << i))) continue;
+                float pitch = pose.torsopitch, roll = pose.torsoroll;
+                if(i == NPC_PART_HEAD) pitch = pose.headpitch;
+                else if(i == NPC_PART_LEFT_ARM) pitch = pose.leftarmpitch;
+                else if(i == NPC_PART_RIGHT_ARM) pitch = pose.rightarmpitch;
+                else if(i == NPC_PART_LEFT_LEG) pitch = pose.leftlegpitch;
+                else if(i == NPC_PART_RIGHT_LEG) pitch = pose.rightlegpitch;
+                string model;
+                npcmodelpath(*mob.definition, i, model);
+                ::model *geometry = loadmodel(model);
+                if(!geometry) continue;
+                vec center, radius;
+                geometry->collisionbox(center, radius);
+                mob.hitboxes.add(characterhitbox(vec(origins[i]).add(transformedmodelvector(center, mob.yaw, pitch, roll)),
+                                                  transformedmodelradius(radius, mob.yaw, pitch, roll), i));
+            }
+            return;
+        }
 
         if(!found[NPC_PART_HEAD]) origins[NPC_PART_HEAD] = humanoidoffset(pose.torsoorigin, mob.yaw, 0, 0, 12);
         if(!found[NPC_PART_LEFT_ARM]) origins[NPC_PART_LEFT_ARM] = humanoidoffset(pose.torsoorigin, mob.yaw, -6, 0, 10);
@@ -836,6 +974,38 @@ namespace game
         return item >= 0 && isinventorytool(item) ? getinventorytooldamage(item) : 1.0f;
     }
 
+    static void spawnlocalnpcdrops(npc &mob)
+    {
+        if(mob.dropsspawned || mob.replicated || !m_survival) return;
+        mob.dropsspawned = true;
+        const uint seed = worlddrophash(uint(mob.instanceid) ^ uint(max(lastmillis, 1)) * 0x9E3779B9U);
+        loopv(mob.definition->drops)
+        {
+            const npcdropdefinition &entry = mob.definition->drops[i];
+            const uint roll = worlddrophash(seed ^ uint(i + 1) * 0x85EBCA6BU);
+            if(float(roll & 0xFFFFU) / 65535.0f > entry.chance) continue;
+            const int item = getinventoryitemindex(entry.itemid);
+            if(item < 0) continue;
+            const int range = entry.maxcount - entry.mincount + 1, quantity = entry.mincount + int((roll >> 16) % uint(range));
+            addlocalitemdrop(item, quantity, mob.feetpos(), roll);
+        }
+    }
+
+    static void triggernpcherdflee(npc &mob, const vec &source)
+    {
+        if(mob.definition->fleeonhitmillis <= 0) return;
+        const float radius = mob.definition->herdradius * GAMEUNITSPERMETER, radiussquared = radius * radius;
+        loopv(npcs)
+        {
+            npc &candidate = *npcs[i];
+            if(candidate.state != CS_ALIVE || candidate.definition != mob.definition || candidate.o.squaredist(mob.o) > radiussquared) continue;
+            candidate.fleeorigin = source;
+            candidate.fleeuntil = lastmillis + candidate.definition->fleeonhitmillis;
+            candidate.target = player1;
+            candidate.wanderpaused = false;
+        }
+    }
+
     static void ragdollnpc(npc &mob, const vec &hitposition, const vec &impulse)
     {
         if(mob.state == CS_DEAD) return;
@@ -843,16 +1013,22 @@ namespace game
         npcpose pose;
         calcnpcpose(mob, pose);
         string torso;
-        humanoidmodelpath(mob.definition->model, NPC_PART_TORSO, torso);
+        npcmodelpath(*mob.definition, NPC_PART_TORSO, torso);
         vec origins[NUM_NPC_PARTS];
         bool found[NUM_NPC_PARTS] = { false };
-        modeltagpositions(torso, &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD], NUM_NPC_PARTS - NPC_PART_HEAD,
+        const char * const *tags = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? quadrupedtags : humanoidtags;
+        modeltagpositions(torso, &tags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD], NUM_NPC_PARTS - NPC_PART_HEAD,
                           pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
 
-        const vec fallbackoffsets[NUM_NPC_PARTS] =
+        const vec humanoidfallbacks[NUM_NPC_PARTS] =
         {
             vec(0, 0, 0), vec(0, 0, 12), vec(-6, 0, 10), vec(6, 0, 10), vec(-2, 0, 0), vec(2, 0, 0)
         };
+        const vec quadrupedfallbacks[NUM_NPC_PARTS] =
+        {
+            vec(0, 0, 0), vec(0, 9, 8), vec(-4, 7, 0), vec(4, 7, 0), vec(-4, -7, 0), vec(4, -7, 0)
+        };
+        const vec *fallbackoffsets = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? quadrupedfallbacks : humanoidfallbacks;
         for(int i = NPC_PART_HEAD; i < NUM_NPC_PARTS; ++i) if(!found[i])
             origins[i] = vec(pose.torsoorigin).add(transformedmodelvector(fallbackoffsets[i], mob.yaw, pose.torsopitch, pose.torsoroll));
 
@@ -890,13 +1066,16 @@ namespace game
                   leftshoulder = addvertex(origins[NPC_PART_LEFT_ARM], 2.0f),
                   rightshoulder = addvertex(origins[NPC_PART_RIGHT_ARM], 2.0f),
                   lefthip = addvertex(origins[NPC_PART_LEFT_LEG], 2.0f),
-                  righthip = addvertex(origins[NPC_PART_RIGHT_LEG], 2.0f);
+                  righthip = addvertex(origins[NPC_PART_RIGHT_LEG], 2.0f),
+                  bodytop = mob.definition->modeltype == NPC_MODEL_QUADRUPED
+                          ? addvertex(vec(pose.torsoorigin).addz(8.0f), 3.0f) : neck;
         const int core[] = { pelvis, neck, leftshoulder, rightshoulder, lefthip, righthip };
         loopi(int(sizeof(core) / sizeof(core[0]))) for(int j = i + 1; j < int(sizeof(core) / sizeof(core[0])); ++j)
             addlink(core[i], core[j]);
+        if(bodytop != neck) loopi(int(sizeof(core) / sizeof(core[0]))) addlink(bodytop, core[i]);
 
         mob.ragdollstart[NPC_PART_TORSO] = pelvis;
-        mob.ragdollend[NPC_PART_TORSO] = neck;
+        mob.ragdollend[NPC_PART_TORSO] = bodytop;
         mob.ragdollstart[NPC_PART_HEAD] = neck;
         mob.ragdollstart[NPC_PART_LEFT_ARM] = leftshoulder;
         mob.ragdollstart[NPC_PART_RIGHT_ARM] = rightshoulder;
@@ -951,6 +1130,7 @@ namespace game
         mob.stopmoving();
         mob.target = NULL;
         mob.hitboxes.setsize(0);
+        spawnlocalnpcdrops(mob);
         loopv(npcs) if(npcs[i]->target == &mob) npcs[i]->target = NULL;
         if(createcustomragdoll(&mob, positions.getbuf(), radii.getbuf(), positions.length(), links.getbuf(), links.length() / 2,
                                triangles.getbuf(), triangles.length() / 3, rotconstraints.getbuf(), rotconstraints.length()))
@@ -1133,6 +1313,7 @@ namespace game
         const vec impulse = strikeimpulse(camdir, damage);
         spawnblood(hitposition, false);
         hitmob->totalhealth = max(hitmob->totalhealth - damage, 0.0f);
+        triggernpcherdflee(*hitmob, player1->o);
         if(hitpart != HITBOX_TORSO)
         {
             hitmob->parthealth[hitpart] = max(hitmob->parthealth[hitpart] - damage, 0.0f);
@@ -1194,7 +1375,12 @@ namespace game
     static void updatebehavior(npc &mob)
     {
         const int previousbehavior = mob.behavior;
-        if(mob.attitude == NPC_AGGRESSIVE)
+        if(lastmillis < mob.fleeuntil)
+        {
+            mob.behavior = NPC_FLEE;
+            mob.target = player1;
+        }
+        else if(mob.attitude == NPC_AGGRESSIVE)
         {
             const float radius = mob.definition->aggrodist * GAMEUNITSPERMETER;
             mob.target = player1 && player1->state == CS_ALIVE && mob.o.squaredist(player1->o) <= radius * radius ? player1 : NULL;
@@ -1224,9 +1410,10 @@ namespace game
             if(mob.nextdecision <= lastmillis || delta.squaredlen() <= mob.radius * mob.radius) beginwanderpause(mob);
         }
         else if(mob.behavior == NPC_CHASE && mob.target) mob.destination = mob.target->feetpos();
-        else if(mob.behavior == NPC_FLEE && mob.target)
+        else if(mob.behavior == NPC_FLEE && (mob.target || lastmillis < mob.fleeuntil))
         {
-            vec away = vec(mob.o).sub(mob.target->o);
+            const vec &source = lastmillis < mob.fleeuntil ? mob.fleeorigin : mob.target->o;
+            vec away = vec(mob.o).sub(source);
             away.z = 0;
             if(away.squaredlen() < 0.01f) vecfromyawpitch(mob.yaw + 180, 0, 1, 0, away);
             else away.normalize();
@@ -1241,7 +1428,10 @@ namespace game
                           : clamp(lastmillis - mob.lastmovementmillis, 0, 100);
         const int legs = npcremaininglegs(mob);
         mob.lastmovementmillis = lastmillis;
-        mob.maxspeed = mob.definition->speed * (legs == 1 ? 0.58f : !legs ? 0.34f : 1.0f);
+        const int maximumlegs = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? 4 : 2;
+        const float limbfactor = !legs ? 0.34f : legs < maximumlegs ? 0.58f : 1.0f,
+                    fleefactor = mob.behavior == NPC_FLEE ? mob.definition->fleespeed : 1.0f;
+        mob.maxspeed = mob.definition->speed * limbfactor * fleefactor;
         if(lastmillis < mob.staggeruntil)
         {
             mob.stopmoving();
@@ -1288,7 +1478,7 @@ namespace game
             }
             else if(mob.physstate >= PHYS_SLOPE) mob.move = 0;
         }
-        else if(legs == 2 && mob.blocked && mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastjump >= 400)
+        else if(legs == maximumlegs && mob.blocked && mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastjump >= 400)
         {
             mob.jumping = true;
             mob.lastjump = lastmillis;
@@ -1485,6 +1675,101 @@ namespace game
         cleardynentcache();
     }
 
+    static int livinglocalnaturalnpcs(const npcdefinition &definition)
+    {
+        int count = 0;
+        loopv(npcs) if(npcs[i]->state != CS_DEAD && npcs[i]->definition == &definition) ++count;
+        return count;
+    }
+
+    static npcdefinition *localnaturalnpcdefinition(uint seed)
+    {
+        int count = 0;
+        loopi(numnpcdefinitions()) if(getnpcdefinition(i)->naturalbiome >= 0) ++count;
+        if(!count) return NULL;
+        int selected = int(seed % uint(count));
+        loopi(numnpcdefinitions()) if(getnpcdefinition(i)->naturalbiome >= 0 && selected-- == 0) return getnpcdefinition(i);
+        return NULL;
+    }
+
+    static bool localnaturalspawnposition(const npcdefinition &definition, worldgenerator &generator, vec &position)
+    {
+        const float worldlimit = float(getworldsize() - 1);
+        if(position.x < 1 || position.y < 1 || position.x >= worldlimit || position.y >= worldlimit) return false;
+        vec probe(position.x, position.y, min(player1->o.z + 128.0f, worldlimit));
+        const float grounddistance = raycube(probe, vec(0, 0, -1), probe.z, RAY_CLIPMAT | RAY_POLY | RAY_SKIPFIRST);
+        if(grounddistance < 0 || grounddistance >= probe.z) return false;
+        position.z = probe.z - grounddistance + definition.height + 0.1f;
+        if((lookupmaterial(vec(position).subz(definition.height))&MATF_VOLUME) == MAT_WATER) return false;
+
+        vec absolute(position);
+        worldpositiontoabsolute(absolute);
+        const int blockx = int(floorf(absolute.x / GAMEUNITSPERMETER)), blocky = int(floorf(absolute.y / GAMEUNITSPERMETER)),
+                  height = generator.height(blockx, blocky);
+        if(generator.biome(blockx, blocky, height) != definition.naturalbiome) return false;
+        const float skydistance = worldlimit - position.z;
+        if(skydistance > 0)
+        {
+            const float obstruction = raycube(position, vec(0, 0, 1), skydistance, RAY_CLIPMAT | RAY_POLY | RAY_SKIPFIRST);
+            if(obstruction >= 0 && obstruction < skydistance) return false;
+        }
+        return true;
+    }
+
+    static void tryspawnlocalnaturalnpc()
+    {
+        if(!m_survival || editmode || !player1 || player1->state != CS_ALIVE ||
+           lastmillis - lastnaturalnpcspawnattempt < npcspawnmillis) return;
+        lastnaturalnpcspawnattempt = lastmillis;
+        const uint seed = worlddrophash(uint(max(lastmillis, 1)) ^ uint(nextnpcid) * 0xC2B2AE35U);
+        npcdefinition *definition = localnaturalnpcdefinition(worlddrophash(seed ^ 0x27D4EB2FU));
+        const uint spawnroll = worlddrophash(seed ^ 0x165667B1U);
+        if(!definition || float(spawnroll & 0xFFFFU) / 65535.0f > definition->spawnchance) return;
+        const int simulationdistanceblocks = getnpcsimulationmaxdist(), cap = max(definition->groupmax, simulationdistanceblocks / 16);
+        if(livinglocalnaturalnpcs(*definition) + definition->groupmin > cap) return;
+
+        const int wanted = min(definition->groupmin + int((seed >> 24) % uint(definition->groupmax - definition->groupmin + 1)),
+                               cap - livinglocalnaturalnpcs(*definition));
+        const float simulationdistance = simulationdistanceblocks * GAMEUNITSPERMETER,
+                    minimumdistance = min(20.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
+                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
+                    angle = float(seed % 36000U) * RAD / 100.0f;
+        const vec anchor = vec(player1->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
+        worldgenerator generator(getworldseed());
+        vector<npc *> group;
+        for(int attempt = 0; attempt < wanted * 5 && group.length() < wanted; ++attempt)
+        {
+            const uint memberseed = worlddrophash(seed ^ uint(attempt + 1) * 0x9E3779B9U);
+            const float memberangle = float(memberseed % 36000U) * RAD / 100.0f,
+                        memberdistance = attempt ? (2.0f + float((memberseed >> 16) % 500U) / 100.0f) * GAMEUNITSPERMETER : 0;
+            vec position = vec(anchor).add(vec(cosf(memberangle) * memberdistance, sinf(memberangle) * memberdistance, 0));
+            if(!localnaturalspawnposition(*definition, generator, position) ||
+               position.squaredist(player1->o) > simulationdistance * simulationdistance)
+                continue;
+            bool overlaps = false;
+            const float separation = definition->radius * 2.0f + 1.0f;
+            loopv(group) if(group[i]->o.squaredist(position) < separation * separation) { overlaps = true; break; }
+            if(overlaps) continue;
+            npc *mob = new npc(definition, nextnpcid + group.length());
+            mob->o = position;
+            mob->yaw = float(worlddrophash(memberseed ^ 0x165667B1U) % 36000U) / 100.0f;
+            if(!entinmap(mob, true)) { delete mob; continue; }
+            mob->spawn = mob->destination = mob->o;
+            beginwanderpause(*mob);
+            updatenpchitboxes(*mob);
+            group.add(mob);
+        }
+        if(group.length() < definition->groupmin)
+        {
+            group.deletecontents();
+            return;
+        }
+        nextnpcid += group.length();
+        loopv(group) npcs.add(group[i]);
+        group.setsize(0);
+        cleardynentcache();
+    }
+
     void updatenpcs()
     {
         if(multiplayer(false))
@@ -1541,6 +1826,7 @@ namespace game
         if(removed) cleardynentcache();
 
         tryspawnlocalaggressivenpc();
+        tryspawnlocalnaturalnpc();
 
         const float simulationdistance = getnpcsimulationmaxdist() * GAMEUNITSPERMETER;
         loopv(npcs)
@@ -1636,8 +1922,8 @@ namespace game
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
         const int legs = npcremaininglegs(mob);
         const float speed = horizontalmeterspersecond(&mob),
-                    gamespeed = speed * GAMEUNITSPERMETER,
-                    gaitcycletravel = legs == 1 ? 10.0f : !legs ? 7.0f : STANDING_HEIGHT * 0.75f;
+                     gamespeed = speed * GAMEUNITSPERMETER,
+                     gaitcycletravel = legs == 1 ? 10.0f : !legs ? 7.0f : mob.definition->height * 0.75f;
         if(mob.renderlastmillis < 0 || lastmillis < mob.renderlastmillis) mob.renderlastmillis = lastmillis;
         const int elapsed = min(lastmillis - mob.renderlastmillis, 100);
         mob.renderlastmillis = lastmillis;
@@ -1649,7 +1935,8 @@ namespace game
         vec origins[NUM_NPC_PARTS];
         bool found[NUM_NPC_PARTS] = { false };
         rendermodel(models[NPC_PART_TORSO], ANIM_MAPMODEL | ANIM_LOOP, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll, flags, &mob);
-        modeltagpositions(models[NPC_PART_TORSO], &humanoidtags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD],
+        const char * const *tags = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? quadrupedtags : humanoidtags;
+        modeltagpositions(models[NPC_PART_TORSO], &tags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD],
                           NUM_NPC_PARTS - NPC_PART_HEAD, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
         if(found[NPC_PART_HEAD] && !(mob.detachedparts & (1U << HITBOX_HEAD)))
             rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw, pose.headpitch, pose.torsoroll, flags,

@@ -241,15 +241,16 @@ namespace server
     {
         uint id, detachedparts;
         npcdefinition *definition;
-        vec o, velocity, spawn, destination;
+        vec o, velocity, spawn, destination, fleeorigin;
         float yaw, health, falldistance, parthealth[NUM_HUMANOID_HITBOXES];
-        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis;
+        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis, fleeuntil;
         bool paused, frozen, attacking, airborne;
 
         servernpc(uint id, npcdefinition *definition)
-            : id(id), detachedparts(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0), yaw(0),
+            : id(id), detachedparts(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0),
+              fleeorigin(0, 0, 0), yaw(0),
               health(definition->health), falldistance(0), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis),
-              lastattack(-1000), deathmillis(0), paused(true), frozen(false), attacking(false), airborne(false)
+              lastattack(-1000), deathmillis(0), fleeuntil(0), paused(true), frozen(false), attacking(false), airborne(false)
         {
             parthealth[HITBOX_TORSO] = definition->health;
             loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
@@ -303,7 +304,7 @@ namespace server
     static vec servermapspawn;
     static int servermapspawnyaw = 0, servermapspawnpitch = 0;
     static uint nextnpcid = 1;
-    static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0;
+    static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0, lastnaturalnpcspawnattempt = 0;
     static vector<serverdrop *> serverdrops;
     static vector<serverfallingblock *> serverfallingblocks;
     static vector<ivec> serverfallblockchecks;
@@ -2471,8 +2472,10 @@ namespace server
         int flags = mob.deathmillis ? NPC_STATE_DEAD : 0;
         if(mob.frozen) flags |= NPC_STATE_FROZEN;
         if(mob.attacking) flags |= NPC_STATE_ATTACKING;
-        if((mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG))) ==
-           ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG))) flags |= NPC_STATE_CRAWLING;
+        const uint legmask = mob.definition->modeltype == NPC_MODEL_QUADRUPED
+                           ? (1U << HITBOX_LEFT_ARM) | (1U << HITBOX_RIGHT_ARM) | (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG)
+                           : (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG);
+        if((mob.detachedparts & legmask) == legmask) flags |= NPC_STATE_CRAWLING;
         return flags;
     }
 
@@ -2527,23 +2530,31 @@ namespace server
         while(servernpcs.length()) removeservernpc(servernpcs.length() - 1);
         nextnpcid = 1;
         lastnpcspawnattempt = 0;
+        lastnaturalnpcspawnattempt = 0;
     }
 
-    static bool servernpcclearance(const vec &position, uint ignore = 0)
+    static bool servernpcclearance(const vec &position, const npcdefinition &definition, uint ignore = 0)
     {
-        static const float offsets[3] = { -4.0f, 0.0f, 4.0f };
+        const float offsets[3] = { -definition.radius, 0.0f, definition.radius };
+        const float feet = position.z - definition.height, heights[3] = { feet + 1.0f, feet + definition.height * 0.5f, position.z - 1.0f };
         loopi(3) loopj(3)
         {
-            vec sample(position.x + offsets[i], position.y + offsets[j], position.z - 27.0f);
-            if(serverblocksolid(serverblockat(sample)) || serverblocksolid(serverblockat(sample.addz(16.0f)))) return false;
+            loopk(3) if(serverblocksolid(serverblockat(vec(position.x + offsets[i], position.y + offsets[j], heights[k])))) return false;
         }
         loopv(servernpcs)
-            if(servernpcs[i]->id != ignore && !servernpcs[i]->deathmillis && servernpcs[i]->o.squaredist(position) < 100.0f) return false;
+            if(servernpcs[i]->id != ignore && !servernpcs[i]->deathmillis)
+            {
+                const float combined = servernpcs[i]->definition->radius + definition.radius + 1.0f,
+                            otherfeet = servernpcs[i]->o.z - servernpcs[i]->definition->height;
+                const float dx = servernpcs[i]->o.x - position.x, dy = servernpcs[i]->o.y - position.y;
+                if(dx * dx + dy * dy < combined * combined &&
+                   feet < servernpcs[i]->o.z && position.z > otherfeet) return false;
+            }
         loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->hasposition)
         {
             const float dx = clients[i]->o.x - position.x, dy = clients[i]->o.y - position.y,
-                        npcfeet = position.z - 28.0f;
-            if(dx * dx + dy * dy < 67.24f && clients[i]->o.z < position.z + 2.0f && clients[i]->o.z + 30.0f > npcfeet) return false;
+                        combined = definition.radius + 4.1f, npcfeet = position.z - definition.height;
+            if(dx * dx + dy * dy < combined * combined && clients[i]->o.z < position.z + 2.0f && clients[i]->o.z + 30.0f > npcfeet) return false;
         }
         return true;
     }
@@ -2553,8 +2564,9 @@ namespace server
         loopv(servernpcs) if(!servernpcs[i]->deathmillis)
         {
             const servernpc &mob = *servernpcs[i];
-            const float dx = feet.x - mob.o.x, dy = feet.y - mob.o.y, npcfeet = mob.o.z - 28.0f;
-            if(dx * dx + dy * dy < 67.24f && feet.z < mob.o.z + 2.0f && feet.z + 30.0f > npcfeet) return true;
+            const float dx = feet.x - mob.o.x, dy = feet.y - mob.o.y, combined = mob.definition->radius + 4.1f,
+                        npcfeet = mob.o.z - mob.definition->height;
+            if(dx * dx + dy * dy < combined * combined && feet.z < mob.o.z + 2.0f && feet.z + 30.0f > npcfeet) return true;
         }
         return false;
     }
@@ -2567,8 +2579,8 @@ namespace server
         vec position = vec(owner.o).madd(direction, SERVER_WORLD_BLOCK_SIZE * 3.0f);
         position.x = floorf(position.x / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f;
         position.y = floorf(position.y / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f;
-        position.z = servergroundheight(position.x, position.y) + 28.0f;
-        if(position.z < 28.0f || position.z > 8191.0f || !servernpcclearance(position) ||
+        position.z = servergroundheight(position.x, position.y) + definition->height;
+        if(position.z < definition->height || position.z > 8191.0f || !servernpcclearance(position, *definition) ||
            !serverlineofsight(vec(owner.o).addz(28.0f), position)) return NULL;
         servernpc *mob = new servernpc(nextnpcid++, definition);
         mob->o = mob->spawn = mob->destination = position;
@@ -2625,10 +2637,10 @@ namespace server
                     angle = float(seed % 36000U) * RAD / 100.0f;
         vec position = vec(owner->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
         if(position.x < 1 || position.y < 1 || position.x >= SERVER_WORLD_MAP_SIZE - 1 || position.y >= SERVER_WORLD_MAP_SIZE - 1) return;
-        position.z = servergroundheight(position.x, position.y) + 28.0f;
-        if(position.z < 28.0f || position.z >= SERVER_WORLD_MAP_SIZE || position.squaredist(owner->o) > simulationdistance * simulationdistance ||
-           !servernpcclearance(position)) return;
-        if(servernaturalwaterat(vec(position).subz(28.0f))) return;
+        position.z = servergroundheight(position.x, position.y) + definition->height;
+        if(position.z < definition->height || position.z >= SERVER_WORLD_MAP_SIZE ||
+           position.squaredist(owner->o) > simulationdistance * simulationdistance || !servernpcclearance(position, *definition)) return;
+        if(servernaturalwaterat(vec(position).subz(definition->height))) return;
         const int light = serveraggressivespawnlightlevel(position);
         if(light > 3) return;
 
@@ -2637,6 +2649,84 @@ namespace server
         mob->yaw = float(worlddrophash(seed ^ 0x27D4EB2FU) % 36000U) / 100.0f;
         mob->pauseuntil = totalmillis + 600;
         servernpcs.add(mob);
+    }
+
+    static int livingservernaturalnpcs(const npcdefinition &definition)
+    {
+        int count = 0;
+        loopv(servernpcs) if(!servernpcs[i]->deathmillis && servernpcs[i]->definition == &definition) ++count;
+        return count;
+    }
+
+    static npcdefinition *servernaturalnpcdefinition(uint seed)
+    {
+        int count = 0;
+        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->naturalbiome >= 0) ++count;
+        if(!count) return NULL;
+        int selected = int(seed % uint(count));
+        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->naturalbiome >= 0 && selected-- == 0)
+            return game::getnpcdefinition(i);
+        return NULL;
+    }
+
+    static bool servernaturalspawnposition(const npcdefinition &definition, vec &position)
+    {
+        if(position.x < 1 || position.y < 1 || position.x >= SERVER_WORLD_MAP_SIZE - 1 || position.y >= SERVER_WORLD_MAP_SIZE - 1) return false;
+        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
+        const int blockx = serverfloordiv(int(floorf(position.x)), SERVER_WORLD_BLOCK_SIZE),
+                  blocky = serverfloordiv(int(floorf(position.y)), SERVER_WORLD_BLOCK_SIZE), height = serverworldgenerator->height(blockx, blocky);
+        if(serverworldgenerator->biome(blockx, blocky, height) != definition.naturalbiome) return false;
+        position.z = servergroundheight(position.x, position.y) + definition.height;
+        if(position.z < definition.height || position.z >= SERVER_WORLD_MAP_SIZE ||
+           servernaturalwaterat(vec(position).subz(definition.height)) || !servernpcclearance(position, definition)) return false;
+        return serverlineofsight(position, vec(position.x, position.y, SERVER_WORLD_MAP_SIZE - 1.0f));
+    }
+
+    static void tryspawnservernaturalnpc()
+    {
+        if(servercreative() || totalmillis - lastnaturalnpcspawnattempt < servernpcspawnmillis || clients.empty()) return;
+        lastnaturalnpcspawnattempt = totalmillis;
+        const uint seed = worlddrophash(uint(max(totalmillis, 1)) ^ nextnpcid * 0xC2B2AE35U);
+        npcdefinition *definition = servernaturalnpcdefinition(worlddrophash(seed ^ 0x27D4EB2FU));
+        const uint spawnroll = worlddrophash(seed ^ 0x165667B1U);
+        if(!definition || float(spawnroll & 0xFFFFU) / 65535.0f > definition->spawnchance) return;
+        clientinfo *owner = NULL;
+        const int start = int(seed % uint(clients.length()));
+        loopi(clients.length())
+        {
+            clientinfo *candidate = clients[(start + i) % clients.length()];
+            if(candidate && candidate->connected && candidate->worldready && candidate->hasposition && !candidate->dead)
+            {
+                owner = candidate;
+                break;
+            }
+        }
+        if(!owner) return;
+        const int cap = max(definition->groupmax, serversimulationmaxdist / 16), living = livingservernaturalnpcs(*definition);
+        if(living + definition->groupmin > cap) return;
+        const int wanted = min(definition->groupmin + int((seed >> 24) % uint(definition->groupmax - definition->groupmin + 1)), cap - living);
+        const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
+                    minimumdistance = min(20.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
+                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
+                    angle = float(seed % 36000U) * RAD / 100.0f;
+        const vec anchor = vec(owner->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
+        const int first = servernpcs.length();
+        for(int attempt = 0; attempt < wanted * 5 && servernpcs.length() - first < wanted; ++attempt)
+        {
+            const uint memberseed = worlddrophash(seed ^ uint(attempt + 1) * 0x9E3779B9U);
+            const float memberangle = float(memberseed % 36000U) * RAD / 100.0f,
+                        memberdistance = attempt ? (2.0f + float((memberseed >> 16) % 500U) / 100.0f) * GAMEUNITSPERMETER : 0;
+            vec position = vec(anchor).add(vec(cosf(memberangle) * memberdistance, sinf(memberangle) * memberdistance, 0));
+            if(!servernaturalspawnposition(*definition, position) || position.squaredist(owner->o) > simulationdistance * simulationdistance)
+                continue;
+            servernpc *mob = new servernpc(nextnpcid++, definition);
+            mob->o = mob->spawn = mob->destination = position;
+            mob->yaw = float(worlddrophash(memberseed ^ 0x165667B1U) % 36000U) / 100.0f;
+            mob->pauseuntil = totalmillis + 600;
+            servernpcs.add(mob);
+        }
+        if(servernpcs.length() - first >= definition->groupmin) return;
+        while(servernpcs.length() > first) delete servernpcs.remove(servernpcs.length() - 1);
     }
 
     static bool serverraybox(const vec &origin, const vec &direction, const vec &minimum, const vec &maximum, float &distance)
@@ -2661,8 +2751,31 @@ namespace server
 
     static void servernpchitbox(const servernpc &mob, int part, vec &center, vec &radius)
     {
-        const float feet = mob.o.z - 28.0f, torso = feet + 11.25f, cosine = cosf(RAD * mob.yaw), sine = sinf(RAD * mob.yaw);
-        const vec lateral(cosine, sine, 0);
+        const float feet = mob.o.z - mob.definition->height, torso = feet + mob.definition->rootheight,
+                    cosine = cosf(RAD * mob.yaw), sine = sinf(RAD * mob.yaw);
+        const vec lateral(cosine, sine, 0), forward(-sine, cosine, 0);
+        if(mob.definition->modeltype == NPC_MODEL_QUADRUPED)
+        {
+            switch(part)
+            {
+                case HITBOX_HEAD:
+                    center = vec(mob.o).madd(forward, 11.0f).addz(-4.5f);
+                    radius = vec(4.5f, 4.5f, 4.5f);
+                    break;
+                case HITBOX_LEFT_ARM: case HITBOX_RIGHT_ARM: case HITBOX_LEFT_LEG: case HITBOX_RIGHT_LEG:
+                    center = vec(mob.o).madd(forward, part <= HITBOX_RIGHT_ARM ? 7.0f : -7.0f)
+                                          .madd(lateral, part == HITBOX_LEFT_ARM || part == HITBOX_LEFT_LEG ? -4.0f : 4.0f);
+                    center.z = feet + 6.0f;
+                    radius = vec(2, 2, 6);
+                    break;
+                default:
+                    center = vec(mob.o).addz(-8.0f);
+                    radius = vec(fabsf(forward.x) * 9.0f + fabsf(lateral.x) * 6.0f,
+                                 fabsf(forward.y) * 9.0f + fabsf(lateral.y) * 6.0f, 5.0f);
+                    break;
+            }
+            return;
+        }
         switch(part)
         {
             case HITBOX_HEAD: center = vec(mob.o.x, mob.o.y, torso + 16.0f); radius = vec(4, 4, 4); break;
@@ -2709,6 +2822,62 @@ namespace server
     static float servernpcpartmultiplier(int part)
     {
         return part == HITBOX_HEAD ? 2.0f : part == HITBOX_TORSO ? 1.0f : 0.75f;
+    }
+
+    static void addservernpcdrop(int item, int count, const vec &origin, uint spreadseed)
+    {
+        if(item < 0 || count <= 0) return;
+        while(serverdrops.length() >= maxdrop) removeserverdrop(0);
+        const uint hash = worlddrophash(spreadseed), anglehash = worlddrophash(hash ^ 0x9E3779B9U);
+        const float angle = float(anglehash % 36000U) * RAD / 100.0f, radius = 1.5f + float(hash % 350U) / 100.0f;
+        serverdrop *drop = new serverdrop;
+        if(!nextdropid || nextdropid > uint(INT_MAX)) nextdropid = 1;
+        drop->id = nextdropid++;
+        drop->source = -1;
+        drop->item = item;
+        drop->count = count;
+        drop->created = max(totalmillis, 1);
+        drop->o = vec(origin).add(vec(cosf(angle) * radius, sinf(angle) * radius, 3.0f));
+        serverdrops.add(drop);
+        broadcastdropspawn(*drop);
+    }
+
+    static void dropservernpcloot(servernpc &mob)
+    {
+        const uint seed = worlddrophash(mob.id ^ uint(max(totalmillis, 1)) * 0x9E3779B9U);
+        loopv(mob.definition->drops)
+        {
+            const npcdropdefinition &entry = mob.definition->drops[i];
+            const uint roll = worlddrophash(seed ^ uint(i + 1) * 0x85EBCA6BU);
+            if(float(roll & 0xFFFFU) / 65535.0f > entry.chance) continue;
+            const int item = getinventoryitemindex(entry.itemid);
+            if(item < 0) continue;
+            const int range = entry.maxcount - entry.mincount + 1, quantity = entry.mincount + int((roll >> 16) % uint(range));
+            addservernpcdrop(item, quantity, vec(mob.o).subz(mob.definition->height), roll);
+        }
+    }
+
+    static void killservernpc(servernpc &mob, int part, const vec &position, const vec &impulse)
+    {
+        if(mob.deathmillis) return;
+        mob.deathmillis = max(totalmillis, 1);
+        mob.velocity = vec(0, 0, 0);
+        dropservernpcloot(mob);
+        broadcastnpcevent(mob, NPC_EVENT_DEATH, part, position, impulse);
+    }
+
+    static void triggerservernpcherdflee(servernpc &mob, const vec &source)
+    {
+        if(mob.definition->fleeonhitmillis <= 0) return;
+        const float radius = mob.definition->herdradius * GAMEUNITSPERMETER, radiussquared = radius * radius;
+        loopv(servernpcs)
+        {
+            servernpc &candidate = *servernpcs[i];
+            if(candidate.deathmillis || candidate.definition != mob.definition || candidate.o.squaredist(mob.o) > radiussquared) continue;
+            candidate.fleeorigin = source;
+            candidate.fleeuntil = totalmillis + candidate.definition->fleeonhitmillis;
+            candidate.paused = false;
+        }
     }
 
     static void handleservernpcattack(clientinfo &ci, uint requestid, uint npcid, int claimedpart)
@@ -2774,6 +2943,7 @@ namespace server
             sendinventory(ci);
         }
         hit->health = max(hit->health - damage, 0.0f);
+        triggerservernpcherdflee(*hit, vec(ci.o).addz(28.0f));
         bool detached = false;
         if(hitpart != HITBOX_TORSO)
         {
@@ -2787,11 +2957,7 @@ namespace server
         vec impulse(direction);
         impulse.mul(16.0f + min(damage, 12.0f) * 3.0f);
         if(hit->health <= 0)
-        {
-            hit->deathmillis = totalmillis;
-            hit->velocity = vec(0, 0, 0);
-            broadcastnpcevent(*hit, NPC_EVENT_DEATH, hitpart, hitposition, impulse);
-        }
+            killservernpc(*hit, hitpart, hitposition, impulse);
         else broadcastnpcevent(*hit, detached ? NPC_EVENT_DISMEMBER : NPC_EVENT_DAMAGE, hitpart, hitposition, impulse);
     }
 
@@ -2820,18 +2986,14 @@ namespace server
         mob.parthealth[HITBOX_TORSO] = max(mob.parthealth[HITBOX_TORSO] - damage, 0.0f);
         const vec impact = mob.o, impulse(0, 0, -min(45.0f, 12.0f + damage * 2.0f));
         if(mob.health <= 0)
-        {
-            mob.deathmillis = totalmillis;
-            mob.velocity = vec(0, 0, 0);
-            broadcastnpcevent(mob, NPC_EVENT_DEATH, HITBOX_TORSO, impact, impulse);
-        }
+            killservernpc(mob, HITBOX_TORSO, impact, impulse);
         else broadcastnpcevent(mob, NPC_EVENT_DAMAGE, HITBOX_TORSO, impact, impulse);
     }
 
     static void updateservernpcfall(servernpc &mob, int elapsed)
     {
-        const float feet = mob.o.z - 28.0f, ground = servergroundheight(mob.o.x, mob.o.y);
-        if(servernaturalwaterat(vec(mob.o).subz(28.0f))) mob.falldistance = 0;
+        const float feet = mob.o.z - mob.definition->height, ground = servergroundheight(mob.o.x, mob.o.y);
+        if(servernaturalwaterat(vec(mob.o).subz(mob.definition->height))) mob.falldistance = 0;
         if(!mob.airborne && feet <= ground + 0.1f)
         {
             mob.velocity.z = 0;
@@ -2848,7 +3010,7 @@ namespace server
             return;
         }
         mob.falldistance = min(mob.falldistance + max(feet - ground, 0.0f), float(1<<13));
-        mob.o.z = ground + 28.0f;
+        mob.o.z = ground + mob.definition->height;
         mob.velocity.z = 0;
         mob.airborne = false;
         damageservernpcfall(mob);
@@ -2873,14 +3035,16 @@ namespace server
         updateservernpcfall(mob, elapsed);
         if(mob.deathmillis) return;
         clientinfo *target = NULL;
-        if(mob.definition->attitude == NPC_AGGRESSIVE)
+        const bool forcedflee = totalmillis < mob.fleeuntil;
+        if(!forcedflee && mob.definition->attitude == NPC_AGGRESSIVE)
             target = nearestservernpcplayer(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
-        else if(mob.definition->attitude == NPC_SCARED)
+        else if(!forcedflee && mob.definition->attitude == NPC_SCARED)
             target = nearestservernpcplayer(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
-        if(target)
+        if(forcedflee || target)
         {
-            vec targetposition = vec(target->o).addz(28.0f), offset;
-            if(mob.definition->attitude == NPC_SCARED)
+            const vec targetposition = target ? vec(target->o).addz(28.0f) : mob.fleeorigin;
+            vec offset;
+            if(forcedflee || mob.definition->attitude == NPC_SCARED)
             {
                 offset = vec(mob.o).sub(targetposition);
                 offset.z = 0;
@@ -2922,19 +3086,23 @@ namespace server
         direction.normalize();
         mob.yaw = fmodf(-atan2f(direction.x, direction.y) / RAD + 360.0f, 360.0f);
         float speed = mob.definition->speed;
-        const uint missinglegs = mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG));
-        if(missinglegs) speed *= missinglegs == ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG)) ? 0.34f : 0.58f;
+        const uint legmask = mob.definition->modeltype == NPC_MODEL_QUADRUPED
+                           ? (1U << HITBOX_LEFT_ARM) | (1U << HITBOX_RIGHT_ARM) | (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG)
+                           : (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG),
+                   missinglegs = mob.detachedparts & legmask;
+        if(missinglegs) speed *= missinglegs == legmask ? 0.34f : 0.58f;
+        if(forcedflee || (mob.definition->attitude == NPC_SCARED && target)) speed *= mob.definition->fleespeed;
         mob.velocity.x = direction.x * speed;
         mob.velocity.y = direction.y * speed;
         vec next = vec(mob.o).madd(vec(mob.velocity.x, mob.velocity.y, 0), elapsed / 1000.0f);
-        const float ground = servergroundheight(next.x, next.y), oldground = mob.o.z - 28.0f;
+        const float ground = servergroundheight(next.x, next.y), oldground = mob.o.z - mob.definition->height;
         if(!mob.airborne && fabsf(ground - oldground) <= SERVER_WORLD_BLOCK_SIZE &&
-           servernpcclearance(vec(next.x, next.y, ground + 28.0f), mob.id))
+           servernpcclearance(vec(next.x, next.y, ground + mob.definition->height), *mob.definition, mob.id))
         {
-            next.z = ground + 28.0f;
+            next.z = ground + mob.definition->height;
             mob.o = next;
         }
-        else if(ground < oldground - SERVER_WORLD_BLOCK_SIZE && servernpcclearance(vec(next.x, next.y, mob.o.z), mob.id))
+        else if(ground < oldground - SERVER_WORLD_BLOCK_SIZE && servernpcclearance(vec(next.x, next.y, mob.o.z), *mob.definition, mob.id))
         {
             mob.o.x = next.x;
             mob.o.y = next.y;
@@ -2984,6 +3152,7 @@ namespace server
     static void updateservernpcs()
     {
         tryspawnserveraggressivenpc();
+        tryspawnservernaturalnpc();
         const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
                     existencedistance = servernpcmaxdist * GAMEUNITSPERMETER;
         for(int i = servernpcs.length() - 1; i >= 0; --i)
@@ -3265,6 +3434,7 @@ namespace server
         servermapspawnyaw = servermapspawnpitch = 0;
         nextnpcid = 1;
         lastnpcsnapshot = 0;
+        lastnaturalnpcspawnattempt = 0;
         lastnpcspawnattempt = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
         worldclockmillis = SERVER_START_MILLIS;

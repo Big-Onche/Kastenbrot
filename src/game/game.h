@@ -203,15 +203,36 @@ enum npcbehavior
     NPC_FLEE
 };
 
+enum npcmodeltype
+{
+    NPC_MODEL_HUMANOID = 0,
+    NPC_MODEL_QUADRUPED
+};
+
+struct npcdropdefinition
+{
+    string itemid;
+    int mincount, maxcount;
+    float chance;
+
+    npcdropdefinition(const char *itemid = "", int mincount = 0, int maxcount = 0, float chance = 1.0f)
+        : mincount(mincount), maxcount(maxcount), chance(chance)
+    {
+        copystring(this->itemid, itemid);
+    }
+};
+
 struct npcdefinition
 {
     string id, name, model;
-    int attitude, behavior, health, attackmillis;
-    float damage, speed, wanderradius, aggrodist, fleedist;
+    int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, fleeonhitmillis;
+    float damage, speed, wanderradius, aggrodist, fleedist, radius, height, rootheight, spawnchance, fleespeed, herdradius;
+    vector<npcdropdefinition> drops;
 
     npcdefinition(const char *id = "")
-        : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), damage(1), speed(40), wanderradius(8), aggrodist(16),
-          fleedist(12)
+        : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), modeltype(NPC_MODEL_HUMANOID), naturalbiome(-1),
+          groupmin(1), groupmax(1), fleeonhitmillis(0), damage(1), speed(40), wanderradius(8), aggrodist(16), fleedist(12), radius(4.1f),
+          height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0)
     {
         copystring(this->id, id);
         copystring(name, id);
@@ -445,6 +466,7 @@ namespace game
     extern void requestworldcommand(const char *command);
     extern float horizontalmeterspersecond(const physent *d);
     extern int fallimpactdamage(float distance);
+    extern void addlocalitemdrop(int item, int count, const vec &origin, uint spreadseed);
     extern float playerarmactionpitch(const gameent *d);
     extern float playerfooduseamount(const gameent *d);
     extern float creativearmwave(int elapsed);

@@ -2831,6 +2831,11 @@ namespace game
         worlddrops.add(drop);
     }
 
+    void addlocalitemdrop(int item, int count, const vec &origin, uint spreadseed)
+    {
+        addlocaldeathdrop(item, count, 0, origin, spreadseed);
+    }
+
     static void droplocalplayerinventory(const vec &origin)
     {
         const uint seed = worlddrophash(uint(++localdeathsequence) ^ uint(max(lastmillis, 1)));
