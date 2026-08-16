@@ -67,6 +67,13 @@ int getworldcubefaceslot(int index, int orient)
     return type.sideslot;
 }
 
+static int getworldcubebytextures(const ushort *textures)
+{
+    loopi(4) if(textures[i] != textures[0]) return -1;
+    int *index = worldcubetextureindexes.access(worldcubetexturekey(textures[O_TOP], textures[0], textures[O_BOTTOM]));
+    return index ? *index : -1;
+}
+
 int getworldcubeindex(int slot)
 {
     if(worldcubedefinitions.inrange(worlderrorcube))
@@ -85,10 +92,12 @@ int getworldcubeindex(int slot)
 
 int getworldcubeindexat(const ivec &position, int orient)
 {
+    // Block identity belongs to the complete texture set, not the face that happened to be targeted.
+    (void)orient;
     ivec origin;
     int size;
     const cube &c = lookupcube(position, 0, origin, size);
-    return getworldcubeindex(c.texture[clamp(orient, 0, 5)]);
+    return validworldcubeindex(getworldcubebytextures(c.texture));
 }
 
 ullong getworldcubepersistentid(int index)

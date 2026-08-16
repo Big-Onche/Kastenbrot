@@ -42,13 +42,6 @@ static bool sameworldscatterlist(const vector<worldscatterinstance> &a, const ve
     return true;
 }
 
-static int getworldcubebytextures(const ushort *textures)
-{
-    loopi(4) if(textures[i] != textures[0]) return -1;
-    int *index = worldcubetextureindexes.access(worldcubetexturekey(textures[O_TOP], textures[0], textures[O_BOTTOM]));
-    return index ? *index : -1;
-}
-
 static void copyworlddiffnode(const cube &c, const ivec &o, int size, const ivec &chunkorigin, worlddiffnode &node)
 {
     node.x = o.x - chunkorigin.x;

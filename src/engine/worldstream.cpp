@@ -504,7 +504,7 @@ static void collectworldsupportnode(const cube &c, const ivec &origin, int size,
         loopi(8) collectworldsupportnode(c.children[i], ivec(i, origin, childsize), childsize, minimum, maximum, chunk, cells);
         return;
     }
-    const int worldindex = getworldcubeindex(c.texture[WORLD_ORIENT_TOP]);
+    const int worldindex = getworldcubebytextures(c.texture);
     if(size < WORLD_BLOCK_SIZE || isempty(c) || !isentirelysolid(c) || getworldcubesupportdistance(worldindex) <= 0)
         return;
     const int startx = max(origin.x, minimum.x), starty = max(origin.y, minimum.y), startz = max(origin.z, minimum.z),
@@ -2251,6 +2251,22 @@ static const cube *lookupworldmipneighbour(cube *root, int orient, const ivec &c
     return neighbour;
 }
 
+static int getworldmipcubeindex(const cube &c)
+{
+    const int toptexture = getmippedtexture(c, O_TOP);
+    int fallback = -1;
+    loopi(8)
+    {
+        const cube &child = c.children[i];
+        if(isempty(child)) continue;
+        const int index = getworldcubebytextures(child.texture);
+        if(index < 0) continue;
+        if(fallback < 0) fallback = index;
+        if(child.texture[O_TOP] == toptexture) return index;
+    }
+    return fallback;
+}
+
 static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
                             bool prepared, int &families, int &merged, const worldchunkdirtybounds *dirty)
 {
@@ -2270,8 +2286,11 @@ static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
         if(!remipworldchunk(children[i], childorigin, size >> 1, root, prepared, families, merged, dirty)) perfect = false;
     }
 
+    // A mip leaf is one gameplay block, so never preserve a synthetic per-face mixture as its identity.
+    const int worldindex = getworldmipcubeindex(c);
     solidfaces(c);
     loopi(6) c.texture[i] = getmippedtexture(c, i);
+    if(worldindex >= 0) loopi(6) c.texture[i] = getworldcubefaceslot(worldindex, i);
     if(!perfect || (size << 1) > 0x1000) return false;
 
     ushort material = MAT_AIR;
