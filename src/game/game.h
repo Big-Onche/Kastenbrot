@@ -240,6 +240,21 @@ struct npcdefinition
     }
 };
 
+enum
+{
+    PASSIVE_NPC_CELL_BLOCKS = 32,
+    PASSIVE_NPC_GROUP_RADIUS_BLOCKS = 6
+};
+
+struct passivenpcspawn
+{
+    ullong key;
+    int blockx, blocky;
+    float yaw;
+
+    passivenpcspawn() : key(0), blockx(0), blocky(0), yaw(0) {}
+};
+
 static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &slotitem, int &slotcount, int button)
 {
     if(button != INVENTORY_CLICK_LEFT && button != INVENTORY_CLICK_RIGHT) return false;
@@ -456,6 +471,11 @@ namespace game
     extern int numnpcdefinitions();
     extern npcdefinition *getnpcdefinition(int index);
     extern void loadnpcdefinitions();
+    extern int generatepassivenpcgroup(const npcdefinition &definition, int worldseed, int cellx, int celly, passivenpcspawn *spawns,
+                                       int maxspawns);
+    extern void resetlocalpassivenpcstates();
+    extern bool savelocalpassivenpcs(const char *world);
+    extern bool loadlocalpassivenpcs(const char *world);
 
     extern void changemap(const char *name, int mode);
     extern bool addmsg(int type, const char *fmt = NULL, ...);

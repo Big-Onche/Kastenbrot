@@ -888,6 +888,7 @@ static void loadworldcommand(const char *requested)
     game::restorelocalplayermotion(metadata.playervelocity, metadata.playerfalling, metadata.playerfalldistance, metadata.playerphysstate);
     if(!game::loadlocalfurnaces(folder)) conoutf(CON_ERROR, "saved furnace data for world %s is corrupt", folder);
     if(!game::loadlocalchests(folder)) conoutf(CON_ERROR, "saved chest data for world %s is corrupt", folder);
+    if(!game::loadlocalpassivenpcs(folder)) conoutf(CON_ERROR, "saved passive NPC data for world %s is corrupt", folder);
     applyloadworlddefaults = false;
     hasrequestedworldspawn = false;
 }
@@ -989,6 +990,11 @@ static bool saveworldstate()
     if(!game::savelocalchests(worldfolder))
     {
         conoutf(CON_ERROR, "could not save chest state for world %s", worldfolder);
+        return false;
+    }
+    if(!game::savelocalpassivenpcs(worldfolder))
+    {
+        conoutf(CON_ERROR, "could not save passive NPC state for world %s", worldfolder);
         return false;
     }
 

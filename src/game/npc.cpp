@@ -155,10 +155,149 @@ namespace game
 
     ICOMMAND(npcload, "", (), loadnpcdefinitions());
 
+    static uint passivenpcdefinitionhash(const npcdefinition &definition)
+    {
+        uint hash = 2166136261U;
+        for(const uchar *value = (const uchar *)definition.id; *value; ++value) hash = (hash ^ *value) * 16777619U;
+        return hash;
+    }
+
+    static ullong passivenpcspawnkey(const npcdefinition &definition, int worldseed, int cellx, int celly, int member)
+    {
+        ullong hash = 1469598103934665603ULL;
+        const auto mix = [&hash](uint value)
+        {
+            loopi(4)
+            {
+                hash ^= uchar(value >> (i * 8));
+                hash *= 1099511628211ULL;
+            }
+        };
+        for(const uchar *value = (const uchar *)definition.id; *value; ++value)
+        {
+            hash ^= *value;
+            hash *= 1099511628211ULL;
+        }
+        mix(uint(worldseed));
+        mix(uint(cellx));
+        mix(uint(celly));
+        mix(uint(member));
+        return hash ? hash : 1;
+    }
+
+    int generatepassivenpcgroup(const npcdefinition &definition, int worldseed, int cellx, int celly, passivenpcspawn *spawns, int maxspawns)
+    {
+        if(!spawns || maxspawns <= 0 || definition.naturalbiome < 0 || definition.spawnchance <= 0) return 0;
+        const uint definitionhash = passivenpcdefinitionhash(definition),
+                   cellseed = worlddrophash(uint(worldseed) ^ uint(cellx) * 0x9E3779B9U ^ uint(celly) * 0x85EBCA6BU ^ definitionhash),
+                   spawnroll = worlddrophash(cellseed ^ 0xC2B2AE35U);
+        if(float(spawnroll & 0xFFFFFFU) / float(0xFFFFFFU) >= definition.spawnchance) return 0;
+
+        const int count = min(definition.groupmin + int(worlddrophash(cellseed ^ 0x27D4EB2FU) %
+                                                                      uint(definition.groupmax - definition.groupmin + 1)),
+                              maxspawns),
+                  margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1,
+                  anchorspan = PASSIVE_NPC_CELL_BLOCKS - margin * 2,
+                  anchorx = cellx * PASSIVE_NPC_CELL_BLOCKS + margin + int(worlddrophash(cellseed ^ 0x165667B1U) % uint(anchorspan)),
+                  anchory = celly * PASSIVE_NPC_CELL_BLOCKS + margin + int(worlddrophash(cellseed ^ 0xD3A2646CU) % uint(anchorspan));
+        const float rotation = float(worlddrophash(cellseed ^ 0xA24BAED4U) % 36000U) * RAD / 100.0f;
+        loopi(count)
+        {
+            const uint memberseed = worlddrophash(cellseed ^ uint(i + 1) * 0x9E3779B9U);
+            const float angle = rotation + (i ? 2.0f * PI * float(i - 1) / max(count - 1, 1) : 0),
+                        radius = i ? 3.0f + float(memberseed % uint(PASSIVE_NPC_GROUP_RADIUS_BLOCKS - 2)) : 0;
+            spawns[i].key = passivenpcspawnkey(definition, worldseed, cellx, celly, i);
+            spawns[i].blockx = anchorx + int(roundf(cosf(angle) * radius));
+            spawns[i].blocky = anchory + int(roundf(sinf(angle) * radius));
+            spawns[i].yaw = float(worlddrophash(memberseed ^ 0x165667B1U) % 36000U) / 100.0f;
+        }
+        return count;
+    }
+
+    static vector<ullong> localdeadpassivenpcs;
+
+#ifndef STANDALONE
+    static bool localpassivenpcdead(ullong key)
+    {
+        loopv(localdeadpassivenpcs) if(localdeadpassivenpcs[i] == key) return true;
+        return false;
+    }
+
+    static void killlocalpassivenpc(ullong key)
+    {
+        if(!key || localpassivenpcdead(key)) return;
+        localdeadpassivenpcs.add(key);
+    }
+#endif
+
+    void resetlocalpassivenpcstates()
+    {
+        localdeadpassivenpcs.setsize(0);
+    }
+
+    static bool replacelocalpassivenpcfile(const char *temporary, const char *finalname)
+    {
+#ifdef WIN32
+        return MoveFileEx(temporary, finalname, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+        return rename(temporary, finalname) == 0;
+#endif
+    }
+
+    bool savelocalpassivenpcs(const char *world)
+    {
+        if(!world || !world[0]) return false;
+        defformatstring(name, "media/map/%s/world.npcs", world);
+        defformatstring(tempname, "%s.tmp", name);
+        string finalpath, temppath;
+        copystring(finalpath, findfile(name, "wb"));
+        copystring(temppath, findfile(tempname, "wb"));
+        stream *file = openrawfile(tempname, "wb");
+        if(!file) return false;
+        bool ok = file->write("CCPN", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(getworldseed())) &&
+                  file->putlil<uint>(uint(localdeadpassivenpcs.length()));
+        loopv(localdeadpassivenpcs) if(ok)
+            ok = file->putlil<uint>(uint(localdeadpassivenpcs[i])) && file->putlil<uint>(uint(localdeadpassivenpcs[i] >> 32));
+        if(ok) ok = file->flush();
+        delete file;
+        if(!ok || !replacelocalpassivenpcfile(temppath, finalpath))
+        {
+            remove(temppath);
+            return false;
+        }
+        return true;
+    }
+
+    bool loadlocalpassivenpcs(const char *world)
+    {
+        resetlocalpassivenpcstates();
+        if(!world || !world[0]) return false;
+        defformatstring(name, "media/map/%s/world.npcs", world);
+        stream *file = openrawfile(path(name), "rb");
+        if(!file) return true;
+        char magic[4] = { 0, 0, 0, 0 };
+        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
+                   seed = version == 1 ? file->getlil<uint>() : 0,
+                   count = version == 1 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCPN", 4) && version == 1 && seed == uint(getworldseed()) && count <= 1000000;
+        loopi(ok ? int(count) : 0)
+        {
+            const ullong low = file->getlil<uint>(), high = file->getlil<uint>();
+            const ullong key = low | high << 32;
+            if(!key) { ok = false; break; }
+            localdeadpassivenpcs.add(key);
+        }
+        if(ok) ok = file->tell() == file->size();
+        delete file;
+        if(!ok) resetlocalpassivenpcstates();
+        return ok;
+    }
+
 #ifndef STANDALONE
     struct npc : dynent
     {
         npcdefinition *definition;
+        ullong spawnkey;
         int instanceid, attitude, behavior, nextdecision, wanderpauseuntil, lastmovementmillis, lastjump, lastattack, lastdebugtext, fleeuntil,
             renderlastmillis, staggeruntil, crawlstart, lastlimbhop, ragdollstart[6], ragdollend[6], partdetachedmillis[6], partlastblood[6];
         float renderstride, totalhealth, parthealth[NUM_HUMANOID_HITBOXES];
@@ -171,7 +310,8 @@ namespace game
         vector<characterhitbox> hitboxes;
 
         npc(npcdefinition *definition, int instanceid)
-            : definition(definition), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior), nextdecision(0),
+            : definition(definition), spawnkey(0), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior),
+              nextdecision(0),
               wanderpauseuntil(0), lastmovementmillis(-1), lastjump(-1000), lastattack(-1000), lastdebugtext(-1000),
               fleeuntil(0), renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
               totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), replicated(false), dropsspawned(false),
@@ -260,7 +400,7 @@ namespace game
     static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
     static vector<npc *> npcs;
     static vector<severedlimb *> severedlimbs;
-    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastnpcspawnattempt = 0, lastnaturalnpcspawnattempt = 0;
+    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastnpcspawnattempt = 0, lastpassivenpcscan = 0;
     static uint nextnpcattackrequest = 1;
 
     VARP(npcmaxdist, 1, 256, 4096);
@@ -333,7 +473,7 @@ namespace game
         nextnpcid = 1;
         nextnpcattackrequest = 1;
         lastnpcspawnattempt = 0;
-        lastnaturalnpcspawnattempt = 0;
+        lastpassivenpcscan = 0;
         cleardynentcache();
     }
 
@@ -1130,6 +1270,7 @@ namespace game
         mob.stopmoving();
         mob.target = NULL;
         mob.hitboxes.setsize(0);
+        killlocalpassivenpc(mob.spawnkey);
         spawnlocalnpcdrops(mob);
         loopv(npcs) if(npcs[i]->target == &mob) npcs[i]->target = NULL;
         if(createcustomragdoll(&mob, positions.getbuf(), radii.getbuf(), positions.length(), links.getbuf(), links.length() / 2,
@@ -1675,25 +1816,16 @@ namespace game
         cleardynentcache();
     }
 
-    static int livinglocalnaturalnpcs(const npcdefinition &definition)
+    static npc *findlocalpassivenpc(ullong key)
     {
-        int count = 0;
-        loopv(npcs) if(npcs[i]->state != CS_DEAD && npcs[i]->definition == &definition) ++count;
-        return count;
-    }
-
-    static npcdefinition *localnaturalnpcdefinition(uint seed)
-    {
-        int count = 0;
-        loopi(numnpcdefinitions()) if(getnpcdefinition(i)->naturalbiome >= 0) ++count;
-        if(!count) return NULL;
-        int selected = int(seed % uint(count));
-        loopi(numnpcdefinitions()) if(getnpcdefinition(i)->naturalbiome >= 0 && selected-- == 0) return getnpcdefinition(i);
+        loopv(npcs) if(npcs[i]->spawnkey == key) return npcs[i];
         return NULL;
     }
 
-    static bool localnaturalspawnposition(const npcdefinition &definition, worldgenerator &generator, vec &position)
+    static bool localnaturalspawnposition(const npcdefinition &definition, worldgenerator &generator, const passivenpcspawn &spawn, vec &position)
     {
+        position = vec((spawn.blockx + 0.5f) * GAMEUNITSPERMETER, (spawn.blocky + 0.5f) * GAMEUNITSPERMETER, 0);
+        worldpositiontolocal(position);
         const float worldlimit = float(getworldsize() - 1);
         if(position.x < 1 || position.y < 1 || position.x >= worldlimit || position.y >= worldlimit) return false;
         vec probe(position.x, position.y, min(player1->o.z + 128.0f, worldlimit));
@@ -1702,11 +1834,8 @@ namespace game
         position.z = probe.z - grounddistance + definition.height + 0.1f;
         if((lookupmaterial(vec(position).subz(definition.height))&MATF_VOLUME) == MAT_WATER) return false;
 
-        vec absolute(position);
-        worldpositiontoabsolute(absolute);
-        const int blockx = int(floorf(absolute.x / GAMEUNITSPERMETER)), blocky = int(floorf(absolute.y / GAMEUNITSPERMETER)),
-                  height = generator.height(blockx, blocky);
-        if(generator.biome(blockx, blocky, height) != definition.naturalbiome) return false;
+        const int height = generator.height(spawn.blockx, spawn.blocky);
+        if(generator.biome(spawn.blockx, spawn.blocky, height) != definition.naturalbiome) return false;
         const float skydistance = worldlimit - position.z;
         if(skydistance > 0)
         {
@@ -1716,58 +1845,64 @@ namespace game
         return true;
     }
 
-    static void tryspawnlocalnaturalnpc()
+    static void tryspawnlocalpassivenpcs()
     {
         if(!m_survival || editmode || !player1 || player1->state != CS_ALIVE ||
-           lastmillis - lastnaturalnpcspawnattempt < npcspawnmillis) return;
-        lastnaturalnpcspawnattempt = lastmillis;
-        const uint seed = worlddrophash(uint(max(lastmillis, 1)) ^ uint(nextnpcid) * 0xC2B2AE35U);
-        npcdefinition *definition = localnaturalnpcdefinition(worlddrophash(seed ^ 0x27D4EB2FU));
-        const uint spawnroll = worlddrophash(seed ^ 0x165667B1U);
-        if(!definition || float(spawnroll & 0xFFFFU) / 65535.0f > definition->spawnchance) return;
-        const int simulationdistanceblocks = getnpcsimulationmaxdist(), cap = max(definition->groupmax, simulationdistanceblocks / 16);
-        if(livinglocalnaturalnpcs(*definition) + definition->groupmin > cap) return;
-
-        const int wanted = min(definition->groupmin + int((seed >> 24) % uint(definition->groupmax - definition->groupmin + 1)),
-                               cap - livinglocalnaturalnpcs(*definition));
+           lastmillis - lastpassivenpcscan < 250) return;
+        lastpassivenpcscan = lastmillis;
+        const int simulationdistanceblocks = getnpcsimulationmaxdist(), margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1;
         const float simulationdistance = simulationdistanceblocks * GAMEUNITSPERMETER,
-                    minimumdistance = min(20.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
-                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
-                    angle = float(seed % 36000U) * RAD / 100.0f;
-        const vec anchor = vec(player1->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
+                    simulationdistancesquared = simulationdistance * simulationdistance;
+        vec absolutefocus(player1->o);
+        worldpositiontoabsolute(absolutefocus);
+        const float focusblockx = absolutefocus.x / GAMEUNITSPERMETER, focusblocky = absolutefocus.y / GAMEUNITSPERMETER;
+        const int mincellx = int(floorf((focusblockx - simulationdistanceblocks - margin) / PASSIVE_NPC_CELL_BLOCKS)),
+                  maxcellx = int(floorf((focusblockx + simulationdistanceblocks + margin) / PASSIVE_NPC_CELL_BLOCKS)),
+                  mincelly = int(floorf((focusblocky - simulationdistanceblocks - margin) / PASSIVE_NPC_CELL_BLOCKS)),
+                  maxcelly = int(floorf((focusblocky + simulationdistanceblocks + margin) / PASSIVE_NPC_CELL_BLOCKS));
         worldgenerator generator(getworldseed());
-        vector<npc *> group;
-        for(int attempt = 0; attempt < wanted * 5 && group.length() < wanted; ++attempt)
+        bool spawned = false;
+        loopi(numnpcdefinitions())
         {
-            const uint memberseed = worlddrophash(seed ^ uint(attempt + 1) * 0x9E3779B9U);
-            const float memberangle = float(memberseed % 36000U) * RAD / 100.0f,
-                        memberdistance = attempt ? (2.0f + float((memberseed >> 16) % 500U) / 100.0f) * GAMEUNITSPERMETER : 0;
-            vec position = vec(anchor).add(vec(cosf(memberangle) * memberdistance, sinf(memberangle) * memberdistance, 0));
-            if(!localnaturalspawnposition(*definition, generator, position) ||
-               position.squaredist(player1->o) > simulationdistance * simulationdistance)
-                continue;
-            bool overlaps = false;
-            const float separation = definition->radius * 2.0f + 1.0f;
-            loopv(group) if(group[i]->o.squaredist(position) < separation * separation) { overlaps = true; break; }
-            if(overlaps) continue;
-            npc *mob = new npc(definition, nextnpcid + group.length());
-            mob->o = position;
-            mob->yaw = float(worlddrophash(memberseed ^ 0x165667B1U) % 36000U) / 100.0f;
-            if(!entinmap(mob, true)) { delete mob; continue; }
-            mob->spawn = mob->destination = mob->o;
-            beginwanderpause(*mob);
-            updatenpchitboxes(*mob);
-            group.add(mob);
+            npcdefinition *definition = getnpcdefinition(i);
+            if(!definition || definition->naturalbiome < 0) continue;
+            for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
+            {
+                passivenpcspawn spawns[16];
+                const int count = generatepassivenpcgroup(*definition, getworldseed(), cellx, celly, spawns, 16);
+                if(!count) continue;
+                vec anchor((spawns[0].blockx + 0.5f) * GAMEUNITSPERMETER, (spawns[0].blocky + 0.5f) * GAMEUNITSPERMETER, player1->o.z);
+                worldpositiontolocal(anchor);
+                if(anchor.squaredist(player1->o) > simulationdistancesquared) continue;
+
+                vector<npc *> group;
+                bool valid = true;
+                loopj(count)
+                {
+                    if(localpassivenpcdead(spawns[j].key) || findlocalpassivenpc(spawns[j].key)) continue;
+                    vec position;
+                    if(!localnaturalspawnposition(*definition, generator, spawns[j], position)) { valid = false; break; }
+                    npc *mob = new npc(definition, nextnpcid + group.length());
+                    mob->spawnkey = spawns[j].key;
+                    mob->o = position;
+                    mob->yaw = spawns[j].yaw;
+                    if(!entinmap(mob, true)) { delete mob; valid = false; break; }
+                    mob->spawn = mob->destination = mob->o;
+                    beginwanderpause(*mob);
+                    updatenpchitboxes(*mob);
+                    group.add(mob);
+                }
+                if(!valid) group.deletecontents();
+                else
+                {
+                    if(!group.empty()) spawned = true;
+                    nextnpcid += group.length();
+                    loopvk(group) npcs.add(group[k]);
+                    group.setsize(0);
+                }
+            }
         }
-        if(group.length() < definition->groupmin)
-        {
-            group.deletecontents();
-            return;
-        }
-        nextnpcid += group.length();
-        loopv(group) npcs.add(group[i]);
-        group.setsize(0);
-        cleardynentcache();
+        if(spawned) cleardynentcache();
     }
 
     void updatenpcs()
@@ -1826,7 +1961,7 @@ namespace game
         if(removed) cleardynentcache();
 
         tryspawnlocalaggressivenpc();
-        tryspawnlocalnaturalnpc();
+        tryspawnlocalpassivenpcs();
 
         const float simulationdistance = getnpcsimulationmaxdist() * GAMEUNITSPERMETER;
         loopv(npcs)

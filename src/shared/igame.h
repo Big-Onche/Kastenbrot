@@ -65,6 +65,8 @@ namespace game
     extern void resetchests();
     extern bool savelocalchests(const char *world);
     extern bool loadlocalchests(const char *world);
+    extern bool savelocalpassivenpcs(const char *world);
+    extern bool loadlocalpassivenpcs(const char *world);
     extern float getchestlidangle(const ivec &target);
     extern int getchestyaw(const ivec &target);
     extern void forceedit(const char *name);

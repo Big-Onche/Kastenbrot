@@ -886,6 +886,7 @@ namespace game
     void startmap(const char *name)
     {
 #ifndef STANDALONE
+        resetlocalpassivenpcstates();
         resetnpcs();
         resetwatersimulation();
         if(!pendingnetworkworld) resetworlddrops();

@@ -240,6 +240,7 @@ namespace server
     struct servernpc
     {
         uint id, detachedparts;
+        ullong spawnkey;
         npcdefinition *definition;
         vec o, velocity, spawn, destination, fleeorigin;
         float yaw, health, falldistance, parthealth[NUM_HUMANOID_HITBOXES];
@@ -247,7 +248,7 @@ namespace server
         bool paused, frozen, attacking, airborne;
 
         servernpc(uint id, npcdefinition *definition)
-            : id(id), detachedparts(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0),
+            : id(id), detachedparts(0), spawnkey(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0),
               fleeorigin(0, 0, 0), yaw(0),
               health(definition->health), falldistance(0), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis),
               lastattack(-1000), deathmillis(0), fleeuntil(0), paused(true), frozen(false), attacking(false), airborne(false)
@@ -299,12 +300,13 @@ namespace server
     static vector<serverworldaction *> serverworldactions;
     static vector<servercollisionchunk *> servercollisionchunks;
     static vector<servernpc *> servernpcs;
+    static vector<ullong> serverdeadpassivenpcs;
     static game::worldgenerator *serverworldgenerator = NULL;
     static bool servermapspawnready = false;
     static vec servermapspawn;
     static int servermapspawnyaw = 0, servermapspawnpitch = 0;
     static uint nextnpcid = 1;
-    static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0, lastnaturalnpcspawnattempt = 0;
+    static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0, lastpassivenpcscan = 0;
     static vector<serverdrop *> serverdrops;
     static vector<serverfallingblock *> serverfallingblocks;
     static vector<ivec> serverfallblockchecks;
@@ -316,8 +318,8 @@ namespace server
     static vector<chestinstance *> serverchests;
     static uint nextdropid = 1;
     static uint nextfallblockid = 1;
-    static bool furnacesdirty = false, chestsdirty = false;
-    static int lastfurnacesave = 0, lastchestsave = 0;
+    static bool furnacesdirty = false, chestsdirty = false, passivenpcsdirty = false;
+    static int lastfurnacesave = 0, lastchestsave = 0, lastpassivenpcsave = 0;
     static serverworldaction *findworldaction(const ivec &target, int action);
     static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced = false);
     static void queueserverfallblockcheck(const ivec &cell);
@@ -327,6 +329,8 @@ namespace server
     static bool saveserverfurnaces(bool force = false);
     static bool loadserverchests();
     static bool saveserverchests(bool force = false);
+    static bool loadserverpassivenpcs();
+    static bool saveserverpassivenpcs(bool force = false);
     static chestinstance *findserverchest(const ivec &target);
 
     vector<clientinfo *> clients;
@@ -668,7 +672,8 @@ namespace server
         serversupportchecks.setsize(0);
         serverfurnaces.deletecontents();
         serverchests.deletecontents();
-        furnacesdirty = chestsdirty = false;
+        serverdeadpassivenpcs.setsize(0);
+        furnacesdirty = chestsdirty = passivenpcsdirty = false;
         nextdropid = 1;
         nextfallblockid = 1;
         worldeditrevision = 0;
@@ -680,6 +685,7 @@ namespace server
         if(!file)
         {
             if(!rewriteserverjournal()) serverworldready = false;
+            if(!loadserverpassivenpcs()) serverworldready = false;
             return;
         }
 
@@ -767,6 +773,7 @@ namespace server
         conoutf("loaded %d authoritative world revisions for seed %d", worldhistory.length(), serverworldseed);
         if(!loadserverfurnaces()) serverworldready = false;
         if(!loadserverchests()) serverworldready = false;
+        if(!loadserverpassivenpcs()) serverworldready = false;
     }
 
     static bool ensureserverworld()
@@ -1323,6 +1330,90 @@ namespace server
             conoutf(CON_ERROR, "authoritative chest state is corrupt or incompatible");
         }
         else conoutf("loaded %d authoritative chest instances", serverchests.length());
+        return ok;
+    }
+
+    static void serverpassivenpcname(char *name, size_t len, const char *suffix = "")
+    {
+        string safe;
+        int n = 0;
+        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
+            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
+        safe[n] = '\0';
+        if(!safe[0]) copystring(safe, "multiplayer");
+        snprintf(name, len, "media/map/%s/server.npcs%s", safe, suffix ? suffix : "");
+        path(name);
+    }
+
+    static bool serverpassivenpcdead(ullong key)
+    {
+        loopv(serverdeadpassivenpcs) if(serverdeadpassivenpcs[i] == key) return true;
+        return false;
+    }
+
+    static void killserverpassivenpc(ullong key)
+    {
+        if(!key || serverpassivenpcdead(key)) return;
+        serverdeadpassivenpcs.add(key);
+        passivenpcsdirty = true;
+    }
+
+    static bool saveserverpassivenpcs(bool force)
+    {
+        if(!force && !passivenpcsdirty) return true;
+        string relative, temporary, finalpath, temppath;
+        serverpassivenpcname(relative, sizeof(relative));
+        serverpassivenpcname(temporary, sizeof(temporary), ".tmp");
+        copystring(finalpath, findfile(relative, "wb"));
+        copystring(temppath, findfile(temporary, "wb"));
+        stream *file = openrawfile(temporary, "wb");
+        if(!file) return false;
+        bool ok = file->write("CCPN", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(serverworldseed)) &&
+                  file->putlil<uint>(uint(serverdeadpassivenpcs.length()));
+        loopv(serverdeadpassivenpcs) if(ok)
+            ok = file->putlil<uint>(uint(serverdeadpassivenpcs[i])) && file->putlil<uint>(uint(serverdeadpassivenpcs[i] >> 32));
+        if(ok) ok = file->flush();
+        delete file;
+        if(!ok || !replaceserveridentityfile(temppath, finalpath))
+        {
+            remove(temppath);
+            return false;
+        }
+        passivenpcsdirty = false;
+        lastpassivenpcsave = max(totalmillis, 1);
+        return true;
+    }
+
+    static bool loadserverpassivenpcs()
+    {
+        serverdeadpassivenpcs.setsize(0);
+        passivenpcsdirty = false;
+        lastpassivenpcsave = max(totalmillis, 1);
+        string relative;
+        serverpassivenpcname(relative, sizeof(relative));
+        stream *file = openrawfile(relative, "rb");
+        if(!file) return true;
+        char magic[4] = { 0, 0, 0, 0 };
+        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
+                   seed = version == 1 ? file->getlil<uint>() : 0,
+                   count = version == 1 ? file->getlil<uint>() : 0;
+        bool ok = !memcmp(magic, "CCPN", 4) && version == 1 && seed == uint(serverworldseed) && count <= 1000000;
+        loopi(ok ? int(count) : 0)
+        {
+            const ullong low = file->getlil<uint>(), high = file->getlil<uint>();
+            const ullong key = low | high << 32;
+            if(!key) { ok = false; break; }
+            serverdeadpassivenpcs.add(key);
+        }
+        if(ok) ok = file->tell() == file->size();
+        delete file;
+        if(!ok)
+        {
+            serverdeadpassivenpcs.setsize(0);
+            conoutf(CON_ERROR, "authoritative passive NPC state is corrupt or incompatible");
+        }
+        else conoutf("loaded %d killed passive NPC spawn states", serverdeadpassivenpcs.length());
         return ok;
     }
 
@@ -2530,7 +2621,7 @@ namespace server
         while(servernpcs.length()) removeservernpc(servernpcs.length() - 1);
         nextnpcid = 1;
         lastnpcspawnattempt = 0;
-        lastnaturalnpcspawnattempt = 0;
+        lastpassivenpcscan = 0;
     }
 
     static bool servernpcclearance(const vec &position, const npcdefinition &definition, uint ignore = 0)
@@ -2651,82 +2742,74 @@ namespace server
         servernpcs.add(mob);
     }
 
-    static int livingservernaturalnpcs(const npcdefinition &definition)
+    static servernpc *findserverpassivenpc(ullong key)
     {
-        int count = 0;
-        loopv(servernpcs) if(!servernpcs[i]->deathmillis && servernpcs[i]->definition == &definition) ++count;
-        return count;
-    }
-
-    static npcdefinition *servernaturalnpcdefinition(uint seed)
-    {
-        int count = 0;
-        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->naturalbiome >= 0) ++count;
-        if(!count) return NULL;
-        int selected = int(seed % uint(count));
-        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->naturalbiome >= 0 && selected-- == 0)
-            return game::getnpcdefinition(i);
+        loopv(servernpcs) if(servernpcs[i]->spawnkey == key) return servernpcs[i];
         return NULL;
     }
 
-    static bool servernaturalspawnposition(const npcdefinition &definition, vec &position)
+    static bool servernaturalspawnposition(const npcdefinition &definition, const passivenpcspawn &spawn, vec &position)
     {
+        position = vec((spawn.blockx + 0.5f) * GAMEUNITSPERMETER, (spawn.blocky + 0.5f) * GAMEUNITSPERMETER, 0);
         if(position.x < 1 || position.y < 1 || position.x >= SERVER_WORLD_MAP_SIZE - 1 || position.y >= SERVER_WORLD_MAP_SIZE - 1) return false;
         if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
-        const int blockx = serverfloordiv(int(floorf(position.x)), SERVER_WORLD_BLOCK_SIZE),
-                  blocky = serverfloordiv(int(floorf(position.y)), SERVER_WORLD_BLOCK_SIZE), height = serverworldgenerator->height(blockx, blocky);
-        if(serverworldgenerator->biome(blockx, blocky, height) != definition.naturalbiome) return false;
+        const int height = serverworldgenerator->height(spawn.blockx, spawn.blocky);
+        if(serverworldgenerator->biome(spawn.blockx, spawn.blocky, height) != definition.naturalbiome) return false;
         position.z = servergroundheight(position.x, position.y) + definition.height;
         if(position.z < definition.height || position.z >= SERVER_WORLD_MAP_SIZE ||
            servernaturalwaterat(vec(position).subz(definition.height)) || !servernpcclearance(position, definition)) return false;
         return serverlineofsight(position, vec(position.x, position.y, SERVER_WORLD_MAP_SIZE - 1.0f));
     }
 
-    static void tryspawnservernaturalnpc()
+    static void tryspawnserverpassivenpcs()
     {
-        if(servercreative() || totalmillis - lastnaturalnpcspawnattempt < servernpcspawnmillis || clients.empty()) return;
-        lastnaturalnpcspawnattempt = totalmillis;
-        const uint seed = worlddrophash(uint(max(totalmillis, 1)) ^ nextnpcid * 0xC2B2AE35U);
-        npcdefinition *definition = servernaturalnpcdefinition(worlddrophash(seed ^ 0x27D4EB2FU));
-        const uint spawnroll = worlddrophash(seed ^ 0x165667B1U);
-        if(!definition || float(spawnroll & 0xFFFFU) / 65535.0f > definition->spawnchance) return;
-        clientinfo *owner = NULL;
-        const int start = int(seed % uint(clients.length()));
-        loopi(clients.length())
+        if(servercreative() || totalmillis - lastpassivenpcscan < 250 || clients.empty()) return;
+        lastpassivenpcscan = totalmillis;
+        const int margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1;
+        const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
+                    simulationdistancesquared = simulationdistance * simulationdistance;
+        loopv(clients)
         {
-            clientinfo *candidate = clients[(start + i) % clients.length()];
-            if(candidate && candidate->connected && candidate->worldready && candidate->hasposition && !candidate->dead)
+            clientinfo *owner = clients[i];
+            if(!owner || !owner->connected || !owner->worldready || !owner->hasposition || owner->dead) continue;
+            const float focusblockx = owner->o.x / GAMEUNITSPERMETER, focusblocky = owner->o.y / GAMEUNITSPERMETER;
+            const int mincellx = int(floorf((focusblockx - serversimulationmaxdist - margin) / PASSIVE_NPC_CELL_BLOCKS)),
+                      maxcellx = int(floorf((focusblockx + serversimulationmaxdist + margin) / PASSIVE_NPC_CELL_BLOCKS)),
+                      mincelly = int(floorf((focusblocky - serversimulationmaxdist - margin) / PASSIVE_NPC_CELL_BLOCKS)),
+                      maxcelly = int(floorf((focusblocky + serversimulationmaxdist + margin) / PASSIVE_NPC_CELL_BLOCKS));
+            loopj(game::numnpcdefinitions())
             {
-                owner = candidate;
-                break;
+                npcdefinition *definition = game::getnpcdefinition(j);
+                if(!definition || definition->naturalbiome < 0) continue;
+                for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
+                {
+                    passivenpcspawn spawns[16];
+                    const int count = game::generatepassivenpcgroup(*definition, serverworldseed, cellx, celly, spawns, 16);
+                    if(!count) continue;
+                    const vec anchor((spawns[0].blockx + 0.5f) * GAMEUNITSPERMETER,
+                                     (spawns[0].blocky + 0.5f) * GAMEUNITSPERMETER, owner->o.z);
+                    if(anchor.squaredist(owner->o) > simulationdistancesquared) continue;
+
+                    vec positions[16];
+                    bool needed[16] = { false }, valid = true;
+                    loopk(count)
+                    {
+                        needed[k] = !serverpassivenpcdead(spawns[k].key) && !findserverpassivenpc(spawns[k].key);
+                        if(needed[k] && !servernaturalspawnposition(*definition, spawns[k], positions[k])) { valid = false; break; }
+                    }
+                    if(!valid) continue;
+                    loopk(count) if(needed[k])
+                    {
+                        servernpc *mob = new servernpc(nextnpcid++, definition);
+                        mob->spawnkey = spawns[k].key;
+                        mob->o = mob->spawn = mob->destination = positions[k];
+                        mob->yaw = spawns[k].yaw;
+                        mob->pauseuntil = totalmillis + 600;
+                        servernpcs.add(mob);
+                    }
+                }
             }
         }
-        if(!owner) return;
-        const int cap = max(definition->groupmax, serversimulationmaxdist / 16), living = livingservernaturalnpcs(*definition);
-        if(living + definition->groupmin > cap) return;
-        const int wanted = min(definition->groupmin + int((seed >> 24) % uint(definition->groupmax - definition->groupmin + 1)), cap - living);
-        const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
-                    minimumdistance = min(20.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
-                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
-                    angle = float(seed % 36000U) * RAD / 100.0f;
-        const vec anchor = vec(owner->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
-        const int first = servernpcs.length();
-        for(int attempt = 0; attempt < wanted * 5 && servernpcs.length() - first < wanted; ++attempt)
-        {
-            const uint memberseed = worlddrophash(seed ^ uint(attempt + 1) * 0x9E3779B9U);
-            const float memberangle = float(memberseed % 36000U) * RAD / 100.0f,
-                        memberdistance = attempt ? (2.0f + float((memberseed >> 16) % 500U) / 100.0f) * GAMEUNITSPERMETER : 0;
-            vec position = vec(anchor).add(vec(cosf(memberangle) * memberdistance, sinf(memberangle) * memberdistance, 0));
-            if(!servernaturalspawnposition(*definition, position) || position.squaredist(owner->o) > simulationdistance * simulationdistance)
-                continue;
-            servernpc *mob = new servernpc(nextnpcid++, definition);
-            mob->o = mob->spawn = mob->destination = position;
-            mob->yaw = float(worlddrophash(memberseed ^ 0x165667B1U) % 36000U) / 100.0f;
-            mob->pauseuntil = totalmillis + 600;
-            servernpcs.add(mob);
-        }
-        if(servernpcs.length() - first >= definition->groupmin) return;
-        while(servernpcs.length() > first) delete servernpcs.remove(servernpcs.length() - 1);
     }
 
     static bool serverraybox(const vec &origin, const vec &direction, const vec &minimum, const vec &maximum, float &distance)
@@ -2862,6 +2945,7 @@ namespace server
         if(mob.deathmillis) return;
         mob.deathmillis = max(totalmillis, 1);
         mob.velocity = vec(0, 0, 0);
+        killserverpassivenpc(mob.spawnkey);
         dropservernpcloot(mob);
         broadcastnpcevent(mob, NPC_EVENT_DEATH, part, position, impulse);
     }
@@ -3152,7 +3236,7 @@ namespace server
     static void updateservernpcs()
     {
         tryspawnserveraggressivenpc();
-        tryspawnservernaturalnpc();
+        tryspawnserverpassivenpcs();
         const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
                     existencedistance = servernpcmaxdist * GAMEUNITSPERMETER;
         for(int i = servernpcs.length() - 1; i >= 0; --i)
@@ -3414,6 +3498,8 @@ namespace server
             conoutf(CON_ERROR, "could not save authoritative furnace state before server reinitialization");
         if(journalinitialized && chestsdirty && !saveserverchests(true))
             conoutf(CON_ERROR, "could not save authoritative chest state before server reinitialization");
+        if(journalinitialized && passivenpcsdirty && !saveserverpassivenpcs(true))
+            conoutf(CON_ERROR, "could not save authoritative passive NPC state before server reinitialization");
 #ifndef STANDALONE
         personaldrops = serverpersonaldrops;
         droptimeout = serverdroptimeout;
@@ -3434,7 +3520,7 @@ namespace server
         servermapspawnyaw = servermapspawnpitch = 0;
         nextnpcid = 1;
         lastnpcsnapshot = 0;
-        lastnaturalnpcspawnattempt = 0;
+        lastpassivenpcscan = 0;
         lastnpcspawnattempt = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
         worldclockmillis = SERVER_START_MILLIS;
@@ -4884,6 +4970,8 @@ namespace server
             conoutf(CON_ERROR, "could not save authoritative furnace state during server shutdown");
         if(chestsdirty && !saveserverchests(true))
             conoutf(CON_ERROR, "could not save authoritative chest state during server shutdown");
+        if(passivenpcsdirty && !saveserverpassivenpcs(true))
+            conoutf(CON_ERROR, "could not save authoritative passive NPC state during server shutdown");
     }
 
     static bool rejectchestaction(clientinfo &ci, uint requestid, const char *reason, bool violation = false, bool malicious = false)
@@ -6138,6 +6226,8 @@ namespace server
         if(!journalinitialized) return;
         updateserverfurnaces();
         updateserverchests();
+        if(passivenpcsdirty && totalmillis - lastpassivenpcsave >= 5000 && !saveserverpassivenpcs())
+            conoutf(CON_ERROR, "could not periodically save authoritative passive NPC state");
         updateserverfallingblocks();
         updateserversupportblocks();
         updateservernpcs();
