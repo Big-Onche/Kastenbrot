@@ -2251,20 +2251,18 @@ static const cube *lookupworldmipneighbour(cube *root, int orient, const ivec &c
     return neighbour;
 }
 
-static int getworldmipcubeindex(const cube &c)
+static bool getworldmipcubeindex(const cube &c, int &worldindex)
 {
-    const int toptexture = getmippedtexture(c, O_TOP);
-    int fallback = -1;
+    worldindex = -1;
     loopi(8)
     {
         const cube &child = c.children[i];
         if(isempty(child)) continue;
         const int index = getworldcubebytextures(child.texture);
-        if(index < 0) continue;
-        if(fallback < 0) fallback = index;
-        if(child.texture[O_TOP] == toptexture) return index;
+        if(index < 0 || (worldindex >= 0 && index != worldindex)) return false;
+        worldindex = index;
     }
-    return fallback;
+    return true;
 }
 
 static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
@@ -2286,12 +2284,13 @@ static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
         if(!remipworldchunk(children[i], childorigin, size >> 1, root, prepared, families, merged, dirty)) perfect = false;
     }
 
-    // A mip leaf is one gameplay block, so never preserve a synthetic per-face mixture as its identity.
-    const int worldindex = getworldmipcubeindex(c);
+    // A mip leaf is one gameplay block. Grass, dirt, sand, stone, and every other type must remain separate even while their shared faces are buried.
+    int worldindex;
+    const bool sameworldblock = getworldmipcubeindex(c, worldindex);
     solidfaces(c);
     loopi(6) c.texture[i] = getmippedtexture(c, i);
-    if(worldindex >= 0) loopi(6) c.texture[i] = getworldcubefaceslot(worldindex, i);
-    if(!perfect || (size << 1) > 0x1000) return false;
+    if(sameworldblock && worldindex >= 0) loopi(6) c.texture[i] = getworldcubefaceslot(worldindex, i);
+    if(!perfect || !sameworldblock || (size << 1) > 0x1000) return false;
 
     ushort material = MAT_AIR;
     loopi(8)
