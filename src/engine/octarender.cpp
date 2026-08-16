@@ -75,6 +75,24 @@ static uint worldmesharenausedvertices = 0, worldmesharenausedindices = 0;
 static uint worldmeshpacketvertices = 0, worldmeshpacketindices = 0, worldmeshlargestpacket = 0;
 static int worldmeshrebuilds = 0, worldmeshpackets = 0, worldmeshpacketranges = 0;
 
+static uint meshpacketbytes(const meshpacket &packet)
+{
+    const uint indices = packet.indices.length() + packet.skyindices.length() + packet.decalindices.length();
+    return packet.vertices.length()*sizeof(vertex) + indices*sizeof(uint) +
+           (packet.ranges.length() + packet.decalranges.length())*sizeof(meshrange) +
+           packet.materials.length()*sizeof(materialsurface) + packet.grasstris.length()*sizeof(grasstri);
+}
+
+static void recordmeshpacket(const meshpacket &packet)
+{
+    const uint indices = packet.indices.length() + packet.skyindices.length() + packet.decalindices.length();
+    worldmeshpackets++;
+    worldmeshpacketvertices += packet.vertices.length();
+    worldmeshpacketindices += indices;
+    worldmeshpacketranges += packet.ranges.length() + packet.decalranges.length() + (packet.skyindices.empty() ? 0 : 1);
+    worldmeshlargestpacket = max(worldmeshlargestpacket, meshpacketbytes(packet));
+}
+
 static ullong hashmeshbytes(ullong hash, const void *data, size_t len)
 {
     const uchar *bytes = (const uchar *)data;
@@ -775,6 +793,16 @@ struct sortval
      sortval() {}
 };
 
+struct mergedface
+{
+    uchar orient, numverts;
+    ushort mat, tex, envmap;
+    vertinfo *verts;
+    int tjoints;
+};
+
+static thread_local bool worldmeshworkerthread = false;
+
 struct vacollect : verthash
 {
     ivec origin;
@@ -923,28 +951,21 @@ struct vacollect : verthash
         if(decals.length()) extdecals.put(decals.getbuf(), decals.length());
         if(extdecals.empty()) return;
         vector<extentity *> &ents = entities::getents();
+        hashset<int> rendered(1<<8);
         loopv(extdecals)
         {
             octaentities *oe = extdecals[i];
             loopvj(oe->decals)
             {
-                extentity &e = *ents[oe->decals[j]];
-                if(e.flags&EF_RENDER) continue;
-                e.flags |= EF_RENDER;
-                DecalSlot &s = lookupdecalslot(e.attr1, true);
+                const int entity = oe->decals[j];
+                if(rendered.access(entity)) continue;
+                rendered.add(entity);
+                extentity &e = *ents[entity];
+                DecalSlot &s = lookupdecalslot(e.attr1, !worldmeshworkerthread);
                 if(!s.shader) continue;
                 ushort envmap = s.shader->type&SHADER_ENVMAP ? (s.texmask&(1<<TEX_ENVMAP) ? EMID_CUSTOM : closestenvmap(e.o)) : EMID_NONE;
                 decalkey k(e.attr1, envmap);
                 gendecal(e, s, k);
-            }
-        }
-        loopv(extdecals)
-        {
-            octaentities *oe = extdecals[i];
-            loopvj(oe->decals)
-            {
-                extentity &e = *ents[oe->decals[j]];
-                if(e.flags&EF_RENDER) e.flags &= ~EF_RENDER;
             }
         }
         enumeratekt(decalindices, decalkey, k, sortval, t,
@@ -1014,6 +1035,9 @@ struct vacollect : verthash
                 packet.materials[i].envmap = EMID_NONE;
             }
         }
+        if(grasstris.length()) packet.grasstris.put(grasstris.getbuf(), grasstris.length());
+        if(mapmodels.length()) packet.mapmodels.put(mapmodels.getbuf(), mapmodels.length());
+        if(decals.length()) packet.decals.put(decals.getbuf(), decals.length());
 
         loopv(decaltexs)
         {
@@ -1036,15 +1060,11 @@ struct vacollect : verthash
             loopvj(t.tris) packet.decalindices.add(t.tris[j]);
         }
 
-        const uint packetindices = packet.indices.length() + packet.skyindices.length() + packet.decalindices.length(),
-                   packetbytes = packet.vertices.length()*sizeof(vertex) + packetindices*sizeof(uint) +
-                                 (packet.ranges.length() + packet.decalranges.length())*sizeof(meshrange) +
-                                 packet.materials.length()*sizeof(materialsurface);
         ullong checksum = 1469598103934665603ULL;
         const uint numverts = packet.vertices.length(), numworldindices = packet.indices.length(),
                    numskyindices = packet.skyindices.length(), numdecalindices = packet.decalindices.length(),
                    numranges = packet.ranges.length(), numdecalranges = packet.decalranges.length(),
-                   nummaterials = packet.materials.length();
+                   nummaterials = packet.materials.length(), numgrasstris = packet.grasstris.length();
         checksum = hashmeshvalue(checksum, numverts);
         checksum = hashmeshvalue(checksum, numworldindices);
         checksum = hashmeshvalue(checksum, numskyindices);
@@ -1052,6 +1072,7 @@ struct vacollect : verthash
         checksum = hashmeshvalue(checksum, numranges);
         checksum = hashmeshvalue(checksum, numdecalranges);
         checksum = hashmeshvalue(checksum, nummaterials);
+        checksum = hashmeshvalue(checksum, numgrasstris);
         if(numverts) checksum = hashmeshbytes(checksum, packet.vertices.getbuf(), numverts*sizeof(vertex));
         if(numworldindices) checksum = hashmeshbytes(checksum, packet.indices.getbuf(), numworldindices*sizeof(uint));
         if(numskyindices) checksum = hashmeshbytes(checksum, packet.skyindices.getbuf(), numskyindices*sizeof(uint));
@@ -1059,6 +1080,7 @@ struct vacollect : verthash
         loopv(packet.ranges) checksum = hashmeshrange(checksum, packet.ranges[i]);
         loopv(packet.decalranges) checksum = hashmeshrange(checksum, packet.decalranges[i]);
         loopv(packet.materials) checksum = hashmaterialsurface(checksum, packet.materials[i]);
+        if(numgrasstris) checksum = hashmeshbytes(checksum, packet.grasstris.getbuf(), numgrasstris*sizeof(grasstri));
         checksum = hashmeshvalue(checksum, packet.bbmin.x);
         checksum = hashmeshvalue(checksum, packet.bbmin.y);
         checksum = hashmeshvalue(checksum, packet.bbmin.z);
@@ -1081,19 +1103,10 @@ struct vacollect : verthash
         HASHVEC(packet.nogimax);
 #undef HASHVEC
         packet.checksum = checksum;
-        worldmeshpackets++;
-        worldmeshpacketvertices += packet.vertices.length();
-        worldmeshpacketindices += packetindices;
-        worldmeshpacketranges += packet.ranges.length() + packet.decalranges.length() + (packet.skyindices.empty() ? 0 : 1);
-        worldmeshlargestpacket = max(worldmeshlargestpacket, packetbytes);
     }
 
-    void setupdata(vtxarray *va)
+    void setupdata(vtxarray *va, meshpacket &packet)
     {
-        meshpacket packet;
-        finalizepacket(packet);
-
-        va->mesh = NULL;
         va->meshchecksum = packet.checksum;
         va->verts = packet.vertices.length();
         va->tris = packet.indices.length()/3;
@@ -1104,10 +1117,10 @@ struct vacollect : verthash
         va->voffset = 0;
         if(va->verts && !worldmeshbackend)
         {
-            if(vbosize[VBO_VBUF] + verts.length() > maxvbosize ||
-               vbosize[VBO_EBUF] + worldtris > USHRT_MAX ||
-               vbosize[VBO_SKYBUF] + skytris > USHRT_MAX ||
-               vbosize[VBO_DECALBUF] + decaltris > USHRT_MAX)
+            if(vbosize[VBO_VBUF] + packet.vertices.length() > maxvbosize ||
+               vbosize[VBO_EBUF] + packet.indices.length() > USHRT_MAX ||
+               vbosize[VBO_SKYBUF] + packet.skyindices.length() > USHRT_MAX ||
+               vbosize[VBO_DECALBUF] + packet.decalindices.length() > USHRT_MAX)
                 flushvbo();
 
             uchar *vdata = addvbo(va, VBO_VBUF, va->verts, sizeof(vertex));
@@ -1169,7 +1182,7 @@ struct vacollect : verthash
         if(va->texs)
         {
             va->texelems = new elementset[va->texs];
-            ushort *edata = !worldmeshbackend ? (ushort *)addvbo(va, VBO_EBUF, worldtris, sizeof(ushort)) : NULL,
+            ushort *edata = !worldmeshbackend ? (ushort *)addvbo(va, VBO_EBUF, packet.indices.length(), sizeof(ushort)) : NULL,
                    *curbuf = edata;
             loopv(packet.ranges)
             {
@@ -1227,7 +1240,7 @@ struct vacollect : verthash
         if(va->decaltexs)
         {
             va->decalelems = new elementset[va->decaltexs];
-            ushort *edata = !worldmeshbackend ? (ushort *)addvbo(va, VBO_DECALBUF, decaltris, sizeof(ushort)) : NULL,
+            ushort *edata = !worldmeshbackend ? (ushort *)addvbo(va, VBO_DECALBUF, packet.decalindices.length(), sizeof(ushort)) : NULL,
                    *curbuf = edata;
             loopv(packet.decalranges)
             {
@@ -1308,21 +1321,215 @@ struct vacollect : verthash
         va->nogimax = packet.nogimax;
         calcmatbb(va, va->o, va->size, packet.materials);
 
-        if(grasstris.length())
+        if(packet.grasstris.length())
         {
-            va->grasstris.move(grasstris);
+            va->grasstris.move(packet.grasstris);
             loadgrassshaders();
         }
 
-        if(mapmodels.length()) va->mapmodels.put(mapmodels.getbuf(), mapmodels.length());
-        if(decals.length()) va->decals.put(decals.getbuf(), decals.length());
+        if(packet.mapmodels.length()) va->mapmodels.put(packet.mapmodels.getbuf(), packet.mapmodels.length());
+        if(packet.decals.length()) va->decals.put(packet.decals.getbuf(), packet.decals.length());
+    }
+
+    void setupdata(vtxarray *va)
+    {
+        meshpacket packet;
+        finalizepacket(packet);
+        recordmeshpacket(packet);
+        setupdata(va, packet);
     }
 
     bool emptyva()
     {
         return verts.empty() && matsurfs.empty() && skyindices.empty() && grasstris.empty() && mapmodels.empty() && decals.empty();
     }
-} vc;
+};
+
+#define MAXMERGELEVEL 12
+
+// Every invocation of the voxel mesher owns all of its mutable scratch state.
+// The main thread uses mainmeshbuildcontext; workers install a scoped context
+// before processing a job. No collector, merge bucket, or entity traversal
+// state is shared between jobs, so rendercube() can move into the worker once
+// immutable octree job inputs are available.
+struct meshbuildcontext
+{
+    vacollect *collector;
+    int hasmerges, mergemax, entdepth;
+    vector<mergedface> merges[MAXMERGELEVEL+1];
+    octaentities *entstack[32];
+    bool worker;
+
+    meshbuildcontext(bool worker = false) : collector(new vacollect), hasmerges(0), mergemax(0), entdepth(-1), worker(worker)
+    {
+        collector->clear();
+        memclear(entstack);
+    }
+
+    ~meshbuildcontext()
+    {
+        delete collector;
+    }
+
+    void reset()
+    {
+        collector->clear();
+        hasmerges = mergemax = 0;
+        entdepth = -1;
+        loopi(MAXMERGELEVEL+1) merges[i].setsize(0);
+        memclear(entstack);
+    }
+};
+
+static meshbuildcontext mainmeshbuildcontext;
+static thread_local meshbuildcontext *activemeshbuildcontext = NULL;
+
+static inline meshbuildcontext &currentmeshbuildcontext()
+{
+    return activemeshbuildcontext ? *activemeshbuildcontext : mainmeshbuildcontext;
+}
+
+struct scopedmeshbuildcontext
+{
+    meshbuildcontext *previous;
+
+    scopedmeshbuildcontext(meshbuildcontext &context) : previous(activemeshbuildcontext)
+    {
+        activemeshbuildcontext = &context;
+    }
+
+    ~scopedmeshbuildcontext()
+    {
+        activemeshbuildcontext = previous;
+    }
+};
+
+#define vc (*currentmeshbuildcontext().collector)
+#define vahasmerges (currentmeshbuildcontext().hasmerges)
+#define vamergemax (currentmeshbuildcontext().mergemax)
+#define vamerges (currentmeshbuildcontext().merges)
+#define entdepth (currentmeshbuildcontext().entdepth)
+#define entstack (currentmeshbuildcontext().entstack)
+
+VARP(asyncworldmesh, 0, 0, 1);
+VARP(worldmeshthreads, 1, 2, 8);
+VARP(worldmeshjoblimit, 16, 128, 4096);
+VARP(worldmeshuploadlimit, 1, 4, 64);
+VARP(worldmeshuploadbytes, 64<<10, 2<<20, 64<<20);
+
+struct worldmeshjob
+{
+    meshbuildcontext context;
+    meshpacket *packet;
+    vtxarray *target;
+    uint generation;
+
+    worldmeshjob() : context(true), packet(NULL), target(NULL), generation(0) {}
+    ~worldmeshjob() { delete packet; }
+};
+
+static vector<worldmeshjob *> worldmeshjobs, worldmeshresults;
+static vector<SDL_Thread *> worldmeshworkers;
+static SDL_mutex *worldmeshmutex = NULL;
+static SDL_cond *worldmeshcond = NULL;
+static bool stopworldmeshworkers = false;
+static bool acceptworldmeshjobs = false;
+static int activeworldmeshjobs = 0;
+static uint nextmeshgeneration = 1;
+
+static int worldmeshworker(void *)
+{
+#ifdef TRACY_ENABLE
+    tracy::SetThreadName("World mesh worker");
+#endif
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_NORMAL);
+    for(;;)
+    {
+        SDL_LockMutex(worldmeshmutex);
+        while(worldmeshjobs.empty() && !stopworldmeshworkers) SDL_CondWait(worldmeshcond, worldmeshmutex);
+        if(stopworldmeshworkers)
+        {
+            SDL_UnlockMutex(worldmeshmutex);
+            return 0;
+        }
+        worldmeshjob *job = worldmeshjobs.remove(0);
+        activeworldmeshjobs++;
+        SDL_UnlockMutex(worldmeshmutex);
+
+        {
+            ZoneScopedN("VoxelMesh/WorkerPacket");
+            scopedmeshbuildcontext scope(job->context);
+            worldmeshworkerthread = true;
+            job->packet = new meshpacket;
+            job->context.collector->finalizepacket(*job->packet);
+            worldmeshworkerthread = false;
+        }
+
+        SDL_LockMutex(worldmeshmutex);
+        activeworldmeshjobs--;
+        if(stopworldmeshworkers) delete job;
+        else worldmeshresults.add(job);
+        SDL_CondBroadcast(worldmeshcond);
+        SDL_UnlockMutex(worldmeshmutex);
+    }
+}
+
+static bool startworldmeshworkers()
+{
+    if(!worldmeshworkers.empty()) return true;
+    worldmeshmutex = SDL_CreateMutex();
+    worldmeshcond = SDL_CreateCond();
+    stopworldmeshworkers = false;
+    if(!worldmeshmutex || !worldmeshcond)
+    {
+        if(worldmeshcond) SDL_DestroyCond(worldmeshcond);
+        if(worldmeshmutex) SDL_DestroyMutex(worldmeshmutex);
+        worldmeshcond = NULL;
+        worldmeshmutex = NULL;
+        return false;
+    }
+    loopi(worldmeshthreads)
+    {
+        SDL_Thread *worker = SDL_CreateThread(worldmeshworker, "world mesh worker", NULL);
+        if(worker) worldmeshworkers.add(worker);
+    }
+    return !worldmeshworkers.empty();
+}
+
+static bool queueworldmeshpacket(vtxarray *target)
+{
+    if(!acceptworldmeshjobs || !asyncworldmesh || !worldmeshbackend || !startworldmeshworkers()) return false;
+    SDL_LockMutex(worldmeshmutex);
+    const bool full = worldmeshjobs.length() + worldmeshresults.length() + activeworldmeshjobs >= worldmeshjoblimit;
+    SDL_UnlockMutex(worldmeshmutex);
+    if(full) return false;
+    // Slot loading/linking is render-thread state. Resolve every decal slot
+    // before ownership of the collector crosses the worker boundary.
+    vector<extentity *> &ents = entities::getents();
+    loopv(vc.decals) loopvj(vc.decals[i]->decals)
+        lookupdecalslot(ents[vc.decals[i]->decals[j]]->attr1, true);
+    loopv(vc.extdecals) loopvj(vc.extdecals[i]->decals)
+        lookupdecalslot(ents[vc.extdecals[i]->decals[j]]->attr1, true);
+    worldmeshjob *job = new worldmeshjob;
+    delete job->context.collector;
+    job->context.collector = currentmeshbuildcontext().collector;
+    currentmeshbuildcontext().collector = new vacollect;
+    currentmeshbuildcontext().collector->clear();
+    job->target = target;
+    job->generation = target->meshgeneration;
+    target->meshpending = true;
+
+    SDL_LockMutex(worldmeshmutex);
+    worldmeshjobs.add(job);
+    SDL_CondSignal(worldmeshcond);
+    SDL_UnlockMutex(worldmeshmutex);
+    return true;
+}
+
+void setasyncworldmeshing(bool enabled)
+{
+    acceptworldmeshjobs = enabled;
+}
 
 int recalcprogress = 0;
 #define progress(s)     if((recalcprogress++&0xFFF)==0) renderprogress(recalcprogress/(float)allocnodes, s);
@@ -1858,8 +2065,30 @@ vtxarray *newva(const ivec &o, int size)
     va->bbmax = va->alphamax = va->refractmax = va->skymax = ivec(-1, -1, -1);
     va->hasmerges = 0;
     va->mergelevel = -1;
+    va->mesh = NULL;
+    va->meshchecksum = 0;
+    va->meshgeneration = nextmeshgeneration++;
+    if(!va->meshgeneration) va->meshgeneration = nextmeshgeneration++;
+    va->meshpending = false;
+    va->vdata = NULL;
+    va->edata = va->skydata = va->decaldata = NULL;
+    va->vbuf = va->ebuf = va->skybuf = va->decalbuf = 0;
+    va->voffset = va->eoffset = va->skyoffset = va->decaloffset = 0;
+    va->texelems = va->decalelems = NULL;
+    va->matbuf = NULL;
+    va->minvert = va->maxvert = 0;
+    va->verts = va->tris = va->texs = va->blendtris = va->blends = 0;
+    va->alphabacktris = va->alphaback = va->alphafronttris = va->alphafront = 0;
+    va->refracttris = va->refract = va->alphatris = va->texmask = 0;
+    va->sky = va->matsurfs = va->matmask = va->distance = va->rdistance = 0;
+    va->dyntexs = va->dynalphatexs = va->decaltris = va->decaltexs = 0;
+    va->oqcontent = 0;
+    va->geommin = va->geommax = va->lavamin = va->lavamax = ivec(-1, -1, -1);
+    va->watermin = va->watermax = va->glassmin = va->glassmax = ivec(-1, -1, -1);
+    va->nogimin = va->nogimax = ivec(-1, -1, -1);
+    va->shadowmask = va->shadowtransparent = 0;
 
-    vc.setupdata(va);
+    if(!queueworldmeshpacket(va)) vc.setupdata(va);
     va->oqcontent = va->alphatris || va->matmask || !va->mapmodels.empty() || !va->decals.empty();
 
     wverts += va->verts;
@@ -1868,6 +2097,24 @@ vtxarray *newva(const ivec &o, int size)
     valist.add(va);
 
     return va;
+}
+
+static bool liveworldmeshnode(vtxarray *va, uint generation)
+{
+    return va && valist.find(va) >= 0 && va->meshgeneration == generation;
+}
+
+static void cancelworldmeshjob(vtxarray *va)
+{
+    if(!va || !worldmeshmutex) return;
+    SDL_LockMutex(worldmeshmutex);
+    for(int i = worldmeshjobs.length()-1; i >= 0; --i) if(worldmeshjobs[i]->target == va)
+        delete worldmeshjobs.remove(i);
+    for(int i = worldmeshresults.length()-1; i >= 0; --i) if(worldmeshresults[i]->target == va)
+        delete worldmeshresults.remove(i);
+    va->meshpending = false;
+    va->meshgeneration = nextmeshgeneration++;
+    SDL_UnlockMutex(worldmeshmutex);
 }
 
 void invalidatevabb(vtxarray *va)
@@ -1881,6 +2128,7 @@ void invalidatevabb(vtxarray *va)
 
 void destroyva(vtxarray *va, bool reparent)
 {
+    cancelworldmeshjob(va);
     vtxarray *parent = va->parent;
     wverts -= va->verts;
     wtris -= va->tris + va->blends + va->alphatris + va->decaltris;
@@ -1911,6 +2159,121 @@ void destroyva(vtxarray *va, bool reparent)
     if(va->decalelems) delete[] va->decalelems;
     if(va->matbuf) delete[] va->matbuf;
     delete va;
+}
+
+static void applyworldmeshresult(worldmeshjob *job)
+{
+    vtxarray *va = job->target;
+    if(!job->packet || !liveworldmeshnode(va, job->generation)) return;
+
+    const int oldverts = va->verts, oldsky = va->sky,
+              oldtris = va->tris + va->blends + va->alphatris + va->decaltris;
+    if(!va->mesh)
+    {
+        if(va->vbuf) destroyvbo(va->vbuf);
+        if(va->ebuf) destroyvbo(va->ebuf);
+        if(va->skybuf) destroyvbo(va->skybuf);
+        if(va->decalbuf) destroyvbo(va->decalbuf);
+    }
+    delete[] va->texelems;
+    delete[] va->decalelems;
+    delete[] va->matbuf;
+    va->texelems = va->decalelems = NULL;
+    va->matbuf = NULL;
+    va->grasstris.setsize(0);
+    va->mapmodels.setsize(0);
+    va->decals.setsize(0);
+
+    recordmeshpacket(*job->packet);
+    vc.setupdata(va, *job->packet);
+    va->meshpending = false;
+    va->oqcontent = va->alphatris || va->matmask || !va->mapmodels.empty() || !va->decals.empty();
+    wverts += va->verts - oldverts;
+    wtris += va->tris + va->blends + va->alphatris + va->decaltris - oldtris;
+    explicitsky += va->sky - oldsky;
+    int index = valist.find(va);
+    if(index >= 0) setupmaterials(index, index+1);
+    invalidatevabb(va);
+}
+
+void processworldmeshuploads(bool drain)
+{
+    if(!worldmeshmutex) return;
+    ZoneScopedN("VoxelMesh/ProcessCompleted");
+    const uint bytebudget = drain ? UINT_MAX : uint(worldmeshuploadbytes);
+    const int countbudget = drain ? INT_MAX : worldmeshuploadlimit;
+    uint uploaded = 0;
+    int handled = 0;
+    for(;;)
+    {
+        worldmeshjob *job = NULL;
+        SDL_LockMutex(worldmeshmutex);
+        if(worldmeshresults.empty() && drain && (!worldmeshjobs.empty() || activeworldmeshjobs))
+        {
+            SDL_CondWait(worldmeshcond, worldmeshmutex);
+        }
+        if(!worldmeshresults.empty())
+        {
+            worldmeshjob *candidate = worldmeshresults[0];
+            uint bytes = candidate->packet ? meshpacketbytes(*candidate->packet) : 0;
+            if(handled < countbudget && (!handled || uploaded + bytes <= bytebudget))
+            {
+                job = worldmeshresults.remove(0);
+                uploaded += bytes;
+                handled++;
+            }
+        }
+        bool finished = worldmeshjobs.empty() && !activeworldmeshjobs && worldmeshresults.empty();
+        SDL_UnlockMutex(worldmeshmutex);
+
+        if(job)
+        {
+            applyworldmeshresult(job);
+            delete job;
+            continue;
+        }
+        if(!drain || finished || handled >= countbudget || uploaded >= bytebudget) break;
+    }
+    if(handled)
+    {
+        clearshadowcache();
+        updatevabbs();
+    }
+    SDL_LockMutex(worldmeshmutex);
+    const int pendingcpu = worldmeshjobs.length() + activeworldmeshjobs,
+              pendinguploads = worldmeshresults.length();
+    SDL_UnlockMutex(worldmeshmutex);
+    (void)pendingcpu;
+    (void)pendinguploads;
+    TracyPlot("VoxelMesh/Completed uploads", int64_t(handled));
+    TracyPlot("VoxelMesh/Pending CPU jobs", int64_t(pendingcpu));
+    TracyPlot("VoxelMesh/Pending uploads", int64_t(pendinguploads));
+}
+
+void flushworldmeshjobs()
+{
+    processworldmeshuploads(true);
+}
+
+void shutdownworldmeshworkers()
+{
+    if(!worldmeshmutex) return;
+    SDL_LockMutex(worldmeshmutex);
+    stopworldmeshworkers = true;
+    SDL_CondBroadcast(worldmeshcond);
+    SDL_UnlockMutex(worldmeshmutex);
+    loopv(worldmeshworkers) SDL_WaitThread(worldmeshworkers[i], NULL);
+    worldmeshworkers.setsize(0);
+    loopv(worldmeshjobs) delete worldmeshjobs[i];
+    loopv(worldmeshresults) delete worldmeshresults[i];
+    worldmeshjobs.setsize(0);
+    worldmeshresults.setsize(0);
+    SDL_DestroyCond(worldmeshcond);
+    SDL_DestroyMutex(worldmeshmutex);
+    worldmeshcond = NULL;
+    worldmeshmutex = NULL;
+    activeworldmeshjobs = 0;
+    stopworldmeshworkers = false;
 }
 
 void clearvas(cube *c)
@@ -1998,18 +2361,6 @@ void updatevabbs(bool force)
         worldmax = ivec(worldsize, worldsize, worldsize);
     }
 }
-
-struct mergedface
-{
-    uchar orient, numverts;
-    ushort mat, tex, envmap;
-    vertinfo *verts;
-    int tjoints;
-};
-
-#define MAXMERGELEVEL 12
-static int vahasmerges = 0, vamergemax = 0;
-static vector<mergedface> vamerges[MAXMERGELEVEL+1];
 
 int genmergedfaces(cube &c, const ivec &co, int size, int minlevel = -1)
 {
@@ -2173,9 +2524,6 @@ void rendercube(cube &c, const ivec &co, int size, int csi, int &maxlevel) // cr
 
     if(csi <= MAXMERGELEVEL && vamerges[csi].length()) addmergedverts(csi, co);
 }
-
-static int entdepth = -1;
-static octaentities *entstack[32];
 
 void setva(cube &c, const ivec &co, int size, int csi, bool force = false)
 {
@@ -2464,6 +2812,7 @@ void precachetextures()
 
 void allchanged(bool load)
 {
+    flushworldmeshjobs();
     if(mainmenu && !isconnected()) load = false;
     if(load) initlights();
     renderprogress(0, "clearing vertex arrays...");

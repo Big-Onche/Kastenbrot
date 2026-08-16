@@ -1952,6 +1952,7 @@ void renderva(renderstate &cur, vtxarray *va, int pass = RENDERPASS_GBUFFER, boo
 
 void cleanupva()
 {
+    shutdownworldmeshworkers();
     clearvas(worldroot);
     cleanupworldmesharena();
     clearqueries();
@@ -1977,6 +1978,10 @@ VAR(oqgeom, 0, 1, 1);
 void rendergeom()
 {
     ZoneScopedN("Render/G-buffer/World/Total");
+
+    // Worker results contain CPU-only meshpackets. OpenGL residency and the
+    // handle swap always happen here on the render thread under a strict budget.
+    processworldmeshuploads();
 
     bool doOQ = oqfrags && oqgeom && !drawtex, multipassing = false;
     renderstate cur;

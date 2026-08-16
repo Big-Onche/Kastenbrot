@@ -96,6 +96,8 @@ enum
     MESH_RANGE_DECAL       = 1<<5
 };
 
+struct octaentities;
+
 // CPU-only output of the octree mesher. Indices remain local to the packet;
 // GPU residency is assigned later by either the validation or pooled backend.
 struct meshrange
@@ -114,6 +116,8 @@ struct meshpacket
     vector<uint> indices, skyindices, decalindices;
     vector<meshrange> ranges, decalranges;
     vector<materialsurface> materials;
+    vector<grasstri> grasstris;
+    vector<octaentities *> mapmodels, decals;
     vec bbmin, bbmax;
     vec alphamin, alphamax, refractmin, refractmax, skymin, skymax;
     ivec nogimin, nogimax;
@@ -190,6 +194,8 @@ struct vtxarray
     GLuint vbuf, ebuf, skybuf, decalbuf; // legacy ownership or pooled compatibility aliases
     gpumesh *mesh;             // pooled GPU residency; NULL for the legacy backend
     ullong meshchecksum;       // backend-independent packet checksum for validation
+    uint meshgeneration;       // rejects completed work for recycled/destroyed spatial nodes
+    bool meshpending;          // CPU packet build or bounded main-thread upload is outstanding
     ushort minvert, maxvert; // DRE info
     elementset *texelems, *decalelems;   // List of element indices sets (range) per texture
     materialsurface *matbuf; // buffer of material surfaces

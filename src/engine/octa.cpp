@@ -272,8 +272,8 @@ int lookupmaterial(const vec &v)
     return c->material;
 }
 
-const cube *neighbourstack[32];
-int neighbourdepth = -1;
+thread_local const cube *neighbourstack[32];
+thread_local int neighbourdepth = -1;
 
 const cube &neighbourcube(const cube &c, int orient, const ivec &co, int size, ivec &ro, int &rsize)
 {
