@@ -27,6 +27,500 @@ static vector<vtxarray *> vbovas[NUMVBO];
 static int vbosize[NUMVBO];
 static int worldvauploadbytes = 0, worldvauploadvertices = 0;
 
+static void worldmeshbackendchanged();
+VARF(worldmeshbackend, 0, 1, 1, worldmeshbackendchanged());
+
+struct worldmeshpage
+{
+    GLuint vbuf, ebuf;
+    uint vertexcapacity, indexcapacity, usedvertices, usedindices;
+    vertex *vertices;
+    ushort *indices;
+    vector<gpuslice> freevertices, freeindices;
+
+    worldmeshpage(uint vertexcapacity, uint indexcapacity) : vbuf(0), ebuf(0),
+        vertexcapacity(vertexcapacity), indexcapacity(indexcapacity), usedvertices(0), usedindices(0)
+    {
+        ZoneScopedN("VoxelMesh/ArenaAlloc");
+        vertices = new vertex[vertexcapacity];
+        indices = new ushort[indexcapacity];
+        freevertices.add(gpuslice(0, vertexcapacity));
+        freeindices.add(gpuslice(0, indexcapacity));
+
+        gle::disable();
+        glGenBuffers_(1, &vbuf);
+        glBindBuffer_(GL_ARRAY_BUFFER, vbuf);
+        glBufferData_(GL_ARRAY_BUFFER, vertexcapacity*sizeof(vertex), NULL, GL_STATIC_DRAW);
+        glGenBuffers_(1, &ebuf);
+        glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, ebuf);
+        glBufferData_(GL_ELEMENT_ARRAY_BUFFER, indexcapacity*sizeof(ushort), NULL, GL_STATIC_DRAW);
+        glBindBuffer_(GL_ARRAY_BUFFER, 0);
+        glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+
+    ~worldmeshpage()
+    {
+        if(vbuf) glDeleteBuffers_(1, &vbuf);
+        if(ebuf) glDeleteBuffers_(1, &ebuf);
+        delete[] vertices;
+        delete[] indices;
+    }
+};
+
+// Pages are shared by many VAs. The 65,535-vertex page boundary deliberately
+// preserves Cube's GL_UNSIGNED_SHORT index format until base-vertex drawing is
+// introduced; freed VA slices can be reused independently inside each page.
+static vector<worldmeshpage *> worldmeshpages;
+static uint worldmesharenausedvertices = 0, worldmesharenausedindices = 0;
+static uint worldmeshpacketvertices = 0, worldmeshpacketindices = 0, worldmeshlargestpacket = 0;
+static int worldmeshrebuilds = 0, worldmeshpackets = 0, worldmeshpacketranges = 0;
+
+static ullong hashmeshbytes(ullong hash, const void *data, size_t len)
+{
+    const uchar *bytes = (const uchar *)data;
+    loopi(int(len)) hash = (hash ^ bytes[i]) * 1099511628211ULL;
+    return hash;
+}
+
+template<class T>
+static inline ullong hashmeshvalue(ullong hash, const T &value)
+{
+    return hashmeshbytes(hash, &value, sizeof(value));
+}
+
+static ullong hashmeshrange(ullong hash, const meshrange &range)
+{
+    hash = hashmeshvalue(hash, range.firstindex);
+    hash = hashmeshvalue(hash, range.indexcount);
+    hash = hashmeshvalue(hash, range.flags);
+    hash = hashmeshvalue(hash, range.texture);
+    hash = hashmeshvalue(hash, range.material);
+    hash = hashmeshvalue(hash, range.envmap);
+    hash = hashmeshvalue(hash, range.minvert);
+    hash = hashmeshvalue(hash, range.maxvert);
+    hash = hashmeshvalue(hash, range.reuse);
+    hash = hashmeshvalue(hash, range.orient);
+    return hashmeshvalue(hash, range.layer);
+}
+
+static ullong hashmaterialsurface(ullong hash, const materialsurface &surface)
+{
+    hash = hashmeshvalue(hash, surface.o.x);
+    hash = hashmeshvalue(hash, surface.o.y);
+    hash = hashmeshvalue(hash, surface.o.z);
+    hash = hashmeshvalue(hash, surface.csize);
+    hash = hashmeshvalue(hash, surface.rsize);
+    hash = hashmeshvalue(hash, surface.material);
+    hash = hashmeshvalue(hash, surface.skip);
+    hash = hashmeshvalue(hash, surface.orient);
+    hash = hashmeshvalue(hash, surface.visible);
+    return hashmeshvalue(hash, surface.envmap);
+}
+
+static int findslice(const vector<gpuslice> &freelist, uint size)
+{
+    if(!size) return -2;
+    loopv(freelist) if(freelist[i].size >= size) return i;
+    return -1;
+}
+
+static gpuslice takeslice(vector<gpuslice> &freelist, int index, uint size)
+{
+    if(index == -2) return gpuslice();
+    gpuslice result(freelist[index].offset, size);
+    freelist[index].offset += size;
+    freelist[index].size -= size;
+    if(!freelist[index].size) freelist.remove(index);
+    return result;
+}
+
+static bool sortslice(const gpuslice &a, const gpuslice &b)
+{
+    return a.offset < b.offset;
+}
+
+static void returnslice(vector<gpuslice> &freelist, const gpuslice &slice)
+{
+    if(!slice.size) return;
+    freelist.add(slice);
+    freelist.sort(sortslice);
+    for(int i = 1; i < freelist.length();)
+    {
+        gpuslice &prev = freelist[i-1], &cur = freelist[i];
+        if(prev.offset + prev.size < cur.offset) { ++i; continue; }
+        prev.size = max(prev.size, cur.offset + cur.size - prev.offset);
+        freelist.remove(i);
+    }
+}
+
+static worldmeshpage *allocworldmeshpage(uint numverts, uint numindices, gpuslice &verts, gpuslice &indices)
+{
+    ZoneScopedN("VoxelMesh/ArenaAlloc");
+    loopv(worldmeshpages)
+    {
+        worldmeshpage *page = worldmeshpages[i];
+        int vi = findslice(page->freevertices, numverts), ii = findslice(page->freeindices, numindices);
+        if(vi != -1 && ii != -1)
+        {
+            verts = takeslice(page->freevertices, vi, numverts);
+            indices = takeslice(page->freeindices, ii, numindices);
+            page->usedvertices += numverts;
+            page->usedindices += numindices;
+            return page;
+        }
+    }
+
+    const uint vertexcapacity = max(uint(USHRT_MAX), numverts),
+               indexcapacity = max(uint(USHRT_MAX)*4U, numindices);
+    worldmeshpage *page = new worldmeshpage(vertexcapacity, indexcapacity);
+    worldmeshpages.add(page);
+    verts = takeslice(page->freevertices, findslice(page->freevertices, numverts), numverts);
+    indices = takeslice(page->freeindices, findslice(page->freeindices, numindices), numindices);
+    page->usedvertices = numverts;
+    page->usedindices = numindices;
+    return page;
+}
+
+static void freeworldmesh(gpumesh *mesh);
+
+static gpumesh *uploadworldmesh(const meshpacket &packet)
+{
+    ZoneScopedN("VoxelMesh/Upload");
+    gle::disable();
+    ASSERT(packet.vertices.length() <= USHRT_MAX);
+    const uint totalindices = packet.indices.length() + packet.skyindices.length() + packet.decalindices.length();
+    gpuslice vertices, allindices;
+    worldmeshpage *page = allocworldmeshpage(packet.vertices.length(), totalindices, vertices, allindices);
+    gpumesh *mesh = new gpumesh;
+    mesh->vertices = vertices;
+    mesh->indices = gpuslice(allindices.offset, packet.indices.length());
+    mesh->skyindices = gpuslice(mesh->indices.offset + mesh->indices.size, packet.skyindices.length());
+    mesh->decalindices = gpuslice(mesh->skyindices.offset + mesh->skyindices.size, packet.decalindices.length());
+    mesh->numverts = packet.vertices.length();
+    mesh->numindices = totalindices;
+    mesh->vbuf = page->vbuf;
+    mesh->ebuf = page->ebuf;
+    mesh->arena = page;
+    mesh->checksum = packet.checksum;
+    loopv(packet.ranges)
+    {
+        meshrange range = packet.ranges[i];
+        range.firstindex += mesh->indices.offset;
+        range.minvert += mesh->vertices.offset;
+        range.maxvert += mesh->vertices.offset;
+        mesh->ranges.add(range);
+    }
+    if(packet.skyindices.length())
+    {
+        meshrange &range = mesh->ranges.add();
+        range.firstindex = mesh->skyindices.offset;
+        range.indexcount = packet.skyindices.length();
+        range.flags = MESH_RANGE_SKY;
+        range.minvert = mesh->vertices.offset;
+        range.maxvert = mesh->vertices.offset + mesh->vertices.size - 1;
+    }
+    loopv(packet.decalranges)
+    {
+        meshrange range = packet.decalranges[i];
+        range.firstindex += mesh->decalindices.offset;
+        range.minvert += mesh->vertices.offset;
+        range.maxvert += mesh->vertices.offset;
+        mesh->ranges.add(range);
+    }
+
+    if(mesh->numverts)
+    {
+        memcpy(page->vertices + vertices.offset, packet.vertices.getbuf(), mesh->numverts*sizeof(vertex));
+        glBindBuffer_(GL_ARRAY_BUFFER, page->vbuf);
+        glBufferSubData_(GL_ARRAY_BUFFER, vertices.offset*sizeof(vertex), mesh->numverts*sizeof(vertex), packet.vertices.getbuf());
+    }
+
+    ushort *dst = page->indices + allindices.offset;
+#define UPLOADINDICES(src) do \
+    { \
+        loopv(src) \
+        { \
+            ASSERT(src[i] + vertices.offset <= USHRT_MAX); \
+            dst[i] = ushort(src[i] + vertices.offset); \
+        } \
+        dst += src.length(); \
+    } while(0)
+    UPLOADINDICES(packet.indices);
+    UPLOADINDICES(packet.skyindices);
+    UPLOADINDICES(packet.decalindices);
+#undef UPLOADINDICES
+    if(totalindices)
+    {
+        glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, page->ebuf);
+        glBufferSubData_(GL_ELEMENT_ARRAY_BUFFER, allindices.offset*sizeof(ushort), totalindices*sizeof(ushort), page->indices + allindices.offset);
+    }
+    glBindBuffer_(GL_ARRAY_BUFFER, 0);
+    glBindBuffer_(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    worldmesharenausedvertices += mesh->numverts;
+    worldmesharenausedindices += mesh->numindices;
+    worldvauploadbytes += mesh->numverts*sizeof(vertex) + mesh->numindices*sizeof(ushort);
+    worldvauploadvertices += mesh->numverts;
+    worldmeshrebuilds++;
+    return mesh;
+}
+
+static void installworldmesh(vtxarray *va, gpumesh *mesh)
+{
+    ZoneScopedN("VoxelMesh/Swap");
+    gpumesh *oldmesh = va->mesh;
+    worldmeshpage *page = (worldmeshpage *)mesh->arena;
+    va->mesh = mesh;
+    va->meshchecksum = mesh->checksum;
+    va->vbuf = mesh->vbuf;
+    va->ebuf = va->skybuf = va->decalbuf = mesh->ebuf;
+    va->vdata = page->vertices;
+    va->edata = va->skydata = va->decaldata = page->indices;
+    va->voffset = mesh->vertices.offset;
+    va->eoffset = mesh->indices.offset;
+    va->skyoffset = mesh->skyindices.offset;
+    va->decaloffset = mesh->decalindices.offset;
+    va->minvert = mesh->vertices.offset;
+    va->maxvert = mesh->vertices.size ? mesh->vertices.offset + mesh->vertices.size - 1 : mesh->vertices.offset;
+    if(oldmesh) freeworldmesh(oldmesh);
+}
+
+static void freeworldmesh(gpumesh *mesh)
+{
+    if(!mesh) return;
+    ZoneScopedN("VoxelMesh/FreeOld");
+    worldmeshpage *page = (worldmeshpage *)mesh->arena;
+    if(page)
+    {
+        returnslice(page->freevertices, mesh->vertices);
+        returnslice(page->freeindices, gpuslice(mesh->indices.offset, mesh->numindices));
+        page->usedvertices -= mesh->numverts;
+        page->usedindices -= mesh->numindices;
+    }
+    worldmesharenausedvertices -= mesh->numverts;
+    worldmesharenausedindices -= mesh->numindices;
+    delete mesh;
+}
+
+void cleanupworldmesharena()
+{
+    worldmeshpages.deletecontents();
+    worldmesharenausedvertices = worldmesharenausedindices = 0;
+}
+
+static void worldmeshstats()
+{
+    uint vertexcapacity = 0, indexcapacity = 0, freevertices = 0, freeindices = 0,
+         largestvertexfree = 0, largestindexfree = 0;
+    loopv(worldmeshpages)
+    {
+        worldmeshpage &page = *worldmeshpages[i];
+        vertexcapacity += page.vertexcapacity;
+        indexcapacity += page.indexcapacity;
+        loopvj(page.freevertices)
+        {
+            freevertices += page.freevertices[j].size;
+            largestvertexfree = max(largestvertexfree, page.freevertices[j].size);
+        }
+        loopvj(page.freeindices)
+        {
+            freeindices += page.freeindices[j].size;
+            largestindexfree = max(largestindexfree, page.freeindices[j].size);
+        }
+    }
+    const ullong usedbytes = ullong(worldmesharenausedvertices)*sizeof(vertex) + ullong(worldmesharenausedindices)*sizeof(ushort),
+                 freebytes = ullong(freevertices)*sizeof(vertex) + ullong(freeindices)*sizeof(ushort);
+    const float vertexfragmentation = freevertices ? 1.0f - largestvertexfree/float(freevertices) : 0,
+                indexfragmentation = freeindices ? 1.0f - largestindexfree/float(freeindices) : 0;
+    conoutf(CON_DEBUG, "world mesh backend %d: %d arena pages, vertices %u/%u, indices %u/%u, largest free %u verts/%u indices",
+        worldmeshbackend, worldmeshpages.length(), worldmesharenausedvertices, vertexcapacity,
+        worldmesharenausedindices, indexcapacity, largestvertexfree, largestindexfree);
+    conoutf(CON_DEBUG, "arena used/free %llu/%llu bytes, fragmentation vertices %.1f%% / indices %.1f%%",
+        usedbytes, freebytes, vertexfragmentation*100.0f, indexfragmentation*100.0f);
+    conoutf(CON_DEBUG, "mesh packets %d, vertices %u, indices %u, ranges %d, largest packet %u bytes, resident rebuilds %d",
+        worldmeshpackets, worldmeshpacketvertices, worldmeshpacketindices, worldmeshpacketranges,
+        worldmeshlargestpacket, worldmeshrebuilds);
+}
+COMMAND(worldmeshstats, "");
+
+struct worldmeshsnapshot
+{
+    ullong fingerprint;
+    uint vas, vertices, indices, ranges;
+
+    worldmeshsnapshot() : fingerprint(0), vas(0), vertices(0), indices(0), ranges(0) {}
+
+    bool operator==(const worldmeshsnapshot &other) const
+    {
+        return fingerprint == other.fingerprint && vas == other.vas && vertices == other.vertices &&
+               indices == other.indices && ranges == other.ranges;
+    }
+};
+
+static ullong mixmeshchecksum(ullong value)
+{
+    value ^= value >> 30;
+    value *= 0xBF58476D1CE4E5B9ULL;
+    value ^= value >> 27;
+    value *= 0x94D049BB133111EBULL;
+    return value ^ (value >> 31);
+}
+
+static worldmeshsnapshot snapshotworldmeshes()
+{
+    worldmeshsnapshot snapshot;
+    loopv(valist)
+    {
+        const vtxarray &va = *valist[i];
+        const uint worldindices = 3U*(va.tris + va.blendtris + va.alphatris),
+                   totalindices = worldindices + va.sky + 3U*va.decaltris,
+                   totalranges = va.texs + va.blends + va.alphaback + va.alphafront + va.refract +
+                                 va.decaltexs + (va.sky ? 1 : 0);
+        ullong nodehash = hashmeshvalue(va.meshchecksum, va.o.x);
+        nodehash = hashmeshvalue(nodehash, va.o.y);
+        nodehash = hashmeshvalue(nodehash, va.o.z);
+        nodehash = hashmeshvalue(nodehash, va.size);
+        snapshot.fingerprint ^= mixmeshchecksum(nodehash);
+        snapshot.vas++;
+        snapshot.vertices += va.verts;
+        snapshot.indices += totalindices;
+        snapshot.ranges += totalranges;
+    }
+    return snapshot;
+}
+
+static bool validworldmeshfreelist(const vector<gpuslice> &freelist, uint capacity, uint used)
+{
+    uint free = 0, end = 0;
+    loopv(freelist)
+    {
+        const gpuslice &slice = freelist[i];
+        if(!slice.size || slice.offset < end || slice.offset + slice.size > capacity) return false;
+        free += slice.size;
+        end = slice.offset + slice.size;
+    }
+    return free + used == capacity;
+}
+
+static void worldmeshvalidate()
+{
+    uint vertices = 0, indices = 0, ranges = 0;
+    int metadataerrors = 0, indexerrors = 0, arenaerrors = 0,
+        pooled = 0, legacy = 0, empty = 0, boundsmismatches = 0;
+    loopv(valist)
+    {
+        vtxarray &va = *valist[i];
+        const uint worldindices = 3U*(va.tris + va.blendtris + va.alphatris),
+                   totalindices = worldindices + va.sky + 3U*va.decaltris,
+                   totalranges = va.texs + va.blends + va.alphaback + va.alphafront + va.refract +
+                                 va.decaltexs + (va.sky ? 1 : 0);
+        vertices += va.verts;
+        indices += totalindices;
+        ranges += totalranges;
+        if((worldmeshbackend != 0) != (va.mesh != NULL) && va.verts) metadataerrors++;
+        if(va.mesh)
+        {
+            pooled++;
+            if(va.mesh->numverts != uint(va.verts) || va.mesh->numindices != totalindices ||
+               va.mesh->ranges.length() != int(totalranges) || va.vbuf != va.mesh->vbuf ||
+               va.ebuf != va.mesh->ebuf || va.skybuf != va.mesh->ebuf || va.decalbuf != va.mesh->ebuf ||
+               va.meshchecksum != va.mesh->checksum)
+                metadataerrors++;
+
+            worldmeshpage *page = (worldmeshpage *)va.mesh->arena;
+            if(!page || worldmeshpages.find(page) < 0 || va.mesh->vertices.offset + va.mesh->vertices.size > page->vertexcapacity ||
+               va.mesh->indices.offset + va.mesh->numindices > page->indexcapacity ||
+               va.mesh->vbuf != page->vbuf || va.mesh->ebuf != page->ebuf)
+                arenaerrors++;
+            else
+            {
+                loopj(va.mesh->numindices)
+                {
+                    const ushort index = page->indices[va.mesh->indices.offset + j];
+                    if(index < va.mesh->vertices.offset || index >= va.mesh->vertices.offset + va.mesh->vertices.size)
+                    {
+                        indexerrors++;
+                        break;
+                    }
+                }
+                uint worldcursor = va.mesh->indices.offset, skycursor = va.mesh->skyindices.offset,
+                     decalcursor = va.mesh->decalindices.offset;
+                loopvj(va.mesh->ranges)
+                {
+                    const meshrange &range = va.mesh->ranges[j];
+                    const gpuslice &slice = range.flags&MESH_RANGE_SKY ? va.mesh->skyindices :
+                                               (range.flags&MESH_RANGE_DECAL ? va.mesh->decalindices : va.mesh->indices);
+                    uint &cursor = range.flags&MESH_RANGE_SKY ? skycursor :
+                                       (range.flags&MESH_RANGE_DECAL ? decalcursor : worldcursor);
+                    if(range.firstindex < slice.offset || range.firstindex + range.indexcount > slice.offset + slice.size ||
+                       range.firstindex != cursor || range.minvert < va.mesh->vertices.offset ||
+                       range.maxvert >= va.mesh->vertices.offset + va.mesh->vertices.size)
+                        metadataerrors++;
+                    cursor += range.indexcount;
+                }
+                if(worldcursor != va.mesh->indices.offset + va.mesh->indices.size ||
+                   skycursor != va.mesh->skyindices.offset + va.mesh->skyindices.size ||
+                   decalcursor != va.mesh->decalindices.offset + va.mesh->decalindices.size)
+                    metadataerrors++;
+            }
+        }
+        else if(va.verts) legacy++;
+        else empty++;
+
+        if(va.verts && va.vdata)
+        {
+            vec bbmin(va.o), bbmax(bbmin);
+            bbmin.add(va.size);
+            loopj(va.verts)
+            {
+                const vec &pos = va.vdata[va.voffset + j].pos;
+                bbmin.min(pos);
+                bbmax.max(pos);
+            }
+            ivec geommin = ivec(bbmin.mul(8)).shr(3), geommax = ivec(bbmax.mul(8)).add(7).shr(3);
+            if(geommin != va.geommin || geommax != va.geommax) boundsmismatches++;
+        }
+    }
+
+    uint usedvertices = 0, usedindices = 0;
+    loopv(worldmeshpages)
+    {
+        const worldmeshpage &page = *worldmeshpages[i];
+        usedvertices += page.usedvertices;
+        usedindices += page.usedindices;
+        if(!validworldmeshfreelist(page.freevertices, page.vertexcapacity, page.usedvertices) ||
+           !validworldmeshfreelist(page.freeindices, page.indexcapacity, page.usedindices))
+            arenaerrors++;
+    }
+    if(usedvertices != worldmesharenausedvertices || usedindices != worldmesharenausedindices) arenaerrors++;
+
+    const worldmeshsnapshot snapshot = snapshotworldmeshes();
+    conoutf(metadataerrors || indexerrors || arenaerrors || boundsmismatches ? CON_WARN : CON_DEBUG,
+        "world mesh validation: %d legacy / %d pooled / %d empty VAs, %u vertices, %u indices, %u ranges, checksum 0x%llx, errors metadata %d/index %d/arena %d/bounds %d",
+        legacy, pooled, empty, vertices, indices, ranges, snapshot.fingerprint,
+        metadataerrors, indexerrors, arenaerrors, boundsmismatches);
+}
+COMMAND(worldmeshvalidate, "");
+
+static int residentworldmeshbackend = 1;
+
+static void worldmeshbackendchanged()
+{
+    const worldmeshsnapshot before = snapshotworldmeshes();
+    const int oldbackend = residentworldmeshbackend;
+    residentworldmeshbackend = worldmeshbackend;
+    allchanged();
+    if(!before.vas) return;
+
+    const worldmeshsnapshot after = snapshotworldmeshes();
+    const bool matches = before == after;
+    conoutf(matches ? CON_DEBUG : CON_WARN,
+        "world mesh backend validation %d -> %d: %s; VAs %u/%u, vertices %u/%u, indices %u/%u, ranges %u/%u, checksums 0x%llx/0x%llx",
+        oldbackend, worldmeshbackend, matches ? "identical" : "MISMATCH",
+        before.vas, after.vas, before.vertices, after.vertices, before.indices, after.indices,
+        before.ranges, after.ranges, before.fingerprint, after.fingerprint);
+}
+
 void resetworldvauploadstats()
 {
     worldvauploadbytes = worldvauploadvertices = 0;
@@ -460,19 +954,155 @@ struct vacollect : verthash
         decaltexs.sort(decalkey::sort);
     }
 
-    void setupdata(vtxarray *va)
+    void finalizepacket(meshpacket &packet)
     {
+        ZoneScopedN("VoxelMesh/FinalizePacket");
         optimize();
         gendecals();
+        packet.alphamin = alphamin;
+        packet.alphamax = alphamax;
+        packet.refractmin = refractmin;
+        packet.refractmax = refractmax;
+        packet.skymin = skymin;
+        packet.skymax = skymax;
+        packet.nogimin = nogimin;
+        packet.nogimax = nogimax;
 
-        va->verts = verts.length();
-        va->tris = worldtris/3;
+        if(verts.length())
+        {
+            vertex *vdata = packet.vertices.pad(verts.length());
+            genverts(vdata);
+            loopv(packet.vertices)
+            {
+                packet.bbmin.min(packet.vertices[i].pos);
+                packet.bbmax.max(packet.vertices[i].pos);
+            }
+        }
+
+        loopv(texs)
+        {
+            const sortkey &k = texs[i];
+            const sortval &t = indices[k];
+            meshrange &range = packet.ranges.add();
+            range.firstindex = packet.indices.length();
+            range.indexcount = t.tris.length();
+            range.texture = k.tex;
+            range.envmap = k.envmap;
+            range.orient = k.orient;
+            range.layer = k.layer;
+            range.minvert = USHRT_MAX;
+            range.maxvert = 0;
+            if(k.layer == LAYER_BLEND) range.flags |= MESH_RANGE_BLEND;
+            if(k.alpha == ALPHA_BACK) range.flags |= MESH_RANGE_ALPHA_BACK;
+            else if(k.alpha == ALPHA_FRONT) range.flags |= MESH_RANGE_ALPHA_FRONT;
+            else if(k.alpha == ALPHA_REFRACT) range.flags |= MESH_RANGE_REFRACT;
+            if(k.alpha != NO_ALPHA) range.material = MAT_ALPHA;
+            loopvj(t.tris)
+            {
+                range.minvert = min(range.minvert, t.tris[j]);
+                range.maxvert = max(range.maxvert, t.tris[j]);
+            }
+            loopvj(t.tris) packet.indices.add(t.tris[j]);
+        }
+        loopv(skyindices) packet.skyindices.add(skyindices[i]);
+        if(matsurfs.length())
+        {
+            packet.materials.put(matsurfs.getbuf(), matsurfs.length());
+            loopv(packet.materials)
+            {
+                packet.materials[i].skip = 0;
+                packet.materials[i].envmap = EMID_NONE;
+            }
+        }
+
+        loopv(decaltexs)
+        {
+            const decalkey &k = decaltexs[i];
+            const sortval &t = decalindices[k];
+            meshrange &range = packet.decalranges.add();
+            range.firstindex = packet.decalindices.length();
+            range.indexcount = t.tris.length();
+            range.flags = MESH_RANGE_DECAL;
+            range.texture = k.tex;
+            range.envmap = k.envmap;
+            range.reuse = k.reuse;
+            range.minvert = USHRT_MAX;
+            range.maxvert = 0;
+            loopvj(t.tris)
+            {
+                range.minvert = min(range.minvert, t.tris[j]);
+                range.maxvert = max(range.maxvert, t.tris[j]);
+            }
+            loopvj(t.tris) packet.decalindices.add(t.tris[j]);
+        }
+
+        const uint packetindices = packet.indices.length() + packet.skyindices.length() + packet.decalindices.length(),
+                   packetbytes = packet.vertices.length()*sizeof(vertex) + packetindices*sizeof(uint) +
+                                 (packet.ranges.length() + packet.decalranges.length())*sizeof(meshrange) +
+                                 packet.materials.length()*sizeof(materialsurface);
+        ullong checksum = 1469598103934665603ULL;
+        const uint numverts = packet.vertices.length(), numworldindices = packet.indices.length(),
+                   numskyindices = packet.skyindices.length(), numdecalindices = packet.decalindices.length(),
+                   numranges = packet.ranges.length(), numdecalranges = packet.decalranges.length(),
+                   nummaterials = packet.materials.length();
+        checksum = hashmeshvalue(checksum, numverts);
+        checksum = hashmeshvalue(checksum, numworldindices);
+        checksum = hashmeshvalue(checksum, numskyindices);
+        checksum = hashmeshvalue(checksum, numdecalindices);
+        checksum = hashmeshvalue(checksum, numranges);
+        checksum = hashmeshvalue(checksum, numdecalranges);
+        checksum = hashmeshvalue(checksum, nummaterials);
+        if(numverts) checksum = hashmeshbytes(checksum, packet.vertices.getbuf(), numverts*sizeof(vertex));
+        if(numworldindices) checksum = hashmeshbytes(checksum, packet.indices.getbuf(), numworldindices*sizeof(uint));
+        if(numskyindices) checksum = hashmeshbytes(checksum, packet.skyindices.getbuf(), numskyindices*sizeof(uint));
+        if(numdecalindices) checksum = hashmeshbytes(checksum, packet.decalindices.getbuf(), numdecalindices*sizeof(uint));
+        loopv(packet.ranges) checksum = hashmeshrange(checksum, packet.ranges[i]);
+        loopv(packet.decalranges) checksum = hashmeshrange(checksum, packet.decalranges[i]);
+        loopv(packet.materials) checksum = hashmaterialsurface(checksum, packet.materials[i]);
+        checksum = hashmeshvalue(checksum, packet.bbmin.x);
+        checksum = hashmeshvalue(checksum, packet.bbmin.y);
+        checksum = hashmeshvalue(checksum, packet.bbmin.z);
+        checksum = hashmeshvalue(checksum, packet.bbmax.x);
+        checksum = hashmeshvalue(checksum, packet.bbmax.y);
+        checksum = hashmeshvalue(checksum, packet.bbmax.z);
+#define HASHVEC(v) do \
+        { \
+            checksum = hashmeshvalue(checksum, v.x); \
+            checksum = hashmeshvalue(checksum, v.y); \
+            checksum = hashmeshvalue(checksum, v.z); \
+        } while(0)
+        HASHVEC(packet.alphamin);
+        HASHVEC(packet.alphamax);
+        HASHVEC(packet.refractmin);
+        HASHVEC(packet.refractmax);
+        HASHVEC(packet.skymin);
+        HASHVEC(packet.skymax);
+        HASHVEC(packet.nogimin);
+        HASHVEC(packet.nogimax);
+#undef HASHVEC
+        packet.checksum = checksum;
+        worldmeshpackets++;
+        worldmeshpacketvertices += packet.vertices.length();
+        worldmeshpacketindices += packetindices;
+        worldmeshpacketranges += packet.ranges.length() + packet.decalranges.length() + (packet.skyindices.empty() ? 0 : 1);
+        worldmeshlargestpacket = max(worldmeshlargestpacket, packetbytes);
+    }
+
+    void setupdata(vtxarray *va)
+    {
+        meshpacket packet;
+        finalizepacket(packet);
+
+        va->mesh = NULL;
+        va->meshchecksum = packet.checksum;
+        va->verts = packet.vertices.length();
+        va->tris = packet.indices.length()/3;
         va->vbuf = 0;
         va->vdata = 0;
         va->minvert = 0;
         va->maxvert = va->verts-1;
         va->voffset = 0;
-        if(va->verts)
+        if(va->verts && !worldmeshbackend)
         {
             if(vbosize[VBO_VBUF] + verts.length() > maxvbosize ||
                vbosize[VBO_EBUF] + worldtris > USHRT_MAX ||
@@ -481,21 +1111,21 @@ struct vacollect : verthash
                 flushvbo();
 
             uchar *vdata = addvbo(va, VBO_VBUF, va->verts, sizeof(vertex));
-            genverts(vdata);
+            memcpy(vdata, packet.vertices.getbuf(), va->verts*sizeof(vertex));
             va->minvert += va->voffset;
             va->maxvert += va->voffset;
         }
 
         va->matbuf = NULL;
-        va->matsurfs = matsurfs.length();
+        va->matsurfs = packet.materials.length();
         va->matmask = 0;
         if(va->matsurfs)
         {
-            va->matbuf = new materialsurface[matsurfs.length()];
-            memcpy(va->matbuf, matsurfs.getbuf(), matsurfs.length()*sizeof(materialsurface));
-            loopv(matsurfs)
+            va->matbuf = new materialsurface[packet.materials.length()];
+            loopv(packet.materials) va->matbuf[i] = packet.materials[i];
+            loopv(packet.materials)
             {
-                materialsurface &m = matsurfs[i];
+                materialsurface &m = packet.materials[i];
                 if(m.visible == MATSURF_EDIT_ONLY) continue;
                 switch(m.material)
                 {
@@ -509,16 +1139,19 @@ struct vacollect : verthash
         va->skybuf = 0;
         va->skydata = 0;
         va->skyoffset = 0;
-        va->sky = skyindices.length();
-        if(va->sky)
+        va->sky = packet.skyindices.length();
+        if(va->sky && !worldmeshbackend)
         {
             ushort *skydata = (ushort *)addvbo(va, VBO_SKYBUF, va->sky, sizeof(ushort));
-            memcpy(skydata, skyindices.getbuf(), va->sky*sizeof(ushort));
-            if(va->voffset) loopi(va->sky) skydata[i] += va->voffset;
+            loopi(va->sky)
+            {
+                ASSERT(packet.skyindices[i] + va->voffset <= USHRT_MAX);
+                skydata[i] = ushort(packet.skyindices[i] + va->voffset);
+            }
         }
 
         va->texelems = NULL;
-        va->texs = texs.length();
+        va->texs = packet.ranges.length();
         va->blendtris = 0;
         va->blends = 0;
         va->alphabacktris = 0;
@@ -536,45 +1169,46 @@ struct vacollect : verthash
         if(va->texs)
         {
             va->texelems = new elementset[va->texs];
-            ushort *edata = (ushort *)addvbo(va, VBO_EBUF, worldtris, sizeof(ushort)), *curbuf = edata;
-            loopv(texs)
+            ushort *edata = !worldmeshbackend ? (ushort *)addvbo(va, VBO_EBUF, worldtris, sizeof(ushort)) : NULL,
+                   *curbuf = edata;
+            loopv(packet.ranges)
             {
-                const sortkey &k = texs[i];
-                const sortval &t = indices[k];
+                const meshrange &range = packet.ranges[i];
                 elementset &e = va->texelems[i];
-                e.texture = k.tex;
-                e.orient = k.orient;
-                e.layer = k.layer;
-                e.envmap = k.envmap;
-                ushort *startbuf = curbuf;
+                e.texture = range.texture;
+                e.orient = range.orient;
+                e.layer = range.layer;
+                e.envmap = range.envmap;
                 e.minvert = USHRT_MAX;
                 e.maxvert = 0;
 
-                if(t.tris.length())
+                if(range.indexcount)
                 {
-                    memcpy(curbuf, t.tris.getbuf(), t.tris.length() * sizeof(ushort));
+                    const uint *src = packet.indices.getbuf() + range.firstindex;
 
-                    loopvj(t.tris)
+                    loopj(range.indexcount)
                     {
-                        curbuf[j] += va->voffset;
-                        e.minvert = min(e.minvert, curbuf[j]);
-                        e.maxvert = max(e.maxvert, curbuf[j]);
+                        ASSERT(src[j] + va->voffset <= USHRT_MAX);
+                        ushort index = ushort(src[j] + va->voffset);
+                        if(curbuf) curbuf[j] = index;
+                        e.minvert = min(e.minvert, index);
+                        e.maxvert = max(e.maxvert, index);
                     }
 
-                    curbuf += t.tris.length();
+                    if(curbuf) curbuf += range.indexcount;
                 }
-                e.length = curbuf-startbuf;
+                e.length = range.indexcount;
 
-                if(k.layer==LAYER_BLEND) { va->texs--; va->tris -= e.length/3; va->blends++; va->blendtris += e.length/3; }
-                else if(k.alpha==ALPHA_BACK) { va->texs--; va->tris -= e.length/3; va->alphaback++; va->alphabacktris += e.length/3; }
-                else if(k.alpha==ALPHA_FRONT) { va->texs--; va->tris -= e.length/3; va->alphafront++; va->alphafronttris += e.length/3; }
-                else if(k.alpha==ALPHA_REFRACT) { va->texs--; va->tris -= e.length/3; va->refract++; va->refracttris += e.length/3; }
+                if(range.flags&MESH_RANGE_BLEND) { va->texs--; va->tris -= e.length/3; va->blends++; va->blendtris += e.length/3; }
+                else if(range.flags&MESH_RANGE_ALPHA_BACK) { va->texs--; va->tris -= e.length/3; va->alphaback++; va->alphabacktris += e.length/3; }
+                else if(range.flags&MESH_RANGE_ALPHA_FRONT) { va->texs--; va->tris -= e.length/3; va->alphafront++; va->alphafronttris += e.length/3; }
+                else if(range.flags&MESH_RANGE_REFRACT) { va->texs--; va->tris -= e.length/3; va->refract++; va->refracttris += e.length/3; }
 
-                VSlot &vslot = lookupvslot(k.tex, false);
+                VSlot &vslot = lookupvslot(range.texture, false);
                 if(vslot.isdynamic())
                 {
                     va->dyntexs++;
-                    if(k.alpha) va->dynalphatexs++;
+                    if(range.flags&(MESH_RANGE_ALPHA_BACK|MESH_RANGE_ALPHA_FRONT|MESH_RANGE_REFRACT)) va->dynalphatexs++;
                 }
                 Slot &slot = *vslot.slot;
                 loopvj(slot.sts) va->texmask |= 1<<slot.sts[j].type;
@@ -588,40 +1222,91 @@ struct vacollect : verthash
         va->decaldata = 0;
         va->decaloffset = 0;
         va->decalelems = NULL;
-        va->decaltexs = decaltexs.length();
-        va->decaltris = decaltris/3;
+        va->decaltexs = packet.decalranges.length();
+        va->decaltris = packet.decalindices.length()/3;
         if(va->decaltexs)
         {
             va->decalelems = new elementset[va->decaltexs];
-            ushort *edata = (ushort *)addvbo(va, VBO_DECALBUF, decaltris, sizeof(ushort)), *curbuf = edata;
-            loopv(decaltexs)
+            ushort *edata = !worldmeshbackend ? (ushort *)addvbo(va, VBO_DECALBUF, decaltris, sizeof(ushort)) : NULL,
+                   *curbuf = edata;
+            loopv(packet.decalranges)
             {
-                const decalkey &k = decaltexs[i];
-                const sortval &t = decalindices[k];
+                const meshrange &range = packet.decalranges[i];
                 elementset &e = va->decalelems[i];
-                e.texture = k.tex;
-                e.reuse = k.reuse;
-                e.envmap = k.envmap;
-                ushort *startbuf = curbuf;
+                e.texture = range.texture;
+                e.reuse = range.reuse;
+                e.envmap = range.envmap;
                 e.minvert = USHRT_MAX;
                 e.maxvert = 0;
 
-                if(t.tris.length())
+                if(range.indexcount)
                 {
-                    memcpy(curbuf, t.tris.getbuf(), t.tris.length() * sizeof(ushort));
+                    const uint *src = packet.decalindices.getbuf() + range.firstindex;
 
-                    loopvj(t.tris)
+                    loopj(range.indexcount)
                     {
-                        curbuf[j] += va->voffset;
-                        e.minvert = min(e.minvert, curbuf[j]);
-                        e.maxvert = max(e.maxvert, curbuf[j]);
+                        ASSERT(src[j] + va->voffset <= USHRT_MAX);
+                        ushort index = ushort(src[j] + va->voffset);
+                        if(curbuf) curbuf[j] = index;
+                        e.minvert = min(e.minvert, index);
+                        e.maxvert = max(e.maxvert, index);
                     }
 
-                    curbuf += t.tris.length();
+                    if(curbuf) curbuf += range.indexcount;
                 }
-                e.length = curbuf-startbuf;
+                e.length = range.indexcount;
             }
         }
+
+        if(worldmeshbackend && va->verts)
+        {
+            gpumesh *mesh;
+            {
+                ZoneScopedN("VoxelMesh/QueueUpload");
+                mesh = uploadworldmesh(packet);
+            }
+            installworldmesh(va, mesh);
+            loopi(va->texs + va->blends + va->alphaback + va->alphafront + va->refract)
+            {
+                elementset &e = va->texelems[i];
+                e.minvert += va->voffset;
+                e.maxvert += va->voffset;
+            }
+            loopi(va->decaltexs)
+            {
+                elementset &e = va->decalelems[i];
+                e.minvert += va->voffset;
+                e.maxvert += va->voffset;
+            }
+        }
+
+        vec geommin(va->o), geommax(geommin);
+        geommin.add(va->size);
+        if(va->verts)
+        {
+            geommin.min(packet.bbmin);
+            geommax.max(packet.bbmax);
+        }
+        va->geommin = ivec(geommin.mul(8)).shr(3);
+        va->geommax = ivec(geommax.mul(8)).add(7).shr(3);
+        if(va->alphatris)
+        {
+            va->alphamin = ivec(vec(packet.alphamin).mul(8)).shr(3);
+            va->alphamax = ivec(vec(packet.alphamax).mul(8)).add(7).shr(3);
+        }
+        if(va->refracttris)
+        {
+            va->refractmin = ivec(vec(packet.refractmin).mul(8)).shr(3);
+            va->refractmax = ivec(vec(packet.refractmax).mul(8)).add(7).shr(3);
+        }
+        if(va->sky && packet.skymax.x >= 0)
+        {
+            va->skymin = ivec(vec(packet.skymin).mul(8)).shr(3);
+            va->skymax = ivec(vec(packet.skymax).mul(8)).add(7).shr(3);
+        }
+        va->nogimin = packet.nogimin;
+        va->nogimax = packet.nogimax;
+        calcmatbb(va, va->o, va->size, packet.materials);
 
         if(grasstris.length())
         {
@@ -1177,27 +1862,6 @@ vtxarray *newva(const ivec &o, int size)
     vc.setupdata(va);
     va->oqcontent = va->alphatris || va->matmask || !va->mapmodels.empty() || !va->decals.empty();
 
-    if(va->alphatris)
-    {
-        va->alphamin = ivec(vec(vc.alphamin).mul(8)).shr(3);
-        va->alphamax = ivec(vec(vc.alphamax).mul(8)).add(7).shr(3);
-    }
-
-    if(va->refracttris)
-    {
-        va->refractmin = ivec(vec(vc.refractmin).mul(8)).shr(3);
-        va->refractmax = ivec(vec(vc.refractmax).mul(8)).add(7).shr(3);
-    }
-
-    if(va->sky && vc.skymax.x >= 0)
-    {
-        va->skymin = ivec(vec(vc.skymin).mul(8)).shr(3);
-        va->skymax = ivec(vec(vc.skymax).mul(8)).add(7).shr(3);
-    }
-        
-    va->nogimin = vc.nogimin;
-    va->nogimax = vc.nogimax;
-
     wverts += va->verts;
     wtris  += va->tris + va->blends + va->alphatris + va->decaltris;
     allocva++;
@@ -1235,10 +1899,14 @@ void destroyva(vtxarray *va, bool reparent)
         }
         invalidatevabb(parent);
     }
-    if(va->vbuf) destroyvbo(va->vbuf);
-    if(va->ebuf) destroyvbo(va->ebuf);
-    if(va->skybuf) destroyvbo(va->skybuf);
-    if(va->decalbuf) destroyvbo(va->decalbuf);
+    if(va->mesh) freeworldmesh(va->mesh);
+    else
+    {
+        if(va->vbuf) destroyvbo(va->vbuf);
+        if(va->ebuf) destroyvbo(va->ebuf);
+        if(va->skybuf) destroyvbo(va->skybuf);
+        if(va->decalbuf) destroyvbo(va->decalbuf);
+    }
     if(va->texelems) delete[] va->texelems;
     if(va->decalelems) delete[] va->decalelems;
     if(va->matbuf) delete[] va->matbuf;
@@ -1506,27 +2174,12 @@ void rendercube(cube &c, const ivec &co, int size, int csi, int &maxlevel) // cr
     if(csi <= MAXMERGELEVEL && vamerges[csi].length()) addmergedverts(csi, co);
 }
 
-void calcgeombb(const ivec &co, int size, ivec &bbmin, ivec &bbmax)
-{
-    vec vmin(co), vmax = vmin;
-    vmin.add(size);
-
-    loopv(vc.verts)
-    {
-        const vec &v = vc.verts[i].pos;
-        vmin.min(v);
-        vmax.max(v);
-    }
-
-    bbmin = ivec(vmin.mul(8)).shr(3);
-    bbmax = ivec(vmax.mul(8)).add(7).shr(3);
-}
-
 static int entdepth = -1;
 static octaentities *entstack[32];
 
 void setva(cube &c, const ivec &co, int size, int csi, bool force = false)
 {
+    ZoneScopedN("VoxelMesh/Build");
     ASSERT(size <= 0x1000);
 
     int vamergeoffset[MAXMERGELEVEL+1];
@@ -1542,14 +2195,15 @@ void setva(cube &c, const ivec &co, int size, int csi, bool force = false)
     }
 
     int maxlevel = -1;
-    rendercube(c, co, size, csi, maxlevel);
+    {
+        ZoneScopedN("VoxelMesh/RenderCube");
+        rendercube(c, co, size, csi, maxlevel);
+    }
 
     if(force || size == min(0x1000, worldsize/2) || !vc.emptyva())
     {
         vtxarray *va = newva(co, size);
         ext(c).va = va;
-        calcgeombb(co, size, va->geommin, va->geommax);
-        calcmatbb(va, co, size, vc.matsurfs);
         va->hasmerges = vahasmerges;
         va->mergelevel = vamergemax;
     }
@@ -1755,6 +2409,18 @@ void octarender()                               // creates va s for all leaf cub
         ZoneScopedN("Geometry/Flush vertex buffers");
         flushvbo();
     }
+
+    ullong arenacapacitybytes = 0;
+    loopv(worldmeshpages) arenacapacitybytes += ullong(worldmeshpages[i]->vertexcapacity)*sizeof(vertex) +
+                                                ullong(worldmeshpages[i]->indexcapacity)*sizeof(ushort);
+    const ullong arenausedbytes = ullong(worldmesharenausedvertices)*sizeof(vertex) +
+                                 ullong(worldmesharenausedindices)*sizeof(ushort);
+    (void)arenausedbytes;
+    TracyPlot("VoxelMesh/Uploaded bytes", int64_t(worldvauploadbytes));
+    TracyPlot("VoxelMesh/Arena used bytes", int64_t(arenausedbytes));
+    TracyPlot("VoxelMesh/Arena free bytes", int64_t(arenacapacitybytes - arenausedbytes));
+    TracyPlot("VoxelMesh/Mesh packets", int64_t(worldmeshpackets));
+    TracyPlot("VoxelMesh/Largest packet bytes", int64_t(worldmeshlargestpacket));
 
     {
         ZoneScopedN("Geometry/Recount explicit sky");

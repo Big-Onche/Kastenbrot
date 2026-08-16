@@ -1953,6 +1953,7 @@ void renderva(renderstate &cur, vtxarray *va, int pass = RENDERPASS_GBUFFER, boo
 void cleanupva()
 {
     clearvas(worldroot);
+    cleanupworldmesharena();
     clearqueries();
     cleanupbb();
     cleanupgrass();
@@ -3192,4 +3193,3 @@ void rendershadowmesh(shadowmesh *m)
     gle::clearebo();
     gle::clearvbo();
 }
-
