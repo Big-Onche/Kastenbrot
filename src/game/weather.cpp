@@ -63,7 +63,7 @@ VAR(weatherprecipitationsnowgroundfade, 100, 4000, 30000);
 
 extern int mainmenu;
 extern int worldsnowheight;
-extern float cloudwindangle;
+extern float cloudwindspeed, cloudwindangle;
 
 namespace game
 {
@@ -208,6 +208,14 @@ namespace game
                 const float v01 = weathermap[y1 * WEATHER_MAP_SIZE + x0] / 255.0f;
                 const float v11 = weathermap[y1 * WEATHER_MAP_SIZE + x1] / 255.0f;
                 return (v00 + (v10 - v00) * tx) + ((v01 + (v11 - v01) * tx) - (v00 + (v10 - v00) * tx)) * ty;
+            }
+
+            static float sampleadvectedweather(float x, float y)
+            {
+                const float seconds = float(gettimemillis() / 1000.0);
+                const float angle = getwindangle(cloudwindangle) * RAD;
+                const float distance = getcloudspeed(cloudwindspeed) * seconds;
+                return sampleweather(x - cosf(angle) * distance, y - sinf(angle) * distance);
             }
 
             static bool loadweathermap(const char *folder, int seed)
@@ -383,7 +391,7 @@ namespace game
 
         float samplecurrentovercast(float x, float y)
         {
-            const float value = sampleweather(x, y);
+            const float value = sampleadvectedweather(x, y);
             const float fairthreshold = clamp(weatherfairthreshold, weatherclearthreshold, 1.0f);
             const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
             const float halfwidth = weatherovercastlighttransition * 0.5f;
@@ -392,7 +400,7 @@ namespace game
 
         static float samplecurrentprecipitation(float x, float y)
         {
-            const float value = sampleweather(x, y);
+            const float value = sampleadvectedweather(x, y);
             const float fairthreshold = clamp(weatherfairthreshold, weatherclearthreshold, 1.0f);
             const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
             const float start = clamp(overcastthreshold + weatherprecipitationovercastinset, overcastthreshold, 1.0f);
@@ -476,7 +484,7 @@ namespace game
             vec position = player1->o;
             worldpositiontoabsolute(position);
 
-            const float value = sampleweather(position.x, position.y);
+            const float value = sampleadvectedweather(position.x, position.y);
             const float clearthreshold = clamp(weatherclearthreshold, 0.0f, 1.0f);
             const float fairthreshold = clamp(weatherfairthreshold, clearthreshold, 1.0f);
             const float overcastthreshold = clamp(weatherovercastthreshold, fairthreshold, 1.0f);
