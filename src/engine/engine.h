@@ -215,6 +215,8 @@ extern void resetclipplanes();
 extern void clearworldchunks();
 extern void closeproceduralworld(bool save);
 extern int getworldsectionsize();
+extern int getworldmeshdomainsize();
+extern bool calcworldmeshmerges();
 extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section);
 extern bool worldsectionvaenabled(const ivec &origin, int size);
 extern bool isworldleafcube(const cube &c);

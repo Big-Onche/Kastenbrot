@@ -1380,19 +1380,20 @@ int mergefaces(int orient, facebounds *m, int sz)
 struct cfkey
 {
     uchar orient;
-    ushort material, tex;
+    ushort material, tex, envmap, layerenvmap;
     ivec n;
     int offset;
 };
 
 static inline bool htcmp(const cfkey &x, const cfkey &y)
 {
-    return x.orient == y.orient && x.tex == y.tex && x.n == y.n && x.offset == y.offset && x.material==y.material;
+    return x.orient == y.orient && x.tex == y.tex && x.envmap == y.envmap && x.layerenvmap == y.layerenvmap &&
+           x.n == y.n && x.offset == y.offset && x.material == y.material;
 }
 
 static inline uint hthash(const cfkey &k)
 {
-    return hthash(k.n)^k.offset^k.tex^k.orient^k.material;
+    return hthash(k.n)^k.offset^k.tex^k.orient^k.material^k.envmap^(uint(k.layerenvmap)<<16);
 }
 
 void mincubeface(const cube &cu, int orient, const ivec &o, int size, const facebounds &orig, facebounds &cf, ushort nmat, ushort matmask)
@@ -1829,6 +1830,16 @@ struct cfpolys
 };
 
 static hashtable<cfkey, cfpolys> cpolys;
+static thread_local int mergedomainlimit = 0;
+
+static void flushmergepolys(const ivec &co)
+{
+    enumeratekt(cpolys, cfkey, key, cfpolys, val,
+    {
+        mergepolys(key.orient, co, key.n, key.offset, val.polys);
+    });
+    cpolys.clear();
+}
 
 void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = worldsize>>1,
                bool stackneighbours = true, bool showprogress = true)
@@ -1844,13 +1855,26 @@ void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = wo
         {
             cfkey k;
             poly p;
-            if(size < 1<<maxmerge && c != worldroot)
+            const int mergelimit = mergedomainlimit ? mergedomainlimit : 1<<maxmerge;
+            if(size < mergelimit && (c != worldroot || mergedomainlimit))
             {
                 if(genpoly(c[i], j, co, size, vis, k.n, k.offset, p))
                 {
                     k.orient = j;
                     k.tex = c[i].texture[j];
-                    k.material = c[i].material&MAT_ALPHA;
+                    // Full material equality preserves NOGI, clip, alpha and
+                    // other render-affecting flags across aggressive domains.
+                    // Texture identity carries the VSlot/shader/tangent state;
+                    // n+offset preserve the geometric normal and plane.
+                    k.material = c[i].material;
+                    VSlot &vslot = lookupvslot(k.tex, true);
+                    k.envmap = vslot.slot->shader->type&SHADER_ENVMAP
+                        ? (vslot.slot->texmask&(1<<TEX_ENVMAP) ? EMID_CUSTOM : closestenvmap(j, co, size))
+                        : EMID_NONE;
+                    VSlot *layer = vslot.layer && !(c[i].material&MAT_ALPHA) ? &lookupvslot(vslot.layer, true) : NULL;
+                    k.layerenvmap = layer && layer->slot->shader->type&SHADER_ENVMAP
+                        ? (layer->slot->texmask&(1<<TEX_ENVMAP) ? EMID_CUSTOM : closestenvmap(j, co, size))
+                        : EMID_NONE;
                     cpolys[k].polys.add(p);
                     continue;
                 }
@@ -1865,14 +1889,8 @@ void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = wo
             }
             clearmerge(c[i], j);
         }
-        if((size == 1<<maxmerge || c == worldroot) && cpolys.numelems)
-        {
-            enumeratekt(cpolys, cfkey, key, cfpolys, val,
-            {
-                mergepolys(key.orient, co, key.n, key.offset, val.polys);
-            });
-            cpolys.clear();
-        }
+        if(!mergedomainlimit && (size == 1<<maxmerge || c == worldroot) && cpolys.numelems)
+            flushmergepolys(co);
     }
     if(stackneighbours) --neighbourdepth;
 }
@@ -1943,6 +1961,7 @@ void invalidatemerges(cube &c, const ivec &co, int size, bool msg)
 
 void calcmerges()
 {
+    if(calcworldmeshmerges()) return;
     genmergeprogress = 0;
     genmerges();
 }
@@ -1954,12 +1973,14 @@ void calcmerges(const ivec &origin, int size)
     invalidatemerges(c);
     if(!c.children) return;
 
-    // Streaming sections are aligned above maxmerge, so their greedy groups
-    // never cross a section boundary. Resolve neighbours through worldroot
-    // while rebuilding this subtree instead of manufacturing an ancestry
-    // stack for every incremental update.
+    // The requested power-of-two domain is independent from logical streaming
+    // sections. Running genmerges once for the entire domain lets compatible
+    // faces cross former section/VA boundaries while its normal material,
+    // texture, orientation, surface and geometry checks remain authoritative.
     genmergeprogress = 0;
     cpolys.clear();
+    mergedomainlimit = size;
     genmerges(c.children, origin, size >> 1, false, false);
-    cpolys.clear();
+    mergedomainlimit = 0;
+    if(cpolys.numelems) flushmergepolys(origin);
 }

@@ -2592,6 +2592,10 @@ static inline int setcubevisibility(cube &c, const ivec &co, int size)
 VARF(vafacemax, 64, 384, 256*256, allchanged());
 VARF(vafacemin, 0, 96, 256*256, allchanged());
 VARF(vacubesize, 32, 128, 0x1000, allchanged());
+// MAXFACEVERTS is 15, so 4096 post-merge faces remain below the 65,535 vertex
+// packet ceiling even for pathological carved geometry. Stable planar terrain
+// is counted after genmerges and therefore stays far below this fallback.
+VARF(worldmeshdomainsplitfaces, 1024, 4096, 4096, allchanged());
 
 int updateva(cube *c, const ivec &co, int size, int csi,
              int worldsectionsize, int facemax, int maxvasize)
@@ -2625,7 +2629,9 @@ int updateva(cube *c, const ivec &co, int size, int csi,
             bool makegroup = worldsectionsize > 0 && size >= worldsectionsize &&
                              size <= maxvasize &&
                              (tcount > 0 || varoot.length() > childpos);
-            if(tcount > facemax || makegroup ||
+            const bool domainoverflow = worldsectionsize > 0 && size < worldsectionsize &&
+                                        tcount > worldmeshdomainsplitfaces;
+            if((!worldsectionsize && tcount > facemax) || domainoverflow || makegroup ||
                (!worldsectionsize && tcount >= vafacemin && size >= vacubesize) ||
                size == maxvasize)
             {
@@ -2740,7 +2746,7 @@ void octarender()                               // creates va s for all leaf cub
     ZoneScopedN("Geometry/Update octree render");
     int csi = 0;
     while(1<<csi < worldsize) csi++;
-    const int worldsectionsize = getworldsectionsize(),
+    const int worldsectionsize = getworldmeshdomainsize(),
               facemax = worldsectionsize ? max(vafacemax, 8192) : vafacemax,
               maxvasize = min(0x1000, worldsize/2);
 
