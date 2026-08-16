@@ -1287,6 +1287,7 @@ void rendershadowmapworld()
     gle::clearvbo();
     gle::clearebo();
     gle::disablevertex();
+    if(!smnodraw) renderworldscattershadows();
 }
 
 static octaentities *shadowmms = NULL;
@@ -2263,6 +2264,7 @@ void rendergeom()
     if(multipassing) glDepthFunc(GL_LESS);
 
     cleanupgeom(cur);
+    renderworldscattermeshes();
     renderworldlods();
 
     if(!doOQ)
@@ -3193,4 +3195,3 @@ void rendershadowmesh(shadowmesh *m)
     gle::clearebo();
     gle::clearvbo();
 }
-

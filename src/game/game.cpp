@@ -3152,11 +3152,16 @@ namespace game
 
     struct creativetarget
     {
-        int type, entity;
+        int type, scattertype, scatterorient;
+        ivec scattersupport;
         selinfo cube;
         vec center, radius, hitpoint;
 
-        creativetarget() : type(CREATIVE_TARGET_NONE), entity(-1), center(0, 0, 0), radius(0, 0, 0), hitpoint(0, 0, 0) {}
+        creativetarget()
+            : type(CREATIVE_TARGET_NONE), scattertype(-1), scatterorient(WORLD_ORIENT_TOP), scattersupport(0, 0, 0), center(0, 0, 0),
+              radius(0, 0, 0), hitpoint(0, 0, 0)
+        {
+        }
     };
 
     static bool findcreativetarget(creativetarget &target)
@@ -3165,13 +3170,18 @@ namespace game
 
         const vec origin = camera1 ? camera1->o : player1->o;
         int orient = -1, entity = -1;
-        rayent(origin, camdir, buildactionreach(), RAY_CLIPMAT | RAY_ENTS | RAY_SKIPFIRST,
-               CREATIVE_GRID, orient, entity);
-        if(entity >= 0 && isworldscatterentity(entity) &&
-           getworldscatterentitybox(entity, target.center, target.radius))
+        const float entitydistance = rayent(origin, camdir, buildactionreach(), RAY_CLIPMAT | RAY_ENTS | RAY_SKIPFIRST, CREATIVE_GRID, orient,
+                                            entity);
+        float scatterdistance = min(entitydistance, buildactionreach());
+        if(getworldscatterhit(origin, camdir, scatterdistance, target.scattertype, target.scattersupport, target.scatterorient, target.center, target.radius, scatterdistance))
         {
             target.type = CREATIVE_TARGET_SCATTER;
-            target.entity = entity;
+            return true;
+        }
+        if(entity >= 0 && isworldscatterentity(entity) && getworldscatterentitybox(entity, target.center, target.radius) &&
+           getworldscatterentityedit(entity, target.scattertype, target.scattersupport, target.scatterorient))
+        {
+            target.type = CREATIVE_TARGET_SCATTER;
             return true;
         }
 
@@ -3200,9 +3210,7 @@ namespace game
         creativetarget target;
         if(findcreativetarget(target) && target.type == CREATIVE_TARGET_SCATTER)
         {
-            type = -1;
-            orient = WORLD_ORIENT_TOP;
-            if(getworldscatterentityedit(target.entity, type, support, orient) && openworldchest(type, support, orient)) return true;
+            if(openworldchest(target.scattertype, target.scattersupport, target.scatterorient)) return true;
         }
 
         selinfo hit;
@@ -3329,9 +3337,9 @@ namespace game
         if(!findcreativetarget(target)) return;
         if(target.type == CREATIVE_TARGET_SCATTER)
         {
-            int type, mountorient;
-            ivec support;
-            if(getworldscatterentityedit(target.entity, type, support, mountorient))
+            const int type = target.scattertype, mountorient = target.scatterorient;
+            const ivec support = target.scattersupport;
+            if(type >= 0)
             {
                 if(!waitforserveredit()) scatteredittrigger(type, support, mountorient, false);
                 else
@@ -3414,10 +3422,8 @@ namespace game
         {
             if(survivalbreaktarget.type == CREATIVE_TARGET_SCATTER)
             {
-                int type, orient;
-                ivec support;
-                if(getworldscatterentityedit(survivalbreaktarget.entity, type, support, orient))
-                    sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_CANCEL, support, orient, getworldscatteritem(type), -1);
+                sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_CANCEL, survivalbreaktarget.scattersupport,
+                                survivalbreaktarget.scatterorient, getworldscatteritem(survivalbreaktarget.scattertype), -1);
             }
             else
                 sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_CANCEL, survivalbreaktarget.cube.o,
@@ -3442,7 +3448,8 @@ namespace game
                                    const creativetarget &b)
     {
         if(a.type != b.type) return false;
-        if(a.type == CREATIVE_TARGET_SCATTER) return a.entity == b.entity;
+        if(a.type == CREATIVE_TARGET_SCATTER)
+            return a.scattertype == b.scattertype && a.scatterorient == b.scatterorient && a.scattersupport == b.scattersupport;
         return a.type == CREATIVE_TARGET_CUBE &&
                a.cube.o == b.cube.o && a.cube.grid == b.cube.grid;
     }
@@ -3463,9 +3470,8 @@ namespace game
         }
         if(target.type == CREATIVE_TARGET_SCATTER)
         {
-            int orient;
-            ivec support;
-            if(!getworldscatterentityedit(target.entity, index, support, orient)) return false;
+            index = target.scattertype;
+            if(index < 0) return false;
             type = isworldplaceable(index) ? WORLD_ITEM_PLACEABLE : WORLD_ITEM_SCATTER;
             return true;
         }
@@ -3532,9 +3538,9 @@ namespace game
             {
                 if(target.type == CREATIVE_TARGET_SCATTER)
                 {
-                    int type, mountorient;
-                    ivec support;
-                    if(!getworldscatterentityedit(target.entity, type, support, mountorient))
+                    const int type = target.scattertype, mountorient = target.scatterorient;
+                    const ivec support = target.scattersupport;
+                    if(type < 0)
                     {
                         survivalbreakactive = false;
                         survivalbreakrequestid = 0;
@@ -3603,9 +3609,9 @@ namespace game
         clearbreakstain(player1 ? player1->clientnum : -1, survivalbreakrequestid);
         if(survivalbreaktarget.type == CREATIVE_TARGET_SCATTER)
         {
-            int type, mountorient;
-            ivec support;
-            if(getworldscatterentityedit(survivalbreaktarget.entity, type, support, mountorient))
+            const int type = survivalbreaktarget.scattertype, mountorient = survivalbreaktarget.scatterorient;
+            const ivec support = survivalbreaktarget.scattersupport;
+            if(type >= 0)
             {
                 item = getworldscatteritem(type);
                 bool removed = false;

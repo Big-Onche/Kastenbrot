@@ -665,6 +665,33 @@ static void resolveworldscattericon(worlddefinition &type)
     formatstring(type.modelicon, "media/model/%s/diffuse.png", type.model);
 }
 
+struct worldscatterrenderdefinition
+{
+    string texture;
+    vec center, radius;
+
+    worldscatterrenderdefinition() : center(0, 0, WORLD_BLOCK_SIZE * 0.5f), radius(WORLD_BLOCK_SIZE * 0.5f) { texture[0] = '\0'; }
+};
+
+static vector<worldscatterrenderdefinition> worldscatterrenderdefinitions;
+
+static void resolveworldscatterrenderdata(int index, worlddefinition &type)
+{
+    while(worldscatterrenderdefinitions.length() <= index) worldscatterrenderdefinitions.add();
+    worldscatterrenderdefinition &render = worldscatterrenderdefinitions[index];
+    render.texture[0] = '\0';
+    if(!findworldscatterimage(type.model, "diffuse", render.texture) && !findworldscatterimage(type.model, "logo", render.texture))
+        formatstring(render.texture, "media/model/%s/diffuse.png", type.model);
+
+    model *m = type.mapmodel >= 0 ? loadmapmodel(type.mapmodel) : NULL;
+    if(m) m->boundbox(render.center, render.radius);
+    else
+    {
+        render.center = vec(0, 0, WORLD_BLOCK_SIZE * 0.5f);
+        render.radius = vec(WORLD_BLOCK_SIZE * 0.5f);
+    }
+}
+
 static bool buildworldcubetextureindexes()
 {
     bool valid = true;
@@ -688,6 +715,7 @@ static bool buildworldcubetextureindexes()
 static bool loadworlddefinitions(bool assets = true)
 {
     worldreset();
+    worldscatterrenderdefinitions.setsize(0);
     if(!execfile("config/world.cfg", false))
     {
         conoutf(CON_ERROR, "could not load config/world.cfg");
@@ -808,6 +836,7 @@ static bool loadworlddefinitions(bool assets = true)
         if(i == worlderrorobject)
         {
             resolveworldscattericon(type);
+            resolveworldscatterrenderdata(i, type);
             continue;
         }
         type.mapmodel = registermapmodelpath(type.model);
@@ -818,6 +847,7 @@ static bool loadworlddefinitions(bool assets = true)
             type.mapmodel = worldscatterdefinitions[worlderrorobject]->mapmodel;
         }
         resolveworldscattericon(type);
+        resolveworldscatterrenderdata(i, type);
     }
     worldgrassscatter = getworldscatteridindex("grass_scatter");
     worldrosescatter = getworldscatteridindex("rose");

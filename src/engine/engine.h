@@ -288,6 +288,7 @@ static inline void masktiles(uint *tiles, float sx1, float sy1, float sx2, float
 enum { SM_NONE = 0, SM_REFLECT, SM_CUBEMAP, SM_CASCADE, SM_SPOT };
 
 extern int shadowmapping;
+extern int smbbcull, smdistcull;
 
 extern vec shadoworigin, shadowdir;
 extern float shadowradius, shadowbias;
@@ -308,6 +309,8 @@ extern int calcshadowinfo(const extentity &e, vec &origin, float &radius, vec &s
 extern int dynamicshadowvas();
 extern int dynamicshadowvabounds(int mask, vec &bbmin, vec &bbmax);
 extern void rendershadowmapworld();
+extern void renderworldscattermeshes();
+extern void renderworldscattershadows();
 extern void batchshadowmapmodels(bool skipmesh = false);
 extern void rendershadowatlas();
 extern void renderrsmgeom(bool dyntex = false);
@@ -317,7 +320,7 @@ extern void clearradiancehintscache();
 extern void cleanuplights();
 extern void workinoq();
 
-extern int calcbbsidemask(const vec &bbmin, const vec &bbmax, const vec &lightpos, float lightradius, float bias);
+extern int calcbbsidemask(const ivec &bbmin, const ivec &bbmax, const vec &lightpos, float lightradius, float bias);
 extern int calcspheresidemask(const vec &p, float radius, float bias);
 extern int calctrisidemask(const vec &p1, const vec &p2, const vec &p3, float bias);
 extern int cullfrustumsides(const vec &lightpos, float lightradius, float size, float border);

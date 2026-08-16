@@ -281,8 +281,7 @@ extern int getcraftrecipeskill(int recipe);
 extern int getcraftrecipeskilllevel(int recipe);
 extern bool itemhastag(int item, int tag);
 extern int finditemtag(const char *id);
-extern bool matchcraftrecipe(const int *items, const int *counts, int gridsize, int stationitem,
-                             int skill, int skilllevel, int requestedrecipe, craftmatch &match, int maxoutput = INT_MAX);
+extern bool matchcraftrecipe(const int *items, const int *counts, int gridsize, int stationitem, int skill, int skilllevel, int requestedrecipe, craftmatch &match, int maxoutput = INT_MAX);
 extern int getworlditemtype(int item);
 extern int getworlditemindex(int item);
 extern float getworlditemlightradius(int item);
@@ -313,10 +312,10 @@ extern void addworldtorchparticles();
 extern bool isworldscatterentity(int id);
 extern bool getworldscatterentitybox(int id, vec &center, vec &radius);
 extern bool getworldscatterentityedit(int id, int &type, ivec &support, int &orient);
+extern bool getworldscatterhit(const vec &origin, const vec &direction, float reach, int &type, ivec &support, int &orient, vec &center, vec &radius, float &distance);
 extern bool getworldchesthit(const vec &origin, const vec &direction, float reach, int &type, ivec &support, int &orient);
 extern bool editworldscatter(int type, const ivec &support, int orient, bool place);
-extern float rayent(const vec &o, const vec &ray, float radius, int mode,
-                    int size, int &orient, int &ent);
+extern float rayent(const vec &o, const vec &ray, float radius, int mode, int size, int &orient, int &ent);
 extern void renderboundingbox(const vec &center, const vec &radius);
 extern void renderorientedboundingbox(const vec &center, const vec &radius, float yaw, float pitch, float roll);
 extern void setbreakstain(int owner, uint requestid, const ivec &origin, int size, int stage);

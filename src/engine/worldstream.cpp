@@ -184,6 +184,7 @@ static int worldchunkloader(void *);
 static void shutdownworldchunkloader();
 static void updateworldscatterers();
 static void clearworldscattererentities();
+static void clearworldscattermeshes();
 static void updateworldlods(int chunkx, int chunky, bool force = false);
 static void clearworldlods();
 static int findworldchunk(int x, int y);
@@ -329,6 +330,7 @@ void clearworldchunks()
     shutdownworlddiffwriter();
     cancelworldedit();
     clearworldscattererentities();
+    clearworldscattermeshes();
     clearworldlods();
     shutdownworldchunkloader();
     worldchunkvaupdates.setsize(0);

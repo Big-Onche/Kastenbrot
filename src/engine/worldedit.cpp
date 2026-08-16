@@ -278,7 +278,12 @@ void commitworldedit()
             }
         const bool samescatter =
             sameworldscatterlist(record->scatterbefore, record->scatterafter);
-        if(!samescatter) scatterchanged = true;
+        if(!samescatter)
+        {
+            scatterchanged = true;
+            loopvk(record->scatterbefore) dirtyworldscattermesh(chunk, record->scatterbefore[k]);
+            loopvk(record->scatterafter) dirtyworldscattermesh(chunk, record->scatterafter[k]);
+        }
         if(identical) identical = samescatter;
         if(identical) continue;
 
@@ -419,6 +424,7 @@ bool editworldscatter(int type, const ivec &support, int orient, bool place)
         scatter = chunk.scatter[existing];
         chunk.scatter.removeunordered(existing);
     }
+    dirtyworldscattermesh(chunk, scatter);
     commitworldscatterrecord(chunk, scatter, support, place);
     updateworldscatterers();
     return true;
@@ -525,6 +531,8 @@ static bool commitworldadminrecord(const worldeditrecord &source, bool inverse)
     }
     applyworldscatterchange(chunk.scatter, scatterold, scattertarget);
     game::cacheworldscattertransforms(chunk.x, chunk.y, game::getworldscattermaxoffset(), chunk.scatter);
+    loopv(scatterold) dirtyworldscattermesh(chunk, scatterold[i]);
+    loopv(scattertarget) dirtyworldscattermesh(chunk, scattertarget[i]);
     commitchanges();
 
     worldchunkdiffstate *state = findworldchunkdiffstate(chunk.x, chunk.y, true);

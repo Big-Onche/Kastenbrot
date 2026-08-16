@@ -217,11 +217,11 @@ struct worldchunk
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request;
     int varesidencylod;
-    bool varesidencydirty, loading, generating, saved, dirty, corrupted;
+    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saved, dirty, corrupted;
 
     worldchunk(int x, int y, cube *root, bool loading = false, bool saved = false)
-        : x(x), y(y), root(root), request(0), varesidencylod(-1), varesidencydirty(true), loading(loading), generating(false), saved(saved),
-          dirty(false), corrupted(false)
+        : x(x), y(y), root(root), request(0), varesidencylod(-1), varesidencydirty(true), scattermeshesregistered(false),
+          placeablesregistered(false), loading(loading), generating(false), saved(saved), dirty(false), corrupted(false)
     {
         memclear(mountedtiles);
         memclear(contentknown);
