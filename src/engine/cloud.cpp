@@ -1,9 +1,4 @@
-// Kastenbrot clouds: flat single-layer renderer
-//
-// Deliberately simple: one deterministic 2D cloud mask extruded into a thin voxel slab.
-// The cloud deck is one contiguous VBO centered around the camera with a rebuild margin.
-// Internal faces are never generated, top/bottom and side faces are greedily merged
-// so geometry stays tiny even at long range.
+// Kastenbrot clouds: flat single-layer renderer streamed as deterministic world-space tiles.
 
 #include "engine.h"
 #include "weather.h"
@@ -108,7 +103,11 @@ namespace
     enum
     {
         CLOUD_EMPTY = 0,
-        CLOUD_FAIR
+        CLOUD_FAIR,
+        CLOUD_TILE_CELLS = 64,
+        CLOUD_TILE_MASK_CELLS = CLOUD_TILE_CELLS + 2,
+        CLOUD_TILE_GENERATION_BUDGET = 2,
+        CLOUD_TILE_HYSTERESIS = 1
     };
 
     struct cloudvert
@@ -127,17 +126,16 @@ namespace
         cloudface(const vec &center, int firstvert) : center(center), depth(0.0f), firstvert(firstvert) {}
     };
 
-    struct cloudlayer
+    struct cloudtile
     {
         vector<cloudface> faces;
         vector<uchar> occupancy;
         GLuint vbo, ebo, masktex;
-        int numverts, originx, originy, size, centerx, centery, settingsversion;
+        int numverts, tx, ty, settingsversion;
         bool built;
 
-        cloudlayer()
-            : vbo(0), ebo(0), masktex(0), numverts(0), originx(0), originy(0), size(0), centerx(INT_MIN), centery(INT_MIN),
-              settingsversion(0), built(false)
+        cloudtile(int tx, int ty)
+            : vbo(0), ebo(0), masktex(0), numverts(0), tx(tx), ty(ty), settingsversion(0), built(false)
         {
         }
     };
@@ -166,9 +164,26 @@ namespace
         }
     };
 
-    static cloudlayer cloudstate;
+    struct cloudtilecandidate
+    {
+        int tx, ty;
+        double distance;
+
+        cloudtilecandidate() : tx(0), ty(0), distance(0.0) {}
+        cloudtilecandidate(int tx, int ty, double distance) : tx(tx), ty(ty), distance(distance) {}
+    };
+
+    static bool sortcloudtilecandidates(const cloudtilecandidate &a, const cloudtilecandidate &b)
+    {
+        if(a.distance != b.distance) return a.distance < b.distance;
+        if(a.ty != b.ty) return a.ty < b.ty;
+        return a.tx < b.tx;
+    }
+
+    static vector<cloudtile *> cloudtiles;
     static FastNoiseLite cloudnoise;
     static int noiseseed = INT_MIN, currentsettingsversion = 0, currentweathersettingsversion = 0, lastcloudframe = -1;
+    static int cloudtilesetversion = 0;
     static uint currentsettingshash = 0;
     static vec cloudwind(0, 0, 0), cloudworldorigin(0, 0, 0);
     static GLuint cloudscenefbo = 0, cloudscenetex = 0;
@@ -207,8 +222,6 @@ namespace
     {
         uint hash = mixhash(uint(seed));
         addhash(hash, uint(cloudcellsize));
-        addhash(hash, uint(clouddistance));
-        addhash(hash, uint(cloudrebuildmargin));
         addhash(hash, uint(cloudsmoothpasses));
         addhash(hash, uint(cloudsmoothkeep));
         addhash(hash, uint(cloudsmoothfill));
@@ -216,8 +229,7 @@ namespace
         addhash(hash, uint(cloudheight));
         addhash(hash, hashfloat(clouddome));
         addhash(hash, hashfloat(cloudscale));
-        addhash(hash, hashfloat(game::weather::getcloudspeed(cloudwindspeed)));
-        addhash(hash, hashfloat(game::weather::getwindangle(cloudwindangle)));
+        addhash(hash, hashfloat(cloudspacing));
         return hash;
     }
 
@@ -312,8 +324,9 @@ namespace
             addquad(verts, vec(x0, y, z0), vec(x1, y, z0), vec(x1, y, z1), vec(x0, y, z1), 0, -1, 0);
     }
 
-    static void meshcloudlayer(const cloudmask &mask, vector<cloudvert> &verts)
+    static void meshcloudtile(const cloudmask &mask, vector<cloudvert> &verts)
     {
+        ZoneScopedN("Clouds/MeshTile");
         const int size = mask.size;
         const float cell = float(cloudcellsize);
         const float z0 = float(cloudbaseheight);
@@ -432,112 +445,127 @@ namespace
         }
     }
 
-    static void clearcloudlayer(cloudlayer &layer)
+    static void clearcloudtile(cloudtile &tile)
     {
-        if(layer.vbo) glDeleteBuffers_(1, &layer.vbo);
-        if(layer.ebo) glDeleteBuffers_(1, &layer.ebo);
-        if(layer.masktex) glDeleteTextures(1, &layer.masktex);
-        layer.vbo = layer.ebo = 0;
-        layer.masktex = 0;
-        layer.faces.shrink(0);
-        layer.occupancy.shrink(0);
-        layer.numverts = 0;
-        layer.size = 0;
-        layer.built = false;
-        layer.centerx = layer.centery = INT_MIN;
+        if(tile.vbo) glDeleteBuffers_(1, &tile.vbo);
+        if(tile.ebo) glDeleteBuffers_(1, &tile.ebo);
+        if(tile.masktex) glDeleteTextures(1, &tile.masktex);
+        tile.vbo = tile.ebo = 0;
+        tile.masktex = 0;
+        tile.faces.shrink(0);
+        tile.occupancy.shrink(0);
+        tile.numverts = 0;
+        tile.built = false;
     }
 
-    static void buildcloudlayer(int centerx, int centery)
+    static void clearcloudtiles()
     {
-        cloudlayer &layer = cloudstate;
-        const int radius = max(int(ceilf(float(clouddistance) / max(float(cloudcellsize), 1.0f))) + cloudrebuildmargin + 2, 2);
-        const int size = radius * 2 + 1;
-        const int originx = centerx - radius;
-        const int originy = centery - radius;
-
-        cloudmask mask(size);
-
-        // Sample one-cell border as well so visible border faces know about occupancy immediately outside the generated mesh. This removes artificial mesh seams.
-        for(int y = -1; y <= size; ++y) for(int x = -1; x <= size; ++x)
+        loopv(cloudtiles)
         {
-            const float cloudspacex = (originx + x + 0.5f) * cloudcellsize;
-            const float cloudspacey = (originy + y + 0.5f) * cloudcellsize;
-            const float actualx = cloudspacex + cloudwind.x;
-            const float actualy = cloudspacey + cloudwind.y;
-            const float cloudcoverage = game::weather::samplecoverage(actualx, actualy);
-            mask.cell(x, y) = rawcloudcell(cloudspacex, cloudspacey, cloudcoverage) ? CLOUD_FAIR : CLOUD_EMPTY;
+            clearcloudtile(*cloudtiles[i]);
+            delete cloudtiles[i];
+        }
+        cloudtiles.shrink(0);
+        ++cloudtilesetversion;
+    }
+
+    static cloudtile *findcloudtile(int tx, int ty)
+    {
+        loopv(cloudtiles) if(cloudtiles[i]->tx == tx && cloudtiles[i]->ty == ty) return cloudtiles[i];
+        return NULL;
+    }
+
+    static void buildcloudtile(cloudtile &tile)
+    {
+        {ZoneScopedN("Clouds/GenerateTile");}
+        const int halo = cloudsmoothpasses + 1;
+        const int masksize = CLOUD_TILE_CELLS + 2 * halo;
+        const int origincellx = tile.tx * CLOUD_TILE_CELLS;
+        const int origincelly = tile.ty * CLOUD_TILE_CELLS;
+
+        cloudmask expanded(masksize);
+
+        // The smoothing halo is generated from absolute cell coordinates. Independently generated neighboring tiles therefore agree exactly at
+        // their borders.
+        for(int y = -1; y <= masksize; ++y) for(int x = -1; x <= masksize; ++x)
+        {
+            const float cloudspacex = (origincellx + x - halo + 0.5f) * cloudcellsize;
+            const float cloudspacey = (origincelly + y - halo + 0.5f) * cloudcellsize;
+            const float cloudcoverage = game::weather::samplecoverage(cloudspacex, cloudspacey);
+            expanded.cell(x, y) = rawcloudcell(cloudspacex, cloudspacey, cloudcoverage) ? CLOUD_FAIR : CLOUD_EMPTY;
         }
 
-        smoothcloudmask(mask);
+        smoothcloudmask(expanded);
+
+        cloudmask mask(CLOUD_TILE_CELLS);
+        for(int y = -1; y <= CLOUD_TILE_CELLS; ++y) for(int x = -1; x <= CLOUD_TILE_CELLS; ++x)
+            mask.cell(x, y) = expanded.get(x + halo, y + halo);
 
         vector<cloudvert> verts;
-        meshcloudlayer(mask, verts);
+        meshcloudtile(mask, verts);
         ASSERT(verts.length() % 6 == 0);
 
-        layer.occupancy.shrink(0);
-        layer.occupancy.growbuf(size * size);
-        for(int y = 0; y < size; ++y) for(int x = 0; x < size; ++x)
-            layer.occupancy.add(mask.get(x, y) != CLOUD_EMPTY ? 255 : 0);
+        tile.occupancy.shrink(0);
+        tile.occupancy.growbuf(CLOUD_TILE_MASK_CELLS * CLOUD_TILE_MASK_CELLS);
+        for(int y = -1; y <= CLOUD_TILE_CELLS; ++y) for(int x = -1; x <= CLOUD_TILE_CELLS; ++x)
+            tile.occupancy.add(mask.get(x, y) != CLOUD_EMPTY ? 255 : 0);
 
+        ZoneScopedN("Clouds/UploadTile");
         GLint oldactive = GL_TEXTURE0, oldtex = 0, oldunpack = 4;
         glGetIntegerv(GL_ACTIVE_TEXTURE, &oldactive);
         glActiveTexture_(GL_TEXTURE0);
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &oldtex);
         glGetIntegerv(GL_UNPACK_ALIGNMENT, &oldunpack);
-        if(!layer.masktex) glGenTextures(1, &layer.masktex);
-        glBindTexture(GL_TEXTURE_2D, layer.masktex);
+        if(!tile.masktex) glGenTextures(1, &tile.masktex);
+        glBindTexture(GL_TEXTURE_2D, tile.masktex);
         // Marches use the hardware-filtered mask for fractional edge density. Topology reads remain exact because they sample texel centers.
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, hasTRG ? GL_R8 : GL_LUMINANCE8, size, size, 0, hasTRG ? GL_RED : GL_LUMINANCE,
-                     GL_UNSIGNED_BYTE, layer.occupancy.getbuf());
+        glTexImage2D(GL_TEXTURE_2D, 0, hasTRG ? GL_R8 : GL_LUMINANCE8, CLOUD_TILE_MASK_CELLS, CLOUD_TILE_MASK_CELLS, 0,
+                     hasTRG ? GL_RED : GL_LUMINANCE, GL_UNSIGNED_BYTE, tile.occupancy.getbuf());
         glPixelStorei(GL_UNPACK_ALIGNMENT, oldunpack);
         glBindTexture(GL_TEXTURE_2D, GLuint(oldtex));
         glActiveTexture_(GLenum(oldactive));
 
-        if(!layer.vbo) glGenBuffers_(1, &layer.vbo);
-        if(!layer.ebo) glGenBuffers_(1, &layer.ebo);
-        gle::bindvbo(layer.vbo);
+        if(!tile.vbo) glGenBuffers_(1, &tile.vbo);
+        if(!tile.ebo) glGenBuffers_(1, &tile.ebo);
+        gle::bindvbo(tile.vbo);
         glBufferData_(GL_ARRAY_BUFFER, verts.length() * sizeof(cloudvert), verts.empty() ? NULL : verts.getbuf(), GL_STATIC_DRAW);
         gle::clearvbo();
 
-        layer.faces.shrink(0);
-        layer.faces.growbuf(verts.length() / 6);
+        tile.faces.shrink(0);
+        tile.faces.growbuf(verts.length() / 6);
         for(int firstvert = 0; firstvert < verts.length(); firstvert += 6)
         {
             vec center = vec(verts[firstvert].pos).add(verts[firstvert + 1].pos).add(verts[firstvert + 2].pos)
                                                     .add(verts[firstvert + 5].pos).mul(0.25f);
-            layer.faces.add(cloudface(center, firstvert));
+            tile.faces.add(cloudface(center, firstvert));
         }
 
-        layer.numverts = verts.length();
-        layer.originx = originx;
-        layer.originy = originy;
-        layer.size = size;
-        layer.centerx = centerx;
-        layer.centery = centery;
-        layer.settingsversion = currentsettingsversion;
-        layer.built = true;
+        tile.numverts = verts.length();
+        tile.settingsversion = currentsettingsversion;
+        tile.built = true;
+        ++cloudtilesetversion;
     }
 
-    static vec cloudrenderoffset(const cloudlayer &layer)
+    static vec cloudrenderoffset(const cloudtile &tile)
     {
-        const double ox = double(layer.originx) * cloudcellsize;
-        const double oy = double(layer.originy) * cloudcellsize;
+        const double ox = double(tile.tx) * CLOUD_TILE_CELLS * cloudcellsize;
+        const double oy = double(tile.ty) * CLOUD_TILE_CELLS * cloudcellsize;
         return vec(float(ox + cloudwind.x - cloudworldorigin.x), float(oy + cloudwind.y - cloudworldorigin.y), 0.0f);
     }
 
-    static bool cloudlayerbounds(const cloudlayer &layer, vec &center, float &radius, float distance)
+    static bool cloudtilebounds(const cloudtile &tile, vec &center, float &radius, float distance)
     {
-        if(!layer.built || !layer.vbo || !layer.numverts || !layer.size) return false;
-        const float span = layer.size * cloudcellsize;
+        if(!tile.built || !tile.vbo || !tile.numverts) return false;
+        const float span = CLOUD_TILE_CELLS * cloudcellsize;
         const float halfspan = span * 0.5f;
         const float z0 = float(cloudbaseheight);
         const float z1 = z0 + cloudheight;
-        const vec offset = cloudrenderoffset(layer);
+        const vec offset = cloudrenderoffset(tile);
         const float centerx = offset.x + halfspan, centery = offset.y + halfspan;
         const float dx = centerx - camera1->o.x, dy = centery - camera1->o.y;
         const float domecoefficient = clouddome * max(z0, 0.0f) / max(float(clouddistance * clouddistance), 1.0f);
@@ -549,9 +577,9 @@ namespace
         return dx * dx + dy * dy <= (distance + radius) * (distance + radius);
     }
 
-    static void enablecloudvertexformat(const cloudlayer &layer)
+    static void enablecloudvertexformat(const cloudtile &tile)
     {
-        gle::bindvbo(layer.vbo);
+        gle::bindvbo(tile.vbo);
         const cloudvert *pointer = 0;
         gle::vertexpointer(sizeof(cloudvert), pointer->pos.v);
         gle::normalpointer(sizeof(cloudvert), pointer->normal.v, GL_UNSIGNED_BYTE, 4);
@@ -572,36 +600,36 @@ namespace
         return a.depth > b.depth;
     }
 
-    static void updatecloudfaceorder(cloudlayer &layer)
+    static void updatecloudfaceorder(cloudtile &tile)
     {
-        const vec offset = cloudrenderoffset(layer);
-        loopv(layer.faces)
+        const vec offset = cloudrenderoffset(tile);
+        loopv(tile.faces)
         {
-            const vec worldcenter = vec(layer.faces[i].center).add(offset);
-            layer.faces[i].depth = vec(worldcenter).sub(camera1->o).dot(camdir);
+            const vec worldcenter = vec(tile.faces[i].center).add(offset);
+            tile.faces[i].depth = vec(worldcenter).sub(camera1->o).dot(camdir);
         }
-        layer.faces.sort(sortcloudfaces);
+        tile.faces.sort(sortcloudfaces);
 
         static vector<GLuint> indices;
         indices.shrink(0);
-        indices.growbuf(layer.numverts);
-        loopv(layer.faces) loopk(6) indices.add(GLuint(layer.faces[i].firstvert + k));
+        indices.growbuf(tile.numverts);
+        loopv(tile.faces) loopk(6) indices.add(GLuint(tile.faces[i].firstvert + k));
 
-        gle::bindebo(layer.ebo);
+        gle::bindebo(tile.ebo);
         glBufferData_(GL_ELEMENT_ARRAY_BUFFER, indices.length() * sizeof(GLuint), indices.empty() ? NULL : indices.getbuf(), GL_STREAM_DRAW);
         gle::clearebo();
     }
 
-    static void setclouduniforms(Shader *shader)
+    static void setclouduniforms(Shader *shader, const cloudtile &tile)
     {
         shader->set();
 
         const float day = clamp((sunlightscale - 0.08f) / 0.72f, 0.0f, 1.0f);
         const float sunset = 4.0f * day * (1.0f - day);
         const float cell = max(float(cloudcellsize), 1.0f);
-        const float span = max(cloudstate.size * cell, 1.0f);
+        const float span = max(CLOUD_TILE_MASK_CELLS * cell, 1.0f);
         const float domecoefficient = clouddome * max(float(cloudbaseheight), 0.0f) / max(float(clouddistance * clouddistance), 1.0f);
-        const vec offset = cloudrenderoffset(cloudstate);
+        const vec offset = vec(cloudrenderoffset(tile)).sub(vec(cell, cell, 0.0f));
 
         const float earthradius = 6371e3f, earthairheight = 8.4e3f, earthhazeheight = 1.25e3f;
         const float planetradius = earthradius * atmoplanetsize;
@@ -647,29 +675,33 @@ namespace
         Shader *shader = lookupshaderbyname("cloud");
         if(!shader || !camera1) return 0;
 
-        vec center;
-        float radius;
-        if(!cloudlayerbounds(cloudstate, center, radius, float(clouddistance))) return 0;
-        if(isvisiblesphere(radius, center) == VFC_NOT_VISIBLE) return 0;
-
-        if(sorted) updatecloudfaceorder(cloudstate);
-
         glActiveTexture_(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, cloudscenetex);
         glActiveTexture_(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, cloudstate.masktex);
-        setclouduniforms(shader);
-        enablecloudvertexformat(cloudstate);
-        LOCALPARAM(cloudmeshoffset, cloudrenderoffset(cloudstate));
-        if(sorted)
+        int renderedverts = 0;
+        loopv(cloudtiles)
         {
-            gle::bindebo(cloudstate.ebo);
-            glDrawElements(GL_TRIANGLES, cloudstate.numverts, GL_UNSIGNED_INT, 0);
+            cloudtile &tile = *cloudtiles[i];
+            vec center;
+            float radius;
+            if(!cloudtilebounds(tile, center, radius, float(clouddistance))) continue;
+            if(isvisiblesphere(radius, center) == VFC_NOT_VISIBLE) continue;
+
+            if(sorted) updatecloudfaceorder(tile);
+            glBindTexture(GL_TEXTURE_2D, tile.masktex);
+            setclouduniforms(shader, tile);
+            enablecloudvertexformat(tile);
+            LOCALPARAM(cloudmeshoffset, cloudrenderoffset(tile));
+            if(sorted)
+            {
+                gle::bindebo(tile.ebo);
+                glDrawElements(GL_TRIANGLES, tile.numverts, GL_UNSIGNED_INT, 0);
+            }
+            else glDrawArrays(GL_TRIANGLES, 0, tile.numverts);
+            glde++;
+            renderedverts += tile.numverts;
+            disablecloudvertexformat();
         }
-        else glDrawArrays(GL_TRIANGLES, 0, cloudstate.numverts);
-        glde++;
-        const int renderedverts = cloudstate.numverts;
-        disablecloudvertexformat();
         return renderedverts;
     }
 
@@ -808,30 +840,46 @@ namespace
         gle::end();
     }
 
-    static bool cloudcelloccupied(const cloudlayer &layer, int x, int y)
+    static bool cloudcelloccupied(const cloudtile &tile, int x, int y)
     {
-        return x >= 0 && y >= 0 && x < layer.size && y < layer.size && layer.occupancy[y * layer.size + x] != 0;
+        return x >= 0 && y >= 0 && x < CLOUD_TILE_CELLS && y < CLOUD_TILE_CELLS &&
+               tile.occupancy[(y + 1) * CLOUD_TILE_MASK_CELLS + x + 1] != 0;
+    }
+
+    static int floordiv(int value, int divisor)
+    {
+        int result = value / divisor;
+        if(value < 0 && value % divisor) --result;
+        return result;
+    }
+
+    static bool cloudcelloccupied(int cellx, int celly)
+    {
+        const int tx = floordiv(cellx, CLOUD_TILE_CELLS), ty = floordiv(celly, CLOUD_TILE_CELLS);
+        const cloudtile *tile = findcloudtile(tx, ty);
+        return tile && tile->built && cloudcelloccupied(*tile, cellx - tx * CLOUD_TILE_CELLS, celly - ty * CLOUD_TILE_CELLS);
     }
 
     static float cloudinsidepenetration()
     {
-        if(!clouds || !camera1 || !cloudstate.built || cloudstate.occupancy.empty()) return -1.0f;
+        if(!clouds || !camera1) return -1.0f;
 
         const float z0 = float(cloudbaseheight), z1 = z0 + cloudheight;
         if(camera1->o.z <= z0 || camera1->o.z >= z1) return -1.0f;
 
         const float cell = max(float(cloudcellsize), 1.0f);
-        const vec offset = cloudrenderoffset(cloudstate);
-        const float gridx = (camera1->o.x - offset.x) / cell, gridy = (camera1->o.y - offset.y) / cell;
-        const int x = int(floorf(gridx)), y = int(floorf(gridy));
-        if(!cloudcelloccupied(cloudstate, x, y)) return -1.0f;
+        vec absolute = camera1->o;
+        worldpositiontoabsolute(absolute);
+        const double gridx = (double(absolute.x) - cloudwind.x) / cell, gridy = (double(absolute.y) - cloudwind.y) / cell;
+        const int x = int(floor(gridx)), y = int(floor(gridy));
+        if(!cloudcelloccupied(x, y)) return -1.0f;
 
         float surfacedistance = min(camera1->o.z - z0, z1 - camera1->o.z);
-        const float localx = (gridx - x) * cell, localy = (gridy - y) * cell;
-        if(!cloudcelloccupied(cloudstate, x - 1, y)) surfacedistance = min(surfacedistance, localx);
-        if(!cloudcelloccupied(cloudstate, x + 1, y)) surfacedistance = min(surfacedistance, cell - localx);
-        if(!cloudcelloccupied(cloudstate, x, y - 1)) surfacedistance = min(surfacedistance, localy);
-        if(!cloudcelloccupied(cloudstate, x, y + 1)) surfacedistance = min(surfacedistance, cell - localy);
+        const float localx = float(gridx - x) * cell, localy = float(gridy - y) * cell;
+        if(!cloudcelloccupied(x - 1, y)) surfacedistance = min(surfacedistance, localx);
+        if(!cloudcelloccupied(x + 1, y)) surfacedistance = min(surfacedistance, cell - localx);
+        if(!cloudcelloccupied(x, y - 1)) surfacedistance = min(surfacedistance, localy);
+        if(!cloudcelloccupied(x, y + 1)) surfacedistance = min(surfacedistance, cell - localy);
 
         return surfacedistance;
     }
@@ -847,13 +895,15 @@ namespace
 
 
     // Dedicated cloud shadow mask.
-    // The mask is rendered in cloud-local XY space, so cloud wind/camera translation only changes the sampling transform and does not force a mask rerender every frame
+    // The mask is rendered in cloud-local XY space, so cloud wind/camera translation only changes the sampling transform and does not force a mask
+    // rerender every frame.
     static GLuint cloudshadowfbo[2] = { 0, 0 }, cloudshadowtex[2] = { 0, 0 };
     static int cloudshadowrt = 0;
-    static int cloudshadowmasksettingsversion = -1;
-    static int cloudshadowmaskoriginx = INT_MIN, cloudshadowmaskoriginy = INT_MIN;
+    static int cloudshadowmasktilesetversion = -1;
     static int cloudshadowmaskmapsize = 0;
     static float cloudshadowmasksoftness = -1.0f;
+    static vec cloudshadoworigin(0, 0, 0);
+    static float cloudshadowspanx = 1.0f, cloudshadowspany = 1.0f;
 
     static void cleanupcloudshadowtarget()
     {
@@ -862,8 +912,7 @@ namespace
         cloudshadowfbo[0] = cloudshadowfbo[1] = 0;
         cloudshadowtex[0] = cloudshadowtex[1] = 0;
         cloudshadowrt = 0;
-        cloudshadowmasksettingsversion = -1;
-        cloudshadowmaskoriginx = cloudshadowmaskoriginy = INT_MIN;
+        cloudshadowmasktilesetversion = -1;
         cloudshadowmaskmapsize = 0;
         cloudshadowmasksoftness = -1.0f;
     }
@@ -970,13 +1019,11 @@ namespace
 
     static bool updatecloudshadowmask()
     {
-        if(!cloudshadows || cloudshadowalpha <= 0.0f || !cloudstate.built || !cloudstate.vbo || !cloudstate.size) return false;
+        if(!cloudshadows || cloudshadowalpha <= 0.0f || cloudtiles.empty()) return false;
         if(!setupcloudshadowtarget()) return false;
 
         const bool stale =
-            cloudshadowmasksettingsversion != cloudstate.settingsversion ||
-            cloudshadowmaskoriginx != cloudstate.originx ||
-            cloudshadowmaskoriginy != cloudstate.originy ||
+            cloudshadowmasktilesetversion != cloudtilesetversion ||
             cloudshadowmaskmapsize != cloudshadowmapsize ||
             cloudshadowmasksoftness != cloudshadowsoftness;
 
@@ -996,27 +1043,47 @@ namespace
         glClearColor(0, 0, 0, 0);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        if(cloudstate.numverts > 0)
+        bool anygeometry = false;
+        float minx = FLT_MAX, miny = FLT_MAX, maxx = -FLT_MAX, maxy = -FLT_MAX;
+        const float tilespan = CLOUD_TILE_CELLS * float(cloudcellsize);
+        loopv(cloudtiles) if(cloudtiles[i]->built && cloudtiles[i]->numverts)
+        {
+            const float tilex = float(double(cloudtiles[i]->tx) * CLOUD_TILE_CELLS * cloudcellsize);
+            const float tiley = float(double(cloudtiles[i]->ty) * CLOUD_TILE_CELLS * cloudcellsize);
+            minx = min(minx, tilex);
+            miny = min(miny, tiley);
+            maxx = max(maxx, tilex + tilespan);
+            maxy = max(maxy, tiley + tilespan);
+            anygeometry = true;
+        }
+
+        if(anygeometry)
         {
             Shader *shader = lookupshaderbyname("cloudshadowmask");
             if(!shader) return false;
 
             shader->set();
-
-            const float span = max(cloudstate.size * float(cloudcellsize), 1.0f);
-            LOCALPARAMF(cloudshadowmaskparams, 1.0f / span, 1.0f / span, 0, 0);
-
-            enablecloudvertexformat(cloudstate);
-            glDrawArrays(GL_TRIANGLES, 0, cloudstate.numverts);
-            glde++;
-            disablecloudvertexformat();
+            cloudshadoworigin = vec(minx, miny, float(cloudbaseheight));
+            cloudshadowspanx = max(maxx - minx, 1.0f);
+            cloudshadowspany = max(maxy - miny, 1.0f);
+            loopv(cloudtiles)
+            {
+                cloudtile &tile = *cloudtiles[i];
+                if(!tile.built || !tile.numverts) continue;
+                const float tilex = float(double(tile.tx) * CLOUD_TILE_CELLS * cloudcellsize);
+                const float tiley = float(double(tile.ty) * CLOUD_TILE_CELLS * cloudcellsize);
+                LOCALPARAMF(cloudshadowmaskparams, 1.0f / cloudshadowspanx, 1.0f / cloudshadowspany,
+                            (tilex - minx) / cloudshadowspanx, (tiley - miny) / cloudshadowspany);
+                enablecloudvertexformat(tile);
+                glDrawArrays(GL_TRIANGLES, 0, tile.numverts);
+                glde++;
+                disablecloudvertexformat();
+            }
 
             blurcloudshadowtarget();
         }
 
-        cloudshadowmasksettingsversion = cloudstate.settingsversion;
-        cloudshadowmaskoriginx = cloudstate.originx;
-        cloudshadowmaskoriginy = cloudstate.originy;
+        cloudshadowmasktilesetversion = cloudtilesetversion;
         cloudshadowmaskmapsize = cloudshadowmapsize;
         cloudshadowmasksoftness = cloudshadowsoftness;
         return true;
@@ -1052,12 +1119,14 @@ namespace
 
         shader->set();
 
-        const vec offset = cloudrenderoffset(cloudstate);
-        const float span = max(cloudstate.size * float(cloudcellsize), 1.0f);
-        LOCALPARAM(cloudshadoworigin, vec(offset.x, offset.y, float(cloudbaseheight)));
+        // Wind and world-origin shifts translate the cached topology without rerendering the mask.
+        vec shadoworigin(float(double(cloudshadoworigin.x) + cloudwind.x - cloudworldorigin.x),
+                         float(double(cloudshadoworigin.y) + cloudwind.y - cloudworldorigin.y), cloudshadoworigin.z);
+        LOCALPARAM(cloudshadoworigin, shadoworigin);
         LOCALPARAM(cloudsundir, sunlightdir);
         LOCALPARAM(camera, camera1->o);
-        LOCALPARAMF(cloudshadowparams, 1.0f / span, cloudshadowalpha * direct, float(cloudshadowdistance), 0.0f);
+        LOCALPARAMF(cloudshadowparams, 1.0f / cloudshadowspanx, cloudshadowalpha * direct, float(cloudshadowdistance),
+                    1.0f / cloudshadowspany);
 
         glActiveTexture_(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, cloudshadowtex[0]);
@@ -1147,19 +1216,21 @@ void updateclouds()
 {
     if(!clouds || !camera1) return;
     if(lastcloudframe == lastmillis) return;
+    ZoneScopedN("Clouds/Stream");
+
     lastcloudframe = lastmillis;
 
     const int seed = game::weather::getseed(game::getworldseed());
     game::weather::update(seed);
     const uint settingshash = cloudsettingshash(seed);
-    const int weathersettingsversion = game::weather::getsettingsversion();
+    const int weathersettingsversion = game::weather::getcoverageversion();
     if(settingshash != currentsettingshash || seed != noiseseed || weathersettingsversion != currentweathersettingsversion)
     {
         currentsettingshash = settingshash;
         currentweathersettingsversion = weathersettingsversion;
         ++currentsettingsversion;
         setupcloudnoise(seed);
-        cloudstate.built = false;
+        clearcloudtiles();
     }
 
     const double weathermillis = game::weather::gettimemillis();
@@ -1172,13 +1243,45 @@ void updateclouds()
     worldpositiontoabsolute(absolute);
     cloudworldorigin = vec(absolute).sub(camera1->o);
 
-    const int centerx = int(floorf((absolute.x - cloudwind.x) / max(float(cloudcellsize), 1.0f)));
-    const int centery = int(floorf((absolute.y - cloudwind.y) / max(float(cloudcellsize), 1.0f)));
-    const int margin = max(cloudrebuildmargin, 1);
+    const double cell = max(double(cloudcellsize), 1.0);
+    const double cloudx = (double(absolute.x) - cloudwind.x) / cell;
+    const double cloudy = (double(absolute.y) - cloudwind.y) / cell;
+    const double radius = double(clouddistance) / cell;
+    const double keepspan = radius + CLOUD_TILE_HYSTERESIS * CLOUD_TILE_CELLS;
+    const int centertx = int(floor(cloudx / CLOUD_TILE_CELLS)), centerty = int(floor(cloudy / CLOUD_TILE_CELLS));
+    const int tileradius = int(ceil(radius / CLOUD_TILE_CELLS)) + 1;
 
-    const bool moved = cloudstate.centerx == INT_MIN || abs(centerx - cloudstate.centerx) >= margin || abs(centery - cloudstate.centery) >= margin;
-    const bool stale = !cloudstate.built || cloudstate.settingsversion != currentsettingsversion;
-    if(moved || stale) buildcloudlayer(centerx, centery);
+    loopvrev(cloudtiles)
+    {
+        cloudtile &tile = *cloudtiles[i];
+        const double nearestx = max(double(tile.tx * CLOUD_TILE_CELLS), min(cloudx, double((tile.tx + 1) * CLOUD_TILE_CELLS)));
+        const double nearesty = max(double(tile.ty * CLOUD_TILE_CELLS), min(cloudy, double((tile.ty + 1) * CLOUD_TILE_CELLS)));
+        const double dx = nearestx - cloudx, dy = nearesty - cloudy;
+        if(dx * dx + dy * dy <= keepspan * keepspan) continue;
+        clearcloudtile(tile);
+        delete cloudtiles.remove(i);
+        ++cloudtilesetversion;
+    }
+
+    vector<cloudtilecandidate> missing;
+    for(int ty = centerty - tileradius; ty <= centerty + tileradius; ++ty)
+        for(int tx = centertx - tileradius; tx <= centertx + tileradius; ++tx)
+        {
+            const double nearestx = max(double(tx * CLOUD_TILE_CELLS), min(cloudx, double((tx + 1) * CLOUD_TILE_CELLS)));
+            const double nearesty = max(double(ty * CLOUD_TILE_CELLS), min(cloudy, double((ty + 1) * CLOUD_TILE_CELLS)));
+            const double dx = nearestx - cloudx, dy = nearesty - cloudy;
+            if(dx * dx + dy * dy > radius * radius || findcloudtile(tx, ty)) continue;
+            missing.add(cloudtilecandidate(tx, ty, dx * dx + dy * dy));
+        }
+    missing.sort(sortcloudtilecandidates);
+
+    const int generate = min(missing.length(), int(CLOUD_TILE_GENERATION_BUDGET));
+    loopi(generate)
+    {
+        cloudtile *tile = new cloudtile(missing[i].tx, missing[i].ty);
+        cloudtiles.add(tile);
+        buildcloudtile(*tile);
+    }
 }
 
 void renderclouds()
@@ -1376,7 +1479,7 @@ void rendercloudshadows(int split)
 
 void cleanupclouds()
 {
-    clearcloudlayer(cloudstate);
+    clearcloudtiles();
     cleanupcloudscene();
     cleanupcloudtarget();
     cleanupcloudshadowtarget();

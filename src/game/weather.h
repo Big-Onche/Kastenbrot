@@ -15,6 +15,7 @@ namespace game
         float getcloudspeed(float fallback);
         float getwindangle(float fallback);
         int getsettingsversion();
+        int getcoverageversion();
         float samplecoverage(float x, float y);
         float samplecurrentovercast(float x, float y);
         void addparticles();

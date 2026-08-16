@@ -381,7 +381,7 @@ struct vacollect : verthash
                    tmax.x <= bbmin.x || tmax.y <= bbmin.y || tmax.z <= bbmin.z)
                     continue;
                 float f0 = t0.norm.tonormal().dot(orient.b), f1 = t1.norm.tonormal().dot(orient.b), f2 = t2.norm.tonormal().dot(orient.b);
-                if(f0 >= 0 && f1 >= 0 && f2 >= 0) continue; 
+                if(f0 >= 0 && f1 >= 0 && f2 >= 0) continue;
                 vec p1[9], p2[9];
                 p1[0] = v0; p1[1] = v1; p1[2] = v2;
                 int nump = polyclip(p1, 3, orient.b, clipoffset.y, clipoffset.y + size.y, p2);
@@ -923,7 +923,7 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
         if(vslot.refractscale > 0) loopk(numverts) { vc.refractmin.min(pos[k]); vc.refractmax.max(pos[k]); }
     }
     if(texture == DEFAULT_SKY) loopi(numverts) if(pos[i][orient>>1] != ((orient&1)<<worldscale))
-    {       
+    {
         loopk(numverts) { vc.skymin.min(pos[k]); vc.skymax.max(pos[k]); }
         break;
     }
@@ -1194,7 +1194,7 @@ vtxarray *newva(const ivec &o, int size)
         va->skymin = ivec(vec(vc.skymin).mul(8)).shr(3);
         va->skymax = ivec(vec(vc.skymax).mul(8)).add(7).shr(3);
     }
-        
+
     va->nogimin = vc.nogimin;
     va->nogimax = vc.nogimax;
 
@@ -1591,8 +1591,7 @@ VARF(vafacemax, 64, 384, 256*256, allchanged());
 VARF(vafacemin, 0, 96, 256*256, allchanged());
 VARF(vacubesize, 32, 128, 0x1000, allchanged());
 
-int updateva(cube *c, const ivec &co, int size, int csi,
-             int worldsectionsize, int facemax, int maxvasize)
+int updateva(cube *c, const ivec &co, int size, int csi, int worldsectionsize, int facemax, int maxvasize)
 {
     progress("recalculating geometry...");
     int ccount = 0, cmergemax = vamergemax, chasmerges = vahasmerges;
@@ -1614,18 +1613,13 @@ int updateva(cube *c, const ivec &co, int size, int csi,
             if(c[i].children)
             {
                 if(c[i].ext && c[i].ext->ents) entstack[++entdepth] = c[i].ext->ents;
-                count += updateva(c[i].children, o, size/2, csi-1,
-                                  worldsectionsize, facemax, maxvasize);
+                count += updateva(c[i].children, o, size/2, csi-1, worldsectionsize, facemax, maxvasize);
                 if(c[i].ext && c[i].ext->ents) --entdepth;
             }
             else count += setcubevisibility(c[i], o, size);
             int tcount = count + (csi <= MAXMERGELEVEL ? vamerges[csi].length() : 0);
-            bool makegroup = worldsectionsize > 0 && size >= worldsectionsize &&
-                             size <= maxvasize &&
-                             (tcount > 0 || varoot.length() > childpos);
-            if(tcount > facemax || makegroup ||
-               (!worldsectionsize && tcount >= vafacemin && size >= vacubesize) ||
-               size == maxvasize)
+            bool makegroup = worldsectionsize > 0 && size >= worldsectionsize && size <= maxvasize && (tcount > 0 || varoot.length() > childpos);
+            if(tcount > facemax || makegroup || (!worldsectionsize && tcount >= vafacemin && size >= vacubesize) || size == maxvasize)
             {
                 loadprogress = clamp(recalcprogress/float(allocnodes), 0.0f, 1.0f);
                 setva(c[i], o, size, csi, makegroup);

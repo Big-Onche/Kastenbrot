@@ -83,8 +83,8 @@ namespace game
             static FastNoiseLite weathernoise, weatherwarp;
             static vector<uchar> weathermap;
             static string currentmapfolder = "";
-            static int mapseed = INT_MIN, settingsversion = 0;
-            static uint currentsettingshash = 0;
+            static int mapseed = INT_MIN, settingsversion = 0, coverageversion = 0;
+            static uint currentsettingshash = 0, currentcoveragehash = 0;
             static float rainbudget = 0.0f, snowbudget = 0.0f;
             static bool synchronized = false;
             static int synchronizedseed = 0, synchronizedat = 0;
@@ -188,6 +188,7 @@ namespace game
                 mapseed = seed;
                 currentmapfolder[0] = '\0';
                 ++settingsversion;
+                ++coverageversion;
             }
 
             static float sampleweather(float x, float y)
@@ -243,6 +244,7 @@ namespace game
                 mapseed = seed;
                 copystring(currentmapfolder, folder);
                 ++settingsversion;
+                ++coverageversion;
                 conoutf("loaded fixed weather map %s", name);
                 return true;
             }
@@ -297,6 +299,11 @@ namespace game
 
             currentsettingshash = hash;
             ++settingsversion;
+            if(hash != currentcoveragehash)
+            {
+                currentcoveragehash = hash;
+                ++coverageversion;
+            }
         }
 
         bool preparemap(const char *folder, int seed)
@@ -362,6 +369,11 @@ namespace game
         int getsettingsversion()
         {
             return settingsversion;
+        }
+
+        int getcoverageversion()
+        {
+            return coverageversion;
         }
 
         float samplecoverage(float x, float y)
