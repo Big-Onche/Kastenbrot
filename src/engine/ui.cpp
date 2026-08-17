@@ -1934,6 +1934,11 @@ namespace UI
     VARP(uitextrows, 1, 24, 200);
     FVAR(uitextscale, 1, 0, 0);
 
+    static char *tooltip = NULL;
+    static Object *tooltipowner = NULL, *tooltipcandidate = NULL;
+    static float tooltipsize = 1.0f;
+    static int tooltipdelay = 0, tooltiphovermillis = 0;
+
     #define SETSTR(dst, src) do { \
         if(dst) { if(dst != src && strcmp(dst, src)) { delete[] dst; dst = newstring(src); } } \
         else dst = newstring(src); \
@@ -3410,6 +3415,34 @@ namespace UI
     ICOMMAND(uitarget, "ffe", (float *minw, float *minh, uint *children),
         BUILD(Target, o, o->setup(*minw, *minh), children));
 
+    static Target *findtooltiptarget()
+    {
+        // A tooltip belongs to the Target that contains its declaration, not to
+        // whichever ancestor happens to have a propagated hover bit this frame.
+        // This is important for helpers such as UIbutton where uitooltip is nested
+        // through uihlist/uispace before reaching the actual uitarget.
+        for(Object *o = buildparent; o; o = o->parent)
+            if(o->istype<Target>()) return (Target *)o;
+        return NULL;
+    }
+
+    ICOMMAND(uitooltip, "sfi", (char *text, float *size, int *delay),
+    {
+        Target *owner = findtooltiptarget();
+        if(owner && (owner->state & STATE_HOVER))
+        {
+            tooltipcandidate = owner;
+            if(tooltipowner != tooltipcandidate)
+            {
+                tooltipowner = tooltipcandidate;
+                tooltiphovermillis = totalmillis;
+            }
+            SETSTR(tooltip, text);
+            tooltipsize = *size > 0 ? *size : 1.0f;
+            tooltipdelay = max(*delay, 0);
+        }
+    });
+
     ICOMMAND(uidragsource, "ffe", (float *minw, float *minh, uint *children),
         BUILD(DragSource, o, o->setup(*minw, *minh), children));
 
@@ -3763,6 +3796,8 @@ namespace UI
         enumerate(windows, Window *, w, delete w);
         windows.clear();
         DELETEP(world);
+        DELETEA(tooltip);
+        tooltipowner = tooltipcandidate = NULL;
     }
 
     void calctextscale()
@@ -3773,6 +3808,53 @@ namespace UI
         if(forceaspect) tw = int(ceil(th*forceaspect));
         gettextres(tw, th);
         uicontextscale = conscale/th;
+    }
+
+    static void rendertooltip()
+    {
+        if(!tooltipcandidate || !tooltip || !tooltip[0] || totalmillis - tooltiphovermillis < tooltipdelay) return;
+
+        const float aspect = hudw / float(hudh), scale = uitextscale * tooltipsize / FONTH,
+                    padding = uitextscale * tooltipsize * 0.25f, offset = uitextscale * 0.35f;
+
+        float tw, th;
+        text_boundsf(tooltip, tw, th);
+        tw *= scale;
+        th *= scale;
+
+        const float bw = tw + padding * 2, bh = th + padding * 2;
+        float x = cursorx * aspect + offset, y = cursory + offset;
+
+        if(x + bw > aspect) x = cursorx * aspect - offset - bw;
+        if(y + bh > 1) y = cursory - offset - bh;
+        x = clamp(x, 0.0f, max(aspect - bw, 0.0f));
+        y = clamp(y, 0.0f, max(1.0f - bh, 0.0f));
+
+        hudmatrix.ortho(0, aspect, 1, 0, -1, 1);
+        resethudmatrix();
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        hudnotextureshader->set();
+        gle::colorub(0, 0, 0, 220);
+        gle::defvertex(2);
+        gle::begin(GL_TRIANGLE_STRIP);
+        gle::attribf(x + bw, y);
+        gle::attribf(x,      y);
+        gle::attribf(x + bw, y + bh);
+        gle::attribf(x,      y + bh);
+        gle::end();
+
+        hudshader->set();
+        gle::colorf(1, 1, 1);
+
+        float oldscale = textscale;
+        textscale = scale;
+        draw_text(tooltip, (x + padding) / scale, (y + padding) / scale, 255, 255, 255, 255);
+        textscale = oldscale;
+
+        glDisable(GL_BLEND);
     }
 
     void update()
@@ -3786,7 +3868,13 @@ namespace UI
 
         calctextscale();
 
+        tooltipcandidate = NULL;
         world->build();
+        if(!tooltipcandidate)
+        {
+            tooltipowner = NULL;
+            tooltiphovermillis = 0;
+        }
 
         flusheditors();
     }
@@ -3796,6 +3884,7 @@ namespace UI
         world->layout();
         world->adjustchildren();
         world->draw();
+        rendertooltip();
     }
 
     float abovehud()
