@@ -638,13 +638,23 @@ namespace server
     {
         string filename;
         serverjournalname(filename, sizeof(filename));
-        stream *file = openrawfile(filename, "wb");
+        defformatstring(temporary, "%s.tmp", filename);
+        string finalpath, temporarypath;
+        copystring(finalpath, findfile(filename, "wb"));
+        copystring(temporarypath, findfile(temporary, "wb"));
+        stream *file = openrawfile(temporary, "wb");
         if(!file) return false;
         bool ok = writeserverjournalheader(*file);
         loopv(worldhistory) if(ok) ok = writeserveredit(*file, *worldhistory[i]);
+        if(ok) ok = file->flush();
         delete file;
-        if(!ok) conoutf(CON_ERROR, "could not write authoritative world journal %s", filename);
-        return ok;
+        if(!ok || !replaceserveridentityfile(temporarypath, finalpath))
+        {
+            remove(temporarypath);
+            conoutf(CON_ERROR, "could not atomically write authoritative world journal %s", filename);
+            return false;
+        }
+        return true;
     }
 
     static bool appendserveredit(const serveredit &edit)
@@ -653,7 +663,7 @@ namespace server
         serverjournalname(filename, sizeof(filename));
         stream *file = openrawfile(filename, "ab");
         if(!file) return false;
-        bool ok = writeserveredit(*file, edit);
+        bool ok = writeserveredit(*file, edit) && file->flush();
         delete file;
         return ok;
     }

@@ -205,7 +205,7 @@ void cancelworldedit()
 void beginworldedit(int operation, const selinfo &selection, int arg1, int arg2, int arg3, int arg4)
 {
     cancelworldedit();
-    if(worldchunks.empty() || activeworldchunk < 0 || selection.s.iszero()) return;
+    if(worldchunks.empty() || selection.s.iszero()) return;
 
     currentworldedit.active = true;
     currentworldedit.operation = operation;
@@ -291,7 +291,7 @@ void commitworldedit()
         record->revision = revision;
         state->revision = max(state->revision, revision);
         record->timestamp = timestamp;
-        state->pending.add(cloneworldeditrecord(*record));
+        queuependingworldedit(*state, cloneworldeditrecord(*record));
         state->journal.add(cloneworldeditrecord(*record));
         state->audit.add(cloneworldeditrecord(*record));
         chunk.dirty = true;
@@ -328,7 +328,7 @@ static void commitworldscatterrecord(worldchunk &chunk,
 
     worldchunkdiffstate *state = findworldchunkdiffstate(chunk.x, chunk.y, true);
     state->revision = max(state->revision, record.revision);
-    state->pending.add(cloneworldeditrecord(record));
+    queuependingworldedit(*state, cloneworldeditrecord(record));
     state->journal.add(cloneworldeditrecord(record));
     state->audit.add(cloneworldeditrecord(record));
     chunk.dirty = true;
@@ -389,6 +389,15 @@ bool editworldscatter(int type, const ivec &support, int orient, bool place)
 
     if(target.x < 0 || target.y < 0 || target.z < 0 || target.x >= worldsize || target.y >= worldsize || target.z + WORLD_BLOCK_SIZE > WORLD_MAP_SIZE)
         return false;
+
+    selinfo occupied;
+    occupied.o = target;
+    occupied.s = ivec(1, 1, 1);
+    occupied.grid = WORLD_BLOCK_SIZE;
+    occupied.orient = orient;
+    occupied.cx = occupied.cy = occupied.corner = 0;
+    occupied.cxs = occupied.cys = 2;
+    if(!worldselectionready(occupied)) return false;
 
     const int chunkx = worldfirstchunkx + target.x / WORLD_CHUNK_SIZE,
               chunky = worldfirstchunky + target.y / WORLD_CHUNK_SIZE,
@@ -553,7 +562,7 @@ static bool commitworldadminrecord(const worldeditrecord &source, bool inverse)
     loopv(target) record.after.add(target[i]);
     loopv(scatterold) record.scatterbefore.add(scatterold[i]);
     loopv(scattertarget) record.scatterafter.add(scattertarget[i]);
-    state->pending.add(cloneworldeditrecord(record));
+    queuependingworldedit(*state, cloneworldeditrecord(record));
     state->journal.add(cloneworldeditrecord(record));
     state->audit.add(cloneworldeditrecord(record));
     state->canonicalhash = hashworldchunk(chunk.root);

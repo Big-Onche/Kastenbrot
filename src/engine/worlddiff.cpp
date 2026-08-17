@@ -154,9 +154,10 @@ struct worlddiffflushjob
 {
     string filename, auditfilename;
     int chunkx, chunky;
+    worldchunkdiffstate *state;
     vector<worldeditrecord *> records;
 
-    worlddiffflushjob() : chunkx(0), chunky(0) {}
+    worlddiffflushjob() : chunkx(0), chunky(0), state(NULL) {}
     ~worlddiffflushjob() { records.deletecontents(); }
 };
 
@@ -165,14 +166,90 @@ static SDL_mutex *worlddiffwritermutex = NULL;
 static SDL_cond *worlddiffwritercond = NULL;
 static SDL_Thread *worlddiffwriterthread = NULL;
 static bool stopworlddiffwriter = false;
+static uint worlddifffilewriteid = 1;
+
+static void queuependingworldedit(worldchunkdiffstate &state, worldeditrecord *record)
+{
+    if(!record) return;
+    if(worlddiffwritermutex) SDL_LockMutex(worlddiffwritermutex);
+    state.pending.add(record);
+    if(worlddiffwritermutex) SDL_UnlockMutex(worlddiffwritermutex);
+}
+
+static bool replaceworlddifffile(const char *temporary, const char *finalname)
+{
+#ifdef WIN32
+    return MoveFileEx(temporary, finalname, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return rename(temporary, finalname) == 0;
+#endif
+}
+
+static uint readworlddiff32(const uchar *bytes)
+{
+    return uint(bytes[0]) | (uint(bytes[1]) << 8) | (uint(bytes[2]) << 16) | (uint(bytes[3]) << 24);
+}
 
 static bool appendworlddiffbytes(const char *filename, const vector<uchar> &bytes)
 {
-    stream *file = openrawfile(filename, "ab");
-    if(!file) return false;
-    bool written = file->write(bytes.getbuf(), bytes.length()) == size_t(bytes.length());
+    vector<uchar> contents;
+    stream *existing = openrawfile(filename, "rb");
+    if(existing)
+    {
+        const stream::offset length = existing->size();
+        if(length < 0 || length > INT_MAX)
+        {
+            delete existing;
+            return false;
+        }
+        vector<uchar> stored;
+        bool read = true;
+        if(length > 0)
+        {
+            uchar *destination = stored.pad(int(length));
+            read = existing->read(destination, size_t(length)) == size_t(length);
+        }
+        delete existing;
+        if(!read) return false;
+
+        int offset = 0;
+        bool recovered = false;
+        while(stored.length() - offset >= 12)
+        {
+            const uchar *frame = &stored[offset];
+            if(memcmp(frame, "CDF1", 4)) break;
+            const uint framelength = readworlddiff32(frame + 4), checksum = readworlddiff32(frame + 8);
+            if(framelength > WORLD_DIFF_FRAME_MAX || framelength > uint(stored.length() - offset - 12)) break;
+            const int length = int(framelength) + 12;
+            if(worlddiffchecksum(frame + 12, int(framelength)) == checksum) contents.put(frame, length);
+            else recovered = true;
+            offset += length;
+        }
+        if(recovered || offset != stored.length())
+            conoutf(CON_WARN, "repaired damaged world diff journal before appending %s", filename);
+    }
+    contents.put(bytes.getbuf(), bytes.length());
+
+    uint writeid = ++worlddifffilewriteid;
+    if(!writeid) writeid = ++worlddifffilewriteid;
+    defformatstring(temporary, "%s.%u.tmp", filename, writeid);
+    string temporarypath, finalpath;
+    copystring(temporarypath, findfile(temporary, "wb"));
+    copystring(finalpath, findfile(filename, "wb"));
+    stream *file = openrawfile(temporary, "wb");
+    const bool written = file && file->write(contents.getbuf(), contents.length()) == size_t(contents.length()) && file->flush();
     delete file;
-    return written;
+    if(!written)
+    {
+        remove(temporarypath);
+        return false;
+    }
+    if(!replaceworlddifffile(temporarypath, finalpath))
+    {
+        remove(temporarypath);
+        return false;
+    }
+    return true;
 }
 
 static int worlddiffwriter(void *)
@@ -195,10 +272,33 @@ static int worlddiffwriter(void *)
 
         vector<uchar> frame;
         makeworlddiffframe(frame, 2, job->chunkx, job->chunky, job->records);
-        if(!appendworlddiffbytes(job->filename, frame))
+        bool persisted = false;
+        loopi(3) if(appendworlddiffbytes(job->filename, frame))
+        {
+            persisted = true;
+            break;
+        }
+        if(!persisted)
+        {
             conoutf(CON_ERROR, "could not append chunk diff journal %s", job->filename);
-        if(!appendworlddiffbytes(job->auditfilename, frame))
-            conoutf(CON_ERROR, "could not append world audit journal %s", job->auditfilename);
+            SDL_LockMutex(worlddiffwritermutex);
+            if(job->state)
+            {
+                loopvrev(job->records) job->state->pending.insert(0, job->records[i]);
+                job->records.setsize(0);
+            }
+            SDL_UnlockMutex(worlddiffwritermutex);
+        }
+        else
+        {
+            bool audited = false;
+            loopi(3) if(appendworlddiffbytes(job->auditfilename, frame))
+            {
+                audited = true;
+                break;
+            }
+            if(!audited) conoutf(CON_ERROR, "could not append world audit journal %s", job->auditfilename);
+        }
         delete job;
     }
     return 0;
@@ -215,9 +315,10 @@ static bool startworlddiffwriter()
     return worlddiffwriterthread != NULL;
 }
 
-static void queueworlddiffflush(worldchunkdiffstate &state, vector<worldeditrecord *> &records)
+static bool queueworlddiffflush(worldchunkdiffstate &state, vector<worldeditrecord *> &records)
 {
-    if(records.empty() || !startworlddiffwriter()) return;
+    if(records.empty()) return true;
+    if(!startworlddiffwriter()) return false;
     worlddiffflushjob *job = new worlddiffflushjob;
     defformatstring(relative, "media/map/%s/chunks/%d_%d_%d.diff",
                     worldfolder, state.x, state.y, state.z);
@@ -226,12 +327,14 @@ static void queueworlddiffflush(worldchunkdiffstate &state, vector<worldeditreco
     copystring(job->auditfilename, path(auditrelative));
     job->chunkx = state.x;
     job->chunky = state.y;
+    job->state = &state;
     job->records.move(records);
 
     SDL_LockMutex(worlddiffwritermutex);
     worlddiffflushjobs.add(job);
     SDL_CondSignal(worlddiffwritercond);
     SDL_UnlockMutex(worlddiffwritermutex);
+    return true;
 }
 
 static void flushworlddiffjournals(bool force)
@@ -243,11 +346,18 @@ static void flushworlddiffjournals(bool force)
     {
         worldchunkdiffstate &state = *worldchunkdiffstates[i];
         if(state.pending.empty()) continue;
+        if(!startworlddiffwriter()) continue;
         vector<worldeditrecord *> flush;
-        if(worlddiffwritermutex) SDL_LockMutex(worlddiffwritermutex);
+        SDL_LockMutex(worlddiffwritermutex);
         flush.move(state.pending);
-        if(worlddiffwritermutex) SDL_UnlockMutex(worlddiffwritermutex);
-        queueworlddiffflush(state, flush);
+        SDL_UnlockMutex(worlddiffwritermutex);
+        if(!queueworlddiffflush(state, flush))
+        {
+            SDL_LockMutex(worlddiffwritermutex);
+            loopvrev(flush) state.pending.insert(0, flush[i]);
+            flush.setsize(0);
+            SDL_UnlockMutex(worlddiffwritermutex);
+        }
         flush.deletecontents();
     }
 }
@@ -790,6 +900,7 @@ static bool compactworldchunkdiff(worldchunk &chunk)
     if(overrides.empty() && scatterremoved.empty() && scatteradded.empty())
     {
         remove(finalpath);
+        state->pending.deletecontents();
         state->journal.deletecontents();
         state->snapshotrevision = state->revision;
         state->canonicalhash = finalhash;
@@ -819,7 +930,7 @@ static bool compactworldchunkdiff(worldchunk &chunk)
     string temppath;
     copystring(temppath, findfile(temprelative, "wb"));
     stream *file = openrawfile(temprelative, "wb");
-    bool written = file && file->write(frame.getbuf(), frame.length()) == size_t(frame.length());
+    bool written = file && file->write(frame.getbuf(), frame.length()) == size_t(frame.length()) && file->flush();
     delete file;
     if(!written)
     {
@@ -827,16 +938,13 @@ static bool compactworldchunkdiff(worldchunk &chunk)
         conoutf(CON_ERROR, "could not write compacted chunk diff %s", temppath);
         return false;
     }
-    if(rename(temppath, finalpath))
+    if(!replaceworlddifffile(temppath, finalpath))
     {
-        remove(finalpath);
-        if(rename(temppath, finalpath))
-        {
-            remove(temppath);
-            conoutf(CON_ERROR, "could not atomically publish compacted chunk diff %s", finalpath);
-            return false;
-        }
+        remove(temppath);
+        conoutf(CON_ERROR, "could not atomically publish compacted chunk diff %s", finalpath);
+        return false;
     }
+    state->pending.deletecontents();
     state->journal.deletecontents();
     state->snapshotrevision = state->revision;
     state->canonicalhash = finalhash;

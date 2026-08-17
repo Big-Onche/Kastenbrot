@@ -11,6 +11,24 @@ enum
 
 enum
 {
+    WORLD_CACHE_ERROR_NONE = 0,
+    WORLD_CACHE_ERROR_OPEN,
+    WORLD_CACHE_ERROR_SIZE,
+    WORLD_CACHE_ERROR_READ,
+    WORLD_CACHE_ERROR_STALE,
+    WORLD_CACHE_ERROR_DECOMPRESS,
+    WORLD_CACHE_ERROR_CHECKSUM,
+    WORLD_CACHE_ERROR_PAYLOAD
+};
+
+static bool corruptworldchunkcacheerror(int error)
+{
+    return error == WORLD_CACHE_ERROR_SIZE || error == WORLD_CACHE_ERROR_READ || error == WORLD_CACHE_ERROR_DECOMPRESS ||
+           error == WORLD_CACHE_ERROR_CHECKSUM || error == WORLD_CACHE_ERROR_PAYLOAD;
+}
+
+enum
+{
     WORLD_CACHE_NODE_CHILDREN = 0,
     WORLD_CACHE_NODE_LEAF = 1
 };
@@ -268,18 +286,24 @@ static cube *loadworldchunkcache(const char *filename, int x, int y, int seed, u
     {
         ZoneScopedN("Chunks/Cache read");
         stream *file = openrawfile(filename, "rb");
-        if(!file) { error = 1; return NULL; }
+        if(!file) { error = WORLD_CACHE_ERROR_OPEN; return NULL; }
         const stream::offset length = file->size();
         if(length < WORLD_CHUNK_CACHE_HEADER_SIZE || length > WORLD_CHUNK_CACHE_HEADER_SIZE + WORLD_CHUNK_CACHE_MAX_PAYLOAD)
         {
             delete file;
-            error = 2;
+            error = WORLD_CACHE_ERROR_SIZE;
+            remove(foundpath);
             return NULL;
         }
         uchar *destination = filebytes.pad(int(length));
         const bool read = file->read(destination, size_t(length)) == size_t(length);
         delete file;
-        if(!read) { error = 3; return NULL; }
+        if(!read)
+        {
+            error = WORLD_CACHE_ERROR_READ;
+            remove(foundpath);
+            return NULL;
+        }
     }
 
     worldcachereader header(filebytes.getbuf(), filebytes.length());
@@ -295,7 +319,7 @@ static cube *loadworldchunkcache(const char *filename, int x, int y, int seed, u
        int(storedy) != y || storedhash != worldgenhash || !uncompressedsize || uncompressedsize > WORLD_CHUNK_CACHE_MAX_PAYLOAD ||
        !compressedsize || compressedsize > WORLD_CHUNK_CACHE_MAX_PAYLOAD || compressedsize != uint(header.remaining()))
     {
-        error = 4;
+        error = WORLD_CACHE_ERROR_STALE;
         remove(foundpath);
         return NULL;
     }
@@ -308,21 +332,21 @@ static cube *loadworldchunkcache(const char *filename, int x, int y, int seed, u
         if(uncompress((Bytef *)payload.getbuf(), &destinationlength, (const Bytef *)header.pos, uLong(compressedsize)) != Z_OK ||
            destinationlength != uLongf(uncompressedsize))
         {
-            error = 5;
+            error = WORLD_CACHE_ERROR_DECOMPRESS;
             remove(foundpath);
             return NULL;
         }
     }
     if(uint(crc32(0, (const Bytef *)payload.getbuf(), uInt(payload.length()))) != checksum)
     {
-        error = 6;
+        error = WORLD_CACHE_ERROR_CHECKSUM;
         remove(foundpath);
         return NULL;
     }
     cube *root = deserializeworldchunkcache(payload.getbuf(), payload.length(), scatter, prepared, families, renderdata);
     if(!root)
     {
-        error = 7;
+        error = WORLD_CACHE_ERROR_PAYLOAD;
         remove(foundpath);
     }
     else game::cacheworldscattertransforms(x, y, game::getworldscattermaxoffset(), scatter);

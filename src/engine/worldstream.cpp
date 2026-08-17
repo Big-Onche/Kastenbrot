@@ -197,6 +197,7 @@ static int pruneworldchunkcache(int chunkx, int chunky, int limit);
 static bool saveworldconfig();
 static void worldchunkname(char *name, size_t len, const worldchunk &chunk);
 static worldchunkdiffstate *findworldchunkdiffstate(int x, int y, bool create = false);
+static void queuependingworldedit(worldchunkdiffstate &state, worldeditrecord *record);
 static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename, vector<worldscatterinstance> &scatter, bool prepared, int &families,
                                 ullong &revision, ullong &canonicalhash, worldchunkdirtybounds *dirty = NULL);
 static ullong hashworldchunk(cube *root);
@@ -1291,6 +1292,30 @@ static void queueworldchunkcachewrite(int x, int y, int seed, ullong worldgenhas
     worldchunkcachefilename(write->filename, sizeof(write->filename), worldfolder, x, y);
     write->payload.move(payload);
     SDL_LockMutex(worldchunkmutex);
+    for(int i = worldchunkcachewrites.length() - 1; i >= 0; --i)
+    {
+        worldchunkcachewritejob *queued = worldchunkcachewrites[i];
+        if(queued->x != x || queued->y != y) continue;
+        if(queued->seed == seed && queued->worldgenhash == worldgenhash && queued->remip == remip)
+        {
+            SDL_UnlockMutex(worldchunkmutex);
+            delete write;
+            return;
+        }
+        delete worldchunkcachewrites.remove(i);
+    }
+    loopv(worldchunkactivecachewrites)
+    {
+        worldchunkcachewritejob *active = worldchunkactivecachewrites[i];
+        if(active->x != x || active->y != y) continue;
+        if(active->seed == seed && active->worldgenhash == worldgenhash && active->remip == remip)
+        {
+            SDL_UnlockMutex(worldchunkmutex);
+            delete write;
+            return;
+        }
+        SDL_AtomicSet(&active->cancelled, 1);
+    }
     if(worldchunkcachewrites.length() >= WORLD_MAX_PREPARED_CHUNKS)
     {
         SDL_UnlockMutex(worldchunkmutex);
@@ -1715,9 +1740,11 @@ static int processworldchunkresults()
             worldeditrevision = max(worldeditrevision, job->revision);
             diffstate->canonicalhash = job->canonicalhash;
             allocnodes += job->families;
-            if(!job->cached && job->loaderror)
+            if(!job->cached && corruptworldchunkcacheerror(job->loaderror))
                 conoutf(CON_WARN, "generated chunk cache %d_%d failed validation at stage %d; regenerated it",
                         job->x, job->y, job->loaderror);
+            else if(!job->cached && job->loaderror == WORLD_CACHE_ERROR_STALE)
+                conoutf(CON_DEBUG, "discarded stale generated chunk cache %d_%d", job->x, job->y);
             if(job->cached) cached++; else generated++;
             optimized += job->optimized;
             addworldsectionvisibilitychunk(chunk.x, chunk.y);

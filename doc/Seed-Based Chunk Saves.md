@@ -30,8 +30,10 @@ base. It never stores raw pointers or live octree memory.
 
 An edit changes the live chunk immediately and adds a revisioned operation to
 that chunk's in-memory journal. Every ten seconds the active journal is swapped
-into a flush buffer and written by a background thread, so the game thread does
-not perform compression or disk I/O.
+into a flush buffer and written by a background thread. Journal updates and
+compaction are published through a flushed temporary file and atomic
+replacement, preserving the last valid file if a write fails. Failed background
+batches are returned to the pending queue for retry.
 
 Diff frames contain their chunk coordinate, revision, timestamp, optional
 player ID, operation, payload, and checksum. Supported operations include cube,

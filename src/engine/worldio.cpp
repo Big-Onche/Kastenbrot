@@ -857,7 +857,7 @@ static void loadworldcommand(const char *requested)
 
     // load_world() releases the currently mounted chunks. Persist the active
     // offline world before that happens, including its chest snapshot.
-    if(game::islocalworld() && !worldchunks.empty() && activeworldchunk >= 0)
+    if(game::islocalworld() && !worldchunks.empty())
     {
         if(!saveworldstate())
         {
@@ -937,7 +937,7 @@ ICOMMAND(loadworld, "s", (char *name), loadworldcommand(name));
 
 static bool saveworldstate()
 {
-    if(worldchunks.empty() || activeworldchunk < 0)
+    if(worldchunks.empty())
     {
         conoutf(CON_ERROR, "no procedural world is active; use newworld first");
         return false;
@@ -945,12 +945,18 @@ static bool saveworldstate()
 
     if(!saveworldconfig()) return false;
     flushworlddiffjournals(true);
+    int written = 0, failed = 0;
     loopv(worldchunkdiffstates) if(!worldchunkdiffstates[i]->journal.empty())
     {
         int chunkindex = findworldchunk(worldchunkdiffstates[i]->x, worldchunkdiffstates[i]->y);
-        if(worldchunks.inrange(chunkindex)) compactworldchunkdiff(worldchunks[chunkindex]);
+        if(worldchunks.inrange(chunkindex) && compactworldchunkdiff(worldchunks[chunkindex])) written++;
+        else
+        {
+            failed++;
+            conoutf(CON_ERROR, "could not persist chunk %d_%d", worldchunkdiffstates[i]->x, worldchunkdiffstates[i]->y);
+        }
     }
-    int written = 0, unchanged = 0, ready = 0;
+    int unchanged = 0, ready = 0;
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
@@ -961,9 +967,10 @@ static bool saveworldstate()
             unchanged++;
             continue;
         }
+        worldchunkdiffstate *state = findworldchunkdiffstate(chunk.x, chunk.y);
+        if(state && !state->journal.empty()) continue;
         chunk.saved = true;
         chunk.dirty = false;
-        written++;
     }
 
     int entryx = lastplayerchunkx, entryy = lastplayerchunky;
@@ -976,6 +983,17 @@ static bool saveworldstate()
     }
     int entry = findworldchunk(entryx, entryy);
     if(!worldchunks.inrange(entry)) entry = activeworldchunk;
+    if(!worldchunks.inrange(entry)) loopv(worldchunks)
+    {
+        if(worldchunks[i].loading || !worldchunks[i].root) continue;
+        entry = i;
+        break;
+    }
+    if(!worldchunks.inrange(entry))
+    {
+        conoutf(CON_ERROR, "world %s has no ready chunk to use as its save entry", worldfolder);
+        return false;
+    }
     if(worldchunks.inrange(entry))
     {
         entryx = worldchunks[entry].x;
@@ -1015,8 +1033,13 @@ static bool saveworldstate()
         worldchunkname(name, sizeof(name), worldchunks[activeworldchunk]);
         setmapfilenames(name);
     }
-    conoutf("saved world %s: %d chunk journals queued, %d unchanged, %d ready; released %d cached chunks", worldfolder, written, unchanged, ready, released);
-    return true;
+    if(failed)
+        conoutf(CON_ERROR, "world %s save incomplete: %d chunk%s could not be compacted and remain dirty", worldfolder, failed,
+                failed == 1 ? "" : "s");
+    else
+        conoutf("saved world %s: %d chunk%s persisted, %d unchanged, %d ready; released %d cached chunks", worldfolder, written,
+                written == 1 ? "" : "s", unchanged, ready, released);
+    return failed == 0;
 }
 
 void saveworld()
@@ -1029,7 +1052,7 @@ void closeproceduralworld(bool save)
     // Save while the active folder, mounted chunks and diff states still
     // identify the world. clearworldchunks() then flushes and joins both the
     // diff writer and generation workers before releasing their state.
-    if(save && !worldchunks.empty() && activeworldchunk >= 0) saveworld();
+    if(save && !worldchunks.empty()) saveworld();
     game::resetfurnaces();
     game::resetchests();
     clearworldchunks();

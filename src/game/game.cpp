@@ -208,6 +208,7 @@ namespace game
                            absoluteplacedorigin = worldactionplacecell(absolutetarget, orient);
                 selinfo placed;
                 worldactionselection(placed, placedorigin, orient);
+                if(!worldselectionready(placed)) return false;
                 mpeditface(-1, 1, sel, false);
                 paintworldcube(type, placed, false);
                 waterterrainchanged(absoluteplacedorigin);
@@ -3310,6 +3311,7 @@ namespace game
         // Extrude exactly one 16-unit voxel, then deliberately paint every face.
         selinfo placed = hit;
         placed.o = target;
+        if(!worldselectionready(placed)) return;
         if(!waitforserveredit())
         {
             mpeditface(-1, 1, hit, true);
