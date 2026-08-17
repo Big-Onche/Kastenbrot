@@ -2,7 +2,7 @@
 
 set TESS_BIN=bin
 
-IF EXIST bin64\tesseract.exe (
+IF EXIST bin64\kastenbrot.exe (
     IF /I "%PROCESSOR_ARCHITECTURE%" == "amd64" (
         set TESS_BIN=bin64
     )
@@ -11,4 +11,4 @@ IF EXIST bin64\tesseract.exe (
     )
 )
 
-start %TESS_BIN%\tesseract.exe "-u$HOME\My Games\Cube-Craft" -gserver-log.txt -d %*
+start %TESS_BIN%\tesseract.exe "-u$HOME\My Games\Kastenbrot" -gserver-log.txt -d %*

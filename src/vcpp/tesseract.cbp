@@ -2,12 +2,12 @@
 <CodeBlocks_project_file>
 	<FileVersion major="1" minor="6" />
 	<Project>
-		<Option title="tesseract" />
+		<Option title="kastenbrot" />
 		<Option default_target="client64" />
 		<Option compiler="gcc" />
 		<Build>
 			<Target title="client64">
-				<Option output="../../bin64/tesseract.exe" prefix_auto="0" extension_auto="0" />
+				<Option output="../../bin64/kastenbrot.exe" prefix_auto="0" extension_auto="0" />
 				<Option working_dir="../../" />
 				<Option object_output=".objs/client64" />
 				<Option type="0" />
@@ -52,7 +52,7 @@
 				</Environment>
 			</Target>
 			<Target title="profile64">
-				<Option output="../../bin64/tesseract_profile.exe" prefix_auto="0" extension_auto="0" />
+				<Option output="../../bin64/kastenbrot_profile.exe" prefix_auto="0" extension_auto="0" />
 				<Option working_dir="../../" />
 				<Option object_output=".objs/profile64" />
 				<Option type="0" />
@@ -99,9 +99,9 @@
 				</Environment>
 			</Target>
 			<Target title="debug64">
-				<Option output="../../bin64/tesseract_debug.exe" prefix_auto="0" extension_auto="0" />
+				<Option output="../../bin64/kastenbrot_debug.exe" prefix_auto="0" extension_auto="0" />
 				<Option working_dir="../../" />
-				<Option object_output=".objs/client32" />
+				<Option object_output=".objs/debug64" />
 				<Option type="0" />
 				<Option compiler="gcc" />
 				<Option parameters="-t0 -w640 -h480 -qhome" />
@@ -207,15 +207,30 @@
 		<Unit filename="../engine/water.cpp" />
 		<Unit filename="../engine/world.cpp" />
 		<Unit filename="../engine/world.h" />
+		<Unit filename="../engine/worldcache.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
 		<Unit filename="../engine/worlddef.cpp" />
 		<Unit filename="../engine/worlddef.h" />
+		<Unit filename="../engine/worlddiff.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
+		<Unit filename="../engine/worldedit.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
 		<Unit filename="../engine/worldio.cpp" />
-		<Unit filename="../engine/worldcache.cpp"><Option compile="0" link="0" /></Unit>
-		<Unit filename="../engine/worlddiff.cpp"><Option compile="0" link="0" /></Unit>
-		<Unit filename="../engine/worldedit.cpp"><Option compile="0" link="0" /></Unit>
 		<Unit filename="../engine/worldruntime.h" />
-		<Unit filename="../engine/worldstream.cpp"><Option compile="0" link="0" /></Unit>
-		<Unit filename="../engine/worldvisibility.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../engine/worldstream.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
+		<Unit filename="../engine/worldvisibility.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
 		<Unit filename="../game/client.cpp" />
 		<Unit filename="../game/entities.cpp" />
 		<Unit filename="../game/environment.cpp" />
@@ -234,10 +249,16 @@
 		<Unit filename="../game/weather.h" />
 		<Unit filename="../game/world.cpp" />
 		<Unit filename="../game/world.h" />
-		<Unit filename="../game/worldcontent.cpp"><Option compile="0" link="0" /></Unit>
-		<Unit filename="../game/worldrender.cpp"><Option compile="0" link="0" /></Unit>
+		<Unit filename="../game/worldcontent.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
 		<Unit filename="../game/worldgen.cpp" />
 		<Unit filename="../game/worldgen.h" />
+		<Unit filename="../game/worldrender.cpp">
+			<Option compile="0" />
+			<Option link="0" />
+		</Unit>
 		<Unit filename="../include/tracy/public/TracyClient.cpp">
 			<Option target="profile64" />
 		</Unit>
