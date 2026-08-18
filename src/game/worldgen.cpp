@@ -1,9 +1,9 @@
 // worldgen.cpp: Kastenbrot procedural world generation
 
 #include "game.h"
-#include "../engine/engine.h"
-#include "../engine/worlddef.h"
-#include "../engine/worldruntime.h"
+#include "engine.h"
+#include "worlddef.h"
+#include "worldruntime.h"
 #include "world.h"
 #include "worldgen.h"
 
@@ -963,11 +963,11 @@ static float worldoregeologicalweight(const worldoredefinition &ore, const game:
                 hill = worldsmoothstep(0.12f, 0.45f, relief),
                 deep = 1.0f - worldsmoothstep(-180.0f, -80.0f, float(elevation)),
                 activity = clamp(tectonics.activity, 0.0f, 1.0f);
-    if(!strcmp(ore.id, "coal")) return 1.0f + (ore.geologicalbonus - 1.0f) * mountain;
-    if(!strcmp(ore.id, "copper")) return 1.0f + (ore.geologicalbonus - 1.0f) * hill;
-    if(!strcmp(ore.id, "iron")) return (1.0f + 0.7f * mountain) * (1.0f + 0.3f * activity);
-    if(!strcmp(ore.id, "tin")) return 1.0f + (ore.geologicalbonus - 1.0f) * mountain * deep;
-    if(!strcmp(ore.id, "gold")) return 1.0f + (ore.geologicalbonus - 1.0f) * activity;
+    if(!strcmp(ore.id, "coal_ore")) return 1.0f + (ore.geologicalbonus - 1.0f) * mountain;
+    if(!strcmp(ore.id, "copper_ore")) return 1.0f + (ore.geologicalbonus - 1.0f) * hill;
+    if(!strcmp(ore.id, "iron_ore")) return (1.0f + 0.7f * mountain) * (1.0f + 0.3f * activity);
+    if(!strcmp(ore.id, "tin_ore")) return 1.0f + (ore.geologicalbonus - 1.0f) * mountain * deep;
+    if(!strcmp(ore.id, "gold_ore")) return 1.0f + (ore.geologicalbonus - 1.0f) * activity;
     return 1.0f + (ore.geologicalbonus - 1.0f) * deep;
 }
 
