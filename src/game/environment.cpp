@@ -1,3 +1,6 @@
+// environment.cpp: Kastenbrot day and night cycle
+// reviewed
+
 #include "game.h"
 #include "weather.h"
 
@@ -7,7 +10,11 @@ extern bvec ambient, fogcolour, sunlight;
 extern float ambientscale, sunlightscale;
 extern float sunlightyaw, sunlightpitch;
 extern void setsunlightdir();
-extern float weatherovercastlightreduction, weatherovercastsunlightreduction, weatherovercastambientgray, weatherovercastsunwhite;
+
+extern float weatherovercastlightreduction;
+extern float weatherovercastsunlightreduction;
+extern float weatherovercastambientgray;
+extern float weatherovercastsunwhite;
 
 namespace game
 {
@@ -15,11 +22,15 @@ namespace game
 
     namespace environment
     {
-        static const int DAY_MILLIS = 10 * 60 * 1000;
-        static const int NIGHT_MILLIS = 10 * 60 * 1000;
-        static const int CYCLE_MILLIS = DAY_MILLIS + NIGHT_MILLIS;
+        static const int CYCLE_MILLIS = 20 * 60 * 1000;
+
+        static const float HOURS_PER_DAY = 24.0f;
         static const float START_HOUR = 8.0f;
+        static const float SUNRISE_HOUR = 6.0f;
+        static const float DEGREES_PER_HOUR = 360.0f / HOURS_PER_DAY;
         static const float MAX_SUN_PITCH = 70.0f;
+        static const float AMBIENT_LIGHT_LEVELS = 16.0f;
+
         static const int DAY_FOG_COLOR = 0xC0E0F5;
         static const int DAY_AMBIENT_COLOR = 0x5A5A6E;
         static const int NIGHT_FOG_COLOR = 0x0A1026;
@@ -32,6 +43,7 @@ namespace game
             float sunlightintensity;
         };
 
+        // hours must remain strictly increasing
         static const lightingkey lightingkeys[] =
         {
             {  0.0f, 0x8090C0, NIGHT_FOG_COLOR, NIGHT_AMBIENT_COLOR, 0.06f },
@@ -46,7 +58,15 @@ namespace game
             { 24.0f, 0x8090C0, NIGHT_FOG_COLOR, NIGHT_AMBIENT_COLOR, 0.06f }
         };
 
-        static double cyclemillis = START_HOUR * CYCLE_MILLIS / 24.0;
+        static const int NUM_LIGHTING_KEYS = sizeof(lightingkeys) / sizeof(lightingkeys[0]);
+
+        enum
+        {
+            LIGHTING_DIRECT = 0,
+            LIGHTING_SETVARS
+        };
+
+        static double cyclemillis = START_HOUR * CYCLE_MILLIS / HOURS_PER_DAY;
         static bool initialized = false, timefrozen = false;
         static float worldambientlightlevel = 0.0f;
 
@@ -61,6 +81,11 @@ namespace game
             return from + (to - from) * amount;
         }
 
+        static float luminance(const bvec &color)
+        {
+            return color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f;
+        }
+
         static bvec interpolatecolor(int from, int to, float amount)
         {
             bvec result;
@@ -68,10 +93,8 @@ namespace game
             return result;
         }
 
-        static float currentovercastblend()
+        static float sampleplayerovercast()
         {
-            if(!player1) return 0.0f;
-            weather::update(getworldseed());
             vec position = player1->o;
             worldpositiontoabsolute(position);
             return weather::samplecurrentovercast(position.x, position.y);
@@ -79,7 +102,8 @@ namespace game
 
         static bvec neutralizeambient(const bvec &color, float amount)
         {
-            const int gray = int(color.r * 0.2126f + color.g * 0.7152f + color.b * 0.0722f + 0.5f);
+            const int gray = int(luminance(color) + 0.5f);
+
             bvec result;
             result.lerp(color, bvec(uchar(gray), uchar(gray), uchar(gray)), amount);
             return result;
@@ -92,29 +116,32 @@ namespace game
             return result;
         }
 
-        static void applyovercastambient(bvec &newAmbient, float overcast)
+        static void applyovercastambient(bvec &color, float overcast)
         {
             if(overcast <= 0.0f) return;
 
-            const float ambientscale = 1.0f - clamp(weatherovercastlightreduction, 0.0f, 1.0f) * overcast;
-            newAmbient = neutralizeambient(newAmbient, clamp(weatherovercastambientgray, 0.0f, 1.0f) * overcast);
-            loopk(3) newAmbient[k] = uchar(clamp(newAmbient[k] * ambientscale + 0.5f, 0.0f, 255.0f));
+            const float overcastfalloff = 1.0f - clamp(weatherovercastlightreduction, 0.0f, 1.0f) * overcast;
+            color = neutralizeambient(color, clamp(weatherovercastambientgray, 0.0f, 1.0f) * overcast);
+            loopk(3) color[k] = uchar(clamp(color[k] * overcastfalloff + 0.5f, 0.0f, 255.0f));
         }
 
-        static void applyovercastsunlight(bvec &newSunlight, float &newSunlightScale, float overcast)
+        static void applyovercastsunlight(bvec &color, float &scale, float overcast)
         {
             if(overcast <= 0.0f) return;
 
-            const float sunlightscale = 1.0f - clamp(weatherovercastsunlightreduction, 0.0f, 1.0f) * overcast;
-            newSunlight = neutralizesunlight(newSunlight, clamp(weatherovercastsunwhite, 0.0f, 1.0f) * overcast);
-            newSunlightScale *= sunlightscale;
+            const float overcastfalloff = 1.0f - clamp(weatherovercastsunlightreduction, 0.0f, 1.0f) * overcast;
+            color = neutralizesunlight(color, clamp(weatherovercastsunwhite, 0.0f, 1.0f) * overcast);
+            scale *= overcastfalloff;
         }
 
-        static void applylighting(bool resetengine)
+        static void applylighting(int mode)
         {
-            const float hour = float(cyclemillis * 24.0 / CYCLE_MILLIS);
-            const lightingkey *from = &lightingkeys[0], *to = &lightingkeys[1];
-            loopi(int(sizeof(lightingkeys) / sizeof(lightingkeys[0])) - 1)
+            const float hour = float(cyclemillis * HOURS_PER_DAY / CYCLE_MILLIS);
+
+            const lightingkey *from = &lightingkeys[0];
+            const lightingkey *to = &lightingkeys[1];
+
+            loopi(NUM_LIGHTING_KEYS - 1)
             {
                 if(hour <= lightingkeys[i + 1].hour)
                 {
@@ -125,50 +152,62 @@ namespace game
             }
 
             const float blend = smoothstep((hour - from->hour) / (to->hour - from->hour));
-            bvec newSunlight = interpolatecolor(from->sunlightcolor, to->sunlightcolor, blend);
-            const bvec timeFog = interpolatecolor(from->fogcolor, to->fogcolor, blend);
-            const bvec timeAmbient = interpolatecolor(from->ambientcolor, to->ambientcolor, blend);
-            bvec newAmbient = timeAmbient, newFog = timeFog;
-            float newSunlightScale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
-            const float overcast = currentovercastblend();
-            bvec worldAmbient = timeAmbient;
-            applyovercastambient(worldAmbient, overcast);
-            worldambientlightlevel = (worldAmbient.r * 0.2126f + worldAmbient.g * 0.7152f + worldAmbient.b * 0.0722f) * ambientscale *
-                                     (16.0f / 255.0f);
-            applyovercastambient(newAmbient, overcast);
-            applyovercastsunlight(newSunlight, newSunlightScale, overcast);
 
-            const float orbit = (hour - 6.0f) * 15.0f * RAD;
-            float newSunlightYaw = hour * (360.0f / 24.0f);
-            if(newSunlightYaw >= 360.0f) newSunlightYaw -= 360.0f;
-            const float newSunlightPitch = sinf(orbit) * MAX_SUN_PITCH;
+            bvec newsunlight = interpolatecolor(from->sunlightcolor, to->sunlightcolor, blend);
+            bvec newfog = interpolatecolor(from->fogcolor, to->fogcolor, blend);
+            bvec newambient = interpolatecolor(from->ambientcolor, to->ambientcolor, blend);
 
-            if(resetengine)
+            float newsunlightscale = interpolate(from->sunlightintensity, to->sunlightintensity, blend);
+            float overcast = 0.0f;
+
+            // weather is refreshed here only when a local player exists, including reset/sync lighting updates
+            if(player1)
             {
-                setvar("sunlight", newSunlight.tohexcolor());
-                setvar("fogcolour", newFog.tohexcolor());
-                setvar("ambient", newAmbient.tohexcolor());
-                setfvar("sunlightscale", newSunlightScale);
-                setfvar("sunlightyaw", newSunlightYaw);
-                setfvar("sunlightpitch", newSunlightPitch);
+                weather::update(getworldseed());
+                overcast = sampleplayerovercast();
+            }
+
+            applyovercastambient(newambient, overcast);
+            applyovercastsunlight(newsunlight, newsunlightscale, overcast);
+
+            worldambientlightlevel = luminance(newambient) * ambientscale * (AMBIENT_LIGHT_LEVELS / 255.0f);
+
+            const float orbit = (hour - SUNRISE_HOUR) * DEGREES_PER_HOUR * RAD;
+
+            float newsunlightyaw = hour * DEGREES_PER_HOUR;
+            if(newsunlightyaw >= 360.0f) newsunlightyaw -= 360.0f;
+
+            const float newsunlightpitch = sinf(orbit) * MAX_SUN_PITCH;
+
+            if(mode == LIGHTING_SETVARS)
+            {
+                setvar("sunlight", newsunlight.tohexcolor());
+                setvar("fogcolour", newfog.tohexcolor());
+                setvar("ambient", newambient.tohexcolor());
+                setfvar("sunlightscale", newsunlightscale);
+                setfvar("sunlightyaw", newsunlightyaw);
+                setfvar("sunlightpitch", newsunlightpitch);
                 return;
             }
 
-            sunlight = newSunlight;
-            fogcolour = newFog;
-            ambient = newAmbient;
-            sunlightscale = newSunlightScale;
-            sunlightyaw = newSunlightYaw;
-            sunlightpitch = newSunlightPitch;
+            sunlight = newsunlight;
+            fogcolour = newfog;
+            ambient = newambient;
+
+            sunlightscale = newsunlightscale;
+            sunlightyaw = newsunlightyaw;
+            sunlightpitch = newsunlightpitch;
+
             setsunlightdir();
         }
 
         void reset()
         {
-            cyclemillis = START_HOUR * CYCLE_MILLIS / 24.0;
+            cyclemillis = START_HOUR * CYCLE_MILLIS / HOURS_PER_DAY;
             initialized = true;
             timefrozen = false;
-            applylighting(true);
+
+            applylighting(LIGHTING_SETVARS);
         }
 
         void update()
@@ -179,7 +218,8 @@ namespace game
                 cyclemillis += curtime;
                 while(cyclemillis >= CYCLE_MILLIS) cyclemillis -= CYCLE_MILLIS;
             }
-            applylighting(false);
+
+            applylighting(LIGHTING_DIRECT);
         }
 
         void synctime(int millis, bool frozen)
@@ -187,24 +227,18 @@ namespace game
             cyclemillis = clamp(millis, 0, CYCLE_MILLIS - 1);
             initialized = true;
             timefrozen = frozen;
-            applylighting(true);
+
+            applylighting(LIGHTING_SETVARS);
         }
 
-        int gettimemillis()
-        {
-            return int(cyclemillis);
-        }
+        // getters
+        int gettimemillis() { return int(cyclemillis); }
+        bool istimefrozen() { return timefrozen; }
+        float getambientlightlevel() { return worldambientlightlevel; }
 
-        bool istimefrozen()
-        {
-            return timefrozen;
-        }
-
-        float getambientlightlevel()
-        {
-            return worldambientlightlevel;
-        }
-
+        // game commands:
+        // /time <hour(0-24)>
+        // /time freeze
         ICOMMAND(time, "sN", (char *value, int *numargs),
         {
             if(game::waitforserveredit())
@@ -213,17 +247,21 @@ namespace game
                 game::requestworldcommand(command);
                 return;
             }
+
             if(*numargs == 1 && cubecaseequal(value, "freeze"))
             {
-                const double hour = cyclemillis * 24.0 / CYCLE_MILLIS;
+                const double hour = cyclemillis * HOURS_PER_DAY / CYCLE_MILLIS;
                 const int minutes = int(hour * 60.0 + 0.5) % (24 * 60);
+
                 timefrozen = true;
-                conoutf("time frozen at %02d:%02d", minutes / 60, minutes % 60);
+                conoutf(CON_INFO, "time frozen at %02d:%02d", minutes / 60, minutes % 60);
+
                 return;
             }
 
             char *end = NULL;
             const double hour = *numargs == 1 ? strtod(value, &end) : -1;
+
             if(*numargs != 1 || end == value || *end || !(hour >= 0 && hour <= 24))
             {
                 conoutf(CON_ERROR, "usage: /time <hour 0-24|freeze>");
@@ -231,12 +269,16 @@ namespace game
             }
 
             const double normalizedhour = hour == 24 ? 0 : hour;
-            cyclemillis = normalizedhour * CYCLE_MILLIS / 24.0;
+
+            cyclemillis = normalizedhour * CYCLE_MILLIS / HOURS_PER_DAY;
             initialized = true;
             timefrozen = false;
-            applylighting(true);
+
+            applylighting(LIGHTING_SETVARS);
+
             const int minutes = int(normalizedhour * 60.0 + 0.5) % (24 * 60);
-            conoutf("time set to %02d:%02d", minutes / 60, minutes % 60);
+
+            conoutf(CON_INFO, "time set to %02d:%02d", minutes / 60, minutes % 60);
         });
     }
 }
