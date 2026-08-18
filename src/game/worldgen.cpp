@@ -926,13 +926,13 @@ struct worldoredefinition
 static const worldoredefinition worldores[] =
 {
     // Elevation and depth values are in world blocks relative to sea level.
-    { "coal",      -112,  200,  -32,   64,   4, 110,  8, 28, 40, 80, 12, 1.05f, 1.6f, 0x4A1D3B27U, false },
-    { "copper",    -128,  128,  -48,   32,  10, 130,  5, 16,  0,  0, 14, 0.90f, 1.5f, 0x7C3E91A5U, false },
-    { "iron",      -192,  160,  -96,   16,  12, 180,  6, 20,  0,  0, 14, 0.85f, 1.7f, 0xB6A54D19U, false },
-    { "tin",       -176,   64, -112,  -48,  25, 170,  3,  9,  0,  0, 16, 0.80f, 1.4f, 0xD82F6043U, false },
-    { "gold",      -224,  -32, -168, -112,  60, WORLD_HEIGHT_BLOCKS, 2,  7,  0,  0, 20, 0.70f, 1.8f, 0xE91B72C5U, false },
-    { "diamond",   -248, -136, -232, -200, 120, WORLD_HEIGHT_BLOCKS, 1,  4,  0,  0, 24, 0.55f, 1.25f, 0xF05A8C31U, false },
-    { "moon_dust", WORLD_MIN_HEIGHT, WORLD_MAX_HEIGHT - 1, WORLD_MIN_HEIGHT, WORLD_MAX_HEIGHT - 1, 0, WORLD_HEIGHT_BLOCKS, 1, 2, 1, 3, 8, 1.2f,
+    { "coal_ore",      -112,  200,  -32,   64,   4, 110,  8, 28, 40, 80, 12, 1.05f, 1.6f, 0x4A1D3B27U, false },
+    { "copper_ore",    -128,  128,  -48,   32,  10, 130,  5, 16,  0,  0, 14, 0.90f, 1.5f, 0x7C3E91A5U, false },
+    { "iron_ore",      -192,  160,  -96,   16,  12, 180,  6, 20,  0,  0, 14, 0.85f, 1.7f, 0xB6A54D19U, false },
+    { "tin_ore",       -176,   64, -112,  -48,  25, 170,  3,  9,  0,  0, 16, 0.80f, 1.4f, 0xD82F6043U, false },
+    { "gold_ore",      -224,  -32, -168, -112,  60, WORLD_HEIGHT_BLOCKS, 2,  7,  0,  0, 20, 0.70f, 1.8f, 0xE91B72C5U, false },
+    { "diamond_ore",   -248, -136, -232, -200, 120, WORLD_HEIGHT_BLOCKS, 1,  4,  0,  0, 24, 0.55f, 1.25f, 0xF05A8C31U, false },
+    { "moon_dust_ore", WORLD_MIN_HEIGHT, WORLD_MAX_HEIGHT - 1, WORLD_MIN_HEIGHT, WORLD_MAX_HEIGHT - 1, 0, WORLD_HEIGHT_BLOCKS, 1, 2, 1, 3, 8, 1.2f,
       1.0f, 0x2C7E4B91U, true }
 };
 
