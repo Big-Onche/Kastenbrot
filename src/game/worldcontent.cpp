@@ -716,9 +716,9 @@ static bool loadworlddefinitions(bool assets = true)
 {
     worldreset();
     worldscatterrenderdefinitions.setsize(0);
-    if(!execfile("config/world.cfg", false))
+    if(!execfile("config/game/world.cfg", false))
     {
-        conoutf(CON_ERROR, "could not load config/world.cfg");
+        conoutf(CON_ERROR, "could not load config/game/world.cfg");
         return false;
     }
 
@@ -863,13 +863,13 @@ static bool loadworlddefinitions(bool assets = true)
 void initworlddefinitions()
 {
     if(!loadworlddefinitions(true))
-        fatal("world startup failed: config/world.cfg contains invalid definitions; see the preceding error for details");
+        fatal("world startup failed: config/game/world.cfg contains invalid definitions; see the preceding error for details");
 }
 
 void initserverworlddefinitions()
 {
     if(!loadworlddefinitions(false))
-        fatal("server startup failed: config/world.cfg contains invalid definitions; see the preceding error for details");
+        fatal("server startup failed: config/game/world.cfg contains invalid definitions; see the preceding error for details");
 }
 
 ICOMMAND(worldload, "", (), intret(loadworlddefinitions(true) ? 1 : 0));
@@ -886,7 +886,7 @@ COMMANDN(worldreset, resetserverworlddefinitions, "");
 void initserverworlddefinitions()
 {
     resetserverworlddefinitions();
-    if(!execfile("config/world.cfg", false)) fatal("server startup failed: could not load config/world.cfg");
+    if(!execfile("config/game/world.cfg", false)) fatal("server startup failed: could not load config/game/world.cfg");
     if(!resolveworlddefinitionregistry()) fatal("server startup failed: invalid world definitions");
     if(!reloadrecipes(true)) fatal("server startup failed: invalid recipes");
     conoutf("loaded %d inventory item, %d world cube, and %d world object server definitions",
