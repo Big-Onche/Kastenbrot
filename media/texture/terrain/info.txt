@@ -1,0 +1,38 @@
+Author: JoeEnderman - CC0 https://creativecommons.org/publicdomain/zero/1.0/
+coal.png
+coal_block.png
+cobble.png
+copper.png
+dark_wood.png
+dark_wood_plank.png
+dark_wood_top.png
+diamond.png
+dirt.png
+gold.png
+grass.png
+grass_dirt.png
+iron.png
+sand.png
+sandstone.png
+snow.png
+tin.png
+wood.png
+wood_plank.png
+Source: https://opengameart.org/content/assorted-minecraft-style-textures
+
+Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed.fr
+crafting_table_side.png
+crafting_table_top.png
+furnace_side.png
+furnace_top.png
+gabbro.png
+leaves.png
+moon_dust.png
+needles.pg
+peridotitis.png
+sandstone_brick.png
+stoe.png
+stone_brick.png
+wood_top.png
+
+

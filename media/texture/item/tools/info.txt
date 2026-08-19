@@ -1,0 +1,13 @@
+Author: JoeEnderman - CC0 https://creativecommons.org/publicdomain/zero/1.0/
+diamond|iron|steel|stone|wood_axe.png
+diamond|iron|steel|stone|wood_pick.png
+diamond|iron|steel|stone|wood_shovel.png
+diamond|iron|steel|stone|wood_sword.png
+Source: https://opengameart.org/content/assorted-minecraft-style-textures
+
+Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed.fr
+chisel.png - Based on JoeEnderman's work
+hammer.png - Based on JoeEnderman's work
+hammer_chisel.png
+
+

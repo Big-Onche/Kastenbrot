@@ -1,0 +1,16 @@
+Author: JoeEnderman - CC0 https://creativecommons.org/publicdomain/zero/1.0/
+bronze_ingot.png
+charcoal.png
+coal_lump.png
+copper_lump.png
+diamond.png
+gold_lump.png
+iron_ingot.png
+iron_lump.png
+steel_ingot.png
+tin_lump.png
+Source: https://opengameart.org/content/assorted-minecraft-style-textures
+
+Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed.fr
+leather.png
+moon_dust.png
