@@ -80,8 +80,6 @@ namespace server
     VAR(servernpcdeathtimeout, 1000, 20000, 120000);
     VAR(servernpcspawnmillis, 100, 500, 60000);
     VAR(serversupportdecaymillis, 10, 3000, 60000);
-    VAR(serverlocalworldgen, 0, 0, 1);
-    VAR(serverchunkviewdistance, 1, 3, 16);
 #ifdef STANDALONE
     VAR(personaldrops, 0, 0, 1);
     VAR(droptimeout, 1, 300, 86400);
@@ -320,21 +318,10 @@ namespace server
     static uint nextfallblockid = 1;
     static bool furnacesdirty = false, chestsdirty = false, passivenpcsdirty = false;
     static int lastfurnacesave = 0, lastchestsave = 0, lastpassivenpcsave = 0;
-    struct servercanonicalchunk;
-    struct serverchunkrequest
-    {
-        int clientnum, x, y;
-        bool localgeneration;
-
-        serverchunkrequest(int clientnum = -1, int x = 0, int y = 0, bool localgeneration = false)
-            : clientnum(clientnum), x(x), y(y), localgeneration(localgeneration) {}
-    };
-    static vector<serverchunkrequest> serverchunkrequests;
     static serverworldaction *findworldaction(const ivec &target, int action);
     static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced = false);
     static void queueserverfallblockcheck(const ivec &cell);
     static void queueserversupportchange(const ivec &cell);
-    static void markcanonicalgameplaydirty(const ivec &cell);
     static void sendfallblockspawn(int cn, const serverfallingblock &block);
     static bool loadserverfurnaces();
     static bool saveserverfurnaces(bool force = false);
@@ -343,17 +330,6 @@ namespace server
     static bool loadserverpassivenpcs();
     static bool saveserverpassivenpcs(bool force = false);
     static chestinstance *findserverchest(const ivec &target);
-    static void updatecanonicalworldaction(const ivec &cell, int action, int item);
-    static bool updatecanonicalcornerpush(const ivec &cell, int orient, int corner);
-    static void clearservercanonicalchunks();
-    static bool sendserverchunkdata(clientinfo &ci, int chunkx, int chunky);
-    static bool serverchunkinclientrange(const clientinfo &ci, int chunkx, int chunky);
-    static servercanonicalchunk *getservercanonicalchunk(int x, int y);
-    static int serverblockitem(const ivec &cell);
-    static int serverfloordiv(int value, int divisor);
-    static void sendserveredit(int cn, const serveredit &edit);
-    static void sendworldcorrection(clientinfo &ci, const serverworldaction &state);
-    static void queueserverchunkrequest(clientinfo &ci, int chunkx, int chunky, bool localgeneration);
 
     vector<clientinfo *> clients;
     vector<serveredit *> worldhistory;
@@ -586,8 +562,6 @@ namespace server
         serverfurnaces.deletecontents();
         serverchests.deletecontents();
         serverdeadpassivenpcs.setsize(0);
-        clearservercanonicalchunks();
-        serverchunkrequests.setsize(0);
         furnacesdirty = chestsdirty = passivenpcsdirty = false;
         nextdropid = 1;
         nextfallblockid = 1;
@@ -1042,7 +1016,8 @@ namespace server
                 furnace->baking = version >= 2 && file->getlil<int>() != 0;
                 if(furnace->fuelcount > 0 && getfurnacefuelmillis(furnace->fuelitem) <= 0)
                     furnace->fuelitem = -1, furnace->fuelcount = furnace->fueldurability = 0;
-                if(configured)
+                serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_CUBE);
+                if(configured && state && state->action == WORLD_ACTION_PLACE_CUBE && state->item == worlditem)
                 {
                     bool syncchanged = false;
                     updatefurnaceinstance(*furnace, 0, syncchanged);
@@ -1137,7 +1112,8 @@ namespace server
                 ok = readserverfurnacestack(*file, chest->items[j], chest->counts[j], chest->durabilities[j], INT_MAX);
             if(ok)
             {
-                if(configured) serverchests.add(chest);
+                serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_ITEM);
+                if(configured && state && state->action == WORLD_ACTION_PLACE_ITEM && state->item == worlditem) serverchests.add(chest);
                 else delete chest;
             }
             else delete chest;
@@ -1302,9 +1278,10 @@ namespace server
 
     static bool furnaceblockvalid(const furnaceinstance &furnace)
     {
+        serverworldaction *state = findworldaction(furnace.target, WORLD_ACTION_PLACE_CUBE);
         int inputslots = 0, inputlimit = 0;
-        return serverblockitem(furnace.target) == furnace.worlditem && getworldfurnaceconfig(furnace.worlditem, inputslots, inputlimit) &&
-               inputslots == furnace.inputslots && inputlimit == furnace.inputlimit;
+        return state && state->action == WORLD_ACTION_PLACE_CUBE && state->item == furnace.worlditem &&
+               getworldfurnaceconfig(state->item, inputslots, inputlimit) && inputslots == furnace.inputslots && inputlimit == furnace.inputlimit;
     }
 
     static bool furnaceaccessible(const clientinfo &ci, const furnaceinstance &furnace)
@@ -1366,8 +1343,6 @@ namespace server
 
     static bool chestblockvalid(const chestinstance &chest)
     {
-        getservercanonicalchunk(serverfloordiv(chest.target.x, SERVER_WORLD_CHUNK_SIZE),
-                                serverfloordiv(chest.target.y, SERVER_WORLD_CHUNK_SIZE));
         serverworldaction *state = findworldaction(chest.target, WORLD_ACTION_PLACE_ITEM);
         int slots = 0;
         return state && state->action == WORLD_ACTION_PLACE_ITEM && state->item == chest.worlditem &&
@@ -1841,8 +1816,6 @@ namespace server
         queueserverfallblockcheck(target);
         queueserverfallblockcheck(ivec(target).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
         queueserversupportchange(target);
-        updatecanonicalworldaction(target, action, item);
-        if(action != WORLD_ACTION_PLACE_CUBE && action != WORLD_ACTION_BREAK_CUBE_START) markcanonicalgameplaydirty(target);
     }
 
     static int serverfloordiv(int value, int divisor)
@@ -1934,789 +1907,6 @@ namespace server
         return -1;
     }
 
-    enum
-    {
-        SERVER_SNAPSHOT_EMPTY = 1 << 0,
-        SERVER_SNAPSHOT_SOLID = 1 << 1,
-        SERVER_SNAPSHOT_DAT_VERSION = 1,
-        SERVER_SNAPSHOT_MAX_FILE_SIZE = 64 << 20,
-        SERVER_SNAPSHOT_SECTION_BYTES = 32 * 16,
-        SERVER_CHUNK_COLUMNS_PER_TICK = 32
-    };
-
-    struct servercanonicalvoxel
-    {
-        int cube;
-        ushort material;
-        uchar orientation, flags, edges[12];
-
-        servercanonicalvoxel(int cube = -1, int material = MAT_AIR) : cube(cube), material(ushort(material)), orientation(WORLD_ORIENT_TOP),
-                                                                      flags(cube >= 0 ? SERVER_SNAPSHOT_SOLID : SERVER_SNAPSHOT_EMPTY)
-        {
-            memset(edges, cube >= 0 ? 0x80 : 0, sizeof(edges));
-        }
-
-        bool operator==(const servercanonicalvoxel &other) const
-        {
-            return cube == other.cube && material == other.material && orientation == other.orientation && flags == other.flags &&
-                   !memcmp(edges, other.edges, sizeof(edges));
-        }
-    };
-
-    static int getservercanonicaledge(uchar edge, int coord)
-    {
-        return coord ? edge >> 4 : edge & 0xF;
-    }
-
-    static void setservercanonicaledge(uchar &edge, int coord, int value)
-    {
-        edge = coord ? uchar((edge & 0xF) | value << 4) : uchar((edge & 0xF0) | value);
-    }
-
-    static ivec getservercanonicalvector(const servercanonicalvoxel &voxel, int dimension, int x, int y, int z)
-    {
-        const ivec coordinates(dimension, x, y, z);
-        ivec result;
-        loopi(3) result[i] = getservercanonicaledge(voxel.edges[(i << 2) + (coordinates[C[i]] << 1) + coordinates[R[i]]], coordinates[D[i]]);
-        return result;
-    }
-
-    static void pushservercanonicaledge(uchar &edge, int direction, int coordinate)
-    {
-        const int pushed = clamp(getservercanonicaledge(edge, coordinate) + direction, 0, 8);
-        setservercanonicaledge(edge, coordinate, pushed);
-        const int opposite = getservercanonicaledge(edge, 1 - coordinate);
-        if((direction < 0 && coordinate && opposite > pushed) || (direction > 0 && !coordinate && opposite < pushed))
-            setservercanonicaledge(edge, 1 - coordinate, pushed);
-    }
-
-    static void updateservercanonicalflags(servercanonicalvoxel &voxel)
-    {
-        bool empty = true, solid = true;
-        loopi(12)
-        {
-            empty = empty && voxel.edges[i] == 0;
-            solid = solid && voxel.edges[i] == 0x80;
-        }
-        voxel.flags &= ~(SERVER_SNAPSHOT_EMPTY | SERVER_SNAPSHOT_SOLID);
-        if(empty) voxel.flags |= SERVER_SNAPSHOT_EMPTY;
-        else if(solid) voxel.flags |= SERVER_SNAPSHOT_SOLID;
-    }
-
-    struct servercanonicalrun
-    {
-        ushort length;
-        servercanonicalvoxel voxel;
-
-        servercanonicalrun(int length = 0, const servercanonicalvoxel &voxel = servercanonicalvoxel()) : length(ushort(length)), voxel(voxel) {}
-    };
-
-    struct servercanonicalcolumn { vector<servercanonicalrun> runs; };
-
-    struct servercanonicalchunk
-    {
-        int x, y;
-        uint revision, serializedrevision;
-        int generationcolumn;
-        bool corrupted, dirty, generating, playeredited;
-        vector<servercanonicalcolumn> columns;
-        vector<uchar> vox;
-
-        servercanonicalchunk(int x = 0, int y = 0) : x(x), y(y), revision(1), serializedrevision(0), generationcolumn(0), corrupted(false),
-                                                      dirty(false), generating(false), playeredited(false) {}
-    };
-
-    struct servercanonicalreader
-    {
-        const uchar *position, *end;
-
-        servercanonicalreader(const uchar *data, int length) : position(data), end(data + length) {}
-
-        bool read(void *destination, int length)
-        {
-            if(length < 0 || end - position < length) return false;
-            memcpy(destination, position, length);
-            position += length;
-            return true;
-        }
-
-        bool readbyte(uchar &value) { return read(&value, 1); }
-
-        bool readushort(ushort &value)
-        {
-            uchar bytes[2];
-            if(!read(bytes, 2)) return false;
-            value = ushort(bytes[0] | uint(bytes[1]) << 8);
-            return true;
-        }
-
-        bool readuint(uint &value)
-        {
-            uchar bytes[4];
-            if(!read(bytes, 4)) return false;
-            value = uint(bytes[0]) | uint(bytes[1]) << 8 | uint(bytes[2]) << 16 | uint(bytes[3]) << 24;
-            return true;
-        }
-
-        bool finished() const { return position == end; }
-    };
-
-    static vector<servercanonicalchunk *> servercanonicalchunks;
-
-    static void clearservercanonicalchunks() { servercanonicalchunks.deletecontents(); }
-
-    static void putservercanonicalushort(vector<uchar> &output, ushort value)
-    {
-        output.add(uchar(value));
-        output.add(uchar(value >> 8));
-    }
-
-    static void putservercanonicaluint(vector<uchar> &output, uint value) { loopi(4) output.add(uchar(value >> (8 * i))); }
-    static bool putservercanonicalstring(vector<uchar> &output, const char *value)
-    {
-        const int length = value ? int(strlen(value)) : 0;
-        if(length <= 0 || length >= MAXSTRLEN) return false;
-        putservercanonicalushort(output, ushort(length));
-        output.put((const uchar *)value, length);
-        return true;
-    }
-
-    static bool readservercanonicalstring(servercanonicalreader &reader, char *value, int size)
-    {
-        ushort length;
-        if(!reader.readushort(length) || !length || length >= size || !reader.read(value, length)) return false;
-        value[length] = '\0';
-        return true;
-    }
-
-    static void servercanonicalfilename(char *name, size_t length, int x, int y, const char *extension)
-    {
-        string folder;
-        copystring(folder, serverworld);
-        fixmapname(folder);
-        if(!folder[0]) copystring(folder, "multiplayer");
-        snprintf(name, length, "media/map/%s/chunks/%d_%d.%s", folder, x, y, extension);
-        path(name);
-    }
-
-    static bool readservercanonicalfile(const char *filename, vector<uchar> &contents)
-    {
-        stream *file = openrawfile(filename, "rb");
-        if(!file) return false;
-        const stream::offset length = file->size();
-        if(length <= 0 || length > SERVER_SNAPSHOT_MAX_FILE_SIZE) { delete file; return false; }
-        const bool read = file->read(contents.pad(int(length)), size_t(length)) == size_t(length);
-        delete file;
-        return read;
-    }
-
-    static bool writeservercanonicalfile(const char *filename, const vector<uchar> &contents)
-    {
-        defformatstring(temporary, "%s.tmp", filename);
-        string temporarypath, finalpath;
-        copystring(temporarypath, findfile(temporary, "wb"));
-        copystring(finalpath, findfile(filename, "wb"));
-        stream *file = openrawfile(temporary, "wb");
-        const bool written = file && file->write(contents.getbuf(), contents.length()) == size_t(contents.length()) && file->flush();
-        delete file;
-        if(!written || !replaceserveridentityfile(temporarypath, finalpath))
-        {
-            remove(temporarypath);
-            return false;
-        }
-        return true;
-    }
-
-    static bool validservercanonicalchecksum(const vector<uchar> &contents)
-    {
-        if(contents.length() < 4) return false;
-        servercanonicalreader reader(contents.getbuf() + contents.length() - 4, 4);
-        uint stored;
-        return reader.readuint(stored) && stored == uint(crc32(0, (const Bytef *)contents.getbuf(), uInt(contents.length() - 4)));
-    }
-
-    static void addservercanonicalrun(vector<servercanonicalrun> &runs, int length, const servercanonicalvoxel &voxel)
-    {
-        if(length <= 0) return;
-        if(!runs.empty() && runs.last().voxel == voxel && int(runs.last().length) + length <= USHRT_MAX)
-            runs.last().length = ushort(runs.last().length + length);
-        else runs.add(servercanonicalrun(length, voxel));
-    }
-
-    static const servercanonicalvoxel *getservercanonicalvoxel(const servercanonicalchunk &chunk, int x, int y, int z)
-    {
-        if(x < 0 || x >= SERVER_WORLD_CHUNK_BLOCKS || y < 0 || y >= SERVER_WORLD_CHUNK_BLOCKS || z < 0 || z >= 512) return NULL;
-        const servercanonicalcolumn &column = chunk.columns[y * SERVER_WORLD_CHUNK_BLOCKS + x];
-        int cursor = 0;
-        loopv(column.runs)
-        {
-            const servercanonicalrun &run = column.runs[i];
-            if(z < cursor + run.length) return &run.voxel;
-            cursor += run.length;
-        }
-        return NULL;
-    }
-
-    static bool setservercanonicalvoxel(servercanonicalchunk &chunk, int x, int y, int z, const servercanonicalvoxel &voxel)
-    {
-        if(x < 0 || x >= SERVER_WORLD_CHUNK_BLOCKS || y < 0 || y >= SERVER_WORLD_CHUNK_BLOCKS || z < 0 || z >= 512) return false;
-        servercanonicalcolumn &column = chunk.columns[y * SERVER_WORLD_CHUNK_BLOCKS + x];
-        vector<servercanonicalrun> rebuilt;
-        int cursor = 0;
-        bool changed = false;
-        loopv(column.runs)
-        {
-            const servercanonicalrun &run = column.runs[i];
-            if(!changed && z >= cursor && z < cursor + run.length)
-            {
-                if(run.voxel == voxel) return false;
-                addservercanonicalrun(rebuilt, z - cursor, run.voxel);
-                addservercanonicalrun(rebuilt, 1, voxel);
-                addservercanonicalrun(rebuilt, cursor + run.length - z - 1, run.voxel);
-                changed = true;
-            }
-            else addservercanonicalrun(rebuilt, run.length, run.voxel);
-            cursor += run.length;
-        }
-        if(!changed) return false;
-        column.runs.move(rebuilt);
-        return true;
-    }
-
-    static servercanonicalvoxel generateservercanonicalvoxel(int blockx, int blocky, int cellz, int height,
-                                                               const game::worldtectonicsample &tectonics, int biome, bool beach, bool rock)
-    {
-        const int surface = SERVER_WORLD_GROUND_HEIGHT + height * SERVER_WORLD_BLOCK_SIZE,
-                  watertop = SERVER_WORLD_GROUND_HEIGHT + serverworldgenerator->settings.sealevel * SERVER_WORLD_BLOCK_SIZE,
-                  dirtbottom = surface - serverworldgenerator->settings.soildepth * SERVER_WORLD_BLOCK_SIZE,
-                  grassbottom = surface - SERVER_WORLD_BLOCK_SIZE;
-        if(cellz >= surface && cellz < surface + 10 * SERVER_WORLD_BLOCK_SIZE)
-        {
-            const int treeblock = serverworldgenerator->treeblock(blockx, blocky, cellz / SERVER_WORLD_BLOCK_SIZE);
-            if(treeblock == game::WORLD_TREE_WOOD) return servercanonicalvoxel(serverworldcubeindex("wood"));
-            if(treeblock == game::WORLD_TREE_DARK_WOOD) return servercanonicalvoxel(serverworldcubeindex("dark_wood"));
-            if(treeblock == game::WORLD_TREE_LEAVES) return servercanonicalvoxel(serverworldcubeindex("leaves"), MAT_ALPHA);
-            if(treeblock == game::WORLD_TREE_NEEDLES) return servercanonicalvoxel(serverworldcubeindex("needles"), MAT_ALPHA);
-        }
-        if(surface < watertop && cellz >= surface && cellz < watertop) return servercanonicalvoxel(-1, MAT_WATER);
-        if(cellz >= max(surface, watertop)) return servercanonicalvoxel();
-        if(cellz + SERVER_WORLD_BLOCK_SIZE <= dirtbottom) return servercanonicalvoxel(serverworldcubeindex("stone"));
-        const bool cliff = tectonics.rockyledge > 0.22f || serverworldgenerator->cliff(blockx, blocky, height);
-        if(cliff)
-            return cellz >= dirtbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= surface
-                 ? servercanonicalvoxel(serverworldcubeindex("stone")) : servercanonicalvoxel();
-        if(rock)
-        {
-            if(biome == game::WORLD_BIOME_SNOW && cellz >= grassbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= surface)
-                return servercanonicalvoxel(serverworldcubeindex("snow"));
-            return cellz >= dirtbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= surface
-                 ? servercanonicalvoxel(serverworldcubeindex("stone")) : servercanonicalvoxel();
-        }
-        if((biome == game::WORLD_BIOME_DESERT || beach) && cellz >= dirtbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= surface)
-            return servercanonicalvoxel(serverworldcubeindex("sand"));
-        if(biome == game::WORLD_BIOME_OCEAN)
-            return cellz >= dirtbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= surface
-                 ? servercanonicalvoxel(serverworldcubeindex("dirt")) : servercanonicalvoxel();
-        if(cellz >= dirtbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= grassbottom) return servercanonicalvoxel(serverworldcubeindex("dirt"));
-        if(cellz >= grassbottom && cellz + SERVER_WORLD_BLOCK_SIZE <= surface)
-            return servercanonicalvoxel(serverworldcubeindex(biome == game::WORLD_BIOME_SNOW ? "snow" : "grass"));
-        return servercanonicalvoxel();
-    }
-
-    static bool beginservercanonicalchunkgeneration(servercanonicalchunk &chunk)
-    {
-        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
-        if(!chunk.columns.empty()) return false;
-        chunk.columns.reserve(SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS);
-        loopi(SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS) chunk.columns.add();
-        chunk.generationcolumn = 0;
-        chunk.generating = true;
-        return true;
-    }
-
-    static bool updateservercanonicalchunkgeneration(servercanonicalchunk &chunk, int columnlimit)
-    {
-        if(!chunk.generating || columnlimit <= 0) return !chunk.generating;
-        int generated = 0;
-        while(chunk.generationcolumn < SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS && generated < columnlimit)
-        {
-            const int x = chunk.generationcolumn % SERVER_WORLD_CHUNK_BLOCKS, y = chunk.generationcolumn / SERVER_WORLD_CHUNK_BLOCKS;
-            const int blockx = chunk.x * SERVER_WORLD_CHUNK_BLOCKS + x, blocky = chunk.y * SERVER_WORLD_CHUNK_BLOCKS + y;
-            game::worldtectonicsample tectonics;
-            const int height = serverworldgenerator->height(blockx, blocky, &tectonics), biome = serverworldgenerator->biome(blockx, blocky, height);
-            const bool rock = serverworldgenerator->rock(blockx, blocky, height);
-            const int beachminimum = serverworldgenerator->settings.sealevel + min(serverworldgenerator->settings.beachminheight,
-                                                                                    serverworldgenerator->settings.beachmaxheight),
-                      beachmaximum = serverworldgenerator->settings.sealevel + max(serverworldgenerator->settings.beachminheight,
-                                                                                    serverworldgenerator->settings.beachmaxheight);
-            const bool beach = height >= beachminimum && height <= beachmaximum && serverworldgenerator->beach(blockx, blocky);
-            servercanonicalcolumn &column = chunk.columns[y * SERVER_WORLD_CHUNK_BLOCKS + x];
-            loop(z, 512)
-                addservercanonicalrun(column.runs, 1, generateservercanonicalvoxel(blockx, blocky, z * SERVER_WORLD_BLOCK_SIZE, height,
-                                                                                   tectonics, biome, beach, rock));
-            ++chunk.generationcolumn;
-            ++generated;
-        }
-        if(chunk.generationcolumn < SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS) return false;
-        bool playeredited = false;
-        loopv(serverworldactions)
-        {
-            const serverworldaction &state = *serverworldactions[i];
-            if(state.action != WORLD_ACTION_PLACE_CUBE && state.action != WORLD_ACTION_BREAK_CUBE_START) continue;
-            const int chunkx = serverfloordiv(state.target.x, SERVER_WORLD_CHUNK_SIZE),
-                      chunky = serverfloordiv(state.target.y, SERVER_WORLD_CHUNK_SIZE);
-            if(chunkx != chunk.x || chunky != chunk.y) continue;
-            const int localx = serverfloordiv(state.target.x, SERVER_WORLD_BLOCK_SIZE) - chunk.x * SERVER_WORLD_CHUNK_BLOCKS,
-                      localy = serverfloordiv(state.target.y, SERVER_WORLD_BLOCK_SIZE) - chunk.y * SERVER_WORLD_CHUNK_BLOCKS,
-                      localz = serverfloordiv(state.target.z, SERVER_WORLD_BLOCK_SIZE);
-            const int type = getworlditemtype(state.item), index = getworlditemindex(state.item);
-            if(setservercanonicalvoxel(chunk, localx, localy, localz,
-                                       state.action == WORLD_ACTION_PLACE_CUBE && type == WORLD_ITEM_CUBE ? servercanonicalvoxel(index)
-                                                                                                         : servercanonicalvoxel()))
-                playeredited = true;
-        }
-        chunk.revision = playeredited ? 2 : 1;
-        chunk.playeredited = playeredited;
-        chunk.dirty = true;
-        chunk.generating = false;
-        return true;
-    }
-
-    static int servercanonicalpaletteindex(vector<int> &palette, int cube)
-    {
-        loopv(palette) if(palette[i] == cube) return i;
-        if(palette.length() >= USHRT_MAX) return -1;
-        palette.add(cube);
-        return palette.length() - 1;
-    }
-
-    static bool serializeservercanonicalchunk(servercanonicalchunk &chunk)
-    {
-        vector<int> palette;
-        loopv(chunk.columns) loopvj(chunk.columns[i].runs)
-            if(servercanonicalpaletteindex(palette, chunk.columns[i].runs[j].voxel.cube) < 0) return false;
-
-        vector<uchar> output;
-        output.put((const uchar *)"CCVX", 4);
-        putservercanonicaluint(output, WORLD_SNAPSHOT_VOX_VERSION);
-        putservercanonicaluint(output, uint(chunk.x));
-        putservercanonicaluint(output, uint(chunk.y));
-        putservercanonicalushort(output, SERVER_WORLD_CHUNK_BLOCKS);
-        putservercanonicalushort(output, SERVER_WORLD_CHUNK_BLOCKS);
-        putservercanonicalushort(output, 512);
-        putservercanonicalushort(output, ushort(palette.length()));
-        putservercanonicaluint(output, uint(chunk.columns.length()));
-        putservercanonicaluint(output, chunk.revision);
-        output.add(chunk.playeredited ? 1 : 0);
-        loopi(SERVER_SNAPSHOT_SECTION_BYTES) output.add(0);
-        loopv(palette)
-        {
-            const char *id = palette[i] >= 0 ? getworldcubename(palette[i]) : "air";
-            if(!putservercanonicalstring(output, id)) return false;
-        }
-        loopv(chunk.columns)
-        {
-            const servercanonicalcolumn &column = chunk.columns[i];
-            if(column.runs.empty() || column.runs.length() > 512) return false;
-            putservercanonicalushort(output, ushort(column.runs.length()));
-            loopvj(column.runs)
-            {
-                const servercanonicalrun &run = column.runs[j];
-                const int paletteindex = palette.find(run.voxel.cube);
-                if(paletteindex < 0) return false;
-                putservercanonicalushort(output, run.length);
-                putservercanonicalushort(output, ushort(paletteindex));
-                output.add(run.voxel.orientation);
-                output.add(run.voxel.flags);
-                putservercanonicalushort(output, run.voxel.material);
-                output.put(run.voxel.edges, sizeof(run.voxel.edges));
-            }
-        }
-        putservercanonicaluint(output, uint(crc32(0, (const Bytef *)output.getbuf(), uInt(output.length()))));
-        if(output.length() > SERVER_SNAPSHOT_MAX_FILE_SIZE) return false;
-        chunk.vox.move(output);
-        chunk.serializedrevision = chunk.revision;
-        return true;
-    }
-
-    static bool deserializeservercanonicaldat(const vector<uchar> &contents, int x, int y, uint voxchecksum)
-    {
-        if(!validservercanonicalchecksum(contents)) return false;
-        servercanonicalreader reader(contents.getbuf(), contents.length() - 4);
-        char magic[4];
-        uint version, storedx, storedy, storedchecksum, count;
-        if(!reader.read(magic, 4) || memcmp(magic, "CCDT", 4) || !reader.readuint(version) || version != SERVER_SNAPSHOT_DAT_VERSION ||
-           !reader.readuint(storedx) || int(storedx) != x || !reader.readuint(storedy) || int(storedy) != y ||
-           !reader.readuint(storedchecksum) || storedchecksum != voxchecksum || !reader.readuint(count) || count > 1000000U)
-            return false;
-        vector<serverworldaction *> actions;
-        bool valid = true;
-        loopi(count)
-        {
-            uchar type, orientation;
-            ushort sx, sy, sz;
-            string id;
-            if(!reader.readbyte(type) || (type != 1 && type != 2) || !reader.readushort(sx) || sx >= SERVER_WORLD_CHUNK_BLOCKS ||
-               !reader.readushort(sy) || sy >= SERVER_WORLD_CHUNK_BLOCKS || !reader.readushort(sz) || sz >= 512 ||
-               !reader.readbyte(orientation) || orientation > WORLD_ORIENT_TOP || !readservercanonicalstring(reader, id, sizeof(id)))
-            {
-                valid = false;
-                break;
-            }
-            const int item = getinventoryitemindex(id);
-            if(item < 0)
-            {
-                valid = false;
-                break;
-            }
-            serverworldaction *state = new serverworldaction;
-            state->target = ivec((x * SERVER_WORLD_CHUNK_BLOCKS + sx) * SERVER_WORLD_BLOCK_SIZE,
-                                 (y * SERVER_WORLD_CHUNK_BLOCKS + sy) * SERVER_WORLD_BLOCK_SIZE, sz * SERVER_WORLD_BLOCK_SIZE);
-            state->action = type == 1 ? WORLD_ACTION_PLACE_SCATTER : WORLD_ACTION_PLACE_ITEM;
-            state->orient = orientation;
-            state->item = item;
-            actions.add(state);
-        }
-        uint gameplaylength;
-        if(valid && (!reader.readuint(gameplaylength) || gameplaylength > uint(reader.end - reader.position))) valid = false;
-        if(valid)
-        {
-            reader.position += gameplaylength;
-            valid = reader.finished();
-        }
-        if(!valid)
-        {
-            actions.deletecontents();
-            return false;
-        }
-        loopv(actions) serverworldactions.add(actions[i]);
-        actions.setsize(0);
-        return true;
-    }
-
-    static bool deserializeservercanonicalchunk(servercanonicalchunk &chunk, const vector<uchar> &contents)
-    {
-        if(!validservercanonicalchecksum(contents)) return false;
-        servercanonicalreader reader(contents.getbuf(), contents.length() - 4);
-        char magic[4];
-        uint version, storedx, storedy, columns;
-        ushort width, depth, height, palettesize;
-        if(!reader.read(magic, 4) || memcmp(magic, "CCVX", 4) || !reader.readuint(version) || version != WORLD_SNAPSHOT_VOX_VERSION ||
-           !reader.readuint(storedx) || int(storedx) != chunk.x || !reader.readuint(storedy) || int(storedy) != chunk.y ||
-           !reader.readushort(width) || width != SERVER_WORLD_CHUNK_BLOCKS || !reader.readushort(depth) || depth != SERVER_WORLD_CHUNK_BLOCKS ||
-           !reader.readushort(height) || height != 512 || !reader.readushort(palettesize) || !palettesize || !reader.readuint(columns) ||
-           columns != SERVER_WORLD_CHUNK_BLOCKS * SERVER_WORLD_CHUNK_BLOCKS || !reader.readuint(chunk.revision) || !chunk.revision)
-            return false;
-        uchar playeredited;
-        if(!reader.readbyte(playeredited) || playeredited > 1) return false;
-        chunk.playeredited = playeredited != 0;
-        uchar sectiondata[SERVER_SNAPSHOT_SECTION_BYTES];
-        if(!reader.read(sectiondata, sizeof(sectiondata))) return false;
-        vector<int> palette;
-        loopi(palettesize)
-        {
-            string id;
-            if(!readservercanonicalstring(reader, id, sizeof(id))) return false;
-            if(!strcmp(id, "air")) palette.add(-1);
-            else
-            {
-                const int cube = serverworldcubeindex(id);
-                if(cube < 0) return false;
-                palette.add(cube);
-            }
-        }
-        chunk.columns.reserve(columns);
-        loopi(int(columns))
-        {
-            servercanonicalcolumn &column = chunk.columns.add();
-            ushort runcount;
-            if(!reader.readushort(runcount) || !runcount || runcount > 512) return false;
-            int z = 0;
-            loopj(runcount)
-            {
-                ushort length, paletteindex, material;
-                uchar orientation, flags, edges[12];
-                if(!reader.readushort(length) || !length || z + length > 512 || !reader.readushort(paletteindex) || !palette.inrange(paletteindex) ||
-                   !reader.readbyte(orientation) || orientation < WORLD_ORIENT_LEFT || orientation > WORLD_ORIENT_TOP || !reader.readbyte(flags) ||
-                   flags & ~(SERVER_SNAPSHOT_EMPTY | SERVER_SNAPSHOT_SOLID) ||
-                   ((flags & SERVER_SNAPSHOT_EMPTY) && (flags & SERVER_SNAPSHOT_SOLID)) ||
-                   !reader.readushort(material) || !reader.read(edges, sizeof(edges))) return false;
-                servercanonicalvoxel voxel(palette[paletteindex], material);
-                voxel.orientation = orientation;
-                voxel.flags = flags;
-                memcpy(voxel.edges, edges, sizeof(edges));
-                column.runs.add(servercanonicalrun(length, voxel));
-                z += length;
-            }
-            if(z != 512) return false;
-        }
-        if(!reader.finished()) return false;
-        chunk.vox.put(contents.getbuf(), contents.length());
-        chunk.serializedrevision = chunk.revision;
-        return true;
-    }
-
-    static bool saveservercanonicalchunk(servercanonicalchunk &chunk)
-    {
-        if((chunk.vox.empty() || chunk.serializedrevision != chunk.revision) && !serializeservercanonicalchunk(chunk)) return false;
-        const int checksumoffset = chunk.vox.length() - 4;
-        const uint voxchecksum = uint(chunk.vox[checksumoffset]) | uint(chunk.vox[checksumoffset + 1]) << 8 |
-                                 uint(chunk.vox[checksumoffset + 2]) << 16 | uint(chunk.vox[checksumoffset + 3]) << 24;
-        vector<uchar> dat;
-        dat.put((const uchar *)"CCDT", 4);
-        putservercanonicaluint(dat, SERVER_SNAPSHOT_DAT_VERSION);
-        putservercanonicaluint(dat, uint(chunk.x));
-        putservercanonicaluint(dat, uint(chunk.y));
-        putservercanonicaluint(dat, voxchecksum);
-        int placeablecount = 0;
-        loopv(serverworldactions)
-        {
-            const serverworldaction &state = *serverworldactions[i];
-            if(state.action != WORLD_ACTION_PLACE_SCATTER && state.action != WORLD_ACTION_PLACE_ITEM) continue;
-            if(serverfloordiv(state.target.x, SERVER_WORLD_CHUNK_SIZE) == chunk.x &&
-               serverfloordiv(state.target.y, SERVER_WORLD_CHUNK_SIZE) == chunk.y) ++placeablecount;
-        }
-        putservercanonicaluint(dat, uint(placeablecount));
-        loopv(serverworldactions)
-        {
-            const serverworldaction &state = *serverworldactions[i];
-            if(state.action != WORLD_ACTION_PLACE_SCATTER && state.action != WORLD_ACTION_PLACE_ITEM) continue;
-            if(serverfloordiv(state.target.x, SERVER_WORLD_CHUNK_SIZE) != chunk.x ||
-               serverfloordiv(state.target.y, SERVER_WORLD_CHUNK_SIZE) != chunk.y) continue;
-            dat.add(state.action == WORLD_ACTION_PLACE_SCATTER ? 1 : 2);
-            putservercanonicalushort(dat, ushort(serverfloordiv(state.target.x, SERVER_WORLD_BLOCK_SIZE) - chunk.x * SERVER_WORLD_CHUNK_BLOCKS));
-            putservercanonicalushort(dat, ushort(serverfloordiv(state.target.y, SERVER_WORLD_BLOCK_SIZE) - chunk.y * SERVER_WORLD_CHUNK_BLOCKS));
-            putservercanonicalushort(dat, ushort(serverfloordiv(state.target.z, SERVER_WORLD_BLOCK_SIZE)));
-            dat.add(uchar(state.orient));
-            if(!putservercanonicalstring(dat, getinventoryitemid(state.item))) return false;
-        }
-        putservercanonicaluint(dat, 0); // Dynamic gameplay state is relevance-streamed, never bundled with terrain.
-        putservercanonicaluint(dat, uint(crc32(0, (const Bytef *)dat.getbuf(), uInt(dat.length()))));
-        string voxname, datname;
-        servercanonicalfilename(voxname, sizeof(voxname), chunk.x, chunk.y, "vox");
-        servercanonicalfilename(datname, sizeof(datname), chunk.x, chunk.y, "dat");
-        if(!writeservercanonicalfile(voxname, chunk.vox) || !writeservercanonicalfile(datname, dat)) return false;
-        chunk.dirty = false;
-        return true;
-    }
-
-    static bool flushservercanonicalchunks(int limit = INT_MAX)
-    {
-        int saved = 0;
-        loopv(servercanonicalchunks)
-        {
-            servercanonicalchunk &chunk = *servercanonicalchunks[i];
-            if(chunk.corrupted || !chunk.dirty) continue;
-            if(!saveservercanonicalchunk(chunk))
-            {
-                conoutf(CON_ERROR, "could not asynchronously save authoritative server chunk %d_%d", chunk.x, chunk.y);
-                return false;
-            }
-            if(++saved >= limit) break;
-        }
-        return true;
-    }
-
-    static servercanonicalchunk *findservercanonicalchunk(int x, int y)
-    {
-        loopv(servercanonicalchunks) if(servercanonicalchunks[i]->x == x && servercanonicalchunks[i]->y == y) return servercanonicalchunks[i];
-        return NULL;
-    }
-
-    static servercanonicalchunk *getservercanonicalchunk(int x, int y)
-    {
-        servercanonicalchunk *chunk = findservercanonicalchunk(x, y);
-        if(chunk) return chunk->corrupted || chunk->generating ? NULL : chunk;
-        chunk = new servercanonicalchunk(x, y);
-        servercanonicalchunks.add(chunk);
-        string voxname, datname;
-        servercanonicalfilename(voxname, sizeof(voxname), x, y, "vox");
-        servercanonicalfilename(datname, sizeof(datname), x, y, "dat");
-        const char *found = findfile(voxname, "rb");
-        const bool hasvox = found && fileexists(found, "r");
-        found = findfile(datname, "rb");
-        const bool hasdat = found && fileexists(found, "r");
-        if(hasvox != hasdat)
-        {
-            chunk->corrupted = true;
-            conoutf(CON_ERROR, "authoritative server chunk %d_%d is missing its .vox or .dat sidecar", x, y);
-            return NULL;
-        }
-        if(hasvox)
-        {
-            vector<uchar> vox, dat;
-            if(!readservercanonicalfile(voxname, vox) || !readservercanonicalfile(datname, dat) ||
-               !deserializeservercanonicalchunk(*chunk, vox))
-            {
-                chunk->corrupted = true;
-                conoutf(CON_ERROR, "authoritative server chunk %d_%d is corrupt or incompatible; refusing worldgen recovery", x, y);
-                return NULL;
-            }
-            const int checksumoffset = vox.length() - 4;
-            const uint voxchecksum = uint(vox[checksumoffset]) | uint(vox[checksumoffset + 1]) << 8 |
-                                     uint(vox[checksumoffset + 2]) << 16 | uint(vox[checksumoffset + 3]) << 24;
-            if(!deserializeservercanonicaldat(dat, x, y, voxchecksum))
-            {
-                chunk->corrupted = true;
-                conoutf(CON_ERROR, "authoritative server chunk %d_%d has corrupt or incompatible .dat state; refusing worldgen recovery", x, y);
-                return NULL;
-            }
-            return chunk;
-        }
-        if(!beginservercanonicalchunkgeneration(*chunk))
-        {
-            chunk->corrupted = true;
-            conoutf(CON_ERROR, "could not begin authoritative server chunk generation for %d_%d", x, y);
-        }
-        return NULL;
-    }
-
-    static void updateservercanonicalgenerations()
-    {
-        loopv(servercanonicalchunks)
-        {
-            servercanonicalchunk &chunk = *servercanonicalchunks[i];
-            if(chunk.corrupted || !chunk.generating) continue;
-            updateservercanonicalchunkgeneration(chunk, SERVER_CHUNK_COLUMNS_PER_TICK);
-            if(!chunk.generating)
-            {
-                if(!saveservercanonicalchunk(chunk))
-                {
-                    chunk.corrupted = true;
-                    conoutf(CON_ERROR, "could not save newly generated authoritative server chunk %d_%d", chunk.x, chunk.y);
-                }
-                else conoutf(CON_DEBUG, "generated authoritative server chunk %d_%d without blocking network service", chunk.x, chunk.y);
-            }
-            break;
-        }
-    }
-
-    static void markcanonicalgameplaydirty(const ivec &cell)
-    {
-        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
-        if(servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky)) chunk->dirty = true;
-    }
-
-    static void updatecanonicalworldaction(const ivec &cell, int action, int item)
-    {
-        if(action != WORLD_ACTION_PLACE_CUBE && action != WORLD_ACTION_BREAK_CUBE_START) return;
-        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
-        servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky);
-        if(!chunk) return;
-        const int localx = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE) - chunkx * SERVER_WORLD_CHUNK_BLOCKS,
-                  localy = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE) - chunky * SERVER_WORLD_CHUNK_BLOCKS,
-                  localz = serverfloordiv(cell.z, SERVER_WORLD_BLOCK_SIZE), type = getworlditemtype(item), index = getworlditemindex(item);
-        const servercanonicalvoxel voxel = action == WORLD_ACTION_PLACE_CUBE && type == WORLD_ITEM_CUBE ? servercanonicalvoxel(index)
-                                                                                                        : servercanonicalvoxel();
-        if(!setservercanonicalvoxel(*chunk, localx, localy, localz, voxel)) return;
-        if(++chunk->revision == 0) chunk->revision = 1;
-        chunk->playeredited = true;
-        chunk->dirty = true;
-    }
-
-    static bool updatecanonicalcornerpush(const ivec &cell, int orient, int corner)
-    {
-        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
-        servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky);
-        if(!chunk) return false;
-        const int localx = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE) - chunkx * SERVER_WORLD_CHUNK_BLOCKS,
-                  localy = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE) - chunky * SERVER_WORLD_CHUNK_BLOCKS,
-                  localz = serverfloordiv(cell.z, SERVER_WORLD_BLOCK_SIZE);
-        const servercanonicalvoxel *source = getservercanonicalvoxel(*chunk, localx, localy, localz);
-        if(!source || source->cube < 0) return false;
-
-        servercanonicalvoxel voxel = *source;
-        const int d = orient >> 1, coordinate = orient & 1, direction = coordinate ? -1 : 1,
-                  x = corner & 1, y = corner >> 1;
-        const ivec selected = getservercanonicalvector(voxel, d, x, y, coordinate);
-        loopi(2) loopj(2)
-        {
-            if(getservercanonicalvector(voxel, d, i, j, coordinate) != selected) continue;
-            pushservercanonicaledge(voxel.edges[(d << 2) + (j << 1) + i], direction, coordinate);
-        }
-        updateservercanonicalflags(voxel);
-        if(voxel == *source || !setservercanonicalvoxel(*chunk, localx, localy, localz, voxel)) return false;
-        if(++chunk->revision == 0) chunk->revision = 1;
-        chunk->playeredited = true;
-        chunk->dirty = true;
-        return true;
-    }
-
-    static bool sendserverchunkdata(clientinfo &ci, int chunkx, int chunky)
-    {
-        servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky);
-        if(!chunk || ((chunk->vox.empty() || chunk->serializedrevision != chunk->revision) && !serializeservercanonicalchunk(*chunk))) return false;
-        packetbuf p(MAXTRANS + chunk->vox.length(), ENET_PACKET_FLAG_RELIABLE);
-        putint(p, N_CHUNKDATA);
-        putint(p, chunkx); putint(p, chunky); putint(p, int(chunk->revision));
-        putint(p, WORLD_SNAPSHOT_VOX_VERSION);
-        putint(p, chunk->vox.length());
-        p.put(chunk->vox.getbuf(), chunk->vox.length());
-        sendpacket(ci.clientnum, 2, p.finalize());
-        return true;
-    }
-
-    static bool serverchunkinclientrange(const clientinfo &ci, int chunkx, int chunky)
-    {
-        const int focusx = ci.hasposition ? serverfloordiv(int(floorf(ci.o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
-                  focusy = ci.hasposition ? serverfloordiv(int(floorf(ci.o.y)), SERVER_WORLD_CHUNK_SIZE) : 0;
-        return max(abs(chunkx - focusx), abs(chunky - focusy)) <= serverchunkviewdistance;
-    }
-
-    static void queueserverchunkrequest(clientinfo &ci, int chunkx, int chunky, bool localgeneration)
-    {
-        loopv(serverchunkrequests)
-            if(serverchunkrequests[i].clientnum == ci.clientnum && serverchunkrequests[i].x == chunkx && serverchunkrequests[i].y == chunky)
-                return;
-        if(serverchunkrequests.length() >= 4096) serverchunkrequests.remove(0);
-        serverchunkrequests.add(serverchunkrequest(ci.clientnum, chunkx, chunky, localgeneration));
-    }
-
-    static void updateserverchunkrequests()
-    {
-        if(serverchunkrequests.empty()) return;
-        int best = -1, bestdistance = INT_MAX;
-        for(int i = serverchunkrequests.length() - 1; i >= 0; --i)
-        {
-            const serverchunkrequest &candidate = serverchunkrequests[i];
-            clientinfo *client = getinfo(candidate.clientnum);
-            if(!client || !client->connected || !client->worldready || !serverchunkinclientrange(*client, candidate.x, candidate.y))
-            {
-                serverchunkrequests.remove(i);
-                continue;
-            }
-            const int focusx = client->hasposition ? serverfloordiv(int(floorf(client->o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
-                      focusy = client->hasposition ? serverfloordiv(int(floorf(client->o.y)), SERVER_WORLD_CHUNK_SIZE) : 0,
-                      distance = max(abs(candidate.x - focusx), abs(candidate.y - focusy));
-            if(distance < bestdistance) best = i, bestdistance = distance;
-        }
-        if(best < 0) return;
-        const serverchunkrequest request = serverchunkrequests[best];
-        clientinfo *ci = getinfo(request.clientnum);
-        servercanonicalchunk *chunk = getservercanonicalchunk(request.x, request.y);
-        if(chunk)
-        {
-            serverchunkrequests.remove(best);
-            if(!serverlocalworldgen || !request.localgeneration || chunk->playeredited)
-            {
-                if(!sendserverchunkdata(*ci, request.x, request.y))
-                    sendf(ci->clientnum, 1, "ris", N_SERVMSG, "authoritative chunk payload could not be sent");
-            }
-            loopv(serverworldactions)
-            {
-                const serverworldaction &state = *serverworldactions[i];
-                if((state.action == WORLD_ACTION_PLACE_SCATTER || state.action == WORLD_ACTION_PLACE_ITEM) &&
-                   serverfloordiv(state.target.x, SERVER_WORLD_CHUNK_SIZE) == request.x &&
-                   serverfloordiv(state.target.y, SERVER_WORLD_CHUNK_SIZE) == request.y) sendworldcorrection(*ci, state);
-            }
-            return;
-        }
-        chunk = findservercanonicalchunk(request.x, request.y);
-        if(chunk && chunk->generating) return;
-        serverchunkrequests.remove(best);
-        sendf(ci->clientnum, 1, "ris", N_SERVMSG, "authoritative chunk is unavailable; check the server log");
-    }
-
     static bool servereditcontains(const serveredit &edit, const ivec &cell)
     {
         if(!edit.active || !edit.hasselection || edit.selection.grid <= 0) return false;
@@ -2744,35 +1934,12 @@ namespace server
             }
             return -1;
         }
-        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
-        if(servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky))
-        {
-            const int localx = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE) - chunkx * SERVER_WORLD_CHUNK_BLOCKS,
-                      localy = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE) - chunky * SERVER_WORLD_CHUNK_BLOCKS,
-                      localz = serverfloordiv(cell.z, SERVER_WORLD_BLOCK_SIZE);
-            const servercanonicalvoxel *voxel = getservercanonicalvoxel(*chunk, localx, localy, localz);
-            return voxel && voxel->cube >= 0 ? getworldcubeitem(voxel->cube) : -1;
-        }
         const int worldindex = serverbaseworldcubeindex(cell);
         return worldindex >= 0 ? getworldcubeitem(worldindex) : -1;
     }
 
     static int servercornerpushcount(const ivec &cell, int orient, int corner)
     {
-        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
-        if(servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky))
-        {
-            const int localx = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE) - chunkx * SERVER_WORLD_CHUNK_BLOCKS,
-                      localy = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE) - chunky * SERVER_WORLD_CHUNK_BLOCKS,
-                      localz = serverfloordiv(cell.z, SERVER_WORLD_BLOCK_SIZE);
-            const servercanonicalvoxel *voxel = getservercanonicalvoxel(*chunk, localx, localy, localz);
-            if(voxel && voxel->cube >= 0)
-            {
-                const int d = orient >> 1, coordinate = orient & 1, x = corner & 1, y = corner >> 1,
-                          value = getservercanonicalvector(*voxel, d, x, y, coordinate)[d];
-                return coordinate ? 8 - value : value;
-            }
-        }
         int pushes = 0;
         loopv(worldhistory)
         {
@@ -2818,15 +1985,6 @@ namespace server
                 if(readselection(payload, unused)) return getint(payload) >= 0;
             }
             return true;
-        }
-        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
-        if(servercanonicalchunk *chunk = getservercanonicalchunk(chunkx, chunky))
-        {
-            const int localx = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE) - chunkx * SERVER_WORLD_CHUNK_BLOCKS,
-                      localy = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE) - chunky * SERVER_WORLD_CHUNK_BLOCKS,
-                      localz = serverfloordiv(cell.z, SERVER_WORLD_BLOCK_SIZE);
-            const servercanonicalvoxel *voxel = getservercanonicalvoxel(*chunk, localx, localy, localz);
-            return voxel && !(voxel->flags & SERVER_SNAPSHOT_EMPTY);
         }
         return cell.z < serverbasesurface(cell.x + SERVER_WORLD_BLOCK_SIZE / 2, cell.y + SERVER_WORLD_BLOCK_SIZE / 2);
     }
@@ -4089,12 +3247,6 @@ namespace server
         putint(p, serverwatersimulationmaxdist);
         putint(p, clamp(int(serverwaterflowspeed * 1000.0f + 0.5f), 100, 20000));
         putint(p, serversimulationmaxdist);
-        const ullong generationsignature = game::worldgenerationsignature(serverworldseed);
-        putint(p, int(uint(generationsignature)));
-        putint(p, int(uint(generationsignature >> 32)));
-        putint(p, serverlocalworldgen ? 1 : 0);
-        putint(p, WORLD_SNAPSHOT_VOX_VERSION);
-        putint(p, serverchunkviewdistance);
         const bool restoreposition = !reset && ci.hasposition;
         putint(p, restoreposition ? 1 : 0);
         putint(p, restoreposition ? ci.positioncoords.x : 0);
@@ -4112,6 +3264,10 @@ namespace server
 
     static void replayworld(clientinfo &ci)
     {
+        loopv(worldhistory)
+        {
+            if(worldhistory[i]->active) sendserveredit(ci.clientnum, *worldhistory[i]);
+        }
         loopv(serverdrops) senddropspawn(ci.clientnum, *serverdrops[i]);
         loopv(serverfallingblocks) sendfallblockspawn(ci.clientnum, *serverfallingblocks[i]);
         sendf(ci.clientnum, 1, "ri2", N_WORLDSYNC, int(worldeditrevision));
@@ -4127,8 +3283,6 @@ namespace server
 
     void serverinit()
     {
-        if(serverworldinitialized && !flushservercanonicalchunks())
-            conoutf(CON_ERROR, "could not flush authoritative chunk saves before server reinitialization");
         if(serverworldinitialized && furnacesdirty && !saveserverfurnaces(true))
             conoutf(CON_ERROR, "could not save authoritative furnace state before server reinitialization");
         if(serverworldinitialized && chestsdirty && !saveserverchests(true))
@@ -4168,8 +3322,6 @@ namespace server
     int numchannels() { return 3; }
     void clientdisconnect(int n)
     {
-        for(int i = serverchunkrequests.length() - 1; i >= 0; --i)
-            if(serverchunkrequests[i].clientnum == n) serverchunkrequests.remove(i);
         if(clientinfo *ci = getinfo(n))
         {
             cancelbreak(*ci);
@@ -4283,11 +3435,6 @@ namespace server
     static bool validateedit(clientinfo &ci, int type, packetbuf &p,
                              serveredit &edit, const char *&error)
     {
-        if(editselectiontype(type))
-        {
-            error = "direct octree edits are disabled; use the authoritative world-action protocol";
-            return false;
-        }
         if(ci.privilege < PRIV_ADMIN)
         {
             error = "gameplay world changes must use the authoritative action protocol";
@@ -5083,11 +4230,6 @@ namespace server
         putint(payload, -1); putint(payload, 2); putint(payload, 0); putint(payload, 2); putint(payload, corner);
         putint(payload, 1); putint(payload, 2);
         edit->payload.put(payload.buf, payload.length());
-        if(!updatecanonicalcornerpush(target, orient, corner))
-        {
-            delete edit;
-            return rejectaction(ci, requestid, "server could not persist the corner push");
-        }
         if(!acceptededit(edit)) return rejectaction(ci, requestid, "server could not persist the corner push");
 
         if(ci.breakactive) cancelbreak(ci);
@@ -5604,8 +4746,6 @@ namespace server
     void servershutdown()
     {
         if(!serverworldinitialized) return;
-        if(!flushservercanonicalchunks())
-            conoutf(CON_ERROR, "could not flush authoritative chunk saves during server shutdown");
         if(furnacesdirty && !saveserverfurnaces(true))
             conoutf(CON_ERROR, "could not save authoritative furnace state during server shutdown");
         if(chestsdirty && !saveserverchests(true))
@@ -6405,16 +5545,6 @@ namespace server
                         rejectaction(*ci, requestid, "world actions are disabled until synchronization completes");
                     break;
                 }
-                case N_CHUNKREQUEST:
-                {
-                    clientinfo *ci = getinfo(sender);
-                    const int chunkx = getint(p), chunky = getint(p);
-                    const int localgeneration = getint(p);
-                    if(ci && ci->connected && ci->worldready && !p.overread() && (localgeneration == 0 || localgeneration == 1) &&
-                       serverchunkinclientrange(*ci, chunkx, chunky))
-                        queueserverchunkrequest(*ci, chunkx, chunky, localgeneration != 0);
-                    break;
-                }
                 case N_DROPPICKUP:
                 {
                     clientinfo *ci = getinfo(sender);
@@ -6664,9 +5794,6 @@ namespace server
     void serverupdate()
     {
         if(!serverworldinitialized) return;
-        updateservercanonicalgenerations();
-        updateserverchunkrequests();
-        flushservercanonicalchunks(1);
         updateserverfurnaces();
         updateserverchests();
         if(passivenpcsdirty && totalmillis - lastpassivenpcsave >= 5000 && !saveserverpassivenpcs())

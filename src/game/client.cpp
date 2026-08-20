@@ -1,18 +1,12 @@
 #include "game.h"
-#include "world.h"
 #include "weather.h"
 
 namespace game
 {
-    VARP(clientlocalworldgen, 0, 0, 1);
-
     static int sessionid = 0;
     static string servdesc = "";
     static int authoritativeauthor = -1;
     static uint authoritativerevision = 0, authoritativerequestid = 0, synchronizedrevision = 0;
-    static ullong networkworldgensignature = 0;
-    static bool networklocalworldgen = false;
-    static uint networksnapshotversion = 0;
     vector<networkedit *> pendingnetworkedits;
 
     static void getsel(packetbuf &p, selinfo &sel)
@@ -57,16 +51,6 @@ namespace game
         pendingnetworkedits.deletecontents();
         authoritativeauthor = -1;
         authoritativerevision = authoritativerequestid = synchronizedrevision = 0;
-        networkworldgensignature = 0;
-        networklocalworldgen = false;
-        networksnapshotversion = 0;
-    }
-
-    bool requestworldchunk(int chunkx, int chunky)
-    {
-        if(pendingnetworkworld || !waitforserveredit()) return false;
-        addmsg(N_CHUNKREQUEST, "ri3", chunkx, chunky, networklocalworldgen ? 1 : 0);
-        return !networklocalworldgen;
     }
 
     static bool validhex(const char *value, int minlen, int maxlen)
@@ -443,21 +427,6 @@ namespace game
                     remove(findfile(fname, "rb"));
                 }
             }
-            else if(type == N_CHUNKDATA)
-            {
-                const int chunkx = getint(p), chunky = getint(p);
-                const uint revision = uint(getint(p));
-                const uint formatversion = uint(getint(p));
-                const int length = getint(p);
-                if(length <= 0 || length != p.remaining())
-                {
-                    conoutf(CON_ERROR, "rejected malformed authoritative chunk payload %d_%d", chunkx, chunky);
-                    return;
-                }
-                ucharbuf payload = p.subbuf(length);
-                if(!receivenetworkworldchunk(chunkx, chunky, revision, formatversion, payload.buf, payload.maxlen))
-                    conoutf(CON_ERROR, "could not install authoritative network chunk %d_%d", chunkx, chunky);
-            }
             return;
         }
 
@@ -646,13 +615,6 @@ namespace game
                 if(!m_valid(gamemode) || (!m_creative && !m_survival)) gamemode = STARTGAMEMODE;
                 const int breakmillis = getint(p), scatterbreakmillis = getint(p),
                           waterupdates = getint(p), waterdistance = getint(p), waterspeed = getint(p), npcsimulationdistance = getint(p);
-                networkworldgensignature = ullong(uint(getint(p))) | ullong(uint(getint(p))) << 32;
-                const bool serverlocalgeneration = getint(p) != 0;
-                networksnapshotversion = uint(getint(p));
-                getint(p); // Server residency cap; requests outside it are rejected server-side.
-                networklocalworldgen = clientlocalworldgen && serverlocalgeneration &&
-                                       networksnapshotversion == WORLD_SNAPSHOT_VOX_VERSION &&
-                                       networkworldgensignature == worldgenerationsignature(pendingnetworkseed);
                 const bool serverrestoreposition = getint(p) != 0;
                 vec serverposition;
                 loopk(3) serverposition[k] = getint(p)/DMF;

@@ -1,6 +1,5 @@
 #include "game.h"
 #include "world.h"
-#include "worlddef.h"
 
 VARP(worldseed, 0, 1337, INT_MAX);
 
@@ -816,39 +815,6 @@ namespace game
     {
         worldseed = max(seed, 0);
         activeworldseed = worldseed;
-    }
-
-    static void hashworldgenerationbytes(ullong &hash, const void *data, int length)
-    {
-        const uchar *bytes = (const uchar *)data;
-        loopi(length)
-        {
-            hash ^= bytes[i];
-            hash *= 1099511628211ULL;
-        }
-    }
-
-    ullong worldgenerationsignature(int seed)
-    {
-        ullong hash = 14695981039346656037ULL;
-        const uint version = WORLD_GENERATOR_SIGNATURE_VERSION;
-        const worldsettings settings;
-        hashworldgenerationbytes(hash, &version, sizeof(version));
-        hashworldgenerationbytes(hash, &seed, sizeof(seed));
-        hashworldgenerationbytes(hash, &settings, sizeof(settings));
-        loopv(worldcubedefinitions)
-        {
-            const worlddefinition &definition = *worldcubedefinitions[i];
-            hashworldgenerationbytes(hash, definition.id, int(strlen(definition.id)) + 1);
-            hashworldgenerationbytes(hash, &definition.persistentid, sizeof(definition.persistentid));
-        }
-        loopv(worldscatterdefinitions)
-        {
-            const worlddefinition &definition = *worldscatterdefinitions[i];
-            hashworldgenerationbytes(hash, definition.id, int(strlen(definition.id)) + 1);
-            hashworldgenerationbytes(hash, &definition.persistentid, sizeof(definition.persistentid));
-        }
-        return hash;
     }
 
     void activateworldseed()

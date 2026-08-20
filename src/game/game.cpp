@@ -687,7 +687,6 @@ namespace game
                 addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF),
                        int(worldspawnyaw), int(worldspawnpitch));
             else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
-            requestnetworkworldchunkvalidation();
         }
         environment::update();
 #endif

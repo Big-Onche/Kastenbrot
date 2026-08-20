@@ -44,7 +44,6 @@ namespace game
     extern void gameconnect(bool _remote);
     extern void beginlocalworld();
     extern bool islocalworld();
-    extern bool requestworldchunk(int chunkx, int chunky);
     extern bool allowedittoggle();
     extern void edittoggled(bool on);
     extern void writeclientinfo(stream *f);

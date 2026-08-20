@@ -463,14 +463,6 @@ static bool saveactiveworld()
     return true;
 }
 
-static void recoverfailedproceduralworldload()
-{
-    clearworldchunks();
-    if(worldroot) freeocta(worldroot);
-    worldroot = newcubes(F_EMPTY);
-    resetclipplanes();
-}
-
 static void saveworld()
 {
     if(worldchunks.empty() || activeworldchunk < 0)
@@ -513,12 +505,6 @@ static void createworld(const char *requestedname)
     worldroot = NULL;
     int generated = 0;
     activeworldchunk = acquireworldchunkblocking(0, 0, generated);
-    if(!worldchunks.inrange(activeworldchunk) || !worldchunks[activeworldchunk].root)
-    {
-        conoutf(CON_ERROR, "could not create entry chunk 0_0 for world %s", worldfolder);
-        recoverfailedproceduralworldload();
-        return;
-    }
     loadinitialworldchunks(0, 0);
 
     setvar("mapscale", WORLD_RUNTIME_SCALE, true, false);
@@ -603,7 +589,6 @@ static void loadworldcommand(const char *requested)
     if(!worldchunks.inrange(activeworldchunk) || !worldchunks[activeworldchunk].root)
     {
         conoutf(CON_ERROR, "could not load entry chunk %d_%d for world %s", metadata.entryx, metadata.entryy, folder);
-        recoverfailedproceduralworldload();
         return;
     }
     loadinitialworldchunks(metadata.entryx, metadata.entryy);
@@ -645,13 +630,7 @@ void startnetworkworld(int seed)
         worldchunk &chunk = worldchunks.add(worldchunk(0, 0, game::generateworldchunk(0, 0, &renderdata)));
         indexworldchunk(worldchunks.length() - 1);
         chunk.renderdata = renderdata;
-        if(chunk.root) game::generateworldscatter(chunk.root, 0, 0, chunk.scatter);
-    }
-    if(!worldchunks.inrange(activeworldchunk) || !worldchunks[activeworldchunk].root)
-    {
-        conoutf(CON_ERROR, "could not prepare initial authoritative network chunk 0_0");
-        recoverfailedproceduralworldload();
-        return;
+        game::generateworldscatter(chunk.root, 0, 0, chunk.scatter);
     }
     loadinitialworldchunks(0, 0);
 
