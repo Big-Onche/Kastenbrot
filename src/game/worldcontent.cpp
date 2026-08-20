@@ -99,7 +99,7 @@ int getworldcubepersistentindex(ullong id, bool warn)
 {
     int *index = worldcubepersistentindexes.access(worldpersistentkey(id));
     if(index) return *index;
-    if(warn) conoutf(CON_WARN, "unknown persistent world cube ID " WORLD_ULL_FORMAT "; using error cube", id);
+    // if(warn) conoutf(CON_WARN, "unknown persistent world cube ID " WORLD_ULL_FORMAT "; using error cube", id);
     return validworldcubeindex(worlderrorcube);
 }
 
@@ -183,7 +183,7 @@ int getworldscatterpersistentindex(ullong id, bool warn)
 {
     int *index = worldscatterpersistentindexes.access(worldpersistentkey(id));
     if(index) return *index;
-    if(warn) conoutf(CON_WARN, "unknown persistent world object ID " WORLD_ULL_FORMAT "; using error object", id);
+    // if(warn) conoutf(CON_WARN, "unknown persistent world object ID " WORLD_ULL_FORMAT "; using error object", id);
     return validworldobjectindex(worlderrorobject);
 }
 
@@ -257,7 +257,7 @@ int getinventoryitempersistentindex(ullong id, bool warn)
 {
     int *index = inventoryitempersistentindexes.access(worldpersistentkey(id));
     if(index) return *index;
-    if(warn) conoutf(CON_WARN, "unknown persistent inventory item ID " WORLD_ULL_FORMAT "; using error item", id);
+    // if(warn) conoutf(CON_WARN, "unknown persistent inventory item ID " WORLD_ULL_FORMAT "; using error item", id);
     return inventoryitemdefinitions.inrange(worlderroritem) ? worlderroritem : -1;
 }
 

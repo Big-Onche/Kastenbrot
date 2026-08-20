@@ -29,6 +29,7 @@
 		D1FCB14E18832B7500AFC227 /* dynlight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB0F018832B7500AFC227 /* dynlight.cpp */; };
 		D1FCB14F18832B7500AFC227 /* grass.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB0F318832B7500AFC227 /* grass.cpp */; };
 		D1FCB15018832B7500AFC227 /* light.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB0F718832B7500AFC227 /* light.cpp */; };
+		F1A0B1E10000000000000001 /* localambient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F1A0B1E10000000000000002 /* localambient.cpp */; };
 		D1FCB15118832B7500AFC227 /* main.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB0FA18832B7500AFC227 /* main.cpp */; };
 		D1FCB15318832B7500AFC227 /* material.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB0FC18832B7500AFC227 /* material.cpp */; };
 		D1FCB15418832B7500AFC227 /* menus.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB10018832B7500AFC227 /* menus.cpp */; };
@@ -125,6 +126,7 @@
 		D1FCB0F518832B7500AFC227 /* iqm.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = iqm.h; sourceTree = "<group>"; };
 		D1FCB0F618832B7500AFC227 /* lensflare.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = lensflare.h; sourceTree = "<group>"; };
 		D1FCB0F718832B7500AFC227 /* light.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = light.cpp; sourceTree = "<group>"; };
+		F1A0B1E10000000000000002 /* localambient.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = localambient.cpp; sourceTree = "<group>"; };
 		D1FCB0F818832B7500AFC227 /* light.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = light.h; sourceTree = "<group>"; };
 		D1FCB0F918832B7500AFC227 /* lightning.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = lightning.h; sourceTree = "<group>"; };
 		D1FCB0FA18832B7500AFC227 /* main.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = main.cpp; sourceTree = "<group>"; };
@@ -364,6 +366,7 @@
 				D1FCB0F518832B7500AFC227 /* iqm.h */,
 				D1FCB0F618832B7500AFC227 /* lensflare.h */,
 				D1FCB0F718832B7500AFC227 /* light.cpp */,
+				F1A0B1E10000000000000002 /* localambient.cpp */,
 				D1FCB0F818832B7500AFC227 /* light.h */,
 				D1FCB0F918832B7500AFC227 /* lightning.h */,
 				D1FCB0FA18832B7500AFC227 /* main.cpp */,
@@ -555,6 +558,7 @@
 				D1FCB14E18832B7500AFC227 /* dynlight.cpp in Sources */,
 				D1FCB14F18832B7500AFC227 /* grass.cpp in Sources */,
 				D1FCB15018832B7500AFC227 /* light.cpp in Sources */,
+				F1A0B1E10000000000000001 /* localambient.cpp in Sources */,
 				D1FCB15118832B7500AFC227 /* main.cpp in Sources */,
 				D1FCB15318832B7500AFC227 /* material.cpp in Sources */,
 				D1FCB15418832B7500AFC227 /* menus.cpp in Sources */,

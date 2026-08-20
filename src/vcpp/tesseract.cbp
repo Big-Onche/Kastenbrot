@@ -167,6 +167,7 @@
 		<Unit filename="../engine/light.cpp" />
 		<Unit filename="../engine/light.h" />
 		<Unit filename="../engine/lightning.h" />
+		<Unit filename="../engine/localambient.cpp" />
 		<Unit filename="../engine/main.cpp" />
 		<Unit filename="../engine/material.cpp" />
 		<Unit filename="../engine/md2.h" />

@@ -73,6 +73,9 @@
     <ClCompile Include="..\engine\light.cpp">
       <Filter>engine</Filter>
     </ClCompile>
+    <ClCompile Include="..\engine\localambient.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
     <ClCompile Include="..\engine\main.cpp">
       <Filter>engine</Filter>
     </ClCompile>

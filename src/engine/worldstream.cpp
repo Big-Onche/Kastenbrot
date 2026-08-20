@@ -986,6 +986,54 @@ static int findworldchunk(int x, int y)
     return -1;
 }
 
+bool sampleworldsolid(const ivec &position, int &leafbottom)
+{
+    if(worldchunks.empty())
+    {
+        ivec origin;
+        int size;
+        const cube &c = lookupcube(position, -1, origin, size);
+        leafbottom = origin.z;
+        return !isempty(c);
+    }
+    if(position.x < 0 || position.y < 0 || position.z < 0 || position.x >= worldsize || position.y >= worldsize ||
+       position.z >= WORLD_MAP_SIZE)
+    {
+        leafbottom = position.z;
+        return position.z < WORLD_MAP_SIZE;
+    }
+    const int localchunkx = position.x / WORLD_CHUNK_SIZE, localchunky = position.y / WORLD_CHUNK_SIZE,
+              chunkx = worldfirstchunkx + localchunkx, chunky = worldfirstchunky + localchunky,
+              index = findworldchunk(chunkx, chunky);
+    if(!worldchunks.inrange(index) || worldchunks[index].loading || !worldchunks[index].root)
+    {
+        leafbottom = 0;
+        return true;
+    }
+    const worldchunk &chunk = worldchunks[index];
+    const ivec local(position.x - localchunkx * WORLD_CHUNK_SIZE, position.y - localchunky * WORLD_CHUNK_SIZE, position.z);
+    const int section = local.z / WORLD_SECTION_SIZE,
+              tile = (local.y / WORLD_SECTION_SIZE) * WORLD_SECTION_COLUMNS + local.x / WORLD_SECTION_SIZE;
+    if(chunk.mountedtiles[section] & (1U << tile))
+    {
+        ivec origin;
+        int size;
+        const cube &c = lookupcube(position, -1, origin, size);
+        leafbottom = origin.z;
+        return !isempty(c);
+    }
+
+    int scale = WORLD_CHUNK_SCALE - 1;
+    const cube *c = &chunk.root[octastep(local.x, local.y, local.z, scale)];
+    while(c->children)
+    {
+        --scale;
+        c = &c->children[octastep(local.x, local.y, local.z, scale)];
+    }
+    leafbottom = local.z & (~0U << scale);
+    return !isempty(*c);
+}
+
 static void indexworldchunk(int index)
 {
     if(!worldchunks.inrange(index)) return;
@@ -1047,6 +1095,8 @@ bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar
     game::cacheworldscattertransforms(chunkx, chunky, game::getworldscattermaxoffset(), chunk.scatter);
     addworldsectionvisibilitychunk(chunkx, chunky);
     invalidateworldsectionvisibility();
+    const ivec localorigin = worldchunkorigin(chunk);
+    invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
     lastplayerchunkx = INT_MIN;
     return true;
 }
@@ -1411,6 +1461,8 @@ static int acquireworldchunksync(int x, int y, int &generated)
         chunk.playeredited = snapshotplayeredited;
     }
     addworldsectionvisibilitychunk(x, y);
+    const ivec localorigin = worldchunkorigin(chunk);
+    invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
     if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
         conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", x, y);
     return worldchunks.length() - 1;
@@ -1722,6 +1774,8 @@ static int processworldchunkresults()
             if(job->snapshotresult != WORLD_SNAPSHOT_LOADED) generated++;
             optimized += job->optimized;
             addworldsectionvisibilitychunk(chunk.x, chunk.y);
+            const ivec localorigin = worldchunkorigin(chunk);
+            invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
             if(job->snapshotresult == WORLD_SNAPSHOT_INVALID)
                 conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerated it", chunk.x, chunk.y,
                         job->snapshoterror[0] ? job->snapshoterror : "invalid snapshot");

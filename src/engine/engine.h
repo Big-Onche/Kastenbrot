@@ -216,6 +216,7 @@ extern void clearworldchunks();
 extern void closeproceduralworld();
 extern int getworldsectionsize();
 extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section);
+extern bool sampleworldsolid(const ivec &position, int &leafbottom);
 extern bool worldsectionvaenabled(const ivec &origin, int size);
 extern bool isworldleafcube(const cube &c);
 extern int getmippedtexture(const cube &p, int orient);
@@ -319,6 +320,17 @@ extern void renderradiancehints();
 extern void clearradiancehintscache();
 extern void cleanuplights();
 extern void workinoq();
+
+// localambient
+extern bool uselocalambient();
+extern bool localambientdebugging();
+extern void updatelocalambient();
+extern void bindlocalambient();
+extern void setlocalambientparams(bool enabled = true);
+extern void invalidatelocalambient();
+extern void invalidatelocalambient(const ivec &minimum, const ivec &maximum);
+extern void resetlocalambient();
+extern void cleanuplocalambient();
 
 extern int calcbbsidemask(const ivec &bbmin, const ivec &bbmax, const vec &lightpos, float lightradius, float bias);
 extern int calcspheresidemask(const vec &p, float radius, float bias);

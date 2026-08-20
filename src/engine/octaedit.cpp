@@ -678,6 +678,7 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
     ivec dirtymin, dirtymax;
     if(!dirtygeometrybounds(bbmin, bbmax, dirtymin, dirtymax)) return;
+    invalidatelocalambient(bbmin, bbmax);
     {
         ZoneScopedN("Geometry/Invalidate changed region");
         readychanges(dirtymin, dirtymax, worldroot, ivec(0, 0, 0), worldsize/2);
@@ -702,6 +703,7 @@ void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bo
     loopi(numregions)
     {
         markworldchunksdirty(bbmins[i], bbmaxs[i]);
+        invalidatelocalambient(bbmins[i], bbmaxs[i]);
         ivec dirtymin, dirtymax;
         if(!dirtygeometrybounds(bbmins[i], bbmaxs[i], dirtymin, dirtymax)) continue;
         dirtymins.add(dirtymin);

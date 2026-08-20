@@ -26,6 +26,7 @@ void cleanup()
     SDL_SetRelativeMouseMode(SDL_FALSE);
     if(screen) SDL_SetWindowGrab(screen, SDL_FALSE);
     cleargamma();
+    cleanuplocalambient();
     clearworldchunks();
     freeocta(worldroot);
     UI::cleanup();

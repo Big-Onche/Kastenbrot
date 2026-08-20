@@ -2646,6 +2646,7 @@ Shader *loaddeferredlightshader(const char *type = NULL)
     }
     if(!minimap)
     {
+        if(uselocalambient()) common[commonlen++] = 'l';
         if(!multisample || msaalight) common[commonlen++] = 't';
         if(avatar && useavatarmask()) common[commonlen++] = 'd';
         if(lighttilebatch)
@@ -2951,6 +2952,7 @@ static void bindlighttexs(int msaapass = 0, bool transparent = false)
         glActiveTexture_(GL_TEXTURE6 + i);
         glBindTexture(GL_TEXTURE_3D, rhtex[i]);
     }
+    if(uselocalambient()) bindlocalambient();
     if(smalpha && alphashadow)
     {
         glActiveTexture_(GL_TEXTURE10);
@@ -2983,11 +2985,13 @@ static inline void setlightglobals(bool transparent = false)
     else
         GLOBALPARAMF(lightscale, ambient.x*lightscale*ambientscale, ambient.y*lightscale*ambientscale, ambient.z*lightscale*ambientscale, 255*lightscale);
 
+    if(uselocalambient()) setlocalambientparams(!drawtex && !(editmode && fullbright));
+
     if(csm.rendered)
     {
         csm.bindparams();
         rh.bindparams();
-        if(!drawtex && editmode && fullbright)
+        if((!drawtex && editmode && fullbright) || localambientdebugging())
         {
             GLOBALPARAMF(sunlightdir, 0, 0, 0);
             GLOBALPARAMF(sunlightcolor, 0, 0, 0);
@@ -3014,7 +3018,9 @@ static inline void setlightparams(int i, const lightinfo &l)
 {
     lightposv[i] = vec4(l.o, 1).div(l.radius);
     shadowlightposv[i] = vec4(vec(l.o).sub(camera1->o), 1).div(l.radius);
-    lightcolorv[i] = vec4(vec(l.color).mul(2*ldrscaleb), l.nospec() ? 0 : 1);
+    lightcolorv[i] = localambientdebugging()
+                     ? vec4(0, 0, 0, 0)
+                     : vec4(vec(l.color).mul(2*ldrscaleb), l.nospec() ? 0 : 1);
     if(l.spot > 0) spotparamsv[i] = vec4(vec(l.dir).neg(), 1/(1 - cos360(l.spot)));
     if(l.shadowmap >= 0)
     {
@@ -5330,6 +5336,7 @@ void shadesky()
 
 void shadegbuffer()
 {
+    updatelocalambient();
     if(msaasamples && !msaalight && !drawtex) resolvemsaadepth();
     GLERROR;
 
@@ -5388,6 +5395,7 @@ bool debuglights()
 
 void cleanuplights()
 {
+    cleanuplocalambient();
     cleanupgbuffer();
     cleanupbloom();
     cleanupao();
