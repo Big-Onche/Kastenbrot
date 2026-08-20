@@ -143,13 +143,14 @@ struct worldchunk
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
-    uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request;
+    uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request, revision, savedrevision, savingrevision;
     int varesidencylod;
-    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, corrupted;
+    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted;
 
     worldchunk(int x, int y, cube *root, bool loading = false)
-        : x(x), y(y), root(root), request(0), varesidencylod(-1), varesidencydirty(true), scattermeshesregistered(false),
-          placeablesregistered(false), loading(loading), generating(false), corrupted(false)
+        : x(x), y(y), root(root), request(0), revision(root ? 1 : 0), savedrevision(0), savingrevision(0), varesidencylod(-1),
+          varesidencydirty(true), scattermeshesregistered(false), placeablesregistered(false), loading(loading), generating(false), saving(false),
+          corrupted(false)
     {
         memclear(mountedtiles);
         memclear(contentknown);
@@ -190,13 +191,16 @@ struct worldchunkjob
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
     uint epoch, request;
-    bool remip, leavesalpha, sectionstatesready;
+    bool remip, leavesalpha, sectionstatesready, checksnapshot;
+    int snapshotresult;
     SDL_atomic_t cancelled;
     cube *root;
     vector<worldscatterinstance> scatter;
+    vector<uchar> gameplay;
+    string folder, snapshoterror;
     worldgencontext *generation;
 
-    worldchunkjob(int x, int y, uint epoch, uint request);
+    worldchunkjob(int x, int y, uint epoch, uint request, const char *folder = NULL);
     ~worldchunkjob();
 };
 

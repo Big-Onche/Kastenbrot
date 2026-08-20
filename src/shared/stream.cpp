@@ -367,7 +367,7 @@ char *path(char *s)
 
 char *path(const char *s, bool copy)
 {
-    static string tmp;
+    static thread_local string tmp;
     copystring(tmp, s);
     path(tmp);
     return tmp;
@@ -377,7 +377,7 @@ const char *parentdir(const char *directory)
 {
     const char *p = directory + strlen(directory);
     while(p > directory && *p != '/' && *p != '\\') p--;
-    static string parent;
+    static thread_local string parent;
     size_t len = p-directory+1;
     copystring(parent, directory, len);
     return parent;
@@ -400,7 +400,7 @@ bool createdir(const char *path)
     size_t len = strlen(path);
     if(path[len-1]==PATHDIV)
     {
-        static string strip;
+        static thread_local string strip;
         path = copystring(strip, path, len);
     }
 #ifdef WIN32
@@ -476,7 +476,7 @@ const char *addpackagedir(const char *dir)
 
 const char *findfile(const char *filename, const char *mode)
 {
-    static string s;
+    static thread_local string s;
     if(homedir[0])
     {
         formatstring(s, "%s%s", homedir, filename);
@@ -1289,4 +1289,3 @@ char *loadfile(const char *fn, size_t *size, bool utf8)
     if(size!=NULL) *size = len;
     return buf;
 }
-

@@ -70,6 +70,30 @@ struct worldchunksnapshot
     worldchunksnapshot(int x = 0, int y = 0) : x(x), y(y) {}
 };
 
+struct worldchunksavejob
+{
+    int x, y;
+    uint epoch, revision;
+    cube *root;
+    worldsectionrenderdata renderdata;
+    vector<worldscatterinstance> scatter;
+    vector<uchar> gameplay;
+    string folder, error;
+    bool success;
+
+    worldchunksavejob(int x, int y, uint epoch, uint revision, const char *folder)
+        : x(x), y(y), epoch(epoch), revision(revision), root(NULL), success(false)
+    {
+        copystring(this->folder, folder ? folder : "");
+        error[0] = '\0';
+    }
+
+    ~worldchunksavejob()
+    {
+        if(root) freeocta(root);
+    }
+};
+
 enum worldsnapshotloadresult { WORLD_SNAPSHOT_MISSING = 0, WORLD_SNAPSHOT_LOADED, WORLD_SNAPSHOT_INVALID };
 
 struct worldsnapshotreader
@@ -146,17 +170,6 @@ static void worldchunksnapshotfilename(char *name, size_t length, const char *fo
 {
     snprintf(name, length, "media/map/%s/chunks/%d_%d.%s", folder, x, y, extension);
     path(name);
-}
-
-static bool worldchunksnapshotexists(const char *folder, int x, int y)
-{
-    string voxname, datname;
-    worldchunksnapshotfilename(voxname, sizeof(voxname), folder, x, y, "vox");
-    worldchunksnapshotfilename(datname, sizeof(datname), folder, x, y, "dat");
-    const char *found = findfile(voxname, "rb");
-    const bool hasvox = found && fileexists(found, "r");
-    found = findfile(datname, "rb");
-    return hasvox || (found && fileexists(found, "r"));
 }
 
 static bool readworldsnapshotfile(const char *filename, vector<uchar> &contents)
@@ -258,13 +271,12 @@ struct worldsnapshotsamplingtree
     worldsnapshotsamplingtree() : root(NULL) {}
     ~worldsnapshotsamplingtree() { if(root) freeocta(root); }
 
-    bool build(const worldchunk &chunk, string &error)
+    bool build(const worldchunk &chunk)
     {
         if(!chunk.root) return false;
         root = newcubes(F_EMPTY);
         loopi(8) copyworldsnapshotcube(chunk.root[i], root[i]);
         mergeworldsnapshotmountedsections(chunk, root);
-        loopi(8) if(!normalizeworldsnapshotcube(root[i], WORLD_CHUNK_ROOT_SIZE, error)) return false;
         return true;
     }
 };
@@ -308,14 +320,15 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     return true;
 }
 
-static bool captureworldchunksnapshot(const worldchunk &chunk, worldchunksnapshot &snapshot, string &error)
+static bool captureworldchunksnapshot(cube *root, int chunkx, int chunky, const worldsectionrenderdata &renderdata,
+                                      const vector<worldscatterinstance> &scatter, const vector<uchar> &gameplay,
+                                      worldchunksnapshot &snapshot, string &error)
 {
-    if(!chunk.root || chunk.loading || chunk.corrupted) { copystring(error, "chunk is not in a saveable state"); return false; }
-    snapshot.x = chunk.x;
-    snapshot.y = chunk.y;
-    snapshot.renderdata = chunk.renderdata;
-    worldsnapshotsamplingtree sampling;
-    if(!sampling.build(chunk, error)) return false;
+    if(!root) { copystring(error, "chunk is not in a saveable state"); return false; }
+    snapshot.x = chunkx;
+    snapshot.y = chunky;
+    snapshot.renderdata = renderdata;
+    loopi(8) if(!normalizeworldsnapshotcube(root[i], WORLD_CHUNK_ROOT_SIZE, error)) return false;
     snapshot.columns.reserve(WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS);
     loopi(WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS) snapshot.columns.add();
     loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
@@ -326,7 +339,7 @@ static bool captureworldchunksnapshot(const worldchunk &chunk, worldchunksnapsho
         loop(z, WORLD_HEIGHT_BLOCKS)
         {
             worldsnapshotvoxel voxel;
-            if(!captureworldsnapshotvoxel(sampling.root, snapshot, x, y, z, voxel, error)) return false;
+            if(!captureworldsnapshotvoxel(root, snapshot, x, y, z, voxel, error)) return false;
             if(runlength && voxel == previous) ++runlength;
             else
             {
@@ -337,9 +350,9 @@ static bool captureworldchunksnapshot(const worldchunk &chunk, worldchunksnapsho
         }
         column.runs.add(worldsnapshotrun(runlength, previous));
     }
-    loopv(chunk.scatter)
+    loopv(scatter)
     {
-        const worldscatterinstance &source = chunk.scatter[i];
+        const worldscatterinstance &source = scatter[i];
         const char *id = getworldscattername(source.type);
         if(!id || !id[0] || source.x < 0 || source.x >= WORLD_CHUNK_SIZE || source.y < 0 || source.y >= WORLD_CHUNK_SIZE ||
            source.z < 0 || source.z >= WORLD_MAP_SIZE)
@@ -355,11 +368,7 @@ static bool captureworldchunksnapshot(const worldchunk &chunk, worldchunksnapsho
         record.type = source.type;
         record.orientation = source.orient;
     }
-    if(!game::capturelocalchunkdata(chunk.x, chunk.y, snapshot.gameplay))
-    {
-        copystring(error, "could not capture sparse gameplay state");
-        return false;
-    }
+    if(!gameplay.empty()) snapshot.gameplay.put(gameplay.getbuf(), gameplay.length());
     return true;
 }
 
@@ -450,38 +459,32 @@ static bool writeworldsnapshotdebug(const char *folder, const worldchunksnapshot
     loopv(snapshot.scatter) if(ok)
         ok = file->printf("\nplaceable %u %u %u %s orientation %d\n", uint(snapshot.scatter[i].x), uint(snapshot.scatter[i].y),
                           uint(snapshot.scatter[i].z), snapshot.scatter[i].id, snapshot.scatter[i].orientation) > 0;
-    if(ok && !snapshot.gameplay.empty())
-        ok = game::debuglocalchunkdata(file, snapshot.x, snapshot.y, snapshot.gameplay.getbuf(), snapshot.gameplay.length());
+    if(ok && !snapshot.gameplay.empty()) ok = file->printf("\ngameplay_bytes %d\n", snapshot.gameplay.length()) > 0;
     if(ok) ok = file->flush();
     delete file;
     return ok;
 }
 
-static bool writeworldchunksnapshot(const char *folder, const worldchunk &chunk)
+static bool writeworldchunksnapshot(const char *folder, int x, int y, cube *root, const worldsectionrenderdata &renderdata,
+                                    const vector<worldscatterinstance> &scatter, const vector<uchar> &gameplay, string &error)
 {
-    worldchunksnapshot snapshot(chunk.x, chunk.y);
-    string error;
-    if(!captureworldchunksnapshot(chunk, snapshot, error))
-    {
-        conoutf(CON_ERROR, "could not snapshot chunk %d_%d: %s", chunk.x, chunk.y, error);
-        return false;
-    }
+    worldchunksnapshot snapshot(x, y);
+    if(!captureworldchunksnapshot(root, x, y, renderdata, scatter, gameplay, snapshot, error)) return false;
     vector<uchar> vox, dat;
-    if(!serializeworldsnapshotvox(snapshot, vox)) return false;
+    if(!serializeworldsnapshotvox(snapshot, vox)) { copystring(error, "could not serialize voxel data"); return false; }
     const int checksumoffset = vox.length() - 4;
     const uint voxchecksum = uint(vox[checksumoffset]) | uint(vox[checksumoffset + 1]) << 8 | uint(vox[checksumoffset + 2]) << 16 |
                               uint(vox[checksumoffset + 3]) << 24;
-    if(!serializeworldsnapshotdat(snapshot, voxchecksum, dat)) return false;
+    if(!serializeworldsnapshotdat(snapshot, voxchecksum, dat)) { copystring(error, "could not serialize sparse data"); return false; }
     string voxname, datname;
-    worldchunksnapshotfilename(voxname, sizeof(voxname), folder, chunk.x, chunk.y, "vox");
-    worldchunksnapshotfilename(datname, sizeof(datname), folder, chunk.x, chunk.y, "dat");
+    worldchunksnapshotfilename(voxname, sizeof(voxname), folder, x, y, "vox");
+    worldchunksnapshotfilename(datname, sizeof(datname), folder, x, y, "dat");
     if(!writeworldsnapshotfile(voxname, vox) || !writeworldsnapshotfile(datname, dat))
     {
-        conoutf(CON_ERROR, "could not write authoritative chunk snapshot %d_%d", chunk.x, chunk.y);
+        copystring(error, "could not write authoritative chunk snapshot files");
         return false;
     }
-    if(worldsnapshotdebug && !writeworldsnapshotdebug(folder, snapshot))
-        conoutf(CON_WARN, "could not write debug snapshot for chunk %d_%d", chunk.x, chunk.y);
+    if(worldsnapshotdebug && !writeworldsnapshotdebug(folder, snapshot)) copystring(error, "snapshot saved, but debug output failed");
     return true;
 }
 
@@ -640,8 +643,8 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
     }
 }
 
-static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
-                                                       worldsectionrenderdata &renderdata, string &error)
+static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
+                                                           worldsectionrenderdata &renderdata, vector<uchar> &gameplay, string &error)
 {
     root = NULL;
     scatter.setsize(0);
@@ -667,11 +670,6 @@ static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x,
     const uint voxchecksum = uint(voxcontents[checksumoffset]) | uint(voxcontents[checksumoffset + 1]) << 8 |
                               uint(voxcontents[checksumoffset + 2]) << 16 | uint(voxcontents[checksumoffset + 3]) << 24;
     if(!deserializeworldsnapshotdat(datcontents, x, y, voxchecksum, snapshot, error)) return WORLD_SNAPSHOT_INVALID;
-    if(!game::restorelocalchunkdata(x, y, snapshot.gameplay.getbuf(), snapshot.gameplay.length()))
-    {
-        copystring(error, "invalid sparse gameplay data");
-        return WORLD_SNAPSHOT_INVALID;
-    }
     root = newcubes(F_EMPTY);
     loopi(8) buildworldsnapshotcube(root[i], ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), WORLD_CHUNK_ROOT_SIZE, snapshot, voxels);
     loopv(snapshot.scatter)
@@ -679,7 +677,22 @@ static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x,
                                          snapshot.scatter[i].orientation));
     game::cacheworldscattertransforms(x, y, game::getworldscattermaxoffset(), scatter);
     renderdata = snapshot.renderdata;
+    gameplay.move(snapshot.gameplay);
     return WORLD_SNAPSHOT_LOADED;
+}
+
+static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
+                                                       worldsectionrenderdata &renderdata, string &error)
+{
+    vector<uchar> gameplay;
+    const worldsnapshotloadresult result = loadworldchunksnapshotdata(folder, x, y, root, scatter, renderdata, gameplay, error);
+    if(result != WORLD_SNAPSHOT_LOADED) return result;
+    if(game::restorelocalchunkdata(x, y, gameplay.getbuf(), gameplay.length())) return result;
+    copystring(error, "invalid sparse gameplay data");
+    freeocta(root);
+    root = NULL;
+    scatter.setsize(0);
+    return WORLD_SNAPSHOT_INVALID;
 }
 
 #endif

@@ -287,7 +287,7 @@ static bool prepareworldspawn(const worldspawnmetadata &saved)
     int chunkx = int(floor(absolutex / WORLD_CHUNK_SIZE)),
         chunky = int(floor(absolutey / WORLD_CHUNK_SIZE)),
         generated = 0,
-        destination = acquireworldchunksync(chunkx, chunky, generated);
+        destination = acquireworldchunkblocking(chunkx, chunky, generated);
     if(!worldchunks.inrange(destination) || !worldchunks[destination].root)
     {
         conoutf(CON_ERROR, "could not prepare spawn chunk %d_%d", chunkx, chunky);
@@ -459,7 +459,7 @@ static bool saveactiveworld()
 {
     if(!saveworldchunksnapshots()) return false;
     if(!saveworldmetadata()) return false;
-    conoutf("saved local world %s", worldfolder);
+    conoutf("queued local world save for %s", worldfolder);
     return true;
 }
 
@@ -504,7 +504,7 @@ static void createworld(const char *requestedname)
     freeocta(worldroot);
     worldroot = NULL;
     int generated = 0;
-    activeworldchunk = acquireworldchunksync(0, 0, generated);
+    activeworldchunk = acquireworldchunkblocking(0, 0, generated);
     loadinitialworldchunks(0, 0);
 
     setvar("mapscale", WORLD_RUNTIME_SCALE, true, false);
@@ -585,7 +585,7 @@ static void loadworldcommand(const char *requested)
     freeocta(worldroot);
     worldroot = NULL;
     int generated = 0;
-    activeworldchunk = acquireworldchunksync(metadata.entryx, metadata.entryy, generated);
+    activeworldchunk = acquireworldchunkblocking(metadata.entryx, metadata.entryy, generated);
     if(!worldchunks.inrange(activeworldchunk) || !worldchunks[activeworldchunk].root)
     {
         conoutf(CON_ERROR, "could not load entry chunk %d_%d for world %s", metadata.entryx, metadata.entryy, folder);
@@ -653,6 +653,11 @@ void startnetworkworld(int seed)
 
 void closeproceduralworld()
 {
+    flushworldchunksaves();
+    if(worldfolder[0] && game::islocalworld())
+    {
+        if(!saveactiveworld() || !flushworldchunksaves()) conoutf(CON_ERROR, "local world %s could not be saved completely", worldfolder);
+    }
     game::resetfurnaces();
     game::resetchests();
     clearworldchunks();

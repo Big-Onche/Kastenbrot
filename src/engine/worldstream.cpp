@@ -12,21 +12,29 @@ static void setworldchunksectioncontent(worldchunk &chunk, int tile, int section
 static void setworldchunksectionopaque(worldchunk &chunk, int tile, int section, bool opaque);
 static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, const int *sections, int numsections);
 static int processworldchunkvaupdates();
+static bool queueworldchunksave(worldchunk &chunk);
+static int processworldchunksaveresults();
+static bool flushworldchunksaves();
+static int queueworldchunk(int x, int y);
+static int processworldchunkresults();
+static int acquireworldchunkblocking(int x, int y, int &generated);
 
 static bool worldchunkmounted(const worldchunk &chunk);
 static int worldchunkvaupdatekey(const ivec &origin);
 
 VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generation/load
 
-worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
+worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request, const char *folder)
     : x(x), y(y), families(0), optimized(0), epoch(epoch), request(request), remip(chunkremip != 0), leavesalpha(::leavesalpha != 0),
-      sectionstatesready(false), root(NULL), generation(NULL)
+      sectionstatesready(false), checksnapshot(folder && folder[0]), snapshotresult(WORLD_SNAPSHOT_MISSING), root(NULL), generation(NULL)
 {
     memclear(contenttiles);
     memclear(opaquetiles);
     memclear(portals);
     memclear(portalcellmasks);
     SDL_AtomicSet(&cancelled, 0);
+    copystring(this->folder, folder ? folder : "");
+    snapshoterror[0] = '\0';
     generation = game::createworldgeneration(true, remip, &cancelled);
 }
 
@@ -39,6 +47,7 @@ static vector<worldchunk> worldchunks;
 static vector<worldscatterinstance> reconstructedworldscatter;
 static worldsectionrenderdata reconstructedworldrenderdata;
 static vector<worldchunkjob *> worldchunkjobs, worldchunkactivejobs, worldchunkresults;
+static vector<worldchunksavejob *> worldchunksavejobs, worldchunksaveactivejobs, worldchunksaveresults;
 static string worldfolder = "";
 
 static bool saveworldchunksnapshots()
@@ -48,15 +57,16 @@ static bool saveworldchunksnapshots()
         conoutf(CON_ERROR, "authoritative chunk saving is only available for a loaded local world");
         return false;
     }
-    int saved = 0;
+    int queued = 0;
     loopv(worldchunks)
     {
-        const worldchunk &chunk = worldchunks[i];
+        worldchunk &chunk = worldchunks[i];
         if(chunk.loading || !chunk.root) continue;
-        if(!writeworldchunksnapshot(worldfolder, chunk)) return false;
-        ++saved;
+        if(chunk.saving) continue;
+        if(!queueworldchunksave(chunk)) return false;
+        ++queued;
     }
-    conoutf("saved %d authoritative chunk snapshots for %s", saved, worldfolder);
+    conoutf("queued %d authoritative chunk snapshots for %s", queued, worldfolder);
     return true;
 }
 static int activeworldchunk = -1;
@@ -68,6 +78,7 @@ static vector<SDL_Thread *> worldchunkworkers;
 static SDL_mutex *worldchunkmutex = NULL;
 static SDL_cond *worldchunkcond = NULL;
 static bool stopworldchunkthread = false;
+static bool flushingworldchunksaves = false, worldchunksavefailure = false;
 static uint worldchunkepoch = 1;
 static uint worldchunkrequest = 1;
 static int lastworldchunkpublish = -1;
@@ -182,6 +193,7 @@ VAR(drawfullchunk, 0, 0, 1);
 
 static cube *prepareworldchunk(worldchunkjob &job);
 static int worldchunkloader(void *);
+static bool startworldchunkloader();
 static void shutdownworldchunkloader();
 static void updateworldscatterers();
 static void clearworldscattererentities();
@@ -451,6 +463,36 @@ static void mergeworldsnapshotmountedsections(const worldchunk &chunk, cube *sna
         discardchildren(destination);
         copyworldsnapshotcube(lookupcube(ivec(runtimeorigin).add(position), WORLD_SECTION_SIZE), destination);
     }
+}
+
+static bool queueworldchunksave(worldchunk &chunk)
+{
+    if(chunk.saving) return true;
+    if(!chunk.root || chunk.loading || chunk.corrupted || !worldfolder[0]) return false;
+    if(!startworldchunkloader()) return false;
+
+    worldchunksavejob *job = new worldchunksavejob(chunk.x, chunk.y, worldchunkepoch, chunk.revision, worldfolder);
+    worldsnapshotsamplingtree sampling;
+    if(!sampling.build(chunk) || !game::capturelocalchunkdata(chunk.x, chunk.y, job->gameplay))
+    {
+        if(!job->error[0]) copystring(job->error, "could not capture sparse gameplay state");
+        conoutf(CON_ERROR, "could not capture chunk %d_%d for asynchronous saving: %s", chunk.x, chunk.y, job->error);
+        delete job;
+        return false;
+    }
+    job->root = sampling.root;
+    sampling.root = NULL;
+    job->renderdata = chunk.renderdata;
+    if(!chunk.scatter.empty()) job->scatter.put(chunk.scatter.getbuf(), chunk.scatter.length());
+
+    chunk.saving = true;
+    chunk.savingrevision = chunk.revision;
+    SDL_LockMutex(worldchunkmutex);
+    worldchunksavejobs.add(job);
+    TracyPlot("Chunks/Queued saves", int64_t(worldchunksavejobs.length()));
+    SDL_CondSignal(worldchunkcond);
+    SDL_UnlockMutex(worldchunkmutex);
+    return true;
 }
 
 static void collectworldsupportnode(const cube &c, const ivec &origin, int size, const ivec &minimum, const ivec &maximum,
@@ -818,6 +860,7 @@ void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
         renderdirty.valid = renderdirty.minimum.x < renderdirty.maximum.x && renderdirty.minimum.y < renderdirty.maximum.y &&
                             renderdirty.minimum.z < renderdirty.maximum.z;
         reclassifyworldchunkrenderdata(&chunk, chunk.root, chunk.renderdata, renderdirty);
+        if(++chunk.revision == 0) chunk.revision = 1;
         visibilitychanged = true;
     }
     if(visibilitychanged) invalidateworldsectionvisibility();
@@ -1015,7 +1058,7 @@ static int worldchunkloader(void *)
     for(;;)
     {
         SDL_LockMutex(worldchunkmutex);
-        while(worldchunkjobs.empty() && !stopworldchunkthread)
+        while(worldchunkjobs.empty() && worldchunksavejobs.empty() && !stopworldchunkthread)
             SDL_CondWait(worldchunkcond, worldchunkmutex);
         if(stopworldchunkthread)
         {
@@ -1023,10 +1066,10 @@ static int worldchunkloader(void *)
             return 0;
         }
         worldchunkjob *job = NULL;
+        worldchunksavejob *savejob = NULL;
         {
             ZoneScopedN("Chunks/Worker select job");
-            ZoneValue(worldchunkjobs.length());
-            if(!worldchunkjobs.empty())
+            if(!worldchunkjobs.empty() && (!flushingworldchunksaves || worldchunksavejobs.empty()))
             {
                 int best = 0, bestscore = worldchunkjobscore(*worldchunkjobs[0]);
                 loopv(worldchunkjobs) if(i)
@@ -1039,13 +1082,46 @@ static int worldchunkloader(void *)
                 TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
                 TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
             }
+            else if(!worldchunksavejobs.empty())
+            {
+                savejob = worldchunksavejobs.remove(0);
+                worldchunksaveactivejobs.add(savejob);
+                TracyPlot("Chunks/Queued saves", int64_t(worldchunksavejobs.length()));
+                TracyPlot("Chunks/Active saves", int64_t(worldchunksaveactivejobs.length()));
+            }
         }
         SDL_UnlockMutex(worldchunkmutex);
+
+        if(savejob)
+        {
+            {
+                ZoneScopedN("Chunks/Worker save snapshot");
+                ZoneTextF("%d_%d", savejob->x, savejob->y);
+                savejob->success = writeworldchunksnapshot(savejob->folder, savejob->x, savejob->y, savejob->root, savejob->renderdata,
+                                                           savejob->scatter, savejob->gameplay, savejob->error);
+                freeocta(savejob->root);
+                savejob->root = NULL;
+            }
+            SDL_LockMutex(worldchunkmutex);
+            worldchunksaveactivejobs.removeobj(savejob);
+            worldchunksaveresults.add(savejob);
+            TracyPlot("Chunks/Active saves", int64_t(worldchunksaveactivejobs.length()));
+            TracyPlot("Chunks/Ready saves", int64_t(worldchunksaveresults.length()));
+            SDL_CondBroadcast(worldchunkcond);
+            SDL_UnlockMutex(worldchunkmutex);
+            continue;
+        }
 
         {
             ZoneScopedN("Chunks/Worker job");
             ZoneTextF("%d_%d", job->x, job->y);
-            if(!SDL_AtomicGet(&job->cancelled)) job->root = prepareworldchunk(*job);
+            if(job->checksnapshot && !SDL_AtomicGet(&job->cancelled))
+            {
+                job->snapshotresult = loadworldchunksnapshotdata(job->folder, job->x, job->y, job->root, job->scatter, job->renderdata,
+                                                                  job->gameplay, job->snapshoterror);
+                job->checksnapshot = false;
+            }
+            if(!job->root && !SDL_AtomicGet(&job->cancelled)) job->root = prepareworldchunk(*job);
             if(job->root && !SDL_AtomicGet(&job->cancelled))
             {
                 setworldleavesalpha(job->root, job->leavesalpha);
@@ -1125,6 +1201,7 @@ static bool startworldchunkloader()
 static void shutdownworldchunkloader()
 {
     ZoneScopedN("Chunks/Shutdown worker pool");
+    if(!worldchunkworkers.empty()) flushworldchunksaves();
     if(!worldchunkworkers.empty())
     {
         SDL_LockMutex(worldchunkmutex);
@@ -1152,12 +1229,18 @@ static void shutdownworldchunkloader()
         delete worldchunkresults[i];
     }
     worldchunkresults.setsize(0);
+    loopv(worldchunksavejobs) delete worldchunksavejobs[i];
+    worldchunksavejobs.setsize(0);
+    ASSERT(worldchunksaveactivejobs.empty());
+    loopv(worldchunksaveresults) delete worldchunksaveresults[i];
+    worldchunksaveresults.setsize(0);
 
     if(worldchunkcond) SDL_DestroyCond(worldchunkcond);
     if(worldchunkmutex) SDL_DestroyMutex(worldchunkmutex);
     worldchunkcond = NULL;
     worldchunkmutex = NULL;
     stopworldchunkthread = false;
+    flushingworldchunksaves = false;
 }
 
 static void setworldchunkgenerationstopped(bool stopped)
@@ -1262,8 +1345,9 @@ static int acquireworldchunksync(int x, int y, int &generated)
     indexworldchunk(worldchunks.length() - 1);
     chunk.scatter.move(scatter);
     chunk.renderdata = renderdata;
+    chunk.savedrevision = snapshotresult == WORLD_SNAPSHOT_LOADED ? chunk.revision : 0;
     addworldsectionvisibilitychunk(x, y);
-    if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !writeworldchunksnapshot(worldfolder, chunk))
+    if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
         conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", x, y);
     return worldchunks.length() - 1;
 }
@@ -1289,7 +1373,7 @@ static void loadinitialworldchunks(int chunkx, int chunky)
         if(abs(offsets[i][0]) > maxchunkdist || abs(offsets[i][1]) > maxchunkdist ||
            findworldchunk(x, y) >= 0)
             continue;
-        acquireworldchunksync(x, y, generated);
+        acquireworldchunkblocking(x, y, generated);
         ready++;
         renderprogress(ready / float(target), "loading nearby chunks...");
     }
@@ -1303,13 +1387,6 @@ static int queueworldchunk(int x, int y)
     int index = findworldchunk(x, y);
     if(index >= 0) return index;
 
-    // Snapshot IO is deliberately synchronous and main-thread-only in this phase.
-    if(worldfolder[0] && worldchunksnapshotexists(worldfolder, x, y))
-    {
-        int generated = 0;
-        return acquireworldchunksync(x, y, generated);
-    }
-
     if(!startworldchunkloader())
     {
         int generated = 0;
@@ -1318,7 +1395,7 @@ static int queueworldchunk(int x, int y)
 
     uint request = ++worldchunkrequest;
     if(!request) request = ++worldchunkrequest;
-    worldchunkjob *job = new worldchunkjob(x, y, worldchunkepoch, request);
+    worldchunkjob *job = new worldchunkjob(x, y, worldchunkepoch, request, worldfolder);
 
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, NULL, true));
     indexworldchunk(worldchunks.length() - 1);
@@ -1330,6 +1407,24 @@ static int queueworldchunk(int x, int y)
     SDL_CondSignal(worldchunkcond);
     SDL_UnlockMutex(worldchunkmutex);
     return worldchunks.length() - 1;
+}
+
+static int acquireworldchunkblocking(int x, int y, int &generated)
+{
+    int index = findworldchunk(x, y);
+    if(index < 0) index = queueworldchunk(x, y);
+    if(index < 0) return index;
+    while(worldchunks.inrange(index) && worldchunks[index].loading)
+    {
+        processworldchunkresults();
+        index = findworldchunk(x, y);
+        if(index < 0 || !worldchunks[index].loading) break;
+        SDL_LockMutex(worldchunkmutex);
+        SDL_CondWaitTimeout(worldchunkcond, worldchunkmutex, 5);
+        SDL_UnlockMutex(worldchunkmutex);
+    }
+    if(worldchunks.inrange(index) && worldchunks[index].root && !worldchunks[index].savedrevision) generated++;
+    return index;
 }
 
 static int worldchunkoutstandingjobs()
@@ -1512,6 +1607,22 @@ static int processworldchunkresults()
             delete job;
             continue;
         }
+        if(job->snapshotresult == WORLD_SNAPSHOT_LOADED &&
+           !game::restorelocalchunkdata(job->x, job->y, job->gameplay.getbuf(), job->gameplay.length()))
+        {
+            conoutf(CON_ERROR, "authoritative chunk %d_%d contains invalid sparse gameplay data; regenerating it", job->x, job->y);
+            game::freeworldchunk(job->root);
+            job->root = NULL;
+            job->scatter.setsize(0);
+            job->gameplay.setsize(0);
+            job->snapshotresult = WORLD_SNAPSHOT_INVALID;
+            job->sectionstatesready = false;
+            SDL_LockMutex(worldchunkmutex);
+            worldchunkjobs.add(job);
+            SDL_CondSignal(worldchunkcond);
+            SDL_UnlockMutex(worldchunkmutex);
+            continue;
+        }
         handled++;
 
         {
@@ -1540,11 +1651,16 @@ static int processworldchunkresults()
             }
             chunk.loading = false;
             chunk.generating = false;
+            chunk.revision = 1;
+            chunk.savedrevision = job->snapshotresult == WORLD_SNAPSHOT_LOADED ? 1 : 0;
             allocnodes += job->families;
-            generated++;
+            if(job->snapshotresult != WORLD_SNAPSHOT_LOADED) generated++;
             optimized += job->optimized;
             addworldsectionvisibilitychunk(chunk.x, chunk.y);
-            if(worldfolder[0] && game::islocalworld() && !writeworldchunksnapshot(worldfolder, chunk))
+            if(job->snapshotresult == WORLD_SNAPSHOT_INVALID)
+                conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerated it", chunk.x, chunk.y,
+                        job->snapshoterror[0] ? job->snapshoterror : "invalid snapshot");
+            if(job->snapshotresult != WORLD_SNAPSHOT_LOADED && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
                 conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", chunk.x, chunk.y);
             published++;
         }
@@ -1556,12 +1672,77 @@ static int processworldchunkresults()
     return published;
 }
 
+static int processworldchunksaveresults()
+{
+    if(!worldchunkmutex) return 0;
+    int handled = 0;
+    for(;;)
+    {
+        SDL_LockMutex(worldchunkmutex);
+        worldchunksavejob *job = worldchunksaveresults.empty() ? NULL : worldchunksaveresults.remove(0);
+        TracyPlot("Chunks/Ready saves", int64_t(worldchunksaveresults.length()));
+        SDL_UnlockMutex(worldchunkmutex);
+        if(!job) break;
+
+        int index = findworldchunk(job->x, job->y);
+        bool resave = false;
+        if(job->epoch == worldchunkepoch && worldchunks.inrange(index))
+        {
+            worldchunk &chunk = worldchunks[index];
+            if(chunk.saving && chunk.savingrevision == job->revision)
+            {
+                chunk.saving = false;
+                if(job->success) chunk.savedrevision = job->revision;
+                resave = job->success && chunk.savedrevision != chunk.revision;
+            }
+        }
+        if(!job->success)
+        {
+            worldchunksavefailure = true;
+            conoutf(CON_ERROR, "could not save authoritative chunk %d_%d asynchronously: %s", job->x, job->y, job->error[0] ? job->error : "unknown error");
+        }
+        else if(job->error[0]) conoutf(CON_WARN, "saved chunk %d_%d with warning: %s", job->x, job->y, job->error);
+        delete job;
+        if(resave && worldchunks.inrange(index) && !queueworldchunksave(worldchunks[index]))
+            conoutf(CON_ERROR, "could not queue updated authoritative chunk %d_%d after an older save completed", worldchunks[index].x, worldchunks[index].y);
+        handled++;
+    }
+    return handled;
+}
+
+static bool flushworldchunksaves()
+{
+    if(!worldchunkmutex) return true;
+    SDL_LockMutex(worldchunkmutex);
+    flushingworldchunksaves = true;
+    SDL_CondBroadcast(worldchunkcond);
+    SDL_UnlockMutex(worldchunkmutex);
+
+    for(;;)
+    {
+        processworldchunksaveresults();
+        SDL_LockMutex(worldchunkmutex);
+        const bool pending = !worldchunksavejobs.empty() || !worldchunksaveactivejobs.empty() || !worldchunksaveresults.empty();
+        if(pending) SDL_CondWaitTimeout(worldchunkcond, worldchunkmutex, 10);
+        SDL_UnlockMutex(worldchunkmutex);
+        if(!pending) break;
+    }
+    processworldchunksaveresults();
+    SDL_LockMutex(worldchunkmutex);
+    flushingworldchunksaves = false;
+    SDL_UnlockMutex(worldchunkmutex);
+    const bool success = !worldchunksavefailure;
+    worldchunksavefailure = false;
+    return success;
+}
+
 static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int aheady)
 {
     if(stopworldchunkgeneration || lastworldchunkpublish == totalmillis) return;
     ZoneScopedN("Chunks/Streaming update");
     ZoneTextF("focus %d_%d ahead %d_%d", chunkx, chunky, aheadx, aheady);
     lastworldchunkpublish = totalmillis;
+    processworldchunksaveresults();
     reprioritizeworldchunkqueue(chunkx, chunky, aheadx, aheady);
     processworldchunkresults();
     queueworldchunkview(chunkx, chunky, aheadx, aheady);
@@ -1676,11 +1857,12 @@ static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
         {
             ZoneScopedN("Chunks/Release cache");
             ZoneTextF("%d_%d", chunk.x, chunk.y);
-            if(worldfolder[0] && game::islocalworld() && !writeworldchunksnapshot(worldfolder, chunk))
+            if(worldfolder[0] && game::islocalworld() && chunk.savedrevision != chunk.revision && !queueworldchunksave(chunk))
             {
                 conoutf(CON_ERROR, "refusing to release unsaved authoritative chunk %d_%d", chunk.x, chunk.y);
                 break;
             }
+            if(chunk.saving) continue;
             if(game::islocalworld()) game::unloadlocalchunknpcs(chunk.x, chunk.y);
             freeocta(chunk.root);
         }
@@ -1919,7 +2101,7 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
         if(worldchunks[i].loading) worldchunks.removeunordered(i);
 
     int generated = 0;
-    int destination = acquireworldchunksync(chunkx, chunky, generated);
+    int destination = acquireworldchunkblocking(chunkx, chunky, generated);
     if(!worldchunks.inrange(destination) || !worldchunks[destination].root)
     {
         conoutf(CON_ERROR, "teleport: could not prepare destination chunk %d_%d",
