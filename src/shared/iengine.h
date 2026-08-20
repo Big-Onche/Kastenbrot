@@ -1,5 +1,7 @@
 // the interface the game uses to access the engine
 
+enum { WORLD_SNAPSHOT_VOX_VERSION = 3 };
+
 extern int curtime;                     // current frame time
 extern int lastmillis;                  // last time
 extern int elapsedtime;                 // elapsed frame time
@@ -439,6 +441,8 @@ extern vec getselpos();
 extern int getworldsize();
 extern int getworldlightlevel(const vec &position);
 extern void updateworldchunks(bool force = false);
+extern void requestnetworkworldchunkvalidation();
+extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, uint formatversion, const uchar *data, int length);
 extern int getmapversion();
 extern void renderentcone(const extentity &e, const vec &dir, float radius, float angle);
 extern void renderentarrow(const extentity &e, const vec &dir, float radius);

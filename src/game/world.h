@@ -16,6 +16,8 @@ struct stream;
 
 namespace game
 {
+    enum { WORLD_GENERATOR_SIGNATURE_VERSION = 1 };
+
     enum worldbiome
     {
         WORLD_BIOME_OCEAN,
@@ -120,6 +122,7 @@ namespace game
     extern int getworldseed();
     extern int getconfiguredworldseed();
     extern void loadworldseed(int seed);
+    extern ullong worldgenerationsignature(int seed);
     extern void activateworldseed();
 }
 

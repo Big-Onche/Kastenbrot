@@ -11,4 +11,4 @@ IF EXIST bin64\kastenbrot.exe (
     )
 )
 
-start %TESS_BIN%\tesseract.exe "-u$HOME\My Games\Kastenbrot" -gserver-log.txt -d %*
+start %TESS_BIN%\kastenbrot.exe "-u$HOME\My Games\Kastenbrot" -gserver-log.txt -d %*
