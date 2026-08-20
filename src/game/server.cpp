@@ -728,9 +728,28 @@ namespace server
         return serverchunkthread != NULL;
     }
 
-    static serverchunk *queueserverchunk(int x, int y)
+    static void prioritizeserverchunkload(int x, int y)
     {
-        if(serverchunk *chunk = findserverchunk(x, y)) return chunk;
+        if(!serverchunkmutex) return;
+        SDL_LockMutex(serverchunkmutex);
+        loopv(serverchunkjobs)
+        {
+            serverchunkjob *job = serverchunkjobs[i];
+            if(job->type != SERVER_CHUNK_LOAD || job->x != x || job->y != y) continue;
+            if(i) serverchunkjobs.insert(0, serverchunkjobs.remove(i));
+            SDL_CondSignal(serverchunkcond);
+            break;
+        }
+        SDL_UnlockMutex(serverchunkmutex);
+    }
+
+    static serverchunk *queueserverchunk(int x, int y, bool prioritize = false)
+    {
+        if(serverchunk *chunk = findserverchunk(x, y))
+        {
+            if(prioritize && chunk->loading) prioritizeserverchunkload(x, y);
+            return chunk;
+        }
         serverchunk *chunk = new serverchunk(x, y);
         serverchunks.add(chunk);
         if(!startserverchunkworker())
@@ -740,7 +759,9 @@ namespace server
             return chunk;
         }
         SDL_LockMutex(serverchunkmutex);
-        serverchunkjobs.add(new serverchunkjob(SERVER_CHUNK_LOAD, x, y));
+        serverchunkjob *job = new serverchunkjob(SERVER_CHUNK_LOAD, x, y);
+        if(prioritize) serverchunkjobs.insert(0, job);
+        else serverchunkjobs.add(job);
         SDL_CondSignal(serverchunkcond);
         SDL_UnlockMutex(serverchunkmutex);
         return chunk;
@@ -913,7 +934,7 @@ namespace server
             const serverchunkdelivery &delivery = serverchunkdeliveries[i];
             if(delivery.clientnum == clientnum && delivery.x == chunkx && delivery.y == chunky) return delivery.revision;
         }
-        return 1;
+        return 0;
     }
 
     static void markserverchunkdelivered(int clientnum, int chunkx, int chunky, uint revision)
@@ -950,8 +971,10 @@ namespace server
             if(!ci || !ci->connected || !ci->worldready) continue;
             const int focusx = ci->hasposition ? serverfloordiv(int(floorf(ci->o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
                       focusy = ci->hasposition ? serverfloordiv(int(floorf(ci->o.y)), SERVER_WORLD_CHUNK_SIZE) : 0;
-            for(int y = focusy - maxchunkdist; y <= focusy + maxchunkdist; ++y)
-                for(int x = focusx - maxchunkdist; x <= focusx + maxchunkdist; ++x) queueserverchunk(x, y);
+            for(int distance = 0; distance <= maxchunkdist; ++distance)
+                for(int y = focusy - distance; y <= focusy + distance; ++y)
+                    for(int x = focusx - distance; x <= focusx + distance; ++x)
+                        if(max(abs(x - focusx), abs(y - focusy)) == distance) queueserverchunk(x, y);
         }
         for(int i = serverchunkrequests.length() - 1; i >= 0; --i)
         {
@@ -962,7 +985,7 @@ namespace server
                 serverchunkrequests.remove(i);
                 continue;
             }
-            serverchunk *chunk = queueserverchunk(request.x, request.y);
+            serverchunk *chunk = queueserverchunk(request.x, request.y, true);
             if(chunk->loading || chunk->saving) continue;
             if(chunk->corrupted) { serverchunkrequests.remove(i); continue; }
             if(chunk->dirty)
