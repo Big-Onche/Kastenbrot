@@ -687,6 +687,7 @@ namespace game
                 addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF),
                        int(worldspawnyaw), int(worldspawnpitch));
             else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
+            requestworldchunk(0, 0);
         }
         environment::update();
 #endif
@@ -1929,16 +1930,17 @@ namespace game
         return int(floor(double(target.x) / chunksize)) == chunkx && int(floor(double(target.y) / chunksize)) == chunky;
     }
 
-    bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data)
+    bool capturechunkdata(int chunkx, int chunky, const vector<furnaceinstance *> &furnaces, const vector<chestinstance *> &chests,
+                          const vector<uchar> &npcdata, vector<uchar> &data)
     {
         data.setsize(0);
         localchunkdataputuint(data, 1);
         int furnacecount = 0;
-        loopv(localfurnaces) if(localchunkcontains(localfurnaces[i]->target, chunkx, chunky)) ++furnacecount;
+        loopv(furnaces) if(localchunkcontains(furnaces[i]->target, chunkx, chunky)) ++furnacecount;
         localchunkdataputuint(data, uint(furnacecount));
-        loopv(localfurnaces) if(localchunkcontains(localfurnaces[i]->target, chunkx, chunky))
+        loopv(furnaces) if(localchunkcontains(furnaces[i]->target, chunkx, chunky))
         {
-            const furnaceinstance &furnace = *localfurnaces[i];
+            const furnaceinstance &furnace = *furnaces[i];
             localchunkdataputuint(data, uint(furnace.target.x));
             localchunkdataputuint(data, uint(furnace.target.y));
             localchunkdataputuint(data, uint(furnace.target.z));
@@ -1954,11 +1956,11 @@ namespace game
             localchunkdataputuint(data, furnace.baking ? 1U : 0U);
         }
         int chestcount = 0;
-        loopv(localchests) if(localchunkcontains(localchests[i]->target, chunkx, chunky)) ++chestcount;
+        loopv(chests) if(localchunkcontains(chests[i]->target, chunkx, chunky)) ++chestcount;
         localchunkdataputuint(data, uint(chestcount));
-        loopv(localchests) if(localchunkcontains(localchests[i]->target, chunkx, chunky))
+        loopv(chests) if(localchunkcontains(chests[i]->target, chunkx, chunky))
         {
-            const chestinstance &chest = *localchests[i];
+            const chestinstance &chest = *chests[i];
             localchunkdataputuint(data, uint(chest.target.x));
             localchunkdataputuint(data, uint(chest.target.y));
             localchunkdataputuint(data, uint(chest.target.z));
@@ -1966,17 +1968,22 @@ namespace game
             localchunkdataputuint(data, uint(chest.yaw));
             loopj(CHEST_SLOTS_MAX) if(!localchunkdataputstack(data, chest.items[j], chest.counts[j], chest.durabilities[j])) return false;
         }
-        vector<uchar> npcdata;
-#ifndef STANDALONE
-        if(!capturelocalchunknpcs(chunkx, chunky, npcdata)) return false;
-#endif
         localchunkdataputuint(data, uint(npcdata.length()));
         if(!npcdata.empty()) data.put(npcdata.getbuf(), npcdata.length());
         return true;
     }
 
-    static bool decodelocalchunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
-                                     vector<chestinstance *> &chests, vector<uchar> &npcdata)
+    bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data)
+    {
+        vector<uchar> npcdata;
+#ifndef STANDALONE
+        if(!capturelocalchunknpcs(chunkx, chunky, npcdata)) return false;
+#endif
+        return capturechunkdata(chunkx, chunky, localfurnaces, localchests, npcdata, data);
+    }
+
+    bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
+                         vector<chestinstance *> &chests, vector<uchar> &npcdata)
     {
         localchunkdatareader reader(data, length);
         uint version, furnacecount, chestcount;
@@ -2040,14 +2047,14 @@ namespace game
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
         vector<uchar> npcdata;
-        if(!decodelocalchunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata))
+        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata))
         {
             furnaces.deletecontents();
             chests.deletecontents();
             return false;
         }
 #ifndef STANDALONE
-        if(!restorelocalchunknpcs(chunkx, chunky, npcdata.getbuf(), npcdata.length()))
+        if(islocalworld() && !restorelocalchunknpcs(chunkx, chunky, npcdata.getbuf(), npcdata.length()))
         {
             furnaces.deletecontents();
             chests.deletecontents();
@@ -2077,7 +2084,7 @@ namespace game
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
         vector<uchar> npcdata;
-        if(!decodelocalchunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata)) return false;
+        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata)) return false;
         bool ok = true;
         loopv(furnaces) if(ok)
         {

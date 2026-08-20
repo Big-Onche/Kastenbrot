@@ -192,25 +192,7 @@ struct cubeext
     vertinfo *verts() { return (vertinfo *)(this+1); }
 };
 
-struct cube
-{
-    cube *children;          // points to 8 cube structures which are its children, or NULL. -Z first, then -Y, -X
-    cubeext *ext;            // extended info for the cube
-    union
-    {
-        uchar edges[12];     // edges of the cube, each uchar is 2 4bit values denoting the range.
-                             // see documentation jpgs for more info.
-        uint faces[3];       // 4 edges of each dimension together representing 2 perpendicular faces
-    };
-    ushort texture[6];       // one for each face. same order as orient.
-    ushort material;         // empty-space material
-    uchar merged;            // merged faces of the cube
-    union
-    {
-        uchar escaped;       // mask of which children have escaped merges
-        uchar visible;       // visibility info for faces
-    };
-};
+#include "worldcube.h"
 
 struct block3
 {
@@ -247,27 +229,6 @@ extern cube *worldroot;             // the world data. only a ptr to 8 cubes (ie
 extern int wtris, wverts, vtris, vverts, glde, gbatches, rplanes;
 extern int allocnodes, allocva, selchildcount, selchildmat;
 
-const uint F_EMPTY = 0;             // all edges in the range (0,0)
-const uint F_SOLID = 0x80808080;    // all edges in the range (0,8)
-
-#define isempty(c) ((c).faces[0]==F_EMPTY)
-#define isentirelysolid(c) ((c).faces[0]==F_SOLID && (c).faces[1]==F_SOLID && (c).faces[2]==F_SOLID)
-#define setfaces(c, face) { (c).faces[0] = (c).faces[1] = (c).faces[2] = face; }
-#define solidfaces(c) setfaces(c, F_SOLID)
-#define emptyfaces(c) setfaces(c, F_EMPTY)
-
-#define edgemake(a, b) ((b)<<4|a)
-#define edgeget(edge, coord) ((coord) ? (edge)>>4 : (edge)&0xF)
-#define edgeset(edge, coord, val) ((edge) = ((coord) ? ((edge)&0xF)|((val)<<4) : ((edge)&0xF0)|(val)))
-
-#define cubeedge(c, d, x, y) ((c).edges[(((d)<<2)+((y)<<1)+(x))])
-
-#define octadim(d)          (1<<(d))                    // creates mask for bit of given dimension
-#define octacoord(d, i)     (((i)&octadim(d))>>(d))
-#define oppositeocta(d, i)  ((i)^octadim(D[d]))
-#define octaindex(d,x,y,z)  (((z)<<D[d])+((y)<<C[d])+((x)<<R[d]))
-#define octastep(x, y, z, scale) (((((z)>>(scale))&1)<<2) | ((((y)>>(scale))&1)<<1) | (((x)>>(scale))&1))
-
 static inline uchar octaboxoverlap(const ivec &o, int size, const ivec &bbmin, const ivec &bbmax)
 {
     uchar p = 0xFF; // bitmask of possible collisions with octants. 0 bit = 0 octant, etc
@@ -283,21 +244,6 @@ static inline uchar octaboxoverlap(const ivec &o, int size, const ivec &bbmin, c
 
 #define loopoctabox(o, size, bbmin, bbmax) uchar possible = octaboxoverlap(o, size, bbmin, bbmax); loopi(8) if(possible&(1<<i))
 #define loopoctaboxsize(o, size, bborigin, bbsize) uchar possible = octaboxoverlap(o, size, bborigin, ivec(bborigin).add(bbsize)); loopi(8) if(possible&(1<<i))
-
-enum
-{
-    O_LEFT = 0,
-    O_RIGHT,
-    O_BACK,
-    O_FRONT,
-    O_BOTTOM,
-    O_TOP,
-    O_ANY
-};
-
-#define dimension(orient) ((orient)>>1)
-#define dimcoord(orient)  ((orient)&1)
-#define opposite(orient)  ((orient)^1)
 
 enum
 {

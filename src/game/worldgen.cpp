@@ -3,6 +3,10 @@
 #include "game.h"
 #include "engine.h"
 #include "worlddef.h"
+#ifdef STANDALONE
+#include "worldcube.h"
+#include <SDL_atomic.h>
+#endif
 #include "worldruntime.h"
 #include "world.h"
 #include "worldgen.h"
@@ -74,15 +78,15 @@ struct worldgencontext
     mutable hashtable<const char *, int> cubeids;
     hashtable<ivec, int> surfaceheightcache;
     int errorcube;
-    bool prepared, remip;
+    bool prepared, remip, indexedtextures;
     int families, optimized;
     SDL_atomic_t *cancelled;
 
     worldgencontext(int seed, const vector<worldgencubetextures> &cubetextures, bool prepared, bool remip,
-                    const game::worldsettings &settings, SDL_atomic_t *cancelled = NULL)
+                    const game::worldsettings &settings, SDL_atomic_t *cancelled = NULL, bool indexedtextures = false)
         : generator(seed, settings), settings(settings), seed(seed), cubetextures(cubetextures), cubeids(64), surfaceheightcache(1 << 12),
           errorcube(-1),
-          prepared(prepared), remip(remip), families(0), optimized(0), cancelled(cancelled)
+          prepared(prepared), remip(remip), indexedtextures(indexedtextures), families(0), optimized(0), cancelled(cancelled)
     {
         loopv(this->cubetextures) cubeids[this->cubetextures[i].id] = i;
         int *error = cubeids.access("error");
@@ -99,11 +103,18 @@ struct worldgencontext
 
 static cube *allocworldgenfamily(worldgencontext &ctx)
 {
+#ifdef STANDALONE
+    cube *c = new cube[8];
+    loopi(8) resetworldgencube(c[i]);
+    ctx.families++;
+    return c;
+#else
     if(!ctx.prepared) return newcubes(F_EMPTY);
     cube *c = new cube[8];
     loopi(8) resetworldgencube(c[i]);
     ctx.families++;
     return c;
+#endif
 }
 
 static void freepreparedworldchunk(cube *root)
@@ -113,6 +124,7 @@ static void freepreparedworldchunk(cube *root)
     delete[] root;
 }
 
+#ifndef STANDALONE
 static void setworldcubetexture(cube &c, int texture, int toptexture = -1, int bottomtexture = -1, int material = MAT_AIR)
 {
     solidfaces(c);
@@ -121,12 +133,28 @@ static void setworldcubetexture(cube &c, int texture, int toptexture = -1, int b
     if(toptexture >= 0) c.texture[O_TOP] = toptexture;
     if(bottomtexture >= 0) c.texture[O_BOTTOM] = bottomtexture;
 }
+#endif
 
 static bool setworldcubetype(cube &c, const worldgencontext &ctx, int index, int material = MAT_AIR)
 {
     if(!ctx.cubetextures.inrange(index)) return false;
-    const worldgencubetextures &textures = ctx.cubetextures[index];
-    setworldcubetexture(c, textures.side, textures.top, textures.bottom, material);
+#ifdef STANDALONE
+    solidfaces(c);
+    c.material = material;
+    loopi(6) c.texture[i] = ushort(index);
+#else
+    if(ctx.indexedtextures)
+    {
+        solidfaces(c);
+        c.material = material;
+        loopi(6) c.texture[i] = ushort(index);
+    }
+    else
+    {
+        const worldgencubetextures &textures = ctx.cubetextures[index];
+        setworldcubetexture(c, textures.side, textures.top, textures.bottom, material);
+    }
+#endif
     return true;
 }
 
@@ -1741,7 +1769,7 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
     const long long chunkstartx = (long long)chunkx * WORLD_CHUNK_BLOCKS,
                     chunkstarty = (long long)chunky * WORLD_CHUNK_BLOCKS;
     const int stonecube = ctx.cubetype("stone"),
-              stonetexture = ctx.cubetextures.inrange(stonecube) ? ctx.cubetextures[stonecube].side : -1;
+              stonetexture = ctx.cubetextures.inrange(stonecube) ? ctx.indexedtextures ? stonecube : ctx.cubetextures[stonecube].side : -1;
 
     if(stonetexture < 0) return true;
 
@@ -1848,14 +1876,14 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
         ZoneValue(wood.length() + pinewood.length() + leaves.length() + needles.length());
         const int leafcube = ctx.cubetype("leaves"), needlescube = ctx.cubetype("needles"),
                   woodcube = ctx.cubetype("wood"), pinewoodcube = ctx.cubetype("dark_wood"),
-                  leaftexture = ctx.cubetextures[leafcube].top, needlestexture = ctx.cubetextures[needlescube].top;
+                  leaftexture = ctx.cubetextures.inrange(leafcube) ? ctx.indexedtextures ? leafcube : ctx.cubetextures[leafcube].top : -1,
+                  needlestexture = ctx.cubetextures.inrange(needlescube) ? ctx.indexedtextures ? needlescube : ctx.cubetextures[needlescube].top : -1;
         loopv(leaves)
         {
             cube &c = lookupworldgenblock(ctx, root, leaves[i]);
             if(isempty(c) && c.material == MAT_AIR)
             {
-                setworldcubetype(c, ctx, leafcube, leavesalpha ? MAT_ALPHA : MAT_AIR);
-                markworldgentreeblock(ctx, leaves[i]);
+                if(setworldcubetype(c, ctx, leafcube, leavesalpha ? MAT_ALPHA : MAT_AIR)) markworldgentreeblock(ctx, leaves[i]);
             }
         }
         loopv(needles)
@@ -1863,8 +1891,7 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             cube &c = lookupworldgenblock(ctx, root, needles[i]);
             if(isempty(c) && c.material == MAT_AIR)
             {
-                setworldcubetype(c, ctx, needlescube, leavesalpha ? MAT_ALPHA : MAT_AIR);
-                markworldgentreeblock(ctx, needles[i]);
+                if(setworldcubetype(c, ctx, needlescube, leavesalpha ? MAT_ALPHA : MAT_AIR)) markworldgentreeblock(ctx, needles[i]);
             }
         }
         loopv(wood)
@@ -1872,8 +1899,7 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             cube &c = lookupworldgenblock(ctx, root, wood[i]);
             if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
             {
-                setworldcubetype(c, ctx, woodcube);
-                markworldgentreeblock(ctx, wood[i]);
+                if(setworldcubetype(c, ctx, woodcube)) markworldgentreeblock(ctx, wood[i]);
             }
         }
         loopv(pinewood)
@@ -1881,8 +1907,7 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             cube &c = lookupworldgenblock(ctx, root, pinewood[i]);
             if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
             {
-                setworldcubetype(c, ctx, pinewoodcube);
-                markworldgentreeblock(ctx, pinewood[i]);
+                if(setworldcubetype(c, ctx, pinewoodcube)) markworldgentreeblock(ctx, pinewood[i]);
             }
         }
     }
@@ -1945,9 +1970,13 @@ static cube *generateworldchunk(int chunkx, int chunky, worldgencontext &ctx)
     }
     if(ctx.remip)
     {
+#ifndef STANDALONE
         ZoneScopedN("Chunks/Remip generated octree");
         ctx.optimized = remipworldchunk(root, ctx.prepared, ctx.families, ctx.cancelled);
         ZoneValue(ctx.optimized);
+#else
+        ctx.optimized = 0;
+#endif
     }
     else ctx.optimized = 0;
     if(ctx.iscanceled())
@@ -1992,7 +2021,9 @@ bool game::chooseworldspawn(double originx, double originy, double &spawnx, doub
         return true;
     }
 
+#ifndef STANDALONE
     renderprogress(0.82f, "choosing a better spawn point because you had no chance...");
+#endif
 
     int bestx = originblockx, besty = originblocky;
     long long bestdist = LLONG_MAX;
@@ -2087,10 +2118,13 @@ namespace game
         caveexpansion = tectonics.caveexpansion;
     }
 
-    worldgencontext *createworldgeneration(bool prepared, bool remip, SDL_atomic_t *cancelled)
+    worldgencontext *createworldgeneration(bool prepared, bool remip, SDL_atomic_t *cancelled, bool indexedtextures)
     {
         const worldsettings settings;
-        return new worldgencontext(getworldseed(), worldgentextures, prepared, remip, settings, cancelled);
+#ifdef STANDALONE
+        indexedtextures = true;
+#endif
+        return new worldgencontext(getworldseed(), worldgentextures, prepared, remip, settings, cancelled, indexedtextures);
     }
 
     void destroyworldgeneration(worldgencontext *generation)

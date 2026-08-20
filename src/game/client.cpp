@@ -53,6 +53,12 @@ namespace game
         authoritativerevision = authoritativerequestid = synchronizedrevision = 0;
     }
 
+    void requestworldchunk(int chunkx, int chunky)
+    {
+        if(!connected || !m_mp(gamemode) || pendingnetworkworld) return;
+        addmsg(N_CHUNKREQUEST, "ri2", chunkx, chunky);
+    }
+
     static bool validhex(const char *value, int minlen, int maxlen)
     {
         if(!value) return false;
@@ -761,6 +767,19 @@ namespace game
                 synchronizedrevision = uint(getint(p));
                 processnetworkedits();
                 break;
+            case N_CHUNKDATA:
+            {
+                const int chunkx = getint(p), chunky = getint(p);
+                const uint revision = uint(getint(p));
+                const int voxlength = getint(p), datlength = getint(p);
+                if(voxlength <= 0 || datlength <= 0 || voxlength > p.remaining()) return;
+                ucharbuf vox = p.subbuf(voxlength);
+                if(datlength > p.remaining()) return;
+                ucharbuf dat = p.subbuf(datlength);
+                if(!receivenetworkworldchunk(chunkx, chunky, revision, vox.buf, vox.maxlen, dat.buf, dat.maxlen))
+                    conoutf(CON_ERROR, "rejected authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
+                break;
+            }
             case N_WORLDTIME:
             {
                 // Packet reads mutate p. Read in wire order instead of relying

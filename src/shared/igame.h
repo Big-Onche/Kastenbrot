@@ -98,6 +98,7 @@ namespace game
     extern void vartrigger(ident *id);
     extern bool waitforserveredit();
     extern void requestworldcommand(const char *command);
+    extern void requestworldchunk(int chunkx, int chunky);
     extern void dynentcollide(physent *d, physent *o, const vec &dir);
     extern const char *getclientmap();
     extern int findclientnum(const char *name);

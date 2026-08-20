@@ -56,7 +56,7 @@ int getworldcubefaceslot(int index, int orient)
     return type.sideslot;
 }
 
-static int getworldcubebytextures(const ushort *textures)
+int getworldcubebytextures(const ushort *textures)
 {
     loopi(4) if(textures[i] != textures[0]) return -1;
     int *index = worldcubetextureindexes.access(worldcubetexturekey(textures[O_TOP], textures[0], textures[O_BOTTOM]));
@@ -123,6 +123,12 @@ const char *getworldcubename(int index)
 {
     index = validworldcubeindex(index);
     return index >= 0 ? worldcubedefinitions[index]->id : "";
+}
+
+int getworldcubeidindex(const char *id)
+{
+    worlddefinition *definition = findworldcube(id);
+    return definition ? worldcubedefinitions.find(definition) : -1;
 }
 
 int getworldcubeitem(int index)
@@ -468,7 +474,7 @@ bool isworldleafcube(const cube &c)
     return leavesalpha != 0 && isworldleaftexture(c);
 }
 
-static int getworldscatteridindex(const char *id)
+int getworldscatteridindex(const char *id)
 {
     worlddefinition *type = findworldscatter(id);
     return type ? worldscatterdefinitions.find(type) : worlderrorobject;
@@ -717,6 +723,15 @@ static bool loadworlddefinitions(bool assets = true)
 
     if(!assets)
     {
+        loopv(worldcubedefinitions)
+        {
+            const worlddefinition &type = *worldcubedefinitions[i];
+            worldgentextures.add(worldgencubetextures(type.id, i, i, i));
+        }
+        worldgrassscatter = getworldscatteridindex("grass_scatter");
+        worldrosescatter = getworldscatteridindex("rose");
+        worldtulipscatter = getworldscatteridindex("tulip");
+        worlddandelionscatter = getworldscatteridindex("dandelion");
         conoutf(CON_DEBUG, "loaded %d inventory item, %d world cube, and %d world object server definitions",
                 inventoryitemdefinitions.length(), worldcubedefinitions.length(), worldscatterdefinitions.length());
         return true;
@@ -868,6 +883,11 @@ ICOMMAND(worldload, "", (), intret(loadworlddefinitions(true) ? 1 : 0));
 
 #ifdef WORLDIO_STANDALONE_CONTENT_IMPLEMENTATION
 
+#include "../engine/worldcube.h"
+#include "../engine/worldruntime.h"
+
+vector<worldgencubetextures> worldgentextures;
+int worldgrassscatter = -1, worldrosescatter = -1, worldtulipscatter = -1, worlddandelionscatter = -1;
 
 static void resetserverworlddefinitions() { resetworlddefinitionregistry(); }
 COMMANDN(worldreset, resetserverworlddefinitions, "");
@@ -877,6 +897,16 @@ void initserverworlddefinitions()
     resetserverworlddefinitions();
     if(!execfile("config/game/world.cfg", false)) fatal("server startup failed: could not load config/game/world.cfg");
     if(!resolveworlddefinitionregistry()) fatal("server startup failed: invalid world definitions");
+    worldgentextures.shrink(0);
+    loopv(worldcubedefinitions)
+    {
+        const worlddefinition &type = *worldcubedefinitions[i];
+        worldgentextures.add(worldgencubetextures(type.id, i, i, i));
+    }
+    worldgrassscatter = getworldscatteridindex("grass_scatter");
+    worldrosescatter = getworldscatteridindex("rose");
+    worldtulipscatter = getworldscatteridindex("tulip");
+    worlddandelionscatter = getworldscatteridindex("dandelion");
     if(!reloadrecipes(true)) fatal("server startup failed: invalid recipes");
     conoutf("loaded %d inventory item, %d world cube, and %d world object server definitions",
             inventoryitemdefinitions.length(), worldcubedefinitions.length(), worldscatterdefinitions.length());
@@ -995,6 +1025,14 @@ float getinventoryitemheldsize(int index) { return 1.0f; }
 
 int numworldcubes() { return worldcubedefinitions.length(); }
 
+int getworldcubebytextures(const ushort *textures) { return textures ? int(textures[0]) : -1; }
+
+int getworldcubeidindex(const char *id)
+{
+    loopv(worldcubedefinitions) if(!strcmp(worldcubedefinitions[i]->id, id)) return i;
+    return -1;
+}
+
 int getworldcubeitem(int index)
 {
     return worldcubedefinitions.inrange(index) ? worldcubedefinitions[index]->item : -1;
@@ -1061,6 +1099,12 @@ int getworldcubepersistentindex(ullong id, bool warn)
 }
 
 int numworldscatters() { return worldscatterdefinitions.length(); }
+
+int getworldscatteridindex(const char *id)
+{
+    loopv(worldscatterdefinitions) if(!strcmp(worldscatterdefinitions[i]->id, id)) return i;
+    return -1;
+}
 
 const char *getworldscattername(int index)
 {

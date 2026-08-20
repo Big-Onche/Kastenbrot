@@ -62,6 +62,7 @@ enum
     N_MAPCHANGE, N_MAPVOTE, N_PING, N_PONG, N_CLIENTPING, N_SERVMSG,
     N_EDITMODE, N_EDITENT, N_EDITF, N_EDITT, N_EDITM, N_FLIP, N_COPY, N_PASTE, N_ROTATE, N_REPLACE, N_DELCUBE, N_CALCLIGHT, N_REMIP, N_EDITVSLOT, N_UNDO, N_REDO, N_NEWMAP, N_GETMAP, N_SENDMAP, N_CLIPBOARD, N_EDITVAR, N_EDITSCATTER,
     N_EDITAUTHOR, N_WORLDSTATE, N_WORLDREADY, N_WORLDSYNC, N_WORLDTIME, N_WEATHERSTATE,
+    N_CHUNKREQUEST, N_CHUNKDATA,
     N_SETPRIVILEGE, N_SETMASTER, N_SERVERCOMMAND,
     N_SERVERIDENTITY, N_IDENTITYLOGIN, N_IDENTITYREGISTER, N_IDENTITYCHALLENGE,
     N_IDENTITYRESPONSE, N_IDENTITYSUCCESS, N_IDENTITYFAILURE, N_IDENTITYREVOKED,
@@ -154,6 +155,7 @@ static const int msgsizes[] =
     N_UNDO, 0, N_REDO, 0, N_NEWMAP, 2, N_GETMAP, 1, N_SENDMAP, 0,
     N_CLIPBOARD, 0, N_EDITVAR, 0, N_EDITSCATTER, 16, N_EDITAUTHOR, 4,
     N_WORLDSTATE, 31, N_WORLDREADY, 6, N_WORLDSYNC, 2, N_WORLDTIME, 3, N_WEATHERSTATE, 5,
+    N_CHUNKREQUEST, 3, N_CHUNKDATA, 0,
     N_SETPRIVILEGE, 3, N_SETMASTER, 0, N_SERVERCOMMAND, 0,
     N_SERVERIDENTITY, 0, N_IDENTITYLOGIN, 0, N_IDENTITYREGISTER, 0, N_IDENTITYCHALLENGE, 0,
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
@@ -169,7 +171,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 30
+#define PROTOCOL_VERSION 31
 
 enum
 {
@@ -533,6 +535,10 @@ namespace game
     extern bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data);
     extern bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length);
     extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
+    extern bool capturechunkdata(int chunkx, int chunky, const vector<furnaceinstance *> &furnaces, const vector<chestinstance *> &chests,
+                                 const vector<uchar> &npcdata, vector<uchar> &data);
+    extern bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
+                                vector<chestinstance *> &chests, vector<uchar> &npcdata);
     extern bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data);
     extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length);
     extern bool debuglocalchunknpcs(stream *file, const uchar *data, int length);

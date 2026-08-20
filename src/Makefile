@@ -147,10 +147,10 @@ CLIENT_PCH= shared/cube.h.gch engine/engine.h.gch game/game.h.gch
 SERVER_INCLUDES= -DSTANDALONE -Istandalone/shared -Istandalone/engine -Istandalone/game $(INCLUDES)
 ifneq (,$(findstring MINGW,$(PLATFORM)))
 SERVER_INCLUDES+= -Iinclude
-SERVER_LIBS= -mwindows $(STD_LIBS) -L$(WINBIN) -L$(WINLIB) -lzlib1 -lenet -lws2_32 -lwinmm
+SERVER_LIBS= -mwindows $(STD_LIBS) -L$(WINBIN) -L$(WINLIB) -lzlib1 -lenet -lSDL2 -lws2_32 -lwinmm
 MASTER_LIBS= $(STD_LIBS) -L$(WINBIN) -L$(WINLIB) -lzlib1 -lenet -lws2_32 -lwinmm
 else
-SERVER_LIBS= -Lenet -lenet -lz
+SERVER_LIBS= -Lenet -lenet -lz -lSDL2 -pthread
 MASTER_LIBS= $(SERVER_LIBS)
 endif
 
@@ -168,7 +168,8 @@ SERVER_OBJS= \
 	standalone/game/npc.o \
 	standalone/game/recipes.o \
 	standalone/game/server.o \
-	standalone/game/world.o
+	standalone/game/world.o \
+	standalone/game/worldgen.o
 
 SERVER_PCH= standalone/shared/cube.h.gch standalone/engine/engine.h.gch standalone/game/game.h.gch
 STANDALONE_DIRS= standalone/shared standalone/engine standalone/game
@@ -472,7 +473,8 @@ engine/world.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/world.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/world.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
-engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldruntime.h engine/worldstream.cpp engine/worldlod.cpp engine/worldvisibility.cpp
+engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldcube.h engine/worldruntime.h
+engine/worldio.o: engine/worldcache.cpp engine/worldstream.cpp engine/worldlod.cpp engine/worldvisibility.cpp
 engine/worldio.o: engine/worldedit.cpp game/worldcontent.cpp game/worldrender.cpp game/worldgen.h shared/cube.h shared/tools.h shared/geom.h
 engine/worldio.o: shared/ents.h shared/command.h shared/glexts.h
 engine/worldio.o: shared/glemu.h shared/iengine.h shared/igame.h
@@ -516,7 +518,7 @@ shared/cube.h.gch: shared/iengine.h shared/igame.h
 engine/engine.h.gch: shared/cube.h shared/tools.h shared/geom.h shared/ents.h
 engine/engine.h.gch: shared/command.h shared/glexts.h shared/glemu.h
 engine/engine.h.gch: shared/iengine.h shared/igame.h engine/world.h
-engine/engine.h.gch: engine/octa.h engine/light.h engine/texture.h
+engine/engine.h.gch: engine/worldcube.h engine/octa.h engine/light.h engine/texture.h
 engine/engine.h.gch: engine/bih.h engine/model.h
 game/game.h.gch: shared/cube.h shared/tools.h shared/geom.h shared/ents.h
 game/game.h.gch: shared/command.h shared/glexts.h shared/glemu.h
@@ -537,7 +539,8 @@ standalone/engine/command.o: shared/iengine.h shared/igame.h engine/world.h
 standalone/engine/server.o: engine/engine.h shared/cube.h shared/tools.h
 standalone/engine/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/engine/server.o: shared/iengine.h shared/igame.h engine/world.h
-standalone/engine/worldio.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h
+standalone/engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldcube.h engine/worldruntime.h
+standalone/engine/worldio.o: game/worldcontent.cpp shared/cube.h shared/tools.h
 standalone/engine/worldio.o: shared/geom.h shared/ents.h shared/command.h
 standalone/engine/worldio.o: shared/iengine.h shared/igame.h engine/world.h
 standalone/engine/worlddef.o: engine/engine.h engine/worlddef.h shared/cube.h
@@ -550,6 +553,8 @@ standalone/game/mining.o: shared/iengine.h shared/igame.h
 standalone/game/server.o: game/game.h game/world.h shared/cube.h shared/tools.h
 standalone/game/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/server.o: shared/iengine.h shared/igame.h
+standalone/game/server.o: engine/worldcube.h engine/worldruntime.h engine/worldcache.cpp game/worldgen.h
+standalone/game/worldgen.o: game/game.h game/world.h game/worldgen.h engine/worldcube.h engine/worldruntime.h
 standalone/engine/master.o: shared/cube.h shared/tools.h shared/geom.h
 standalone/engine/master.o: shared/ents.h shared/command.h shared/iengine.h
 standalone/engine/master.o: shared/igame.h

@@ -25,8 +25,9 @@ static int worldchunkvaupdatekey(const ivec &origin);
 VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generation/load
 
 worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request, const char *folder)
-    : x(x), y(y), families(0), optimized(0), epoch(epoch), request(request), remip(chunkremip != 0), leavesalpha(::leavesalpha != 0),
-      sectionstatesready(false), checksnapshot(folder && folder[0]), snapshotresult(WORLD_SNAPSHOT_MISSING), root(NULL), generation(NULL)
+    : x(x), y(y), families(0), optimized(0), epoch(epoch), request(request), snapshotrevision(0), remip(chunkremip != 0),
+      leavesalpha(::leavesalpha != 0), sectionstatesready(false), checksnapshot(folder && folder[0]), snapshotplayeredited(false),
+      snapshotresult(WORLD_SNAPSHOT_MISSING), root(NULL), generation(NULL)
 {
     memclear(contenttiles);
     memclear(opaquetiles);
@@ -483,6 +484,7 @@ static bool queueworldchunksave(worldchunk &chunk)
     job->root = sampling.root;
     sampling.root = NULL;
     job->renderdata = chunk.renderdata;
+    job->playeredited = chunk.playeredited;
     if(!chunk.scatter.empty()) job->scatter.put(chunk.scatter.getbuf(), chunk.scatter.length());
 
     chunk.saving = true;
@@ -861,6 +863,7 @@ void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
                             renderdirty.minimum.z < renderdirty.maximum.z;
         reclassifyworldchunkrenderdata(&chunk, chunk.root, chunk.renderdata, renderdirty);
         if(++chunk.revision == 0) chunk.revision = 1;
+        chunk.playeredited = true;
         visibilitychanged = true;
     }
     if(visibilitychanged) invalidateworldsectionvisibility();
@@ -996,6 +999,58 @@ static void rebuildworldchunkindices()
     loopv(worldchunks) indexworldchunk(i);
 }
 
+bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata, int datlength)
+{
+    if(!voxdata || voxlength <= 0 || !datdata || datlength <= 0 || !revision) return false;
+    vector<uchar> vox, dat;
+    vox.put(voxdata, voxlength);
+    dat.put(datdata, datlength);
+    worldchunksnapshot snapshot(chunkx, chunky);
+    vector<worldsnapshotvoxel> voxels;
+    string error;
+    if(!deserializeworldsnapshotvox(vox, chunkx, chunky, snapshot, voxels, error) || snapshot.revision != revision)
+        return false;
+    const uint voxchecksum = uint(vox[vox.length() - 4]) | uint(vox[vox.length() - 3]) << 8 | uint(vox[vox.length() - 2]) << 16 |
+                             uint(vox[vox.length() - 1]) << 24;
+    if(!deserializeworldsnapshotdat(dat, chunkx, chunky, voxchecksum, snapshot, error)) return false;
+    const int oldindex = findworldchunk(chunkx, chunky);
+    if(worldchunks.inrange(oldindex) && worldchunks[oldindex].playeredited && worldchunks[oldindex].revision >= revision) return true;
+
+    cube *root = allocworldsnapshotfamily();
+    loopi(8) buildworldsnapshotcube(root[i], ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), WORLD_CHUNK_ROOT_SIZE, snapshot, voxels);
+    if(!game::restorelocalchunkdata(chunkx, chunky, snapshot.gameplay.getbuf(), snapshot.gameplay.length()))
+    {
+        freeworldsnapshotfamily(root);
+        return false;
+    }
+    if(worldchunks.inrange(oldindex))
+    {
+        worldchunk &old = worldchunks[oldindex];
+        if(worldchunkmounted(old)) unmountworldchunk(old);
+        if(old.root && old.root != worldroot) freeocta(old.root);
+        worldchunks.removeunordered(oldindex);
+        rebuildworldchunkindices();
+    }
+    worldchunk &chunk = worldchunks.add(worldchunk(chunkx, chunky, root));
+    indexworldchunk(worldchunks.length() - 1);
+    chunk.revision = chunk.savedrevision = revision;
+    chunk.playeredited = snapshot.playeredited;
+    chunk.renderdata = snapshot.renderdata;
+    worldchunkdirtybounds renderdirty;
+    renderdirty.minimum = ivec(0, 0, 0);
+    renderdirty.maximum = ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE);
+    renderdirty.valid = true;
+    reclassifyworldchunkrenderdata(&chunk, chunk.root, chunk.renderdata, renderdirty);
+    loopv(snapshot.scatter)
+        chunk.scatter.add(worldscatterinstance(snapshot.scatter[i].x, snapshot.scatter[i].y, snapshot.scatter[i].z, snapshot.scatter[i].type,
+                                               snapshot.scatter[i].orientation));
+    game::cacheworldscattertransforms(chunkx, chunky, game::getworldscattermaxoffset(), chunk.scatter);
+    addworldsectionvisibilitychunk(chunkx, chunky);
+    invalidateworldsectionvisibility();
+    lastplayerchunkx = INT_MIN;
+    return true;
+}
+
 static int worldchunkdistance(int x, int y, int focusx, int focusy)
 {
     long long dx = (long long)x - focusx, dy = (long long)y - focusy;
@@ -1097,8 +1152,9 @@ static int worldchunkloader(void *)
             {
                 ZoneScopedN("Chunks/Worker save snapshot");
                 ZoneTextF("%d_%d", savejob->x, savejob->y);
-                savejob->success = writeworldchunksnapshot(savejob->folder, savejob->x, savejob->y, savejob->root, savejob->renderdata,
-                                                           savejob->scatter, savejob->gameplay, savejob->error);
+                savejob->success = writeworldchunksnapshot(savejob->folder, savejob->x, savejob->y, savejob->revision, savejob->playeredited,
+                                                           savejob->root, savejob->renderdata, savejob->scatter, savejob->gameplay,
+                                                           savejob->error);
                 freeocta(savejob->root);
                 savejob->root = NULL;
             }
@@ -1118,7 +1174,8 @@ static int worldchunkloader(void *)
             if(job->checksnapshot && !SDL_AtomicGet(&job->cancelled))
             {
                 job->snapshotresult = loadworldchunksnapshotdata(job->folder, job->x, job->y, job->root, job->scatter, job->renderdata,
-                                                                  job->gameplay, job->snapshoterror);
+                                                                  job->gameplay, job->snapshoterror, &job->snapshotrevision,
+                                                                  &job->snapshotplayeredited);
                 job->checksnapshot = false;
             }
             if(!job->root && !SDL_AtomicGet(&job->cancelled)) job->root = prepareworldchunk(*job);
@@ -1328,8 +1385,11 @@ static int acquireworldchunksync(int x, int y, int &generated)
     worldsectionrenderdata renderdata;
     cube *root = NULL;
     string snapshoterror;
+    uint snapshotrevision = 0;
+    bool snapshotplayeredited = false;
     const worldsnapshotloadresult snapshotresult = worldfolder[0]
-                                                   ? loadworldchunksnapshot(worldfolder, x, y, root, scatter, renderdata, snapshoterror)
+                                                   ? loadworldchunksnapshot(worldfolder, x, y, root, scatter, renderdata, snapshoterror,
+                                                                            &snapshotrevision, &snapshotplayeredited)
                                                    : WORLD_SNAPSHOT_MISSING;
     if(snapshotresult == WORLD_SNAPSHOT_INVALID)
         conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerating it", x, y, snapshoterror);
@@ -1345,7 +1405,11 @@ static int acquireworldchunksync(int x, int y, int &generated)
     indexworldchunk(worldchunks.length() - 1);
     chunk.scatter.move(scatter);
     chunk.renderdata = renderdata;
-    chunk.savedrevision = snapshotresult == WORLD_SNAPSHOT_LOADED ? chunk.revision : 0;
+    if(snapshotresult == WORLD_SNAPSHOT_LOADED)
+    {
+        chunk.revision = chunk.savedrevision = snapshotrevision;
+        chunk.playeredited = snapshotplayeredited;
+    }
     addworldsectionvisibilitychunk(x, y);
     if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
         conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", x, y);
@@ -1651,8 +1715,9 @@ static int processworldchunkresults()
             }
             chunk.loading = false;
             chunk.generating = false;
-            chunk.revision = 1;
-            chunk.savedrevision = job->snapshotresult == WORLD_SNAPSHOT_LOADED ? 1 : 0;
+            chunk.revision = job->snapshotresult == WORLD_SNAPSHOT_LOADED ? job->snapshotrevision : 1;
+            chunk.savedrevision = job->snapshotresult == WORLD_SNAPSHOT_LOADED ? job->snapshotrevision : 0;
+            chunk.playeredited = job->snapshotresult == WORLD_SNAPSHOT_LOADED && job->snapshotplayeredited;
             allocnodes += job->families;
             if(job->snapshotresult != WORLD_SNAPSHOT_LOADED) generated++;
             optimized += job->optimized;
@@ -1663,6 +1728,7 @@ static int processworldchunkresults()
             if(job->snapshotresult != WORLD_SNAPSHOT_LOADED && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
                 conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", chunk.x, chunk.y);
             published++;
+            if(!game::islocalworld()) game::requestworldchunk(chunk.x, chunk.y);
         }
         delete job;
     }

@@ -110,14 +110,6 @@ struct worldscatterinstance
     }
 };
 
-struct worldchunkdirtybounds
-{
-    ivec minimum, maximum;
-    bool valid;
-
-    worldchunkdirtybounds() : minimum(0, 0, 0), maximum(0, 0, 0), valid(false) {}
-};
-
 struct worldgencubetextures
 {
     string id;
@@ -128,6 +120,16 @@ struct worldgencubetextures
     {
         copystring(this->id, id);
     }
+};
+
+#ifndef STANDALONE
+
+struct worldchunkdirtybounds
+{
+    ivec minimum, maximum;
+    bool valid;
+
+    worldchunkdirtybounds() : minimum(0, 0, 0), maximum(0, 0, 0), valid(false) {}
 };
 
 struct worldchunk
@@ -145,12 +147,12 @@ struct worldchunk
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request, revision, savedrevision, savingrevision;
     int varesidencylod;
-    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted;
+    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted, playeredited;
 
     worldchunk(int x, int y, cube *root, bool loading = false)
         : x(x), y(y), root(root), request(0), revision(root ? 1 : 0), savedrevision(0), savingrevision(0), varesidencylod(-1),
           varesidencydirty(true), scattermeshesregistered(false), placeablesregistered(false), loading(loading), generating(false), saving(false),
-          corrupted(false)
+          corrupted(false), playeredited(false)
     {
         memclear(mountedtiles);
         memclear(contentknown);
@@ -190,8 +192,8 @@ struct worldchunkjob
     uchar portals[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
-    uint epoch, request;
-    bool remip, leavesalpha, sectionstatesready, checksnapshot;
+    uint epoch, request, snapshotrevision;
+    bool remip, leavesalpha, sectionstatesready, checksnapshot, snapshotplayeredited;
     int snapshotresult;
     SDL_atomic_t cancelled;
     cube *root;
@@ -203,5 +205,7 @@ struct worldchunkjob
     worldchunkjob(int x, int y, uint epoch, uint request, const char *folder = NULL);
     ~worldchunkjob();
 };
+
+#endif
 
 #endif

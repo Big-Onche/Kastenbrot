@@ -4,15 +4,14 @@
 
 enum
 {
-    WORLD_SNAPSHOT_VOX_VERSION = 1,
-    WORLD_SNAPSHOT_DAT_VERSION = 1,
+    WORLD_SNAPSHOT_VOX_VERSION = 2,
+    WORLD_SNAPSHOT_DAT_VERSION = 2,
     WORLD_SNAPSHOT_MAX_FILE_SIZE = 512 << 20,
     WORLD_SNAPSHOT_EMPTY = 1 << 0,
     WORLD_SNAPSHOT_SOLID = 1 << 1,
     WORLD_SNAPSHOT_SCATTER = 1
 };
 
-VAR(worldsnapshotdebug, 0, 0, 1);
 
 struct worldsnapshotvoxel
 {
@@ -56,20 +55,25 @@ struct worldsnapshotscatter
     worldsnapshotscatter() : x(0), y(0), z(0), type(-1), orientation(O_TOP) { id[0] = '\0'; }
 };
 
+#if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 static void mergeworldsnapshotmountedsections(const worldchunk &chunk, cube *snapshotroot);
+#endif
 
 struct worldchunksnapshot
 {
     int x, y;
+    uint revision;
+    bool playeredited;
     worldsectionrenderdata renderdata;
     vector<worldsnapshotpaletteentry> palette;
     vector<worldsnapshotcolumn> columns;
     vector<worldsnapshotscatter> scatter;
     vector<uchar> gameplay;
 
-    worldchunksnapshot(int x = 0, int y = 0) : x(x), y(y) {}
+    worldchunksnapshot(int x = 0, int y = 0) : x(x), y(y), revision(1), playeredited(false) {}
 };
 
+#if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 struct worldchunksavejob
 {
     int x, y;
@@ -79,10 +83,10 @@ struct worldchunksavejob
     vector<worldscatterinstance> scatter;
     vector<uchar> gameplay;
     string folder, error;
-    bool success;
+    bool success, playeredited;
 
     worldchunksavejob(int x, int y, uint epoch, uint revision, const char *folder)
-        : x(x), y(y), epoch(epoch), revision(revision), root(NULL), success(false)
+        : x(x), y(y), epoch(epoch), revision(revision), root(NULL), success(false), playeredited(false)
     {
         copystring(this->folder, folder ? folder : "");
         error[0] = '\0';
@@ -93,6 +97,7 @@ struct worldchunksavejob
         if(root) freeocta(root);
     }
 };
+#endif
 
 enum worldsnapshotloadresult { WORLD_SNAPSHOT_MISSING = 0, WORLD_SNAPSHOT_LOADED, WORLD_SNAPSHOT_INVALID };
 
@@ -166,6 +171,20 @@ static void resetworldsnapshotcube(cube &c)
     loopi(6) c.texture[i] = DEFAULT_GEOM;
 }
 
+static cube *allocworldsnapshotfamily()
+{
+    cube *family = new cube[8];
+    loopi(8) resetworldsnapshotcube(family[i]);
+    return family;
+}
+
+static void freeworldsnapshotfamily(cube *family)
+{
+    if(!family) return;
+    loopi(8) if(family[i].children) freeworldsnapshotfamily(family[i].children);
+    delete[] family;
+}
+
 static void worldchunksnapshotfilename(char *name, size_t length, const char *folder, int x, int y, const char *extension)
 {
     snprintf(name, length, "media/map/%s/chunks/%d_%d.%s", folder, x, y, extension);
@@ -231,7 +250,7 @@ static void copyworldsnapshotcube(const cube &source, cube &destination)
     destination.children = NULL;
     if(source.children)
     {
-        destination.children = newcubes(F_EMPTY);
+        destination.children = allocworldsnapshotfamily();
         loopi(8) copyworldsnapshotcube(source.children[i], destination.children[i]);
     }
 }
@@ -249,7 +268,12 @@ static bool normalizeworldsnapshotcube(cube &c, int size, string &error)
     }
     if(!c.children && !isempty(c) && !isentirelysolid(c))
     {
+#if defined(STANDALONE) || defined(WORLD_SNAPSHOT_SERVER_CODEC)
+        copystring(error, "server chunk contains coarse carved geometry");
+        return false;
+#else
         subdividecube(c, false, false);
+#endif
         if(!c.children)
         {
             copystring(error, "could not subdivide carved block geometry for snapshotting");
@@ -264,22 +288,24 @@ static bool normalizeworldsnapshotcube(cube &c, int size, string &error)
     return true;
 }
 
+#if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 struct worldsnapshotsamplingtree
 {
     cube *root;
 
     worldsnapshotsamplingtree() : root(NULL) {}
-    ~worldsnapshotsamplingtree() { if(root) freeocta(root); }
+    ~worldsnapshotsamplingtree() { if(root) freeworldsnapshotfamily(root); }
 
     bool build(const worldchunk &chunk)
     {
         if(!chunk.root) return false;
-        root = newcubes(F_EMPTY);
+        root = allocworldsnapshotfamily();
         loopi(8) copyworldsnapshotcube(chunk.root[i], root[i]);
         mergeworldsnapshotmountedsections(chunk, root);
         return true;
     }
 };
+#endif
 
 static int worldsnapshotpaletteindex(worldchunksnapshot &snapshot, const char *id, int worldindex)
 {
@@ -287,6 +313,16 @@ static int worldsnapshotpaletteindex(worldchunksnapshot &snapshot, const char *i
     if(snapshot.palette.length() >= USHRT_MAX) return -1;
     snapshot.palette.add(worldsnapshotpaletteentry(id, worldindex));
     return snapshot.palette.length() - 1;
+}
+
+static int worldsnapshotcubeindex(const cube &source)
+{
+#if defined(STANDALONE) || defined(WORLD_SNAPSHOT_SERVER_CODEC)
+    loopi(6) if(source.texture[i] != source.texture[0]) return -1;
+    return int(source.texture[0]);
+#else
+    return getworldcubebytextures(source.texture);
+#endif
 }
 
 static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snapshot, int x, int y, int z,
@@ -301,7 +337,7 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     }
     const bool empty = isempty(source), solid = isentirelysolid(source);
     ASSERT(size <= WORLD_BLOCK_SIZE || empty || solid);
-    const int worldindex = empty ? -1 : getworldcubebytextures(source.texture);
+    const int worldindex = empty ? -1 : worldsnapshotcubeindex(source);
     const char *id = empty ? "air" : worldindex >= 0 ? getworldcubename(worldindex) : NULL;
     if(!id || !id[0])
     {
@@ -383,6 +419,8 @@ static bool serializeworldsnapshotvox(const worldchunksnapshot &snapshot, vector
     worldsnapshotputushort(output, WORLD_HEIGHT_BLOCKS);
     worldsnapshotputushort(output, ushort(snapshot.palette.length()));
     worldsnapshotputuint(output, uint(snapshot.columns.length()));
+    worldsnapshotputuint(output, snapshot.revision);
+    output.add(snapshot.playeredited ? 1 : 0);
     output.put(&snapshot.renderdata.flags[0][0], sizeof(snapshot.renderdata.flags));
     loopv(snapshot.palette) if(!worldsnapshotputstring(output, snapshot.palette[i].id)) return false;
     loopv(snapshot.columns)
@@ -428,54 +466,36 @@ static bool serializeworldsnapshotdat(const worldchunksnapshot &snapshot, uint v
     return output.length() <= WORLD_SNAPSHOT_MAX_FILE_SIZE;
 }
 
-static bool writeworldsnapshotdebug(const char *folder, const worldchunksnapshot &snapshot)
-{
-    string filename;
-    worldchunksnapshotfilename(filename, sizeof(filename), folder, snapshot.x, snapshot.y, "txt");
-    stream *file = openrawfile(filename, "w");
-    if(!file) return false;
-    bool ok = file->printf("chunk %d %d\nvox_version %d\ndat_version %d\ndimensions %d %d %d\n\npalette\n", snapshot.x, snapshot.y,
-                           WORLD_SNAPSHOT_VOX_VERSION, WORLD_SNAPSHOT_DAT_VERSION, WORLD_CHUNK_BLOCKS, WORLD_CHUNK_BLOCKS,
-                           WORLD_HEIGHT_BLOCKS) > 0;
-    loopv(snapshot.palette) if(ok) ok = file->printf("%d %s\n", i, snapshot.palette[i].id) > 0;
-    if(ok) ok = file->printf("\nsection_flags\n") > 0;
-    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES) if(ok)
-        ok = file->printf("section %d %d %d flags %u\n", tile % WORLD_SECTION_COLUMNS, tile / WORLD_SECTION_COLUMNS, section,
-                          uint(snapshot.renderdata.flags[section][tile])) > 0;
-    loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS) if(ok)
-    {
-        ok = file->printf("\ncolumn %d %d\n", x, y) > 0;
-        const worldsnapshotcolumn &column = snapshot.columns[y * WORLD_CHUNK_BLOCKS + x];
-        loopv(column.runs) if(ok)
-        {
-            const worldsnapshotrun &run = column.runs[i];
-            ok = file->printf("%u %s orientation %u flags %u material %u", uint(run.length), snapshot.palette[run.voxel.palette].id,
-                              uint(run.voxel.orientation), uint(run.voxel.flags), uint(run.voxel.material)) > 0;
-            if(ok && !(run.voxel.flags & (WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_SOLID)))
-                loopj(12) ok = file->printf(" %u", uint(run.voxel.edges[j])) > 0;
-            if(ok) ok = file->printf("\n") > 0;
-        }
-    }
-    loopv(snapshot.scatter) if(ok)
-        ok = file->printf("\nplaceable %u %u %u %s orientation %d\n", uint(snapshot.scatter[i].x), uint(snapshot.scatter[i].y),
-                          uint(snapshot.scatter[i].z), snapshot.scatter[i].id, snapshot.scatter[i].orientation) > 0;
-    if(ok && !snapshot.gameplay.empty()) ok = file->printf("\ngameplay_bytes %d\n", snapshot.gameplay.length()) > 0;
-    if(ok) ok = file->flush();
-    delete file;
-    return ok;
-}
-
-static bool writeworldchunksnapshot(const char *folder, int x, int y, cube *root, const worldsectionrenderdata &renderdata,
-                                    const vector<worldscatterinstance> &scatter, const vector<uchar> &gameplay, string &error)
+static bool serializeworldchunksnapshot(cube *root, int x, int y, uint revision, bool playeredited,
+                                        const worldsectionrenderdata &renderdata, const vector<worldscatterinstance> &scatter,
+                                        const vector<uchar> &gameplay, vector<uchar> &vox, vector<uchar> &dat, string &error)
 {
     worldchunksnapshot snapshot(x, y);
-    if(!captureworldchunksnapshot(root, x, y, renderdata, scatter, gameplay, snapshot, error)) return false;
-    vector<uchar> vox, dat;
-    if(!serializeworldsnapshotvox(snapshot, vox)) { copystring(error, "could not serialize voxel data"); return false; }
+    snapshot.revision = max(revision, 1U);
+    snapshot.playeredited = playeredited;
+    if(!captureworldchunksnapshot(root, x, y, renderdata, scatter, gameplay, snapshot, error) || !serializeworldsnapshotvox(snapshot, vox))
+    {
+        if(!error[0]) copystring(error, "could not serialize voxel data");
+        return false;
+    }
     const int checksumoffset = vox.length() - 4;
     const uint voxchecksum = uint(vox[checksumoffset]) | uint(vox[checksumoffset + 1]) << 8 | uint(vox[checksumoffset + 2]) << 16 |
-                              uint(vox[checksumoffset + 3]) << 24;
-    if(!serializeworldsnapshotdat(snapshot, voxchecksum, dat)) { copystring(error, "could not serialize sparse data"); return false; }
+                             uint(vox[checksumoffset + 3]) << 24;
+    if(!serializeworldsnapshotdat(snapshot, voxchecksum, dat))
+    {
+        copystring(error, "could not serialize sparse data");
+        return false;
+    }
+    return true;
+}
+
+#if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
+static bool writeworldchunksnapshot(const char *folder, int x, int y, uint revision, bool playeredited, cube *root,
+                                    const worldsectionrenderdata &renderdata, const vector<worldscatterinstance> &scatter,
+                                    const vector<uchar> &gameplay, string &error)
+{
+    vector<uchar> vox, dat;
+    if(!serializeworldchunksnapshot(root, x, y, revision, playeredited, renderdata, scatter, gameplay, vox, dat, error)) return false;
     string voxname, datname;
     worldchunksnapshotfilename(voxname, sizeof(voxname), folder, x, y, "vox");
     worldchunksnapshotfilename(datname, sizeof(datname), folder, x, y, "dat");
@@ -484,9 +504,9 @@ static bool writeworldchunksnapshot(const char *folder, int x, int y, cube *root
         copystring(error, "could not write authoritative chunk snapshot files");
         return false;
     }
-    if(worldsnapshotdebug && !writeworldsnapshotdebug(folder, snapshot)) copystring(error, "snapshot saved, but debug output failed");
     return true;
 }
+#endif
 
 static bool validateworldsnapshotchecksum(const vector<uchar> &contents)
 {
@@ -503,16 +523,21 @@ static bool deserializeworldsnapshotvox(const vector<uchar> &contents, int x, in
     worldsnapshotreader reader(contents.getbuf(), contents.length() - 4);
     char magic[4];
     uint version, storedx, storedy, columns;
+    uint revision;
+    uchar playeredited;
     ushort width, depth, height, palettesize;
     if(!reader.read(magic, 4) || memcmp(magic, "CCVX", 4) || !reader.readuint(version) || version != WORLD_SNAPSHOT_VOX_VERSION ||
        !reader.readuint(storedx) || !reader.readuint(storedy) || int(storedx) != x || int(storedy) != y || !reader.readushort(width) ||
        !reader.readushort(depth) || !reader.readushort(height) || width != WORLD_CHUNK_BLOCKS || depth != WORLD_CHUNK_BLOCKS ||
        height != WORLD_HEIGHT_BLOCKS || !reader.readushort(palettesize) || !palettesize || !reader.readuint(columns) ||
-       columns != WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS)
+       columns != WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS || !reader.readuint(revision) || !revision || !reader.readbyte(playeredited) ||
+       playeredited > 1)
     {
         copystring(error, "invalid or incompatible .vox header");
         return false;
     }
+    snapshot.revision = revision;
+    snapshot.playeredited = playeredited != 0;
     if(!reader.read(&snapshot.renderdata.flags[0][0], sizeof(snapshot.renderdata.flags)))
     {
         copystring(error, "missing chunk section classification");
@@ -533,10 +558,8 @@ static bool deserializeworldsnapshotvox(const vector<uchar> &contents, int x, in
         if(!strcmp(entry.id, "air")) entry.worldindex = -1;
         else
         {
-            worlddefinition *definition = findworldcube(entry.id);
-            if(!definition) { formatstring(error, "unknown block ID '%s'", entry.id); return false; }
-            entry.worldindex = worldcubedefinitions.find(definition);
-            if(entry.worldindex < 0) return false;
+            entry.worldindex = getworldcubeidindex(entry.id);
+            if(entry.worldindex < 0) { formatstring(error, "unknown block ID '%s'", entry.id); return false; }
         }
     }
     const int voxelcount = WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS * WORLD_HEIGHT_BLOCKS;
@@ -595,11 +618,9 @@ static bool deserializeworldsnapshotdat(const vector<uchar> &contents, int x, in
             copystring(error, "invalid sparse .dat record");
             return false;
         }
-        worlddefinition *definition = findworldscatter(record.id);
-        if(!definition) { formatstring(error, "unknown placeable ID '%s'", record.id); return false; }
-        record.type = worldscatterdefinitions.find(definition);
+        record.type = getworldscatteridindex(record.id);
+        if(record.type < 0) { formatstring(error, "unknown placeable ID '%s'", record.id); return false; }
         record.orientation = orientation;
-        if(record.type < 0) return false;
         snapshot.scatter.add(record);
     }
     uint gameplaylength;
@@ -620,11 +641,18 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
         destination.material = voxel.material;
         memcpy(destination.edges, voxel.edges, sizeof(destination.edges));
         const int worldindex = snapshot.palette[voxel.palette].worldindex;
-        if(worldindex >= 0) loopi(6) destination.texture[i] = getworldcubefaceslot(worldindex, i);
+        if(worldindex >= 0)
+        {
+#if defined(STANDALONE) || defined(WORLD_SNAPSHOT_SERVER_CODEC)
+            loopi(6) destination.texture[i] = ushort(worldindex);
+#else
+            loopi(6) destination.texture[i] = getworldcubefaceslot(worldindex, i);
+#endif
+        }
         return;
     }
     const int childsize = size >> 1;
-    destination.children = newcubes(F_EMPTY);
+    destination.children = allocworldsnapshotfamily();
     loopi(8) buildworldsnapshotcube(destination.children[i], ivec(i, origin, childsize), childsize, snapshot, voxels);
     const cube &first = destination.children[0];
     bool identical = !first.children && (isempty(first) || isentirelysolid(first));
@@ -639,12 +667,13 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
         cube *children = destination.children;
         destination = first;
         destination.children = NULL;
-        freeocta(children);
+        freeworldsnapshotfamily(children);
     }
 }
 
 static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
-                                                           worldsectionrenderdata &renderdata, vector<uchar> &gameplay, string &error)
+                                                           worldsectionrenderdata &renderdata, vector<uchar> &gameplay, string &error,
+                                                           uint *revision = NULL, bool *playeredited = NULL)
 {
     root = NULL;
     scatter.setsize(0);
@@ -670,29 +699,37 @@ static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, in
     const uint voxchecksum = uint(voxcontents[checksumoffset]) | uint(voxcontents[checksumoffset + 1]) << 8 |
                               uint(voxcontents[checksumoffset + 2]) << 16 | uint(voxcontents[checksumoffset + 3]) << 24;
     if(!deserializeworldsnapshotdat(datcontents, x, y, voxchecksum, snapshot, error)) return WORLD_SNAPSHOT_INVALID;
-    root = newcubes(F_EMPTY);
+    root = allocworldsnapshotfamily();
     loopi(8) buildworldsnapshotcube(root[i], ivec(i, ivec(0, 0, 0), WORLD_CHUNK_ROOT_SIZE), WORLD_CHUNK_ROOT_SIZE, snapshot, voxels);
     loopv(snapshot.scatter)
         scatter.add(worldscatterinstance(snapshot.scatter[i].x, snapshot.scatter[i].y, snapshot.scatter[i].z, snapshot.scatter[i].type,
                                          snapshot.scatter[i].orientation));
+#if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
     game::cacheworldscattertransforms(x, y, game::getworldscattermaxoffset(), scatter);
+#endif
     renderdata = snapshot.renderdata;
     gameplay.move(snapshot.gameplay);
+    if(revision) *revision = snapshot.revision;
+    if(playeredited) *playeredited = snapshot.playeredited;
     return WORLD_SNAPSHOT_LOADED;
 }
 
+#if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
-                                                       worldsectionrenderdata &renderdata, string &error)
+                                                       worldsectionrenderdata &renderdata, string &error, uint *revision = NULL,
+                                                       bool *playeredited = NULL)
 {
     vector<uchar> gameplay;
-    const worldsnapshotloadresult result = loadworldchunksnapshotdata(folder, x, y, root, scatter, renderdata, gameplay, error);
+    const worldsnapshotloadresult result = loadworldchunksnapshotdata(folder, x, y, root, scatter, renderdata, gameplay, error, revision,
+                                                                       playeredited);
     if(result != WORLD_SNAPSHOT_LOADED) return result;
     if(game::restorelocalchunkdata(x, y, gameplay.getbuf(), gameplay.length())) return result;
     copystring(error, "invalid sparse gameplay data");
-    freeocta(root);
+    freeworldsnapshotfamily(root);
     root = NULL;
     scatter.setsize(0);
     return WORLD_SNAPSHOT_INVALID;
 }
+#endif
 
 #endif

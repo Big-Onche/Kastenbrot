@@ -31,7 +31,7 @@ namespace game
     extern int getconfiguredworldseed();
     extern void loadworldseed(int seed);
     extern void activateworldseed();
-    extern worldgencontext *createworldgeneration(bool prepared, bool remip, SDL_atomic_t *cancelled = NULL);
+    extern worldgencontext *createworldgeneration(bool prepared, bool remip, SDL_atomic_t *cancelled = NULL, bool indexedtextures = false);
     extern void destroyworldgeneration(worldgencontext *generation);
     extern bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height);
     extern bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface);

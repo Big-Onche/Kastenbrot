@@ -1,6 +1,18 @@
 #include "game.h"
 #include <errno.h>
 #include "world.h"
+#include "worldcube.h"
+#include "../engine/world.h"
+#include "worlddef.h"
+#include <SDL.h>
+#include <SDL_atomic.h>
+#include "worldruntime.h"
+#include "worldgen.h"
+#define WORLDIO_MODULE_IMPLEMENTATION
+#define WORLD_SNAPSHOT_SERVER_CODEC
+#include "worldcache.cpp"
+#undef WORLD_SNAPSHOT_SERVER_CODEC
+#undef WORLDIO_MODULE_IMPLEMENTATION
 
 namespace server
 {
@@ -26,7 +38,7 @@ namespace server
         PLAYER_IDENTITY_VERSION = 1,
         PLAYER_IDENTITY_TIMEOUT = 15000,
         PLAYER_IDENTITY_MAX_RECORDS = 100000,
-        PLAYER_STATE_VERSION = 3,
+        PLAYER_STATE_VERSION = 4,
         DROP_PICKUP_DELAY = 500
     };
 
@@ -80,6 +92,7 @@ namespace server
     VAR(servernpcdeathtimeout, 1000, 20000, 120000);
     VAR(servernpcspawnmillis, 100, 500, 60000);
     VAR(serversupportdecaymillis, 10, 3000, 60000);
+    VAR(maxchunkdist, 1, 3, WORLD_MAX_CHUNK_DIST);
 #ifdef STANDALONE
     VAR(personaldrops, 0, 0, 1);
     VAR(droptimeout, 1, 300, 86400);
@@ -209,9 +222,7 @@ namespace server
     {
         ivec target;
         int action, orient, item;
-        bool supportpersistent;
-
-        serverworldaction() : target(0, 0, 0), action(-1), orient(0), item(-1), supportpersistent(false) {}
+        serverworldaction() : target(0, 0, 0), action(-1), orient(0), item(-1) {}
     };
 
     enum
@@ -233,6 +244,70 @@ namespace server
         {
             memset(heights, 0, sizeof(heights));
         }
+    };
+
+    struct serverchunk
+    {
+        int x, y, saveafter;
+        uint revision, serializedrevision, storageversion;
+        cube *root;
+        worldsectionrenderdata renderdata;
+        vector<worldscatterinstance> scatter;
+        vector<uchar> gameplay, vox, dat;
+        bool loading, saving, dirty, playeredited, corrupted;
+
+        serverchunk(int x, int y)
+            : x(x), y(y), saveafter(0), revision(1), serializedrevision(0), storageversion(1), root(NULL), loading(true), saving(false), dirty(false),
+              playeredited(false), corrupted(false)
+        {
+        }
+
+        ~serverchunk() { freeworldsnapshotfamily(root); }
+    };
+
+    enum { SERVER_CHUNK_LOAD = 0, SERVER_CHUNK_SAVE };
+
+    struct serverchunkjob
+    {
+        int type, x, y;
+        uint revision, storageversion;
+        cube *root;
+        worldsectionrenderdata renderdata;
+        vector<worldscatterinstance> scatter;
+        vector<uchar> gameplay, vox, dat;
+        bool playeredited, success, missing;
+        string error;
+
+        serverchunkjob(int type, int x, int y)
+            : type(type), x(x), y(y), revision(1), storageversion(1), root(NULL), playeredited(false), success(false), missing(false)
+        {
+            error[0] = '\0';
+        }
+
+        ~serverchunkjob() { freeworldsnapshotfamily(root); }
+    };
+
+    struct serverchunkrequest
+    {
+        int clientnum, x, y;
+        serverchunkrequest(int clientnum, int x, int y) : clientnum(clientnum), x(x), y(y) {}
+    };
+
+    struct serverchunkdelivery
+    {
+        int clientnum, x, y;
+        uint revision;
+
+        serverchunkdelivery(int clientnum = -1, int x = 0, int y = 0, uint revision = 0)
+            : clientnum(clientnum), x(x), y(y), revision(revision) {}
+    };
+
+    struct serverdeadpassivenpc
+    {
+        ullong key;
+        int chunkx, chunky;
+
+        serverdeadpassivenpc(ullong key = 0, int chunkx = 0, int chunky = 0) : key(key), chunkx(chunkx), chunky(chunky) {}
     };
 
     struct servernpc
@@ -295,10 +370,17 @@ namespace server
         serversupportcheck(const ivec &cell = ivec(0, 0, 0), int remaining = 0) : cell(cell), remaining(remaining) {}
     };
 
-    static vector<serverworldaction *> serverworldactions;
     static vector<servercollisionchunk *> servercollisionchunks;
+    static vector<serverchunk *> serverchunks;
+    static vector<serverchunkrequest> serverchunkrequests;
+    static vector<serverchunkdelivery> serverchunkdeliveries;
+    static vector<serverchunkjob *> serverchunkjobs, serverchunkresults;
+    static SDL_Thread *serverchunkthread = NULL;
+    static SDL_mutex *serverchunkmutex = NULL;
+    static SDL_cond *serverchunkcond = NULL;
+    static bool stopserverchunkthread = false;
     static vector<servernpc *> servernpcs;
-    static vector<ullong> serverdeadpassivenpcs;
+    static vector<serverdeadpassivenpc> serverdeadpassivenpcs;
     static game::worldgenerator *serverworldgenerator = NULL;
     static bool servermapspawnready = false;
     static vec servermapspawn;
@@ -316,23 +398,19 @@ namespace server
     static vector<chestinstance *> serverchests;
     static uint nextdropid = 1;
     static uint nextfallblockid = 1;
-    static bool furnacesdirty = false, chestsdirty = false, passivenpcsdirty = false;
-    static int lastfurnacesave = 0, lastchestsave = 0, lastpassivenpcsave = 0;
     static serverworldaction *findworldaction(const ivec &target, int action);
+    static serverchunk *serverchunkforcell(const ivec &cell, bool queue = false);
     static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced = false);
     static void queueserverfallblockcheck(const ivec &cell);
     static void queueserversupportchange(const ivec &cell);
     static void sendfallblockspawn(int cn, const serverfallingblock &block);
-    static bool loadserverfurnaces();
-    static bool saveserverfurnaces(bool force = false);
-    static bool loadserverchests();
-    static bool saveserverchests(bool force = false);
-    static bool loadserverpassivenpcs();
-    static bool saveserverpassivenpcs(bool force = false);
     static chestinstance *findserverchest(const ivec &target);
+    static int serverfloordiv(int value, int divisor);
+    static int serverblockitem(const ivec &cell);
+    static void dirtyserverchunk(serverchunk &chunk);
+    static void dirtyservergameplaycell(const ivec &cell);
 
     vector<clientinfo *> clients;
-    vector<serveredit *> worldhistory;
     string smapname = "";
     stream *mapdata = NULL;
     int gamemode = STARTGAMEMODE;
@@ -511,24 +589,6 @@ namespace server
         return ok;
     }
 
-    static bool readselection(ucharbuf &p, selinfo &sel)
-    {
-        sel.o.x = getint(p); sel.o.y = getint(p); sel.o.z = getint(p);
-        sel.s.x = getint(p); sel.s.y = getint(p); sel.s.z = getint(p);
-        sel.grid = getint(p); sel.orient = getint(p);
-        sel.cx = getint(p); sel.cxs = getint(p); sel.cy = getint(p); sel.cys = getint(p);
-        sel.corner = getint(p);
-        return !p.overread();
-    }
-
-    static bool editselectiontype(int type)
-    {
-        return type == N_EDITF || type == N_EDITT || type == N_EDITM ||
-               type == N_FLIP || type == N_ROTATE || type == N_REPLACE ||
-               type == N_DELCUBE || type == N_EDITVSLOT ||
-               type == N_EDITSCATTER;
-    }
-
     static bool worldactionusessupport(int action)
     {
         // Packets identify the supporting face, while authoritative occupancy
@@ -550,8 +610,6 @@ namespace server
 
     static void loadserverstate()
     {
-        worldhistory.deletecontents();
-        serverworldactions.deletecontents();
         serverdrops.deletecontents();
         serverfallingblocks.deletecontents();
         serverfallblockchecks.setsize(0);
@@ -562,15 +620,11 @@ namespace server
         serverfurnaces.deletecontents();
         serverchests.deletecontents();
         serverdeadpassivenpcs.setsize(0);
-        furnacesdirty = chestsdirty = passivenpcsdirty = false;
         nextdropid = 1;
         nextfallblockid = 1;
         worldeditrevision = 0;
         serverworldready = true;
 
-        if(!loadserverfurnaces()) serverworldready = false;
-        if(!loadserverchests()) serverworldready = false;
-        if(!loadserverpassivenpcs()) serverworldready = false;
     }
 
     static bool ensureserverworld()
@@ -583,15 +637,403 @@ namespace server
         return serverworldready;
     }
 
+    static serverchunk *findserverchunk(int x, int y)
+    {
+        loopv(serverchunks) if(serverchunks[i]->x == x && serverchunks[i]->y == y) return serverchunks[i];
+        return NULL;
+    }
+
+    static void serverchunkfolder(char *folder, size_t length)
+    {
+        size_t written = 0;
+        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
+        for(const char *source = storageworld; *source && written + 1 < length; ++source)
+            if(iscubealnum(*source) || *source == '_' || *source == '-') folder[written++] = *source;
+        folder[written] = '\0';
+        if(!folder[0]) copystring(folder, "multiplayer", length);
+    }
+
+    static int serverchunkworker(void *)
+    {
+        for(;;)
+        {
+            SDL_LockMutex(serverchunkmutex);
+            while(serverchunkjobs.empty() && !stopserverchunkthread) SDL_CondWait(serverchunkcond, serverchunkmutex);
+            if(stopserverchunkthread)
+            {
+                SDL_UnlockMutex(serverchunkmutex);
+                return 0;
+            }
+            serverchunkjob *job = serverchunkjobs.remove(0);
+            SDL_UnlockMutex(serverchunkmutex);
+
+            string folder;
+            serverchunkfolder(folder, sizeof(folder));
+            if(job->type == SERVER_CHUNK_LOAD)
+            {
+                const worldsnapshotloadresult loaded = loadworldchunksnapshotdata(folder, job->x, job->y, job->root, job->scatter,
+                                                                                  job->renderdata, job->gameplay, job->error, &job->revision,
+                                                                                  &job->playeredited);
+                if(loaded == WORLD_SNAPSHOT_MISSING)
+                {
+                    job->missing = true;
+                    worldgencontext *generation = game::createworldgeneration(true, false, NULL, true);
+                    int families = 0, optimized = 0;
+                    job->root = game::generateworldchunk(generation, job->x, job->y, families, optimized, &job->renderdata);
+                    if(job->root) game::generateworldscatter(generation, job->root, job->x, job->y, job->scatter);
+                    game::destroyworldgeneration(generation);
+                    job->revision = 1;
+                    job->playeredited = false;
+                    job->success = job->root != NULL;
+                    if(!job->success && !job->error[0]) copystring(job->error, "world generation failed");
+                }
+                else if(loaded == WORLD_SNAPSHOT_LOADED)
+                {
+                    string voxname, datname;
+                    worldchunksnapshotfilename(voxname, sizeof(voxname), folder, job->x, job->y, "vox");
+                    worldchunksnapshotfilename(datname, sizeof(datname), folder, job->x, job->y, "dat");
+                    job->success = readworldsnapshotfile(voxname, job->vox) && readworldsnapshotfile(datname, job->dat);
+                    if(!job->success) copystring(job->error, "could not cache loaded chunk payload");
+                }
+            }
+            else
+            {
+                job->success = serializeworldchunksnapshot(job->root, job->x, job->y, job->revision, job->playeredited, job->renderdata,
+                                                           job->scatter, job->gameplay, job->vox, job->dat, job->error);
+                if(job->success)
+                {
+                    string voxname, datname;
+                    worldchunksnapshotfilename(voxname, sizeof(voxname), folder, job->x, job->y, "vox");
+                    worldchunksnapshotfilename(datname, sizeof(datname), folder, job->x, job->y, "dat");
+                    job->success = writeworldsnapshotfile(voxname, job->vox) && writeworldsnapshotfile(datname, job->dat);
+                    if(!job->success) copystring(job->error, "could not write .vox/.dat chunk pair");
+                }
+            }
+
+            SDL_LockMutex(serverchunkmutex);
+            serverchunkresults.add(job);
+            SDL_CondBroadcast(serverchunkcond);
+            SDL_UnlockMutex(serverchunkmutex);
+        }
+    }
+
+    static bool startserverchunkworker()
+    {
+        if(serverchunkthread) return true;
+        serverchunkmutex = SDL_CreateMutex();
+        serverchunkcond = SDL_CreateCond();
+        if(!serverchunkmutex || !serverchunkcond) return false;
+        stopserverchunkthread = false;
+        serverchunkthread = SDL_CreateThread(serverchunkworker, "server chunk storage", NULL);
+        return serverchunkthread != NULL;
+    }
+
+    static serverchunk *queueserverchunk(int x, int y)
+    {
+        if(serverchunk *chunk = findserverchunk(x, y)) return chunk;
+        serverchunk *chunk = new serverchunk(x, y);
+        serverchunks.add(chunk);
+        if(!startserverchunkworker())
+        {
+            chunk->loading = false;
+            chunk->corrupted = true;
+            return chunk;
+        }
+        SDL_LockMutex(serverchunkmutex);
+        serverchunkjobs.add(new serverchunkjob(SERVER_CHUNK_LOAD, x, y));
+        SDL_CondSignal(serverchunkcond);
+        SDL_UnlockMutex(serverchunkmutex);
+        return chunk;
+    }
+
+    static void serverchunkdataputuint(vector<uchar> &data, uint value) { loopi(4) data.add(uchar(value >> (8 * i))); }
+
+    static bool captureserverchunknpcs(int chunkx, int chunky, vector<uchar> &data)
+    {
+        data.setsize(0);
+        serverchunkdataputuint(data, 1);
+        int count = 0;
+        loopv(serverdeadpassivenpcs)
+            if(serverdeadpassivenpcs[i].chunkx == chunkx && serverdeadpassivenpcs[i].chunky == chunky) ++count;
+        serverchunkdataputuint(data, uint(count));
+        loopv(serverdeadpassivenpcs) if(serverdeadpassivenpcs[i].chunkx == chunkx && serverdeadpassivenpcs[i].chunky == chunky)
+        {
+            serverchunkdataputuint(data, uint(serverdeadpassivenpcs[i].key));
+            serverchunkdataputuint(data, uint(serverdeadpassivenpcs[i].key >> 32));
+        }
+        return true;
+    }
+
+    static bool restoreserverchunknpcs(int chunkx, int chunky, const vector<uchar> &data)
+    {
+        if(data.length() < 8) return false;
+        const uchar *position = data.getbuf(), *end = position + data.length();
+        #define READ_CHUNK_UINT(destination) \
+            do \
+            { \
+                if(end - position < 4) return false; \
+                destination = uint(position[0]) | uint(position[1]) << 8 | uint(position[2]) << 16 | uint(position[3]) << 24; \
+                position += 4; \
+            } while(0)
+        uint version, count;
+        READ_CHUNK_UINT(version);
+        READ_CHUNK_UINT(count);
+        if(version != 1 || count > 100000U || end - position != int(count * 8U)) return false;
+        loopi(count)
+        {
+            uint low, high;
+            READ_CHUNK_UINT(low);
+            READ_CHUNK_UINT(high);
+            const ullong key = ullong(low) | ullong(high) << 32;
+            if(!key) return false;
+            bool duplicate = false;
+            loopv(serverdeadpassivenpcs) if(serverdeadpassivenpcs[i].key == key) { duplicate = true; break; }
+            if(!duplicate) serverdeadpassivenpcs.add(serverdeadpassivenpc(key, chunkx, chunky));
+        }
+        #undef READ_CHUNK_UINT
+        return position == end;
+    }
+
+    static bool restoreserverchunkgameplay(serverchunkjob &job)
+    {
+        vector<furnaceinstance *> furnaces;
+        vector<chestinstance *> chests;
+        vector<uchar> npcdata;
+        if(!game::decodechunkdata(job.x, job.y, job.gameplay.getbuf(), job.gameplay.length(), furnaces, chests, npcdata) ||
+           !restoreserverchunknpcs(job.x, job.y, npcdata))
+        {
+            furnaces.deletecontents();
+            chests.deletecontents();
+            return false;
+        }
+        loopv(furnaces) serverfurnaces.add(furnaces[i]);
+        furnaces.setsize(0);
+        loopv(chests) serverchests.add(chests[i]);
+        chests.setsize(0);
+        return true;
+    }
+
+    static bool queueserverchunksave(serverchunk &chunk)
+    {
+        if(chunk.loading || chunk.saving || chunk.corrupted || !chunk.root || !startserverchunkworker()) return false;
+        vector<uchar> npcdata;
+        if(!captureserverchunknpcs(chunk.x, chunk.y, npcdata) ||
+           !game::capturechunkdata(chunk.x, chunk.y, serverfurnaces, serverchests, npcdata, chunk.gameplay)) return false;
+        serverchunkjob *job = new serverchunkjob(SERVER_CHUNK_SAVE, chunk.x, chunk.y);
+        job->revision = chunk.revision;
+        job->storageversion = chunk.storageversion;
+        job->playeredited = chunk.playeredited;
+        job->root = allocworldsnapshotfamily();
+        loopi(8) copyworldsnapshotcube(chunk.root[i], job->root[i]);
+        job->renderdata = chunk.renderdata;
+        if(!chunk.scatter.empty()) job->scatter.put(chunk.scatter.getbuf(), chunk.scatter.length());
+        if(!chunk.gameplay.empty()) job->gameplay.put(chunk.gameplay.getbuf(), chunk.gameplay.length());
+        chunk.saving = true;
+        SDL_LockMutex(serverchunkmutex);
+        serverchunkjobs.add(job);
+        SDL_CondSignal(serverchunkcond);
+        SDL_UnlockMutex(serverchunkmutex);
+        return true;
+    }
+
+    static void processserverchunkresults()
+    {
+        for(;;)
+        {
+            SDL_LockMutex(serverchunkmutex);
+            serverchunkjob *job = serverchunkresults.empty() ? NULL : serverchunkresults.remove(0);
+            SDL_UnlockMutex(serverchunkmutex);
+            if(!job) break;
+            serverchunk *chunk = findserverchunk(job->x, job->y);
+            if(!chunk) { delete job; continue; }
+            if(job->type == SERVER_CHUNK_LOAD)
+            {
+                chunk->loading = false;
+                chunk->corrupted = !job->success;
+                if(job->success && job->gameplay.empty())
+                {
+                    vector<furnaceinstance *> furnaces;
+                    vector<chestinstance *> chests;
+                    vector<uchar> npcdata;
+                    serverchunkdataputuint(npcdata, 1);
+                    serverchunkdataputuint(npcdata, 0);
+                    job->success = game::capturechunkdata(job->x, job->y, furnaces, chests, npcdata, job->gameplay);
+                    chunk->corrupted = !job->success;
+                    if(!job->success) copystring(job->error, "could not initialize chunk gameplay data");
+                }
+                if(job->success && !restoreserverchunkgameplay(*job))
+                {
+                    job->success = false;
+                    chunk->corrupted = true;
+                    copystring(job->error, "chunk gameplay data is corrupt or incompatible");
+                }
+                if(job->success)
+                {
+                    chunk->root = job->root;
+                    job->root = NULL;
+                    chunk->revision = job->revision;
+                    chunk->playeredited = job->playeredited;
+                    chunk->renderdata = job->renderdata;
+                    chunk->scatter.move(job->scatter);
+                    chunk->gameplay.move(job->gameplay);
+                    chunk->vox.move(job->vox);
+                    chunk->dat.move(job->dat);
+                    chunk->serializedrevision = chunk->vox.empty() ? 0 : chunk->revision;
+                    if(job->missing) chunk->dirty = true;
+                }
+            }
+            else
+            {
+                chunk->saving = false;
+                if(job->success)
+                {
+                    chunk->vox.move(job->vox);
+                    chunk->dat.move(job->dat);
+                    chunk->serializedrevision = job->revision;
+                    if(chunk->storageversion == job->storageversion) chunk->dirty = false;
+                }
+            }
+            if(!job->success)
+                conoutf(CON_ERROR, "authoritative chunk %d_%d failed: %s", job->x, job->y, job->error[0] ? job->error : "unknown error");
+            delete job;
+        }
+    }
+
+    static bool serverchunkinrange(const clientinfo &ci, int chunkx, int chunky)
+    {
+        const int focusx = ci.hasposition ? serverfloordiv(int(floorf(ci.o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
+                  focusy = ci.hasposition ? serverfloordiv(int(floorf(ci.o.y)), SERVER_WORLD_CHUNK_SIZE) : 0;
+        return max(abs(chunkx - focusx), abs(chunky - focusy)) <= maxchunkdist;
+    }
+
+    static uint serverchunkdeliveredrevision(int clientnum, int chunkx, int chunky)
+    {
+        loopv(serverchunkdeliveries)
+        {
+            const serverchunkdelivery &delivery = serverchunkdeliveries[i];
+            if(delivery.clientnum == clientnum && delivery.x == chunkx && delivery.y == chunky) return delivery.revision;
+        }
+        return 1;
+    }
+
+    static void markserverchunkdelivered(int clientnum, int chunkx, int chunky, uint revision)
+    {
+        loopv(serverchunkdeliveries)
+        {
+            serverchunkdelivery &delivery = serverchunkdeliveries[i];
+            if(delivery.clientnum != clientnum || delivery.x != chunkx || delivery.y != chunky) continue;
+            delivery.revision = revision;
+            return;
+        }
+        serverchunkdeliveries.add(serverchunkdelivery(clientnum, chunkx, chunky, revision));
+    }
+
+    static void sendserverchunk(clientinfo &ci, serverchunk &chunk)
+    {
+        if(!chunk.playeredited || chunk.serializedrevision != chunk.revision || chunk.vox.empty() || chunk.dat.empty()) return;
+        packetbuf packet(MAXTRANS + chunk.vox.length() + chunk.dat.length(), ENET_PACKET_FLAG_RELIABLE);
+        putint(packet, N_CHUNKDATA);
+        putint(packet, chunk.x); putint(packet, chunk.y); putint(packet, int(chunk.revision));
+        putint(packet, chunk.vox.length()); putint(packet, chunk.dat.length());
+        packet.put(chunk.vox.getbuf(), chunk.vox.length());
+        packet.put(chunk.dat.getbuf(), chunk.dat.length());
+        sendpacket(ci.clientnum, 2, packet.finalize());
+        markserverchunkdelivered(ci.clientnum, chunk.x, chunk.y, chunk.revision);
+    }
+
+    static void updateserverchunkrequests()
+    {
+        processserverchunkresults();
+        loopv(clients)
+        {
+            const clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->worldready) continue;
+            const int focusx = ci->hasposition ? serverfloordiv(int(floorf(ci->o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
+                      focusy = ci->hasposition ? serverfloordiv(int(floorf(ci->o.y)), SERVER_WORLD_CHUNK_SIZE) : 0;
+            for(int y = focusy - maxchunkdist; y <= focusy + maxchunkdist; ++y)
+                for(int x = focusx - maxchunkdist; x <= focusx + maxchunkdist; ++x) queueserverchunk(x, y);
+        }
+        for(int i = serverchunkrequests.length() - 1; i >= 0; --i)
+        {
+            serverchunkrequest request = serverchunkrequests[i];
+            clientinfo *ci = clients.inrange(request.clientnum) ? clients[request.clientnum] : NULL;
+            if(!ci || !ci->connected || !ci->worldready || !serverchunkinrange(*ci, request.x, request.y))
+            {
+                serverchunkrequests.remove(i);
+                continue;
+            }
+            serverchunk *chunk = queueserverchunk(request.x, request.y);
+            if(chunk->loading || chunk->saving) continue;
+            if(chunk->corrupted) { serverchunkrequests.remove(i); continue; }
+            if(chunk->dirty)
+            {
+                if(totalmillis >= chunk->saveafter) queueserverchunksave(*chunk);
+                continue;
+            }
+            serverchunkrequests.remove(i);
+            sendserverchunk(*ci, *chunk);
+        }
+        loopv(serverchunks) if(serverchunks[i]->dirty && !serverchunks[i]->saving && totalmillis >= serverchunks[i]->saveafter)
+            queueserverchunksave(*serverchunks[i]);
+        loopv(clients)
+        {
+            clientinfo *ci = clients[i];
+            if(!ci || !ci->connected || !ci->worldready) continue;
+            loopvj(serverchunks)
+            {
+                serverchunk &chunk = *serverchunks[j];
+                if(!chunk.playeredited || chunk.loading || chunk.saving || chunk.dirty || chunk.corrupted ||
+                   !serverchunkinrange(*ci, chunk.x, chunk.y) || serverchunkdeliveredrevision(ci->clientnum, chunk.x, chunk.y) >= chunk.revision)
+                    continue;
+                sendserverchunk(*ci, chunk);
+            }
+        }
+    }
+
+    static void shutdownserverchunks(bool flush)
+    {
+        if(flush && serverchunkthread)
+        {
+            for(;;)
+            {
+                processserverchunkresults();
+                loopv(serverchunks) if(serverchunks[i]->dirty && !serverchunks[i]->loading && !serverchunks[i]->saving)
+                    queueserverchunksave(*serverchunks[i]);
+                SDL_LockMutex(serverchunkmutex);
+                const bool queued = !serverchunkjobs.empty() || !serverchunkresults.empty();
+                SDL_UnlockMutex(serverchunkmutex);
+                bool active = false;
+                loopv(serverchunks) if(serverchunks[i]->loading || serverchunks[i]->saving || serverchunks[i]->dirty) { active = true; break; }
+                if(!queued && !active) break;
+                SDL_Delay(1);
+            }
+        }
+        if(serverchunkthread)
+        {
+            SDL_LockMutex(serverchunkmutex);
+            stopserverchunkthread = true;
+            SDL_CondBroadcast(serverchunkcond);
+            SDL_UnlockMutex(serverchunkmutex);
+            SDL_WaitThread(serverchunkthread, NULL);
+        }
+        serverchunkthread = NULL;
+        loopv(serverchunkjobs) delete serverchunkjobs[i];
+        serverchunkjobs.setsize(0);
+        loopv(serverchunkresults) delete serverchunkresults[i];
+        serverchunkresults.setsize(0);
+        if(serverchunkcond) SDL_DestroyCond(serverchunkcond);
+        if(serverchunkmutex) SDL_DestroyMutex(serverchunkmutex);
+        serverchunkcond = NULL;
+        serverchunkmutex = NULL;
+        stopserverchunkthread = false;
+        serverchunkrequests.setsize(0);
+        serverchunkdeliveries.setsize(0);
+        serverchunks.deletecontents();
+    }
+
     clientinfo *getinfo(int n)
     {
         return clients.inrange(n) ? clients[n] : NULL;
-    }
-
-    static void inventoryname(char *name, size_t len, const char *playerid, const char *suffix = "")
-    {
-        snprintf(name, len, "config/server-inventories/%s.cfg%s", playerid, suffix ? suffix : "");
-        path(name);
     }
 
     static void clearinventory(clientinfo &ci)
@@ -614,156 +1056,8 @@ namespace server
         }
         ci.craftinggridsize = 2;
         ci.craftingstationitem = -1;
+        ci.craftingstationtarget = ivec(0, 0, 0);
         ci.inventorydirty = false;
-    }
-
-    static bool parsepersistentid(const char *text, ullong &id)
-    {
-        if(!text || !text[0]) return false;
-        char *end = NULL;
-        errno = 0;
-        id = strtoull(text, &end, 10);
-        return end && !*end && errno != ERANGE;
-    }
-
-    static bool saveinventory(clientinfo &ci, bool force = false)
-    {
-        if(servercreative() || !ci.inventoryloaded || !ci.playerid[0] || (!force && !ci.inventorydirty)) return true;
-        string relative, temporary, finalpath, temppath;
-        inventoryname(relative, sizeof(relative), ci.playerid);
-        inventoryname(temporary, sizeof(temporary), ci.playerid, ".tmp");
-        copystring(finalpath, findfile(relative, "wb"));
-        copystring(temppath, findfile(temporary, "wb"));
-        stream *file = openrawfile(temporary, "wb");
-        if(!file) return false;
-        bool ok = file->printf("survival_inventory 5\nselected %d\ncursor " PERSISTENT_ULL_FORMAT " %d %d\ncrafting %d "
-                               PERSISTENT_ULL_FORMAT " %d %d %d\n", ci.selectedslot,
-                               getinventoryitempersistentid(ci.inventorycursoritem), ci.inventorycursorcount,
-                               ci.inventorycursordurability, ci.craftinggridsize,
-                               getinventoryitempersistentid(ci.craftingstationitem), ci.craftingstationtarget.x,
-                               ci.craftingstationtarget.y, ci.craftingstationtarget.z) > 0;
-        loopi(SURVIVAL_USABLE_SLOTS) if(ok)
-            ok = file->printf("slot %d " PERSISTENT_ULL_FORMAT " %d %d\n", i, getinventoryitempersistentid(ci.inventoryitems[i]),
-                              ci.inventorycounts[i], ci.inventorydurabilities[i]) > 0;
-        loopi(CRAFT_GRID_MAX) if(ok)
-            ok = file->printf("craftslot %d " PERSISTENT_ULL_FORMAT " %d %d\n", i, getinventoryitempersistentid(ci.craftingitems[i]),
-                              ci.craftingcounts[i], ci.craftingdurabilities[i]) > 0;
-        delete file;
-        if(!ok || !replaceserveridentityfile(temppath, finalpath))
-        {
-            remove(temppath);
-            return false;
-        }
-        ci.inventorydirty = false;
-        ci.lastinventorysave = max(totalmillis, 1);
-        return true;
-    }
-
-    static bool loadinventory(clientinfo &ci)
-    {
-        clearinventory(ci);
-        ci.inventoryloaded = true;
-        ci.lastinventorysave = max(totalmillis, 1);
-        if(servercreative()) return true;
-        string relative;
-        inventoryname(relative, sizeof(relative), ci.playerid);
-        stream *file = openrawfile(relative, "rb");
-        if(!file) return true;
-        bool versionseen = false, valid = true;
-        int inventoryversion = 0;
-        bool slotsseen[SURVIVAL_USABLE_SLOTS] = { false }, craftslotsseen[CRAFT_GRID_MAX] = { false };
-        string line;
-        while(file->getline(line, sizeof(line)))
-        {
-            int selected, slot, item, count, durability = INT_MAX;
-            ullong persistentid;
-            char persistenttext[32];
-            if(sscanf(line, "survival_inventory %d", &inventoryversion) == 1)
-            {
-                if(versionseen || inventoryversion != 5) valid = false;
-                versionseen = true;
-            }
-            else if(sscanf(line, "selected %d", &selected) == 1)
-            {
-                if(selected < 0 || selected >= SURVIVAL_HOTBAR_SLOTS) valid = false;
-                else ci.selectedslot = selected;
-            }
-            else if(sscanf(line, "cursor %31s %d %d", persistenttext, &count, &durability) >= 2)
-            {
-                if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
-                item = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
-                if(count < 0 || (count == 0 && item != -1) ||
-                   (count > 0 && (item < 0 || item >= numinventoryitems()))) valid = false;
-                else
-                {
-                    ci.inventorycursoritem = item;
-                    ci.inventorycursorcount = count > 0 ? clamp(count, 1, max(getinventoryitemmaxstack(item), 1)) : 0;
-                    ci.inventorycursordurability = count > 0 && isinventorytool(item)
-                                                   ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
-                }
-            }
-            else if(sscanf(line, "slot %d %31s %d %d", &slot, persistenttext, &count, &durability) >= 3)
-            {
-                if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
-                item = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
-                if(slot < 0 || slot >= SURVIVAL_USABLE_SLOTS || slotsseen[slot] ||
-                   count < 0 || (count == 0 && item != -1) ||
-                   (count > 0 && (item < 0 || item >= numinventoryitems())))
-                    valid = false;
-                else
-                {
-                    slotsseen[slot] = true;
-                    ci.inventoryitems[slot] = item;
-                    ci.inventorycounts[slot] = count > 0 ? clamp(count, 1, max(getinventoryitemmaxstack(item), 1)) : 0;
-                    ci.inventorydurabilities[slot] = count > 0 && isinventorytool(item)
-                                                     ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
-                }
-            }
-            else
-            {
-                int gridsize, stationitem, x, y, z;
-                if(sscanf(line, "crafting %d %31s %d %d %d", &gridsize, persistenttext, &x, &y, &z) == 5)
-                {
-                    if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
-                    stationitem = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
-                    if((gridsize != 2 && gridsize != 3) || stationitem >= numinventoryitems()) valid = false;
-                    else
-                    {
-                        ci.craftinggridsize = gridsize;
-                        ci.craftingstationitem = stationitem;
-                        ci.craftingstationtarget = ivec(x, y, z);
-                    }
-                }
-                else if(sscanf(line, "craftslot %d %31s %d %d", &slot, persistenttext, &count, &durability) >= 3)
-                {
-                    if(!parsepersistentid(persistenttext, persistentid)) { valid = false; break; }
-                    item = persistentid ? getinventoryitempersistentindex(persistentid) : -1;
-                    if(slot < 0 || slot >= CRAFT_GRID_MAX || craftslotsseen[slot] || count < 0 || (count == 0 && item != -1) ||
-                       (count > 0 && (item < 0 || item >= numinventoryitems()))) valid = false;
-                    else
-                    {
-                        craftslotsseen[slot] = true;
-                        ci.craftingitems[slot] = item;
-                        ci.craftingcounts[slot] = count > 0 ? clamp(count, 1, max(getinventoryitemmaxstack(item), 1)) : 0;
-                        ci.craftingdurabilities[slot] = count > 0 && isinventorytool(item)
-                                                      ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
-                    }
-                }
-                else if(line[0] && line[0] != '/' && line[0] != '#') valid = false;
-            }
-            if(!valid) break;
-        }
-        delete file;
-        if(!versionseen || !valid)
-        {
-            if(versionseen && inventoryversion != 5)
-                conoutf(CON_ERROR, "survival inventory for player ID %s uses unsupported format version %d", ci.playerid, inventoryversion);
-            else conoutf(CON_ERROR, "survival inventory for player ID %s is corrupt", ci.playerid);
-            clearinventory(ci);
-            ci.inventoryloaded = false;
-            return false;
-        }
-        return true;
     }
 
     static void playerstatename(char *name, size_t len, const char *playerid, const char *suffix = "")
@@ -779,9 +1073,28 @@ namespace server
         path(name);
     }
 
+    static bool writeserveritemstate(stream &file, int item, int count, int durability)
+    {
+        const ullong persistent = getinventoryitempersistentid(item);
+        return file.putlil<uint>(uint(persistent)) && file.putlil<uint>(uint(persistent >> 32)) &&
+               file.putlil<int>(count) && file.putlil<int>(durability);
+    }
+
+    static bool readserveritemstate(stream &file, int &item, int &count, int &durability)
+    {
+        const ullong persistent = ullong(file.getlil<uint>()) | ullong(file.getlil<uint>()) << 32;
+        count = file.getlil<int>();
+        durability = file.getlil<int>();
+        item = persistent ? getinventoryitempersistentindex(persistent, false) : -1;
+        if(!persistent) return item == -1 && count == 0 && durability == 0;
+        if(item < 0 || item >= numinventoryitems() || getinventoryitempersistentid(item) != persistent || count <= 0 ||
+           count > max(getinventoryitemmaxstack(item), 1)) return false;
+        return isinventorytool(item) ? count == 1 && durability > 0 && durability <= getinventorytoolmaxdurability(item) : durability == 0;
+    }
+
     static bool saveplayerstate(clientinfo &ci, bool force = false)
     {
-        if(!ci.hasposition || !ci.playerid[0] || (!force && !ci.positiondirty)) return true;
+        if(!ci.playerid[0] || (!force && !ci.positiondirty && !ci.inventorydirty)) return true;
         string relative, temporary, finalpath, temppath;
         playerstatename(relative, sizeof(relative), ci.playerid);
         playerstatename(temporary, sizeof(temporary), ci.playerid, ".tmp");
@@ -790,13 +1103,14 @@ namespace server
         stream *file = openrawfile(temporary, "wb");
         if(!file)
         {
-            ci.lastpositionsave = max(totalmillis, 1);
+            ci.lastpositionsave = ci.lastinventorysave = max(totalmillis, 1);
             return false;
         }
         bool ok = file->write("CCPS", 4) == 4 &&
                   file->putlil<uint>(PLAYER_STATE_VERSION) &&
                   writeserveridentitystring(*file, serverworld) &&
                   file->putlil<uint>(uint(serverworldseed)) &&
+                  file->putlil<int>(ci.hasposition ? 1 : 0) &&
                   file->putlil<int>(ci.positioncoords.x) &&
                   file->putlil<int>(ci.positioncoords.y) &&
                   file->putlil<int>(ci.positioncoords.z) &&
@@ -811,23 +1125,35 @@ namespace server
                   file->putlil<int>(int(ci.falling.y * DNF)) &&
                   file->putlil<int>(int(ci.falling.z * DNF)) &&
                   file->putlil<int>(int(ci.falldistance * DMF)) &&
-                  file->putlil<int>(ci.positionphysstate);
+                  file->putlil<int>(ci.positionphysstate) &&
+                  file->putlil<int>(ci.inventoryloaded ? 1 : 0) &&
+                  file->putlil<int>(ci.selectedslot) &&
+                  writeserveritemstate(*file, ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability);
+        loopi(SURVIVAL_USABLE_SLOTS) if(ok)
+            ok = writeserveritemstate(*file, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i]);
+        const ullong station = getinventoryitempersistentid(ci.craftingstationitem);
+        if(ok) ok = file->putlil<int>(ci.craftinggridsize) &&
+                    file->putlil<uint>(uint(station)) && file->putlil<uint>(uint(station >> 32)) &&
+                    file->putlil<int>(ci.craftingstationtarget.x) && file->putlil<int>(ci.craftingstationtarget.y) &&
+                    file->putlil<int>(ci.craftingstationtarget.z);
+        loopi(CRAFT_GRID_MAX) if(ok)
+            ok = writeserveritemstate(*file, ci.craftingitems[i], ci.craftingcounts[i], ci.craftingdurabilities[i]);
         delete file;
         if(!ok || !replaceserveridentityfile(temppath, finalpath))
         {
             remove(temppath);
-            ci.lastpositionsave = max(totalmillis, 1);
+            ci.lastpositionsave = ci.lastinventorysave = max(totalmillis, 1);
             return false;
         }
-        ci.positiondirty = false;
-        ci.lastpositionsave = max(totalmillis, 1);
+        ci.positiondirty = ci.inventorydirty = false;
+        ci.lastpositionsave = ci.lastinventorysave = max(totalmillis, 1);
         return true;
     }
 
     static bool loadplayerstate(clientinfo &ci)
     {
         ci.hasposition = ci.positiondirty = false;
-        ci.lastpositionsave = max(totalmillis, 1);
+        ci.lastpositionsave = ci.lastinventorysave = max(totalmillis, 1);
         ci.positioncoords = ivec(0, 0, 0);
         ci.positionyaw = ci.positionpitch = 0;
         ci.positionphysstate = PHYS_FALL;
@@ -835,6 +1161,9 @@ namespace server
         ci.falldistance = 0;
         ci.health = game::PLAYER_MAX_HEALTH;
         ci.dead = false;
+        clearinventory(ci);
+        ci.inventoryloaded = true;
+
         string relative;
         playerstatename(relative, sizeof(relative), ci.playerid);
         stream *file = openrawfile(relative, "rb");
@@ -842,34 +1171,42 @@ namespace server
 
         char magic[4], world[MAXSTRLEN] = "";
         uint version = 0, seed = 0;
+        int hasposition = 0, inventoryloaded = 0, yaw = 0, pitch = 0;
         ivec position;
-        int yaw = 0, pitch = 0;
         bool valid = file->read(magic, 4) == 4 && !memcmp(magic, "CCPS", 4) &&
-                     (version = file->getlil<uint>()) >= 1 && version <= PLAYER_STATE_VERSION &&
+                     (version = file->getlil<uint>()) == PLAYER_STATE_VERSION &&
                      readserveridentitystring(*file, world, sizeof(world)) &&
-                     (seed = file->getlil<uint>()) == uint(serverworldseed) &&
-                     !strcmp(world, serverworld) && file->size() - file->tell() == (version >= 3 ? 15 : version >= 2 ? 7 : 5) * int(sizeof(int));
+                     (seed = file->getlil<uint>()) == uint(serverworldseed) && !strcmp(world, serverworld);
         if(valid)
         {
-            position.x = file->getlil<int>();
-            position.y = file->getlil<int>();
-            position.z = file->getlil<int>();
-            yaw = file->getlil<int>();
-            pitch = file->getlil<int>();
-            if(version >= 2)
-            {
-                ci.health = file->getlil<int>() / 1000.0f;
-                ci.dead = file->getlil<int>() != 0;
-            }
-            if(version >= 3)
-            {
-                loopk(3) ci.velocity[k] = file->getlil<int>() / DNF;
-                loopk(3) ci.falling[k] = file->getlil<int>() / DNF;
-                ci.falldistance = file->getlil<int>() / DMF;
-                ci.positionphysstate = file->getlil<int>();
-            }
-            valid = position.z >= 0 && position.z <= int((1 << 13) * DMF) &&
-                    yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90 &&
+            hasposition = file->getlil<int>();
+            position.x = file->getlil<int>(); position.y = file->getlil<int>(); position.z = file->getlil<int>();
+            yaw = file->getlil<int>(); pitch = file->getlil<int>();
+            ci.health = file->getlil<int>() / 1000.0f;
+            ci.dead = file->getlil<int>() != 0;
+            loopk(3) ci.velocity[k] = file->getlil<int>() / DNF;
+            loopk(3) ci.falling[k] = file->getlil<int>() / DNF;
+            ci.falldistance = file->getlil<int>() / DMF;
+            ci.positionphysstate = file->getlil<int>();
+            inventoryloaded = file->getlil<int>();
+            ci.selectedslot = file->getlil<int>();
+            valid = readserveritemstate(*file, ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability);
+            loopi(SURVIVAL_USABLE_SLOTS) if(valid)
+                valid = readserveritemstate(*file, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i]);
+            ci.craftinggridsize = file->getlil<int>();
+            const ullong station = ullong(file->getlil<uint>()) | ullong(file->getlil<uint>()) << 32;
+            ci.craftingstationitem = station ? getinventoryitempersistentindex(station, false) : -1;
+            ci.craftingstationtarget.x = file->getlil<int>();
+            ci.craftingstationtarget.y = file->getlil<int>();
+            ci.craftingstationtarget.z = file->getlil<int>();
+            loopi(CRAFT_GRID_MAX) if(valid)
+                valid = readserveritemstate(*file, ci.craftingitems[i], ci.craftingcounts[i], ci.craftingdurabilities[i]);
+            valid = valid && (hasposition == 0 || hasposition == 1) && inventoryloaded == 1 &&
+                    ci.selectedslot >= 0 && ci.selectedslot < SURVIVAL_HOTBAR_SLOTS &&
+                    (ci.craftinggridsize == 2 || ci.craftinggridsize == 3) &&
+                    (!station || (ci.craftingstationitem >= 0 && getinventoryitempersistentid(ci.craftingstationitem) == station)) &&
+                    (!hasposition || (position.z >= 0 && position.z <= int((1 << 13) * DMF) &&
+                                      yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90)) &&
                     ci.health >= 0 && ci.health <= game::PLAYER_MAX_HEALTH && ci.dead == (ci.health <= 0) &&
                     ci.falldistance >= 0 && ci.falldistance <= (1 << 13) &&
                     ci.positionphysstate >= PHYS_FLOAT && ci.positionphysstate <= PHYS_BOUNCE && file->tell() == file->size();
@@ -878,342 +1215,38 @@ namespace server
         if(!valid)
         {
             conoutf(CON_WARN, "ignoring corrupt or incompatible player state %s (version %u, seed %u)", relative, version, seed);
+            clearinventory(ci);
+            ci.inventoryloaded = false;
             return false;
         }
 
-        ci.positioncoords = position;
-        ci.o = vec(position.x/DMF, position.y/DMF, position.z/DMF);
-        ci.positionyaw = yaw;
-        ci.positionpitch = pitch;
-        ci.hasposition = true;
-        ci.lastpositionmillis = max(totalmillis, 1);
+        if(hasposition)
+        {
+            ci.positioncoords = position;
+            ci.o = vec(position.x / DMF, position.y / DMF, position.z / DMF);
+            ci.positionyaw = yaw;
+            ci.positionpitch = pitch;
+            ci.hasposition = true;
+            ci.lastpositionmillis = max(totalmillis, 1);
+        }
         return true;
     }
-
-    static void serverfurnacename(char *name, size_t len, const char *suffix = "")
-    {
-        string safe;
-        int n = 0;
-        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
-        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
-            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
-        safe[n] = '\0';
-        if(!safe[0]) copystring(safe, "multiplayer");
-        snprintf(name, len, "media/map/%s/server.furnaces%s", safe, suffix ? suffix : "");
-        path(name);
-    }
-
-    static bool writeserverfurnacestring(stream &file, const char *value)
-    {
-        const int length = value ? int(strlen(value)) : 0;
-        return length < MAXSTRLEN && file.putlil<ushort>(ushort(length)) &&
-               (!length || file.write(value, length) == size_t(length));
-    }
-
-    static bool readserverfurnacestring(stream &file, char *value, int size)
-    {
-        const uint length = file.getlil<ushort>();
-        if(length >= uint(size) || (length && file.read(value, length) != length)) return false;
-        value[length] = '\0';
-        return true;
-    }
-
-    static bool writeserverfurnacestack(stream &file, int item, int count, int durability)
-    {
-        return writeserverfurnacestring(file, count > 0 ? getinventoryitemid(item) : "") &&
-               file.putlil<int>(max(count, 0)) && file.putlil<int>(max(durability, 0));
-    }
-
-    static bool readserverfurnacestack(stream &file, int &item, int &count, int &durability, int limit)
-    {
-        string id;
-        if(!readserverfurnacestring(file, id, sizeof(id))) return false;
-        count = file.getlil<int>();
-        durability = file.getlil<int>();
-        item = id[0] ? getinventoryitemindex(id) : -1;
-        if(item < 0 || count <= 0)
-        {
-            item = -1;
-            count = durability = 0;
-        }
-        else count = clamp(count, 1, min(max(getinventoryitemmaxstack(item), 1), max(limit, 1)));
-        return true;
-    }
-
-    static bool saveserverfurnaces(bool force)
-    {
-        if(!force && !furnacesdirty) return true;
-        string relative, temporary, finalpath, temppath;
-        serverfurnacename(relative, sizeof(relative));
-        serverfurnacename(temporary, sizeof(temporary), ".tmp");
-        copystring(finalpath, findfile(relative, "wb"));
-        copystring(temppath, findfile(temporary, "wb"));
-        stream *file = openrawfile(temporary, "wb");
-        if(!file) return false;
-        bool ok = file->write("CCSF", 4) == 4 && file->putlil<uint>(2) && file->putlil<uint>(uint(serverworldseed)) &&
-                  file->putlil<uint>(uint(serverfurnaces.length()));
-        loopv(serverfurnaces) if(ok)
-        {
-            furnaceinstance &furnace = *serverfurnaces[i];
-            ok = file->putlil<int>(furnace.target.x) && file->putlil<int>(furnace.target.y) && file->putlil<int>(furnace.target.z) &&
-                 writeserverfurnacestring(*file, getinventoryitemid(furnace.worlditem));
-            loopj(FURNACE_INPUT_MAX) if(ok)
-                ok = writeserverfurnacestack(*file, furnace.inputitems[j], furnace.inputcounts[j], furnace.inputdurabilities[j]);
-            if(ok) ok = writeserverfurnacestack(*file, furnace.fuelitem, furnace.fuelcount, furnace.fueldurability) &&
-                        writeserverfurnacestack(*file, furnace.outputitem, furnace.outputcount, furnace.outputdurability) &&
-                        writeserverfurnacestring(*file, getfurnacerecipeid(furnace.activerecipe)) &&
-                        file->putlil<int>(max(furnace.progress, 0)) && file->putlil<int>(max(furnace.heat, 0)) &&
-                        file->putlil<int>(max(furnace.heatcapacity, 0)) && file->putlil<int>(furnace.baking ? 1 : 0);
-        }
-        delete file;
-        if(!ok || !replaceserveridentityfile(temppath, finalpath))
-        {
-            remove(temppath);
-            return false;
-        }
-        furnacesdirty = false;
-        lastfurnacesave = max(totalmillis, 1);
-        return true;
-    }
-
-    static bool loadserverfurnaces()
-    {
-        serverfurnaces.deletecontents();
-        furnacesdirty = false;
-        lastfurnacesave = max(totalmillis, 1);
-        string relative;
-        serverfurnacename(relative, sizeof(relative));
-        stream *file = openrawfile(relative, "rb");
-        if(!file) return true;
-        char magic[4] = { 0, 0, 0, 0 };
-        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
-                   seed = version >= 1 && version <= 2 ? file->getlil<uint>() : 0,
-                   count = version >= 1 && version <= 2 ? file->getlil<uint>() : 0;
-        bool ok = !memcmp(magic, "CCSF", 4) && version >= 1 && version <= 2 && seed == uint(serverworldseed) && count <= 100000;
-        loopi(ok ? int(count) : 0)
-        {
-            ivec target;
-            target.x = file->getlil<int>(); target.y = file->getlil<int>(); target.z = file->getlil<int>();
-            string worlditemid, recipeid;
-            ok = readserverfurnacestring(*file, worlditemid, sizeof(worlditemid));
-            const int worlditem = ok ? getinventoryitemindex(worlditemid) : -1;
-            int inputslots = 0, inputlimit = 0;
-            const bool configured = ok && getworldfurnaceconfig(worlditem, inputslots, inputlimit);
-            furnaceinstance *furnace = ok ? new furnaceinstance(target, worlditem, configured ? inputslots : FURNACE_INPUT_MAX,
-                                                                 configured ? inputlimit : 16) : NULL;
-            loopj(FURNACE_INPUT_MAX) if(ok)
-                ok = readserverfurnacestack(*file, furnace->inputitems[j], furnace->inputcounts[j], furnace->inputdurabilities[j],
-                                            configured ? inputlimit : 16);
-            if(ok) ok = readserverfurnacestack(*file, furnace->fuelitem, furnace->fuelcount, furnace->fueldurability, INT_MAX) &&
-                        readserverfurnacestack(*file, furnace->outputitem, furnace->outputcount, furnace->outputdurability, INT_MAX) &&
-                        readserverfurnacestring(*file, recipeid, sizeof(recipeid));
-            if(ok)
-            {
-                furnace->activerecipe = recipeid[0] ? getfurnacerecipeindex(recipeid) : -1;
-                furnace->progress = clamp(file->getlil<int>(), 0, max(getfurnacerecipeduration(furnace->activerecipe) - 1, 0));
-                furnace->heat = max(file->getlil<int>(), 0);
-                furnace->heatcapacity = max(file->getlil<int>(), furnace->heat);
-                furnace->baking = version >= 2 && file->getlil<int>() != 0;
-                if(furnace->fuelcount > 0 && getfurnacefuelmillis(furnace->fuelitem) <= 0)
-                    furnace->fuelitem = -1, furnace->fuelcount = furnace->fueldurability = 0;
-                serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_CUBE);
-                if(configured && state && state->action == WORLD_ACTION_PLACE_CUBE && state->item == worlditem)
-                {
-                    bool syncchanged = false;
-                    updatefurnaceinstance(*furnace, 0, syncchanged);
-                    serverfurnaces.add(furnace);
-                }
-                else delete furnace;
-            }
-            else delete furnace;
-            if(!ok) break;
-        }
-        if(ok) ok = file->tell() == file->size();
-        delete file;
-        if(!ok)
-        {
-            serverfurnaces.deletecontents();
-            conoutf(CON_ERROR, "authoritative furnace state is corrupt or incompatible");
-        }
-        else conoutf("loaded %d authoritative furnace instances", serverfurnaces.length());
-        return ok;
-    }
-
-    static void serverchestname(char *name, size_t len, const char *suffix = "")
-    {
-        string safe;
-        int n = 0;
-        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
-        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
-            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
-        safe[n] = '\0';
-        if(!safe[0]) copystring(safe, "multiplayer");
-        snprintf(name, len, "media/map/%s/server.chests%s", safe, suffix ? suffix : "");
-        path(name);
-    }
-
-    static bool saveserverchests(bool force)
-    {
-        if(!force && !chestsdirty) return true;
-        string relative, temporary, finalpath, temppath;
-        serverchestname(relative, sizeof(relative));
-        serverchestname(temporary, sizeof(temporary), ".tmp");
-        copystring(finalpath, findfile(relative, "wb"));
-        copystring(temppath, findfile(temporary, "wb"));
-        stream *file = openrawfile(temporary, "wb");
-        if(!file) return false;
-        bool ok = file->write("CCSC", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(serverworldseed)) &&
-                  file->putlil<uint>(uint(serverchests.length()));
-        loopv(serverchests) if(ok)
-        {
-            chestinstance &chest = *serverchests[i];
-            ok = file->putlil<int>(chest.target.x) && file->putlil<int>(chest.target.y) && file->putlil<int>(chest.target.z) &&
-                 writeserverfurnacestring(*file, getinventoryitemid(chest.worlditem)) && file->putlil<int>(chest.yaw);
-            loopj(CHEST_SLOTS_MAX) if(ok)
-                ok = writeserverfurnacestack(*file, chest.items[j], chest.counts[j], chest.durabilities[j]);
-        }
-        delete file;
-        if(!ok || !replaceserveridentityfile(temppath, finalpath))
-        {
-            remove(temppath);
-            return false;
-        }
-        chestsdirty = false;
-        lastchestsave = max(totalmillis, 1);
-        return true;
-    }
-
-    static bool loadserverchests()
-    {
-        serverchests.deletecontents();
-        chestsdirty = false;
-        lastchestsave = max(totalmillis, 1);
-        string relative;
-        serverchestname(relative, sizeof(relative));
-        stream *file = openrawfile(relative, "rb");
-        if(!file) return true;
-        char magic[4] = { 0, 0, 0, 0 };
-        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
-                   seed = version == 1 ? file->getlil<uint>() : 0,
-                   count = version == 1 ? file->getlil<uint>() : 0;
-        bool ok = !memcmp(magic, "CCSC", 4) && version == 1 && seed == uint(serverworldseed) && count <= 100000;
-        loopi(ok ? int(count) : 0)
-        {
-            ivec target;
-            target.x = file->getlil<int>(); target.y = file->getlil<int>(); target.z = file->getlil<int>();
-            string worlditemid;
-            ok = readserverfurnacestring(*file, worlditemid, sizeof(worlditemid));
-            const int worlditem = ok ? getinventoryitemindex(worlditemid) : -1;
-            int slots = 0;
-            const bool configured = ok && getworldchestconfig(worlditem, slots);
-            const int yaw = ok ? file->getlil<int>() : 0;
-            chestinstance *chest = ok ? new chestinstance(target, worlditem, configured ? slots : CHEST_SLOTS_MAX, yaw) : NULL;
-            loopj(CHEST_SLOTS_MAX) if(ok)
-                ok = readserverfurnacestack(*file, chest->items[j], chest->counts[j], chest->durabilities[j], INT_MAX);
-            if(ok)
-            {
-                serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_ITEM);
-                if(configured && state && state->action == WORLD_ACTION_PLACE_ITEM && state->item == worlditem) serverchests.add(chest);
-                else delete chest;
-            }
-            else delete chest;
-            if(!ok) break;
-        }
-        if(ok) ok = file->tell() == file->size();
-        delete file;
-        if(!ok)
-        {
-            serverchests.deletecontents();
-            conoutf(CON_ERROR, "authoritative chest state is corrupt or incompatible");
-        }
-        else conoutf("loaded %d authoritative chest instances", serverchests.length());
-        return ok;
-    }
-
-    static void serverpassivenpcname(char *name, size_t len, const char *suffix = "")
-    {
-        string safe;
-        int n = 0;
-        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
-        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
-            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
-        safe[n] = '\0';
-        if(!safe[0]) copystring(safe, "multiplayer");
-        snprintf(name, len, "media/map/%s/server.npcs%s", safe, suffix ? suffix : "");
-        path(name);
-    }
-
     static bool serverpassivenpcdead(ullong key)
     {
-        loopv(serverdeadpassivenpcs) if(serverdeadpassivenpcs[i] == key) return true;
+        loopv(serverdeadpassivenpcs) if(serverdeadpassivenpcs[i].key == key) return true;
         return false;
     }
 
-    static void killserverpassivenpc(ullong key)
+    static void killserverpassivenpc(ullong key, const vec &position)
     {
         if(!key || serverpassivenpcdead(key)) return;
-        serverdeadpassivenpcs.add(key);
-        passivenpcsdirty = true;
+        const int chunkx = serverfloordiv(int(floorf(position.x)), SERVER_WORLD_CHUNK_SIZE),
+                  chunky = serverfloordiv(int(floorf(position.y)), SERVER_WORLD_CHUNK_SIZE);
+        serverdeadpassivenpcs.add(serverdeadpassivenpc(key, chunkx, chunky));
+        serverchunk *chunk = queueserverchunk(chunkx, chunky);
+        if(chunk && chunk->loading) chunk->dirty = true;
+        else if(chunk && !chunk->corrupted) dirtyservergameplaycell(ivec(chunkx * SERVER_WORLD_CHUNK_SIZE, chunky * SERVER_WORLD_CHUNK_SIZE, 0));
     }
-
-    static bool saveserverpassivenpcs(bool force)
-    {
-        if(!force && !passivenpcsdirty) return true;
-        string relative, temporary, finalpath, temppath;
-        serverpassivenpcname(relative, sizeof(relative));
-        serverpassivenpcname(temporary, sizeof(temporary), ".tmp");
-        copystring(finalpath, findfile(relative, "wb"));
-        copystring(temppath, findfile(temporary, "wb"));
-        stream *file = openrawfile(temporary, "wb");
-        if(!file) return false;
-        bool ok = file->write("CCPN", 4) == 4 && file->putlil<uint>(1) && file->putlil<uint>(uint(serverworldseed)) &&
-                  file->putlil<uint>(uint(serverdeadpassivenpcs.length()));
-        loopv(serverdeadpassivenpcs) if(ok)
-            ok = file->putlil<uint>(uint(serverdeadpassivenpcs[i])) && file->putlil<uint>(uint(serverdeadpassivenpcs[i] >> 32));
-        if(ok) ok = file->flush();
-        delete file;
-        if(!ok || !replaceserveridentityfile(temppath, finalpath))
-        {
-            remove(temppath);
-            return false;
-        }
-        passivenpcsdirty = false;
-        lastpassivenpcsave = max(totalmillis, 1);
-        return true;
-    }
-
-    static bool loadserverpassivenpcs()
-    {
-        serverdeadpassivenpcs.setsize(0);
-        passivenpcsdirty = false;
-        lastpassivenpcsave = max(totalmillis, 1);
-        string relative;
-        serverpassivenpcname(relative, sizeof(relative));
-        stream *file = openrawfile(relative, "rb");
-        if(!file) return true;
-        char magic[4] = { 0, 0, 0, 0 };
-        const uint version = file->read(magic, 4) == 4 ? file->getlil<uint>() : 0,
-                   seed = version == 1 ? file->getlil<uint>() : 0,
-                   count = version == 1 ? file->getlil<uint>() : 0;
-        bool ok = !memcmp(magic, "CCPN", 4) && version == 1 && seed == uint(serverworldseed) && count <= 1000000;
-        loopi(ok ? int(count) : 0)
-        {
-            const ullong low = file->getlil<uint>(), high = file->getlil<uint>();
-            const ullong key = low | high << 32;
-            if(!key) { ok = false; break; }
-            serverdeadpassivenpcs.add(key);
-        }
-        if(ok) ok = file->tell() == file->size();
-        delete file;
-        if(!ok)
-        {
-            serverdeadpassivenpcs.setsize(0);
-            conoutf(CON_ERROR, "authoritative passive NPC state is corrupt or incompatible");
-        }
-        else conoutf("loaded %d killed passive NPC spawn states", serverdeadpassivenpcs.length());
-        return ok;
-    }
-
     static void sendinventory(clientinfo &ci)
     {
         packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
@@ -1401,12 +1434,7 @@ namespace server
         const ivec target = ci.chesttarget;
         ci.chestopen = false;
         sendcheststate(ci, chestinstance(), false);
-        if(!chesthasviewers(target))
-        {
-            sendchestanimation(target, false);
-            if(chestsdirty && !saveserverchests(true))
-                conoutf(CON_ERROR, "could not save authoritative chest state after closing chest");
-        }
+        if(!chesthasviewers(target)) sendchestanimation(target, false);
     }
 
     static void syncchestviewers(const chestinstance &chest)
@@ -1517,7 +1545,7 @@ namespace server
                 banned ? "banned" : "kicked", playerid[0] ? playerid : "(local)", ci.clientnum, kicks, identitybankicks,
                 reason ? reason : "illegal action");
         cancelbreak(ci);
-        saveinventory(ci, true);
+        saveplayerstate(ci, true);
         if(!ci.local) disconnect_client(ci.clientnum, DISC_KICK);
         return false;
     }
@@ -1726,7 +1754,7 @@ namespace server
             loopvj(clients) if(clients[j] && clients[j]->furnaceopen && clients[j]->furnacetarget == target)
                 closefurnace(*clients[j]);
             delete serverfurnaces.remove(i);
-            furnacesdirty = true;
+            dirtyservergameplaycell(target);
             return;
         }
     }
@@ -1741,7 +1769,7 @@ namespace server
             loopvj(clients) if(clients[j] && clients[j]->chestopen && clients[j]->chesttarget == target)
                 closechest(*clients[j]);
             delete serverchests.remove(i);
-            chestsdirty = true;
+            dirtyservergameplaycell(target);
             return;
         }
     }
@@ -1750,14 +1778,32 @@ namespace server
     {
         const bool scatter = action == WORLD_ACTION_PLACE_SCATTER || action == WORLD_ACTION_PLACE_ITEM ||
                              action == WORLD_ACTION_BREAK_SCATTER_START;
-        loopvrev(serverworldactions)
+        static serverworldaction state;
+        state = serverworldaction();
+        state.target = target;
+        if(!scatter)
         {
-            serverworldaction *state = serverworldactions[i];
-            const bool statescatter = state->action == WORLD_ACTION_PLACE_SCATTER || state->action == WORLD_ACTION_PLACE_ITEM ||
-                                      state->action == WORLD_ACTION_BREAK_SCATTER_START;
-            if(state->target == target && scatter == statescatter) return state;
+            state.item = serverblockitem(target);
+            state.action = state.item >= 0 ? WORLD_ACTION_PLACE_CUBE : WORLD_ACTION_BREAK_CUBE_START;
+            return &state;
         }
-        return NULL;
+        serverchunk *chunk = serverchunkforcell(target);
+        if(chunk && !chunk->loading && !chunk->corrupted)
+        {
+            const int localx = target.x - chunk->x * SERVER_WORLD_CHUNK_SIZE,
+                      localy = target.y - chunk->y * SERVER_WORLD_CHUNK_SIZE;
+            loopv(chunk->scatter)
+            {
+                const worldscatterinstance &instance = chunk->scatter[i];
+                if(instance.x != localx || instance.y != localy || instance.z != target.z) continue;
+                state.orient = instance.orient;
+                state.item = getworldscatteritem(instance.type);
+                state.action = getworlditemtype(state.item) == WORLD_ITEM_PLACEABLE ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_SCATTER;
+                return &state;
+            }
+        }
+        state.action = WORLD_ACTION_BREAK_SCATTER_START;
+        return &state;
     }
 
     static void queueserverfallblockcheck(const ivec &cell)
@@ -1800,19 +1846,26 @@ namespace server
 
     static void setworldactionstate(const ivec &target, int action, int orient, int item, bool playerplaced)
     {
-        serverworldaction *state = findworldaction(target, action);
-        if(!state)
+        if(action == WORLD_ACTION_PLACE_SCATTER || action == WORLD_ACTION_PLACE_ITEM || action == WORLD_ACTION_BREAK_SCATTER_START)
         {
-            state = new serverworldaction;
-            state->target = target;
-            serverworldactions.add(state);
+            serverchunk *chunk = serverchunkforcell(target);
+            if(chunk && !chunk->loading && !chunk->corrupted)
+            {
+                const int localx = target.x - chunk->x * SERVER_WORLD_CHUNK_SIZE,
+                          localy = target.y - chunk->y * SERVER_WORLD_CHUNK_SIZE;
+                for(int i = chunk->scatter.length() - 1; i >= 0; --i)
+                {
+                    const worldscatterinstance &instance = chunk->scatter[i];
+                    if(instance.x == localx && instance.y == localy && instance.z == target.z) chunk->scatter.remove(i);
+                }
+                if(action == WORLD_ACTION_PLACE_SCATTER || action == WORLD_ACTION_PLACE_ITEM)
+                {
+                    const int type = getworlditemindex(item);
+                    if(type >= 0) chunk->scatter.add(worldscatterinstance(localx, localy, target.z, type, orient));
+                }
+            }
         }
-        state->action = action;
-        state->orient = orient;
-        state->item = item;
-        const int type = getworlditemtype(item), index = getworlditemindex(item);
-        state->supportpersistent = action == WORLD_ACTION_PLACE_CUBE && playerplaced && type == WORLD_ITEM_CUBE &&
-                                   getworldcubesupportpersistentonplace(index);
+        (void)playerplaced;
         queueserverfallblockcheck(target);
         queueserverfallblockcheck(ivec(target).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE)));
         queueserversupportchange(target);
@@ -1823,6 +1876,112 @@ namespace server
         int quotient = value / divisor, remainder = value % divisor;
         if(remainder < 0) --quotient;
         return quotient;
+    }
+
+    static serverchunk *serverchunkforcell(const ivec &cell, bool queue)
+    {
+        const int chunkx = serverfloordiv(cell.x, SERVER_WORLD_CHUNK_SIZE), chunky = serverfloordiv(cell.y, SERVER_WORLD_CHUNK_SIZE);
+        return queue ? queueserverchunk(chunkx, chunky) : findserverchunk(chunkx, chunky);
+    }
+
+    static cube *serverchunkcubeat(serverchunk &chunk, const ivec &cell, bool create)
+    {
+        if(!chunk.root || cell.z < 0 || cell.z >= SERVER_WORLD_MAP_SIZE) return NULL;
+        const ivec position(cell.x - chunk.x * SERVER_WORLD_CHUNK_SIZE, cell.y - chunk.y * SERVER_WORLD_CHUNK_SIZE, cell.z);
+        int scale = WORLD_CHUNK_SCALE - 1, size = 1 << scale;
+        cube *current = &chunk.root[octastep(position.x, position.y, position.z, scale)];
+        while(size > SERVER_WORLD_BLOCK_SIZE)
+        {
+            if(!current->children)
+            {
+                if(!create) return current;
+                current->children = allocworldsnapshotfamily();
+                loopi(8)
+                {
+                    cube &child = current->children[i];
+                    cube *children = child.children;
+                    child = *current;
+                    child.children = children;
+                    child.ext = NULL;
+                    child.visible = child.merged = 0;
+                }
+            }
+            --scale;
+            size >>= 1;
+            current = &current->children[octastep(position.x, position.y, position.z, scale)];
+        }
+        return current;
+    }
+
+    static const cube *serverchunkcubeat(const ivec &cell)
+    {
+        serverchunk *chunk = serverchunkforcell(cell);
+        return chunk && !chunk->loading && !chunk->corrupted ? serverchunkcubeat(*chunk, cell, false) : NULL;
+    }
+
+    static void dirtyserverchunk(serverchunk &chunk)
+    {
+        ++chunk.revision;
+        ++chunk.storageversion;
+        chunk.playeredited = chunk.dirty = true;
+        chunk.saveafter = totalmillis;
+        chunk.serializedrevision = 0;
+        chunk.vox.setsize(0);
+        chunk.dat.setsize(0);
+    }
+
+    static void dirtyservergameplaycell(const ivec &cell)
+    {
+        serverchunk *chunk = serverchunkforcell(cell);
+        if(!chunk || chunk->loading || chunk->corrupted) return;
+        if(!chunk->dirty || chunk->saving) chunk->saveafter = totalmillis + 5000;
+        ++chunk->storageversion;
+        chunk->dirty = true;
+        chunk->serializedrevision = 0;
+        chunk->vox.setsize(0);
+        chunk->dat.setsize(0);
+    }
+
+    static bool updateserverchunkblock(const ivec &cell, int action, int item)
+    {
+        serverchunk *chunk = serverchunkforcell(cell, true);
+        if(!chunk || chunk->loading || chunk->corrupted) return false;
+        cube *voxel = serverchunkcubeat(*chunk, cell, true);
+        if(!voxel) return false;
+        if(action == WORLD_ACTION_PLACE_CUBE)
+        {
+            const int worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+            if(worldindex < 0 || worldindex >= numworldcubes()) return false;
+            freeworldsnapshotfamily(voxel->children);
+            voxel->children = NULL;
+            voxel->ext = NULL;
+            voxel->material = MAT_AIR;
+            voxel->visible = voxel->merged = 0;
+            solidfaces(*voxel);
+            loopi(6) voxel->texture[i] = ushort(worldindex);
+        }
+        else if(action == WORLD_ACTION_BREAK_CUBE_START)
+        {
+            freeworldsnapshotfamily(voxel->children);
+            resetworldsnapshotcube(*voxel);
+        }
+        else return true;
+        dirtyserverchunk(*chunk);
+        return true;
+    }
+
+    static bool updateserverchunkcorner(const ivec &cell, int orient, int corner)
+    {
+        serverchunk *chunk = serverchunkforcell(cell, true);
+        if(!chunk || chunk->loading || chunk->corrupted) return false;
+        cube *voxel = serverchunkcubeat(*chunk, cell, true);
+        if(!voxel || isempty(*voxel) || orient < O_LEFT || orient > O_TOP || corner < 0 || corner > 3) return false;
+        const int axis = dimension(orient), endpoint = dimcoord(orient), direction = endpoint ? -1 : 1;
+        const int previous = edgeget(cubeedge(*voxel, axis, corner & 1, corner >> 1), endpoint);
+        if(previous + direction < 0 || previous + direction > 8) return false;
+        pushworldcubecorneredge(*voxel, axis, corner & 1, corner >> 1, endpoint, direction);
+        dirtyserverchunk(*chunk);
+        return true;
     }
 
     static vec serverdirection(float yaw, float pitch)
@@ -1856,136 +2015,31 @@ namespace server
         return SERVER_WORLD_GROUND_HEIGHT + chunk->heights[localy * SERVER_WORLD_CHUNK_BLOCKS + localx] * SERVER_WORLD_BLOCK_SIZE;
     }
 
-    static int serverworldcubeindex(const char *id)
-    {
-        loopi(numworldcubes()) if(!cubecasecmp(getworldcubename(i), id)) return i;
-        return -1;
-    }
-
-    static int serverbaseworldcubeindex(const ivec &cell)
-    {
-        if(cell.z < 0 || cell.z >= SERVER_WORLD_MAP_SIZE) return -1;
-        if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
-        const int x = serverfloordiv(cell.x, SERVER_WORLD_BLOCK_SIZE), y = serverfloordiv(cell.y, SERVER_WORLD_BLOCK_SIZE);
-        game::worldtectonicsample tectonics;
-        const int height = serverworldgenerator->height(x, y, &tectonics),
-                  surface = SERVER_WORLD_GROUND_HEIGHT + height * SERVER_WORLD_BLOCK_SIZE,
-                  watertop = SERVER_WORLD_GROUND_HEIGHT + serverworldgenerator->settings.sealevel * SERVER_WORLD_BLOCK_SIZE,
-                  dirtbottom = surface - serverworldgenerator->settings.soildepth * SERVER_WORLD_BLOCK_SIZE,
-                  grassbottom = surface - SERVER_WORLD_BLOCK_SIZE;
-        if(cell.z >= surface && cell.z < surface + 10 * SERVER_WORLD_BLOCK_SIZE)
-        {
-            const int treeblock = serverworldgenerator->treeblock(x, y, cell.z / SERVER_WORLD_BLOCK_SIZE);
-            if(treeblock == game::WORLD_TREE_WOOD) return serverworldcubeindex("wood");
-            if(treeblock == game::WORLD_TREE_DARK_WOOD) return serverworldcubeindex("dark_wood");
-            if(treeblock == game::WORLD_TREE_LEAVES) return serverworldcubeindex("leaves");
-            if(treeblock == game::WORLD_TREE_NEEDLES) return serverworldcubeindex("needles");
-        }
-        if(cell.z >= max(surface, watertop) || (surface < watertop && cell.z >= surface)) return -1;
-        if(cell.z + SERVER_WORLD_BLOCK_SIZE <= dirtbottom) return serverworldcubeindex("stone");
-        const int biome = serverworldgenerator->biome(x, y, height);
-        const bool cliff = tectonics.rockyledge > 0.22f || serverworldgenerator->cliff(x, y, height), rock = serverworldgenerator->rock(x, y, height);
-        if(cliff) return cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface ? serverworldcubeindex("stone") : -1;
-        if(rock)
-        {
-            if(biome == game::WORLD_BIOME_SNOW && cell.z >= grassbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
-                return serverworldcubeindex("snow");
-            return cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface ? serverworldcubeindex("stone") : -1;
-        }
-        const int beachminimum = serverworldgenerator->settings.sealevel + min(serverworldgenerator->settings.beachminheight,
-                                                                                serverworldgenerator->settings.beachmaxheight),
-                  beachmaximum = serverworldgenerator->settings.sealevel + max(serverworldgenerator->settings.beachminheight,
-                                                                                serverworldgenerator->settings.beachmaxheight);
-        if((biome == game::WORLD_BIOME_DESERT || (height >= beachminimum && height <= beachmaximum && serverworldgenerator->beach(x, y))) &&
-           cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
-            return serverworldcubeindex("sand");
-        if(biome == game::WORLD_BIOME_OCEAN)
-            return cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface ? serverworldcubeindex("dirt") : -1;
-        if(cell.z >= dirtbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= grassbottom) return serverworldcubeindex("dirt");
-        if(cell.z >= grassbottom && cell.z + SERVER_WORLD_BLOCK_SIZE <= surface)
-            return serverworldcubeindex(biome == game::WORLD_BIOME_SNOW ? "snow" : "grass");
-        return -1;
-    }
-
-    static bool servereditcontains(const serveredit &edit, const ivec &cell)
-    {
-        if(!edit.active || !edit.hasselection || edit.selection.grid <= 0) return false;
-        const ivec end = ivec(edit.selection.o).add(ivec(edit.selection.s).mul(edit.selection.grid));
-        return cell.x >= edit.selection.o.x && cell.y >= edit.selection.o.y && cell.z >= edit.selection.o.z &&
-               cell.x < end.x && cell.y < end.y && cell.z < end.z;
-    }
 
     static int serverblockitem(const ivec &cell)
     {
-        if(serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE))
-            return state->action == WORLD_ACTION_PLACE_CUBE ? state->item : -1;
-        loopvrev(worldhistory) if(worldhistory[i]->type != N_WORLDAUTH && servereditcontains(*worldhistory[i], cell))
+        serverchunkforcell(cell, true);
+        if(const cube *voxel = serverchunkcubeat(cell))
         {
-            const serveredit &edit = *worldhistory[i];
-            if(edit.type == N_EDITF)
-            {
-                ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
-                selinfo unused;
-                if(readselection(payload, unused))
-                {
-                    getint(payload);
-                    if(getint(payload) == 2 && !payload.overread()) continue;
-                }
-            }
-            return -1;
+            if(isempty(*voxel)) return -1;
+            loopi(6) if(voxel->texture[i] != voxel->texture[0]) return -1;
+            return getworldcubeitem(int(voxel->texture[0]));
         }
-        const int worldindex = serverbaseworldcubeindex(cell);
-        return worldindex >= 0 ? getworldcubeitem(worldindex) : -1;
+        return -1;
     }
 
     static int servercornerpushcount(const ivec &cell, int orient, int corner)
     {
-        int pushes = 0;
-        loopv(worldhistory)
-        {
-            const serveredit &edit = *worldhistory[i];
-            if(!edit.active) continue;
-            if(edit.type == N_WORLDAUTH)
-            {
-                ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
-                const int action = getint(payload);
-                ivec target;
-                target.x = getint(payload); target.y = getint(payload); target.z = getint(payload);
-                const int actionorient = getint(payload);
-                if(!payload.overread() && (action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_BREAK_CUBE_START) &&
-                   worldactionstatecell(target, action, actionorient) == cell)
-                    pushes = 0;
-                continue;
-            }
-            if(edit.type != N_EDITF || edit.selection.o != cell || edit.selection.grid != SERVER_WORLD_BLOCK_SIZE ||
-               edit.selection.s != ivec(1, 1, 1) || edit.selection.orient != orient || edit.selection.corner != corner)
-                continue;
-            ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
-            selinfo unused;
-            if(!readselection(payload, unused)) continue;
-            const int dir = getint(payload), mode = getint(payload);
-            if(!payload.overread() && mode == 2) pushes = clamp(pushes + dir, 0, 8);
-        }
-        return pushes;
+        const cube *voxel = serverchunkcubeat(cell);
+        if(!voxel || isempty(*voxel) || orient < O_LEFT || orient > O_TOP || corner < 0 || corner > 3) return 0;
+        const int axis = dimension(orient), endpoint = dimcoord(orient), value = edgeget(cubeedge(*voxel, axis, corner & 1, corner >> 1), endpoint);
+        return endpoint ? 8 - value : value;
     }
 
     static bool serverblocksolid(const ivec &cell)
     {
         if(cell.z < 0 || cell.z >= 8192) return cell.z < 0;
-        if(serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE)) return state->action == WORLD_ACTION_PLACE_CUBE;
-        loopvrev(worldhistory)
-        {
-            const serveredit &edit = *worldhistory[i];
-            if(edit.type == N_WORLDAUTH || !servereditcontains(edit, cell)) continue;
-            if(edit.type == N_DELCUBE) return false;
-            if(edit.type == N_EDITF)
-            {
-                ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
-                selinfo unused;
-                if(readselection(payload, unused)) return getint(payload) >= 0;
-            }
-            return true;
-        }
+        if(const cube *voxel = serverchunkcubeat(cell)) return !isempty(*voxel);
         return cell.z < serverbasesurface(cell.x + SERVER_WORLD_BLOCK_SIZE / 2, cell.y + SERVER_WORLD_BLOCK_SIZE / 2);
     }
 
@@ -1999,13 +2053,9 @@ namespace server
     static float servergroundheight(float x, float y)
     {
         int top = serverbasesurface(int(floorf(x)), int(floorf(y)));
-        loopv(serverworldactions)
-        {
-            const serverworldaction &state = *serverworldactions[i];
-            if(state.action == WORLD_ACTION_PLACE_CUBE && x >= state.target.x && x < state.target.x + SERVER_WORLD_BLOCK_SIZE &&
-               y >= state.target.y && y < state.target.y + SERVER_WORLD_BLOCK_SIZE)
-                top = max(top, state.target.z + SERVER_WORLD_BLOCK_SIZE);
-        }
+        const ivec column(serverfloordiv(int(floorf(x)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
+                          serverfloordiv(int(floorf(y)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE, 0);
+        if(serverchunkforcell(column)) top = SERVER_WORLD_MAP_SIZE;
         while(top > 0 && !serverblocksolid(ivec(serverfloordiv(int(floorf(x)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
                                                  serverfloordiv(int(floorf(y)), SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE,
                                                  top - SERVER_WORLD_BLOCK_SIZE))) top -= SERVER_WORLD_BLOCK_SIZE;
@@ -2111,15 +2161,22 @@ namespace server
     {
         const float skyexposure = serverskylightlevel(position) / 16.0f;
         float level = skyexposure * (serversunlightintensity() * 16.0f + serverambientlightlevel());
-        loopv(serverworldactions)
+        loopv(serverchunks)
         {
-            const serverworldaction &state = *serverworldactions[i];
-            if(state.action != WORLD_ACTION_PLACE_ITEM) continue;
-            const float radius = getworlditemlightradius(state.item);
-            if(radius <= 0) continue;
-            const vec emitter(state.target.x + SERVER_WORLD_BLOCK_SIZE * 0.5f, state.target.y + SERVER_WORLD_BLOCK_SIZE * 0.5f,
-                              state.target.z + SERVER_WORLD_BLOCK_SIZE);
-            level = max(level, radius - emitter.dist(position) / SERVER_WORLD_BLOCK_SIZE);
+            const serverchunk &chunk = *serverchunks[i];
+            if(chunk.loading || chunk.corrupted) continue;
+            loopvj(chunk.scatter)
+            {
+                const worldscatterinstance &scatter = chunk.scatter[j];
+                const int item = getworldscatteritem(scatter.type);
+                if(getworlditemtype(item) != WORLD_ITEM_PLACEABLE) continue;
+                const float radius = getworlditemlightradius(item);
+                if(radius <= 0) continue;
+                const vec emitter(chunk.x * SERVER_WORLD_CHUNK_SIZE + scatter.x + SERVER_WORLD_BLOCK_SIZE * 0.5f,
+                                  chunk.y * SERVER_WORLD_CHUNK_SIZE + scatter.y + SERVER_WORLD_BLOCK_SIZE * 0.5f,
+                                  scatter.z + SERVER_WORLD_BLOCK_SIZE);
+                level = max(level, radius - emitter.dist(position) / SERVER_WORLD_BLOCK_SIZE);
+            }
         }
         loopv(clients)
         {
@@ -2307,7 +2364,6 @@ namespace server
             if(ci.breakactive) cancelbreak(ci);
             dropserverplayerinventory(ci);
             ci.positiondirty = true;
-            saveinventory(ci, true);
             saveplayerstate(ci, true);
         }
         broadcastplayerstate(ci, impulse);
@@ -2591,6 +2647,9 @@ namespace server
                     bool needed[16] = { false }, valid = true;
                     loopk(count)
                     {
+                        const ivec spawnorigin(spawns[k].blockx * SERVER_WORLD_BLOCK_SIZE, spawns[k].blocky * SERVER_WORLD_BLOCK_SIZE, 0);
+                        serverchunk *chunk = serverchunkforcell(spawnorigin, true);
+                        if(!chunk || chunk->loading || chunk->corrupted) { valid = false; break; }
                         needed[k] = !serverpassivenpcdead(spawns[k].key) && !findserverpassivenpc(spawns[k].key);
                         if(needed[k] && !servernaturalspawnposition(*definition, spawns[k], positions[k])) { valid = false; break; }
                     }
@@ -2742,7 +2801,7 @@ namespace server
         if(mob.deathmillis) return;
         mob.deathmillis = max(totalmillis, 1);
         mob.velocity = vec(0, 0, 0);
-        killserverpassivenpc(mob.spawnkey);
+        killserverpassivenpc(mob.spawnkey, mob.spawn);
         dropservernpcloot(mob);
         broadcastnpcevent(mob, NPC_EVENT_DEATH, part, position, impulse);
     }
@@ -3162,12 +3221,11 @@ namespace server
     static void completeidentity(clientinfo &ci)
     {
         if(duplicateidentity(ci)) return;
-        if(!loadinventory(ci))
+        if(!loadplayerstate(ci))
         {
-            rejectidentity(ci, "server inventory data is corrupt; an administrator must repair it");
+            rejectidentity(ci, "server player state is corrupt or incompatible; an administrator must repair it");
             return;
         }
-        loadplayerstate(ci);
         ci.identitystate = IDENTITY_AUTHENTICATED;
         ci.connected = true;
         const char *kind = ci.identitykind == IDENTITY_KIND_NEW ? "new player" : "returning player";
@@ -3264,10 +3322,6 @@ namespace server
 
     static void replayworld(clientinfo &ci)
     {
-        loopv(worldhistory)
-        {
-            if(worldhistory[i]->active) sendserveredit(ci.clientnum, *worldhistory[i]);
-        }
         loopv(serverdrops) senddropspawn(ci.clientnum, *serverdrops[i]);
         loopv(serverfallingblocks) sendfallblockspawn(ci.clientnum, *serverfallingblocks[i]);
         sendf(ci.clientnum, 1, "ri2", N_WORLDSYNC, int(worldeditrevision));
@@ -3283,12 +3337,7 @@ namespace server
 
     void serverinit()
     {
-        if(serverworldinitialized && furnacesdirty && !saveserverfurnaces(true))
-            conoutf(CON_ERROR, "could not save authoritative furnace state before server reinitialization");
-        if(serverworldinitialized && chestsdirty && !saveserverchests(true))
-            conoutf(CON_ERROR, "could not save authoritative chest state before server reinitialization");
-        if(serverworldinitialized && passivenpcsdirty && !saveserverpassivenpcs(true))
-            conoutf(CON_ERROR, "could not save authoritative passive NPC state before server reinitialization");
+        shutdownserverchunks(serverworldinitialized);
 #ifndef STANDALONE
         personaldrops = serverpersonaldrops;
         droptimeout = serverdroptimeout;
@@ -3297,6 +3346,7 @@ namespace server
         requireconfirmeditems = serverrequireconfirmeditems;
 #endif
         gamemode = creativemode ? STARTGAMEMODE : STARTGAMEMODE + 2;
+        game::loadworldseed(serverworldseed);
         copystring(smapname, serverworld);
         serverworldinitialized = false;
         if(!loadserveridentities()) serverworldready = false;
@@ -3322,16 +3372,18 @@ namespace server
     int numchannels() { return 3; }
     void clientdisconnect(int n)
     {
+        for(int i = serverchunkrequests.length() - 1; i >= 0; --i)
+            if(serverchunkrequests[i].clientnum == n) serverchunkrequests.remove(i);
+        for(int i = serverchunkdeliveries.length() - 1; i >= 0; --i)
+            if(serverchunkdeliveries[i].clientnum == n) serverchunkdeliveries.remove(i);
         if(clientinfo *ci = getinfo(n))
         {
             cancelbreak(*ci);
             cancelfooduse(*ci);
             ci->furnaceopen = false;
             closechest(*ci);
-            if(ci->connected && !saveinventory(*ci, true))
-                conoutf(CON_ERROR, "could not save survival inventory for player ID %s on disconnect", ci->playerid);
             if(ci->connected && !saveplayerstate(*ci, true))
-                conoutf(CON_ERROR, "could not save player position for player ID %s on disconnect", ci->playerid);
+                conoutf(CON_ERROR, "could not save player state for player ID %s on disconnect", ci->playerid);
             if(!ci->connected &&
                (ci->identitystate == IDENTITY_AWAITING_IDENTITY ||
                 ci->identitystate == IDENTITY_AWAITING_RESPONSE))
@@ -3389,173 +3441,53 @@ namespace server
     bool allowbroadcast(int n) { clientinfo *ci = getinfo(n); return ci && ci->connected; }
     void recordpacket(int chan, void *data, int len) {}
 
-    static bool validselection(const clientinfo &ci, const selinfo &sel, const char *&error)
-    {
-        if(sel.grid <= 0 || sel.grid > 4096 || (sel.grid & (sel.grid - 1)) ||
-           sel.s.x <= 0 || sel.s.y <= 0 || sel.s.z <= 0 ||
-           sel.orient < 0 || sel.orient > 5 ||
-           sel.o.x % sel.grid || sel.o.y % sel.grid || sel.o.z % sel.grid)
-        {
-            error = "invalid or unaligned edit selection";
-            return false;
-        }
-        long long volume = (long long)sel.s.x * sel.s.y * sel.s.z,
-                  maxx = (long long)sel.o.x + (long long)sel.s.x * sel.grid,
-                  maxy = (long long)sel.o.y + (long long)sel.s.y * sel.grid,
-                  maxz = (long long)sel.o.z + (long long)sel.s.z * sel.grid;
-        if(volume <= 0 || volume > (1 << 20) ||
-           maxx < INT_MIN || maxx > INT_MAX || maxy < INT_MIN || maxy > INT_MAX ||
-           sel.o.z < 0 || maxz > (1 << 13))
-        {
-            error = "edit selection is outside the generated world or too large";
-            return false;
-        }
-        if(ci.privilege < PRIV_ADMIN)
-        {
-            if(sel.grid != 16 || sel.s != ivec(1, 1, 1))
-            {
-                error = "normal players may only modify one gridsize 4 (16-unit) block";
-                return false;
-            }
-            if(!ci.hasposition)
-            {
-                error = "send a valid position before editing";
-                return false;
-            }
-            vec center(sel.o.x + 8.0f, sel.o.y + 8.0f, sel.o.z + 8.0f);
-            if(center.dist(ci.o) > 160.0f)
-            {
-                error = "block is beyond creative reach";
-                return false;
-            }
-        }
-        return true;
-    }
-
     static bool validateedit(clientinfo &ci, int type, packetbuf &p,
                              serveredit &edit, const char *&error)
     {
-        if(ci.privilege < PRIV_ADMIN)
-        {
-            error = "gameplay world changes must use the authoritative action protocol";
-            return false;
-        }
-        int start = p.length();
-        selinfo sel;
-        if(!editselectiontype(type) || !readselection(p, sel) || !validselection(ci, sel, error)) return false;
+        (void)ci; (void)type; (void)p; (void)edit;
+        error = "direct octree edits are disabled; use the authoritative world action protocol";
+        return false;
+    }
 
-        int arg1 = 0, arg2 = 0, arg3 = 0, extra = 0;
-        switch(type)
+    static serverchunk *servereditchunk(const serveredit &edit)
+    {
+        ivec cell;
+        if(edit.type == N_WORLDAUTH)
         {
-            case N_EDITF:
-                arg1 = getint(p); arg2 = getint(p);
-                if(arg1 < -1 || arg1 > 1 || arg2 < 0 || arg2 > 2)
-                {
-                    error = "invalid face edit";
-                    return false;
-                }
-                break;
-            case N_EDITT:
-                arg1 = getint(p); arg2 = getint(p);
-                if(p.remaining() < 2) { error = "truncated texture edit"; return false; }
-                extra = lilswap(*(const ushort *)p.pad(2));
-                if(extra > p.remaining()) { error = "truncated texture payload"; return false; }
-                p.pad(extra);
-                if(arg1 < 0 || arg1 > 0xFFFF || arg2 < 0 || arg2 > 1)
-                {
-                    error = "invalid texture edit";
-                    return false;
-                }
-                break;
-            case N_EDITM:
-                arg1 = getint(p); arg2 = getint(p);
-                break;
-            case N_FLIP:
-            case N_DELCUBE:
-                break;
-            case N_ROTATE:
-                arg1 = getint(p);
-                if(arg1 < -3 || arg1 > 3 || !arg1)
-                {
-                    error = "invalid rotation";
-                    return false;
-                }
-                break;
-            case N_REPLACE:
-                arg1 = getint(p); arg2 = getint(p); arg3 = getint(p);
-                if(p.remaining() < 2) { error = "truncated replace edit"; return false; }
-                extra = lilswap(*(const ushort *)p.pad(2));
-                if(extra > p.remaining()) { error = "truncated replace payload"; return false; }
-                p.pad(extra);
-                if(arg1 < 0 || arg2 < 0 || arg3 != 1)
-                {
-                    error = "invalid replace edit";
-                    return false;
-                }
-                break;
-            case N_EDITVSLOT:
-                arg1 = getint(p); arg2 = getint(p);
-                if(p.remaining() < 2) { error = "truncated vslot edit"; return false; }
-                extra = lilswap(*(const ushort *)p.pad(2));
-                if(extra > p.remaining()) { error = "truncated vslot payload"; return false; }
-                p.pad(extra);
-                break;
-            case N_EDITSCATTER:
-            {
-                const ullong scatterid = getpersistentid(p);
-                arg1 = getworldscatterpersistentindex(scatterid);
-                arg2 = getint(p);
-                if(arg1 < 0 || (arg2 != 0 && arg2 != 1) ||
-                   sel.grid != 16 || sel.s != ivec(1, 1, 1) ||
-                   sel.orient == WORLD_ORIENT_BOTTOM)
-                {
-                    error = "invalid scatter edit";
-                    return false;
-                }
-                break;
-            }
-            default:
-                error = "unsupported world edit";
-                return false;
+            ucharbuf payload((uchar *)edit.payload.getbuf(), edit.payload.length());
+            const int action = getint(payload);
+            cell.x = getint(payload); cell.y = getint(payload); cell.z = getint(payload);
+            const int orient = getint(payload);
+            if(payload.overread()) return NULL;
+            cell = worldactionstatecell(cell, action, worldmountorient(orient));
         }
-        if(p.overread() || p.remaining())
-        {
-            error = "malformed edit packet";
-            return false;
-        }
-        if(ci.privilege < PRIV_ADMIN)
-        {
-            bool allowedface = type == N_EDITF && arg1 == -1 && arg2 == 1,
-                 allowedtexture = type == N_EDITT && arg1 <= 0xFFF &&
-                                  arg2 == 1 && extra == 0,
-                 alloweddelete = type == N_DELCUBE,
-                 allowedscatter = type == N_EDITSCATTER;
-            if(!allowedface && !allowedtexture && !alloweddelete && !allowedscatter)
-            {
-                error = "this edit operation requires admin";
-                return false;
-            }
-        }
-
-        edit.author = ci.clientnum;
-        copystring(edit.ownerid, ci.playerid);
-        edit.type = type;
-        edit.selection = sel;
-        edit.hasselection = true;
-        edit.payload.put(&p.buf[start], p.length() - start);
-        return true;
+        else if(edit.hasselection) cell = edit.selection.o;
+        else return NULL;
+        return serverchunkforcell(cell);
     }
 
     static bool acceptededit(serveredit *edit)
     {
-        edit->revision = ++worldeditrevision;
+        serverchunk *chunk = servereditchunk(*edit);
+        if(!chunk || chunk->loading || chunk->corrupted)
+        {
+            delete edit;
+            return false;
+        }
+        edit->revision = chunk->revision;
+        ++worldeditrevision;
         edit->timestamp = uint(time(NULL));
-        worldhistory.add(edit);
         loopv(clients)
         {
             clientinfo *recipient = clients[i];
-            if(recipient && recipient->connected && recipient->worldready) sendserveredit(recipient->clientnum, *edit);
+            if(recipient && recipient->connected && recipient->worldready && serverchunkinrange(*recipient, chunk->x, chunk->y) &&
+               serverchunkdeliveredrevision(recipient->clientnum, chunk->x, chunk->y) + 1 == chunk->revision)
+            {
+                sendserveredit(recipient->clientnum, *edit);
+                markserverchunkdelivered(recipient->clientnum, chunk->x, chunk->y, chunk->revision);
+            }
         }
+        delete edit;
         return true;
     }
 
@@ -3573,6 +3505,11 @@ namespace server
         putint(payload, orient);
         putpersistentid(payload, getinventoryitempersistentid(item));
         edit->payload.put(payload.buf, payload.length());
+        if(!updateserverchunkblock(cell, action, item))
+        {
+            delete edit;
+            return false;
+        }
         if(!acceptededit(edit)) return false;
         setworldactionstate(cell, action, orient, item);
         return true;
@@ -3744,8 +3681,8 @@ namespace server
 
     static bool serversupportpersistent(const ivec &cell)
     {
-        serverworldaction *state = findworldaction(cell, WORLD_ACTION_PLACE_CUBE);
-        return state && state->action == WORLD_ACTION_PLACE_CUBE && state->supportpersistent;
+        const int item = serverblockitem(cell), index = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+        return index >= 0 && getworldcubesupportpersistentonplace(index);
     }
 
     static void updateserverunsupportedstate(const ivec &cell, serversupportcell &state)
@@ -4090,6 +4027,17 @@ namespace server
 
     static bool acceptworldaction(clientinfo &ci, uint requestid, int action, const ivec &target, int orient, int item)
     {
+        const ivec cell = worldactionstatecell(target, action, worldmountorient(orient));
+        if(action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_BREAK_CUBE_START)
+        {
+            if(!updateserverchunkblock(cell, action, item)) return false;
+        }
+        else
+        {
+            serverchunk *chunk = serverchunkforcell(cell, true);
+            if(!chunk || chunk->loading || chunk->corrupted) return false;
+            dirtyserverchunk(*chunk);
+        }
         serveredit *edit = new serveredit;
         edit->author = ci.clientnum;
         edit->requestid = requestid;
@@ -4141,14 +4089,12 @@ namespace server
         if(!actionrate(ci, true)) return rejectaction(ci, requestid, "excessive placement rate", true);
         if((action != WORLD_ACTION_PLACE_ITEM || chest) && (playeroccupies(occupied) || serverfallingblockoccupies(occupied)))
             return rejectaction(ci, requestid, "");
-        serverworldaction *state = findworldaction(occupied, action);
-        serverworldaction *other = findworldaction(occupied, action == WORLD_ACTION_PLACE_CUBE
-                                                            ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_CUBE);
-        if(!state || (state->action != WORLD_ACTION_PLACE_CUBE && state->action != WORLD_ACTION_PLACE_SCATTER &&
-                      state->action != WORLD_ACTION_PLACE_ITEM))
-            state = other;
-        if(state && (state->action == WORLD_ACTION_PLACE_CUBE || state->action == WORLD_ACTION_PLACE_SCATTER ||
-                     state->action == WORLD_ACTION_PLACE_ITEM))
+        const serverworldaction cubestate = *findworldaction(occupied, WORLD_ACTION_PLACE_CUBE),
+                                scatterstate = *findworldaction(occupied, WORLD_ACTION_PLACE_SCATTER);
+        const serverworldaction *state = cubestate.action == WORLD_ACTION_PLACE_CUBE ? &cubestate
+                                        : scatterstate.action == WORLD_ACTION_PLACE_SCATTER || scatterstate.action == WORLD_ACTION_PLACE_ITEM
+                                          ? &scatterstate : NULL;
+        if(state)
         {
             rejectaction(ci, requestid, "placement target is already occupied");
             sendworldcorrection(ci, *state);
@@ -4168,7 +4114,7 @@ namespace server
         if(chest && !findserverchest(occupied))
         {
             serverchests.add(new chestinstance(occupied, item, chestslots, worldplaceyaw(packed)));
-            chestsdirty = true;
+            dirtyservergameplaycell(occupied);
         }
         if(!servercreative())
         {
@@ -4230,6 +4176,11 @@ namespace server
         putint(payload, -1); putint(payload, 2); putint(payload, 0); putint(payload, 2); putint(payload, corner);
         putint(payload, 1); putint(payload, 2);
         edit->payload.put(payload.buf, payload.length());
+        if(!updateserverchunkcorner(target, orient, corner))
+        {
+            delete edit;
+            return rejectaction(ci, requestid, "server could not persist the corner push");
+        }
         if(!acceptededit(edit)) return rejectaction(ci, requestid, "server could not persist the corner push");
 
         if(ci.breakactive) cancelbreak(ci);
@@ -4682,7 +4633,7 @@ namespace server
             {
                 furnace = new furnaceinstance(target, state->item, inputslots, inputlimit);
                 serverfurnaces.add(furnace);
-                furnacesdirty = true;
+                dirtyservergameplaycell(target);
             }
             if(ci.chestopen) closechest(ci);
             ci.furnaceopen = true;
@@ -4732,7 +4683,7 @@ namespace server
                                                           : "the requested furnace transfer could not be completed");
         bool syncchanged = false;
         updatefurnaceinstance(*furnace, 0, syncchanged);
-        furnacesdirty = true;
+        dirtyservergameplaycell(furnace->target);
         sendactionresult(ci, requestid, true);
         if(action != FURNACE_ACTION_BAKE)
         {
@@ -4746,12 +4697,7 @@ namespace server
     void servershutdown()
     {
         if(!serverworldinitialized) return;
-        if(furnacesdirty && !saveserverfurnaces(true))
-            conoutf(CON_ERROR, "could not save authoritative furnace state during server shutdown");
-        if(chestsdirty && !saveserverchests(true))
-            conoutf(CON_ERROR, "could not save authoritative chest state during server shutdown");
-        if(passivenpcsdirty && !saveserverpassivenpcs(true))
-            conoutf(CON_ERROR, "could not save authoritative passive NPC state during server shutdown");
+        shutdownserverchunks(true);
     }
 
     static bool rejectchestaction(clientinfo &ci, uint requestid, const char *reason, bool violation = false, bool malicious = false)
@@ -4792,7 +4738,7 @@ namespace server
             {
                 chest = new chestinstance(target, state->item, slots, 0);
                 serverchests.add(chest);
-                chestsdirty = true;
+                dirtyservergameplaycell(target);
             }
             if(ci.chestopen && ci.chesttarget != target) closechest(ci);
             if(ci.furnaceopen) closefurnace(ci);
@@ -4816,7 +4762,7 @@ namespace server
                                         chest->items[first], chest->counts[first], chest->durabilities[first], second,
                                         max(getinventoryitemmaxstack(ci.inventorycursoritem), 1)))
             return rejectchestaction(ci, requestid, "the requested chest transfer could not be completed");
-        chestsdirty = true;
+        dirtyservergameplaycell(chest->target);
         markinventorydirty(ci);
         sendactionresult(ci, requestid, true);
         sendinventory(ci);
@@ -5555,6 +5501,23 @@ namespace server
                         handledroppickup(*ci, requestid, dropid, vec(coords[0] / DMF, coords[1] / DMF, coords[2] / DMF));
                     break;
                 }
+                case N_CHUNKREQUEST:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    const int chunkx = getint(p), chunky = getint(p);
+                    if(ci && ci->connected && ci->worldready && !p.overread() && serverchunkinrange(*ci, chunkx, chunky))
+                    {
+                        bool duplicate = false;
+                        loopv(serverchunkrequests) if(serverchunkrequests[i].clientnum == sender && serverchunkrequests[i].x == chunkx &&
+                                                      serverchunkrequests[i].y == chunky)
+                        {
+                            duplicate = true;
+                            break;
+                        }
+                        if(!duplicate) serverchunkrequests.add(serverchunkrequest(sender, chunkx, chunky));
+                    }
+                    break;
+                }
                 case N_NPCATTACK:
                 {
                     clientinfo *ci = getinfo(sender);
@@ -5759,7 +5722,7 @@ namespace server
                 continue;
             }
             bool syncchanged = false;
-            if(updatefurnaceinstance(furnace, curtime, syncchanged)) furnacesdirty = true;
+            if(updatefurnaceinstance(furnace, curtime, syncchanged)) dirtyservergameplaycell(furnace.target);
             if(syncchanged) syncfurnaceviewers(furnace);
         }
         loopv(clients)
@@ -5769,8 +5732,6 @@ namespace server
             furnaceinstance *furnace = findserverfurnace(ci->furnacetarget);
             if(!furnace || !furnaceaccessible(*ci, *furnace)) closefurnace(*ci);
         }
-        if(furnacesdirty && totalmillis - lastfurnacesave >= 5000 && !saveserverfurnaces())
-            conoutf(CON_ERROR, "could not periodically save authoritative furnace state");
     }
 
     static void updateserverchests()
@@ -5787,17 +5748,14 @@ namespace server
             chestinstance *chest = findserverchest(ci->chesttarget);
             if(!chest || !chestaccessible(*ci, *chest)) closechest(*ci);
         }
-        if(chestsdirty && totalmillis - lastchestsave >= 5000 && !saveserverchests())
-            conoutf(CON_ERROR, "could not periodically save authoritative chest state");
     }
 
     void serverupdate()
     {
         if(!serverworldinitialized) return;
+        updateserverchunkrequests();
         updateserverfurnaces();
         updateserverchests();
-        if(passivenpcsdirty && totalmillis - lastpassivenpcsave >= 5000 && !saveserverpassivenpcs())
-            conoutf(CON_ERROR, "could not periodically save authoritative passive NPC state");
         updateserverfallingblocks();
         updateserversupportblocks();
         updateservernpcs();
@@ -5813,12 +5771,12 @@ namespace server
                 ci->violations = 0;
                 ci->violationwindow = max(totalmillis, 1);
             }
-            if(ci->inventorydirty && totalmillis - ci->lastinventorysave >= inventorysaveinterval * 1000 &&
-               !saveinventory(*ci))
-                conoutf(CON_ERROR, "could not periodically save survival inventory for player ID %s", ci->playerid);
-            if(ci->positiondirty && totalmillis - ci->lastpositionsave >= playerstatesaveinterval * 1000 &&
-               !saveplayerstate(*ci))
-                conoutf(CON_ERROR, "could not periodically save player position for player ID %s", ci->playerid);
+            if((ci->inventorydirty && totalmillis - ci->lastinventorysave >= inventorysaveinterval * 1000) ||
+               (ci->positiondirty && totalmillis - ci->lastpositionsave >= playerstatesaveinterval * 1000))
+            {
+                if(!saveplayerstate(*ci))
+                    conoutf(CON_ERROR, "could not periodically save player state for player ID %s", ci->playerid);
+            }
             if(ci->breakactive &&
                (!ci->hasposition ||
                 actiontargetoutofreach(*ci, ci->breaktarget) || servernpcinterceptsaction(*ci, ci->breaktarget) ||
