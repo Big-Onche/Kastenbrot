@@ -2284,9 +2284,24 @@ namespace game
         drop.pickupfrom = drop.o;
     }
 
+    static bool worlddropsupported(const worlddrop &drop)
+    {
+        vec probe = drop.o;
+        if(waitforserveredit()) worldpositiontolocal(probe);
+        const float maxdist = DROP_GROUND_CLEARANCE + 1.1f;
+        return raycube(probe, vec(0, 0, -1), maxdist, RAY_CLIPMAT | RAY_SKIPFIRST) < maxdist;
+    }
+
     static void updateworlddropfall(worlddrop &drop)
     {
-        if(drop.settled || drop.picking) return;
+        if(drop.picking) return;
+        if(drop.settled)
+        {
+            if(worlddropsupported(drop)) return;
+            drop.settled = false;
+            drop.landingknown = false;
+            drop.physicsmillis = lastmillis;
+        }
         if(!drop.landingknown)
         {
             vec landing = drop.o;

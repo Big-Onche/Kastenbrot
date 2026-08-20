@@ -925,6 +925,12 @@ struct blockchiprenderer
 
     bool haswork() const { return !chips.empty(); }
 
+    bool supported(const blockchip &chip) const
+    {
+        const float maxdist = 0.12f;
+        return raycube(chip.o, vec(0, 0, -1), maxdist, RAY_CLIPMAT | RAY_SKIPFIRST) < maxdist;
+    }
+
     void add(Texture *tex, const bvec &color, float scale, const vec &p, const vec &normal, int num, physent *owner, bool centered)
     {
         if(!tex || tex == notexture || tex->xs <= 0 || tex->ys <= 0) return;
@@ -1008,8 +1014,13 @@ struct blockchiprenderer
             }
             if(chip.settled)
             {
-                if(lastmillis - chip.settledmillis >= SETTLED_LIFETIME) chips.removeunordered(i);
-                continue;
+                if(supported(chip))
+                {
+                    if(lastmillis - chip.settledmillis >= SETTLED_LIFETIME) chips.removeunordered(i);
+                    continue;
+                }
+                chip.settled = false;
+                chip.settledmillis = -1;
             }
             if(lastmillis - chip.millis >= MAX_LIFETIME)
             {
