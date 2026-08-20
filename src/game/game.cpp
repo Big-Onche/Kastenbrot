@@ -54,6 +54,7 @@ namespace game
 
     static vector<predictedworldaction *> predictedworldactions;
     static vector<worlddrop *> worlddrops;
+    static vector<chunkdropstate> pendinglocaldrops;
     static vector<fallingblock *> fallingblocks;
     static vector<ivec> fallblockchecks;
 
@@ -1862,6 +1863,8 @@ namespace game
         return ok;
     }
 
+#endif
+
     struct localchunkdatareader
     {
         const uchar *position, *end;
@@ -1878,6 +1881,14 @@ namespace game
 
         bool readint(int &value) { uint raw; if(!readuint(raw)) return false; value = int(raw); return true; }
 
+        bool readfloat(float &value)
+        {
+            uint raw;
+            if(!readuint(raw)) return false;
+            memcpy(&value, &raw, sizeof(value));
+            return isfinite(value);
+        }
+
         bool readstring(char *value, int size)
         {
             uint length;
@@ -1892,6 +1903,13 @@ namespace game
     };
 
     static void localchunkdataputuint(vector<uchar> &data, uint value) { loopi(4) data.add(uchar(value >> (8 * i))); }
+
+    static void localchunkdataputfloat(vector<uchar> &data, float value)
+    {
+        uint raw;
+        memcpy(&raw, &value, sizeof(raw));
+        localchunkdataputuint(data, raw);
+    }
 
     static bool localchunkdataputstring(vector<uchar> &data, const char *value)
     {
@@ -1926,15 +1944,23 @@ namespace game
 
     static bool localchunkcontains(const ivec &target, int chunkx, int chunky)
     {
-        const int chunksize = CREATIVE_GRID * 64;
+        const int chunksize = 16 * 64;
         return int(floor(double(target.x) / chunksize)) == chunkx && int(floor(double(target.y) / chunksize)) == chunky;
     }
 
+    static bool localchunkcontains(const vec &position, int chunkx, int chunky)
+    {
+        if(!isfinite(position.x) || !isfinite(position.y) || !isfinite(position.z)) return false;
+        const int chunksize = 16 * 64;
+        return int(floor(double(position.x) / chunksize)) == chunkx && int(floor(double(position.y) / chunksize)) == chunky;
+    }
+
     bool capturechunkdata(int chunkx, int chunky, const vector<furnaceinstance *> &furnaces, const vector<chestinstance *> &chests,
-                          const vector<uchar> &npcdata, vector<uchar> &data)
+                          const vector<uchar> &npcdata, const vector<chunkfallingblockstate> &falling,
+                          const vector<chunkdropstate> &drops, vector<uchar> &data)
     {
         data.setsize(0);
-        localchunkdataputuint(data, 1);
+        localchunkdataputuint(data, 2);
         int furnacecount = 0;
         loopv(furnaces) if(localchunkcontains(furnaces[i]->target, chunkx, chunky)) ++furnacecount;
         localchunkdataputuint(data, uint(furnacecount));
@@ -1970,24 +1996,83 @@ namespace game
         }
         localchunkdataputuint(data, uint(npcdata.length()));
         if(!npcdata.empty()) data.put(npcdata.getbuf(), npcdata.length());
+        localchunkdataputuint(data, uint(falling.length()));
+        loopv(falling)
+        {
+            const chunkfallingblockstate &block = falling[i];
+            const int worldindex = getworlditemtype(block.item) == WORLD_ITEM_CUBE ? getworlditemindex(block.item) : -1;
+            if(block.item < 0 || !localchunkcontains(block.origin, chunkx, chunky) || !localchunkcontains(block.position, chunkx, chunky) ||
+               worldindex < 0 || !getworldcubefall(worldindex) || !isfinite(block.velocity) || block.velocity < 0 ||
+               !localchunkdataputstring(data, getinventoryitemid(block.item))) return false;
+            localchunkdataputuint(data, uint(block.origin.x));
+            localchunkdataputuint(data, uint(block.origin.y));
+            localchunkdataputuint(data, uint(block.origin.z));
+            loopj(3) localchunkdataputfloat(data, block.position[j]);
+            localchunkdataputfloat(data, block.velocity);
+        }
+        localchunkdataputuint(data, uint(drops.length()));
+        loopv(drops)
+        {
+            const chunkdropstate &drop = drops[i];
+            const bool validdurability = drop.item >= 0 && (isinventorytool(drop.item)
+                                       ? drop.durability > 0 && drop.durability <= getinventorytoolmaxdurability(drop.item)
+                                       : drop.durability == 0);
+            if(drop.item < 0 || drop.count <= 0 || drop.age < 0 || !localchunkcontains(drop.position, chunkx, chunky) ||
+               drop.count > max(getinventoryitemmaxstack(drop.item), 1) || !validdurability ||
+               !localchunkdataputstring(data, getinventoryitemid(drop.item))) return false;
+            localchunkdataputuint(data, uint(drop.count));
+            localchunkdataputuint(data, uint(max(drop.durability, 0)));
+            localchunkdataputuint(data, uint(min(drop.age, 86400000)));
+            loopj(3) localchunkdataputfloat(data, drop.position[j]);
+            if(!localchunkdataputstring(data, drop.ownerid[0] ? drop.ownerid : "none")) return false;
+        }
         return true;
     }
 
+#ifndef STANDALONE
     bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data)
     {
         vector<uchar> npcdata;
+        vector<chunkfallingblockstate> falling;
+        vector<chunkdropstate> drops;
 #ifndef STANDALONE
         if(!capturelocalchunknpcs(chunkx, chunky, npcdata)) return false;
 #endif
-        return capturechunkdata(chunkx, chunky, localfurnaces, localchests, npcdata, data);
+        loopv(fallingblocks)
+        {
+            const fallingblock &source = *fallingblocks[i];
+            if(source.replicated || source.item < 0 || !localchunkcontains(source.o, chunkx, chunky)) continue;
+            chunkfallingblockstate &block = falling.add();
+            block.item = source.item;
+            block.origin = source.origin;
+            block.position = source.o;
+            block.velocity = source.velocity;
+        }
+        loopv(worlddrops)
+        {
+            const worlddrop &source = *worlddrops[i];
+            vec position = source.o;
+            worldpositiontoabsolute(position);
+            if(!source.confirmed || source.removed || source.item < 0 || !localchunkcontains(position, chunkx, chunky)) continue;
+            chunkdropstate &drop = drops.add();
+            drop.item = source.item;
+            drop.count = source.count;
+            drop.durability = source.durability;
+            drop.age = min(max(lastmillis - source.created, 0), 86400000);
+            drop.position = position;
+        }
+        loopv(pendinglocaldrops) if(localchunkcontains(pendinglocaldrops[i].position, chunkx, chunky)) drops.add(pendinglocaldrops[i]);
+        return capturechunkdata(chunkx, chunky, localfurnaces, localchests, npcdata, falling, drops, data);
     }
+#endif
 
     bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
-                         vector<chestinstance *> &chests, vector<uchar> &npcdata)
+                         vector<chestinstance *> &chests, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
+                         vector<chunkdropstate> &drops)
     {
         localchunkdatareader reader(data, length);
         uint version, furnacecount, chestcount;
-        if(!reader.readuint(version) || version != 1 || !reader.readuint(furnacecount) || furnacecount > 100000U) return false;
+        if(!reader.readuint(version) || version != 2 || !reader.readuint(furnacecount) || furnacecount > 100000U) return false;
         loopi(furnacecount)
         {
             ivec target;
@@ -2039,15 +2124,51 @@ namespace game
             npcdata.put(reader.position, int(npclength));
             reader.position += npclength;
         }
+        uint fallingcount;
+        if(!reader.readuint(fallingcount) || fallingcount > 100000U) return false;
+        loopi(fallingcount)
+        {
+            chunkfallingblockstate &block = falling.add();
+            string itemid;
+            if(!reader.readstring(itemid, sizeof(itemid)) || !reader.readint(block.origin.x) || !reader.readint(block.origin.y) ||
+               !reader.readint(block.origin.z) || !reader.readfloat(block.position.x) || !reader.readfloat(block.position.y) ||
+               !reader.readfloat(block.position.z) || !reader.readfloat(block.velocity) || block.velocity < 0 ||
+               !localchunkcontains(block.origin, chunkx, chunky) || !localchunkcontains(block.position, chunkx, chunky)) return false;
+            block.item = getinventoryitemindex(itemid);
+            const int worldindex = getworlditemtype(block.item) == WORLD_ITEM_CUBE ? getworlditemindex(block.item) : -1;
+            if(block.item < 0 || worldindex < 0 || !getworldcubefall(worldindex)) return false;
+        }
+        uint dropcount;
+        if(!reader.readuint(dropcount) || dropcount > 100000U) return false;
+        loopi(dropcount)
+        {
+            chunkdropstate &drop = drops.add();
+            string itemid, ownerid;
+            if(!reader.readstring(itemid, sizeof(itemid)) || !reader.readint(drop.count) || !reader.readint(drop.durability) ||
+               !reader.readint(drop.age) || !reader.readfloat(drop.position.x) || !reader.readfloat(drop.position.y) ||
+               !reader.readfloat(drop.position.z) || !reader.readstring(ownerid, sizeof(ownerid)) || drop.count <= 0 || drop.durability < 0 ||
+               drop.age < 0 || drop.age > 86400000 || !localchunkcontains(drop.position, chunkx, chunky)) return false;
+            drop.item = getinventoryitemindex(itemid);
+            if(drop.item < 0 || drop.count > max(getinventoryitemmaxstack(drop.item), 1)) return false;
+            if(isinventorytool(drop.item))
+            {
+                if(drop.durability <= 0 || drop.durability > getinventorytoolmaxdurability(drop.item)) return false;
+            }
+            else if(drop.durability) return false;
+            if(strcmp(ownerid, "none")) copystring(drop.ownerid, ownerid);
+        }
         return reader.finished();
     }
 
+#ifndef STANDALONE
     bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length)
     {
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
         vector<uchar> npcdata;
-        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata))
+        vector<chunkfallingblockstate> falling;
+        vector<chunkdropstate> drops;
+        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata, falling, drops))
         {
             furnaces.deletecontents();
             chests.deletecontents();
@@ -2075,7 +2196,54 @@ namespace game
             setchestvisual(chests[i]->target, chests[i]->yaw);
         }
         chests.setsize(0);
+        for(int i = fallingblocks.length() - 1; i >= 0; --i)
+            if(!fallingblocks[i]->replicated && localchunkcontains(fallingblocks[i]->o, chunkx, chunky)) delete fallingblocks.remove(i);
+        loopv(falling)
+        {
+            const chunkfallingblockstate &saved = falling[i];
+            fallingblock *block = new fallingblock;
+            if(!nextlocalfallblockid || nextlocalfallblockid > uint(INT_MAX)) nextlocalfallblockid = 1;
+            block->id = 0x80000000U | nextlocalfallblockid++;
+            block->item = saved.item;
+            block->origin = saved.origin;
+            block->o = saved.position;
+            block->velocity = saved.velocity;
+            block->physicsmillis = lastmillis;
+            fallingblocks.add(block);
+        }
+        for(int i = worlddrops.length() - 1; i >= 0; --i)
+        {
+            vec position = worlddrops[i]->o;
+            worldpositiontoabsolute(position);
+            if(worlddrops[i]->confirmed && !worlddrops[i]->removed && localchunkcontains(position, chunkx, chunky))
+                delete worlddrops.remove(i);
+        }
+        for(int i = pendinglocaldrops.length() - 1; i >= 0; --i)
+            if(localchunkcontains(pendinglocaldrops[i].position, chunkx, chunky)) pendinglocaldrops.remove(i);
+        int queued = 0;
+        loopv(drops)
+        {
+            const chunkdropstate &saved = drops[i];
+            if(droptimeout > 0 && saved.age >= droptimeout * 1000) continue;
+            pendinglocaldrops.add(saved);
+            ++queued;
+        }
+        if(queued) conoutf(CON_DEBUG, "queued %d persistent drops from chunk %d_%d until its geometry is ready", queued, chunkx, chunky);
         return true;
+    }
+
+    bool haslocalchunkdynamicstate(int chunkx, int chunky)
+    {
+        loopv(fallingblocks)
+            if(!fallingblocks[i]->replicated && fallingblocks[i]->item >= 0 && localchunkcontains(fallingblocks[i]->o, chunkx, chunky)) return true;
+        loopv(worlddrops)
+        {
+            vec position = worlddrops[i]->o;
+            worldpositiontoabsolute(position);
+            if(worlddrops[i]->confirmed && !worlddrops[i]->removed && localchunkcontains(position, chunkx, chunky)) return true;
+        }
+        loopv(pendinglocaldrops) if(localchunkcontains(pendinglocaldrops[i].position, chunkx, chunky)) return true;
+        return false;
     }
 
     bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length)
@@ -2084,7 +2252,9 @@ namespace game
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
         vector<uchar> npcdata;
-        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata)) return false;
+        vector<chunkfallingblockstate> falling;
+        vector<chunkdropstate> drops;
+        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata, falling, drops)) return false;
         bool ok = true;
         loopv(furnaces) if(ok)
         {
@@ -2113,6 +2283,14 @@ namespace game
                 ok = file->printf("slot %d %s %d durability %d\n", j, getinventoryitemid(chest.items[j]), chest.counts[j],
                                   chest.durabilities[j]) > 0;
         }
+        loopv(falling) if(ok)
+            ok = file->printf("\nfalling %s origin %d %d %d position %.9g %.9g %.9g velocity %.9g\n",
+                              getinventoryitemid(falling[i].item), falling[i].origin.x, falling[i].origin.y, falling[i].origin.z,
+                              falling[i].position.x, falling[i].position.y, falling[i].position.z, falling[i].velocity) > 0;
+        loopv(drops) if(ok)
+            ok = file->printf("\ndrop %s %d durability %d position %.9g %.9g %.9g age %d owner %s\n",
+                              getinventoryitemid(drops[i].item), drops[i].count, drops[i].durability, drops[i].position.x, drops[i].position.y,
+                              drops[i].position.z, drops[i].age, drops[i].ownerid[0] ? drops[i].ownerid : "none") > 0;
 #ifndef STANDALONE
         if(ok && !npcdata.empty()) ok = debuglocalchunknpcs(file, npcdata.getbuf(), npcdata.length());
 #endif
@@ -2335,8 +2513,49 @@ namespace game
         else drop.o.z -= distance;
     }
 
+    static bool localdropworldready(const chunkdropstate &saved)
+    {
+        vec position = saved.position;
+        worldpositiontolocal(position);
+        selinfo occupied;
+        occupied.grid = 1;
+        occupied.o = ivec(int(floorf(position.x - 1.0f)), int(floorf(position.y - 1.0f)), int(floorf(position.z - 1.0f)));
+        const ivec end(int(ceilf(position.x + 1.0f)), int(ceilf(position.y + 1.0f)), int(ceilf(position.z + 1.0f)));
+        occupied.s = ivec(max(end.x - occupied.o.x, 1), max(end.y - occupied.o.y, 1), max(end.z - occupied.o.z, 1));
+        return occupied.validate() && worldselectionready(occupied);
+    }
+
+    static void activatependinglocaldrops()
+    {
+        int activated = 0;
+        for(int i = pendinglocaldrops.length() - 1; i >= 0; --i)
+        {
+            const chunkdropstate saved = pendinglocaldrops[i];
+            if(!localdropworldready(saved)) continue;
+            pendinglocaldrops.remove(i);
+            if(droptimeout > 0 && saved.age >= droptimeout * 1000) continue;
+            while(worlddrops.length() >= maxdrop) delete worlddrops.remove(0);
+            worlddrop *drop = new worlddrop;
+            if(!nextlocaldropid) nextlocaldropid = 1;
+            drop->id = 0x80000000U | nextlocaldropid++;
+            drop->item = saved.item;
+            drop->count = saved.count;
+            drop->durability = saved.durability;
+            drop->owner = -1;
+            drop->created = lastmillis - saved.age;
+            drop->physicsmillis = lastmillis;
+            drop->confirmed = true;
+            drop->o = saved.position;
+            worldpositiontolocal(drop->o);
+            worlddrops.add(drop);
+            ++activated;
+        }
+        if(activated) conoutf(CON_DEBUG, "activated %d persistent drops after their chunk geometry became ready", activated);
+    }
+
     static void updateworlddrops()
     {
+        activatependinglocaldrops();
         if(!player1) return;
         const vec feet = absoluteplayerfeet(player1);
         for(int i = worlddrops.length() - 1; i >= 0; --i)
@@ -2350,6 +2569,14 @@ namespace game
                     continue;
                 }
                 continue;
+            }
+            if(!drop.geometryready)
+            {
+                chunkdropstate saved;
+                saved.position = drop.o;
+                if(!localdropworldready(saved)) continue;
+                drop.geometryready = true;
+                drop.physicsmillis = lastmillis;
             }
             if(!waitforserveredit() && drop.confirmed && droptimeout > 0 && lastmillis - drop.created >= droptimeout * 1000)
             {
@@ -2468,6 +2695,7 @@ namespace game
         drop->owner = owner;
         drop->created = lastmillis;
         drop->confirmed = true;
+        if(!predicted) drop->geometryready = false;
         if(!predicted)
         {
             drop->physicsmillis = lastmillis;
@@ -2500,6 +2728,7 @@ namespace game
     void resetworlddrops()
     {
         worlddrops.deletecontents();
+        pendinglocaldrops.setsize(0);
         nextlocaldropid = 1;
         personaldrops = 0;
         droptimeout = 300;

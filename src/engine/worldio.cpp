@@ -11,12 +11,6 @@
 
 VARP(compresschunks, 0, 1, 1);
 
-#ifdef WIN32
-#define WORLD_ULL_FORMAT "%I64u"
-#else
-#define WORLD_ULL_FORMAT "%llu"
-#endif
-
 void validmapname(char *dst, const char *src, const char *prefix = NULL, const char *alt = "untitled", size_t maxlen = 100)
 {
     if(prefix) while(*prefix) *dst++ = *prefix++;
@@ -373,14 +367,24 @@ static void applypreparedworldspawn()
     player->resetinterp();
 }
 
-enum { WORLD_SNAPSHOT_METADATA_VERSION = 1 };
+enum { WORLD_SNAPSHOT_METADATA_VERSION = 2 };
 
 struct worldsnapshotmetadata
 {
     int seed, mode, entryx, entryy;
     worldspawnmetadata spawn;
+    ullong inventoryids[game::SURVIVAL_USABLE_SLOTS], inventorycursorid;
+    int inventorycounts[game::SURVIVAL_USABLE_SLOTS], inventorydurabilities[game::SURVIVAL_USABLE_SLOTS],
+        inventorycursorcount, inventorycursordurability;
 
-    worldsnapshotmetadata() : seed(0), mode(0), entryx(0), entryy(0) {}
+    worldsnapshotmetadata() : seed(0), mode(0), entryx(0), entryy(0), inventorycursorid(0), inventorycursorcount(0), inventorycursordurability(0)
+    {
+        loopi(game::SURVIVAL_USABLE_SLOTS)
+        {
+            inventoryids[i] = 0;
+            inventorycounts[i] = inventorydurabilities[i] = 0;
+        }
+    }
 };
 
 static bool saveworldmetadata()
@@ -417,6 +421,7 @@ static bool saveworldmetadata()
                    file->printf("entry %d %d\n", entryx, entryy) > 0;
     if(written && spawn.valid)
         written = file->printf("spawn %.17g %.17g %.9g %.9g %.9g\n", spawn.x, spawn.y, spawn.z, spawn.yaw, spawn.pitch) > 0;
+    if(written) written = game::savesurvivalinventory(file);
     if(written) written = file->flush();
     delete file;
     if(!written || !replaceworldsnapshotfile(temporarypath, finalpath))
@@ -438,11 +443,36 @@ static bool loadworldmetadata(const char *folder, worldsnapshotmetadata &metadat
     string line;
     while(file->getline(line, sizeof(line)))
     {
+        int slot = -1, count = 0, durability = 0;
+        char itemidtext[32] = "", *itemidend = NULL;
         if(sscanf(line, "CUBECRAFT_SNAPSHOT_WORLD %d", &version) == 1) { header = true; continue; }
         if(sscanf(line, "dimensions %d %d %d", &width, &depth, &height) == 3) { dimensions = true; continue; }
         if(sscanf(line, "world_seed %d", &metadata.seed) == 1) { seed = true; continue; }
         if(sscanf(line, "game_mode %d", &metadata.mode) == 1) { mode = true; continue; }
         if(sscanf(line, "entry %d %d", &metadata.entryx, &metadata.entryy) == 2) { entry = true; continue; }
+        if(sscanf(line, "inventory_cursor %31[0-9] %d %d", itemidtext, &count, &durability) == 3)
+        {
+            errno = 0;
+            const ullong itemid = strtoull(itemidtext, &itemidend, 10);
+            if(errno || !itemidend || *itemidend) continue;
+            metadata.inventorycursorid = itemid;
+            metadata.inventorycursorcount = count;
+            metadata.inventorycursordurability = durability;
+            continue;
+        }
+        if(sscanf(line, "inventory %d %31[0-9] %d %d", &slot, itemidtext, &count, &durability) == 4)
+        {
+            errno = 0;
+            const ullong itemid = strtoull(itemidtext, &itemidend, 10);
+            if(errno || !itemidend || *itemidend) continue;
+            if(slot >= 0 && slot < game::SURVIVAL_USABLE_SLOTS)
+            {
+                metadata.inventoryids[slot] = itemid;
+                metadata.inventorycounts[slot] = count;
+                metadata.inventorydurabilities[slot] = durability;
+            }
+            continue;
+        }
         if(sscanf(line, "spawn %lf %lf %f %f %f", &metadata.spawn.x, &metadata.spawn.y, &metadata.spawn.z, &metadata.spawn.yaw,
                   &metadata.spawn.pitch) == 5)
             metadata.spawn.valid = true;
@@ -581,6 +611,12 @@ static void loadworldcommand(const char *requested)
     worldfirstchunkx = metadata.entryx - WORLD_RUNTIME_CENTER;
     worldfirstchunky = metadata.entryy - WORLD_RUNTIME_CENTER;
     if(!loadworlddefinitions()) return;
+    int inventoryitems[game::SURVIVAL_USABLE_SLOTS];
+    loopi(game::SURVIVAL_USABLE_SLOTS)
+        inventoryitems[i] = metadata.inventoryids[i] ? getinventoryitempersistentindex(metadata.inventoryids[i]) : -1;
+    const int inventorycursoritem = metadata.inventorycursorid ? getinventoryitempersistentindex(metadata.inventorycursorid) : -1;
+    game::loadsurvivalinventory(inventoryitems, metadata.inventorycounts, metadata.inventorydurabilities, game::SURVIVAL_USABLE_SLOTS,
+                                inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability);
     game::loadworldseed(metadata.seed);
     game::weather::preparemap(worldfolder, metadata.seed);
 

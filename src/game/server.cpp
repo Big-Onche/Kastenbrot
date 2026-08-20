@@ -405,6 +405,8 @@ namespace server
     static void queueserverfallblockcheck(const ivec &cell);
     static void queueserversupportchange(const ivec &cell);
     static void sendfallblockspawn(int cn, const serverfallingblock &block);
+    static void broadcastfallblockspawn(const serverfallingblock &block);
+    static void broadcastdropspawn(const serverdrop &drop);
     static chestinstance *findserverchest(const ivec &target);
     static int serverfloordiv(int value, int divisor);
     static int serverblockitem(const ivec &cell);
@@ -815,7 +817,9 @@ namespace server
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
         vector<uchar> npcdata;
-        if(!game::decodechunkdata(job.x, job.y, job.gameplay.getbuf(), job.gameplay.length(), furnaces, chests, npcdata) ||
+        vector<chunkfallingblockstate> falling;
+        vector<chunkdropstate> drops;
+        if(!game::decodechunkdata(job.x, job.y, job.gameplay.getbuf(), job.gameplay.length(), furnaces, chests, npcdata, falling, drops) ||
            !restoreserverchunknpcs(job.x, job.y, npcdata))
         {
             furnaces.deletecontents();
@@ -826,15 +830,79 @@ namespace server
         furnaces.setsize(0);
         loopv(chests) serverchests.add(chests[i]);
         chests.setsize(0);
+        loopv(falling)
+        {
+            const chunkfallingblockstate &saved = falling[i];
+            serverfallingblock *block = new serverfallingblock;
+            if(!nextfallblockid || nextfallblockid > uint(INT_MAX)) nextfallblockid = 1;
+            block->id = nextfallblockid++;
+            block->item = saved.item;
+            block->origin = saved.origin;
+            block->o = saved.position;
+            block->velocity = saved.velocity;
+            block->lastupdate = totalmillis;
+            serverfallingblocks.add(block);
+            broadcastfallblockspawn(*block);
+        }
+        loopv(drops)
+        {
+            const chunkdropstate &saved = drops[i];
+            if(saved.age >= droptimeout * 1000)
+            {
+                dirtyservergameplaycell(ivec(int(floorf(saved.position.x)), int(floorf(saved.position.y)), int(floorf(saved.position.z))));
+                continue;
+            }
+            serverdrop *drop = new serverdrop;
+            if(!nextdropid || nextdropid > uint(INT_MAX)) nextdropid = 1;
+            drop->id = nextdropid++;
+            drop->item = saved.item;
+            drop->count = saved.count;
+            drop->durability = saved.durability;
+            drop->created = totalmillis - saved.age;
+            drop->o = saved.position;
+            copystring(drop->ownerid, saved.ownerid);
+            serverdrops.add(drop);
+            broadcastdropspawn(*drop);
+        }
         return true;
+    }
+
+    static bool serverchunkcontains(const vec &position, int chunkx, int chunky)
+    {
+        return serverfloordiv(int(floorf(position.x)), SERVER_WORLD_CHUNK_SIZE) == chunkx &&
+               serverfloordiv(int(floorf(position.y)), SERVER_WORLD_CHUNK_SIZE) == chunky;
     }
 
     static bool queueserverchunksave(serverchunk &chunk)
     {
         if(chunk.loading || chunk.saving || chunk.corrupted || !chunk.root || !startserverchunkworker()) return false;
         vector<uchar> npcdata;
+        vector<chunkfallingblockstate> falling;
+        vector<chunkdropstate> drops;
+        loopv(serverfallingblocks)
+        {
+            const serverfallingblock &source = *serverfallingblocks[i];
+            if(source.item < 0 || !serverchunkcontains(source.o, chunk.x, chunk.y)) continue;
+            chunkfallingblockstate &block = falling.add();
+            block.item = source.item;
+            block.origin = source.origin;
+            block.position = source.o;
+            block.velocity = source.velocity;
+        }
+        loopv(serverdrops)
+        {
+            const serverdrop &source = *serverdrops[i];
+            if(source.item < 0 || !serverchunkcontains(source.o, chunk.x, chunk.y)) continue;
+            chunkdropstate &drop = drops.add();
+            drop.item = source.item;
+            drop.count = source.count;
+            drop.durability = source.durability;
+            drop.age = min(max(totalmillis - source.created, 0), 86400000);
+            drop.position = source.o;
+            copystring(drop.ownerid, source.ownerid);
+        }
         if(!captureserverchunknpcs(chunk.x, chunk.y, npcdata) ||
-           !game::capturechunkdata(chunk.x, chunk.y, serverfurnaces, serverchests, npcdata, chunk.gameplay)) return false;
+           !game::capturechunkdata(chunk.x, chunk.y, serverfurnaces, serverchests, npcdata, falling, drops, chunk.gameplay)) return false;
         serverchunkjob *job = new serverchunkjob(SERVER_CHUNK_SAVE, chunk.x, chunk.y);
         job->revision = chunk.revision;
         job->storageversion = chunk.storageversion;
@@ -871,9 +939,11 @@ namespace server
                     vector<furnaceinstance *> furnaces;
                     vector<chestinstance *> chests;
                     vector<uchar> npcdata;
+                    vector<chunkfallingblockstate> falling;
+                    vector<chunkdropstate> drops;
                     serverchunkdataputuint(npcdata, 1);
                     serverchunkdataputuint(npcdata, 0);
-                    job->success = game::capturechunkdata(job->x, job->y, furnaces, chests, npcdata, job->gameplay);
+                    job->success = game::capturechunkdata(job->x, job->y, furnaces, chests, npcdata, falling, drops, job->gameplay);
                     chunk->corrupted = !job->success;
                     if(!job->success) copystring(job->error, "could not initialize chunk gameplay data");
                 }
@@ -1701,6 +1771,7 @@ namespace server
     {
         if(!serverdrops.inrange(index)) return;
         serverdrop *drop = serverdrops.remove(index);
+        dirtyservergameplaycell(ivec(int(floorf(drop->o.x)), int(floorf(drop->o.y)), int(floorf(drop->o.z))));
         loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready)
             sendf(clients[i]->clientnum, 1, "ri3", N_DROPDELETE, int(drop->id), picker);
         delete drop;
@@ -1737,6 +1808,7 @@ namespace server
             drop->o = serverdroporigin(target, action, orient);
             if(owner) copystring(drop->ownerid, owner->playerid);
             serverdrops.add(drop);
+            dirtyservergameplaycell(target);
             broadcastdropspawn(*drop);
         }
     }
@@ -1757,6 +1829,7 @@ namespace server
         drop->o = vec(target).add(8);
         if(owner) copystring(drop->ownerid, owner->playerid);
         serverdrops.add(drop);
+        dirtyservergameplaycell(target);
         broadcastdropspawn(*drop);
     }
 
@@ -2333,6 +2406,7 @@ namespace server
         drop->o = vec(origin).add(vec(cosf(angle) * radius, sinf(angle) * radius, 3.0f));
         copystring(drop->ownerid, ci.playerid);
         serverdrops.add(drop);
+        dirtyservergameplaycell(ivec(int(floorf(drop->o.x)), int(floorf(drop->o.y)), int(floorf(drop->o.z))));
         broadcastdropspawn(*drop);
     }
 
@@ -2796,6 +2870,7 @@ namespace server
         drop->created = max(totalmillis, 1);
         drop->o = vec(origin).add(vec(cosf(angle) * radius, sinf(angle) * radius, 3.0f));
         serverdrops.add(drop);
+        dirtyservergameplaycell(ivec(int(floorf(drop->o.x)), int(floorf(drop->o.y)), int(floorf(drop->o.z))));
         broadcastdropspawn(*drop);
     }
 

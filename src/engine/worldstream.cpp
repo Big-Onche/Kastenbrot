@@ -1918,7 +1918,7 @@ static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
     {
         worldchunk &chunk = worldchunks[i];
         if(chunk.loading || worldchunkmounted(chunk) || !chunk.root ||
-           worldchunkdistance(chunk.x, chunk.y, chunkx, chunky) <= cachedist)
+           worldchunkdistance(chunk.x, chunk.y, chunkx, chunky) <= cachedist || game::haslocalchunkdynamicstate(chunk.x, chunk.y))
             continue;
         {
             ZoneScopedN("Chunks/Release cache");

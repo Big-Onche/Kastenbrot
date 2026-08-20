@@ -67,6 +67,7 @@ namespace game
     extern bool loadlocalchests(const char *world);
     extern bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data);
     extern bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length);
+    extern bool haslocalchunkdynamicstate(int chunkx, int chunky);
     extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
     extern void unloadlocalchunknpcs(int chunkx, int chunky);
     extern bool savelocalpassivenpcs(const char *world);

@@ -757,6 +757,7 @@ namespace game
 
     static void renderworlddrop(const worlddrop &drop)
     {
+        if(!drop.geometryready) return;
         vec position = drop.picking ? drop.pickupfrom : drop.o;
         if(waitforserveredit()) worldpositiontolocal(position);
         if(drop.picking)

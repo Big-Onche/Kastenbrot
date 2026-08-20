@@ -171,7 +171,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 31
+#define PROTOCOL_VERSION 32
 
 enum
 {
@@ -349,12 +349,12 @@ struct worlddrop
     uint id, sourcerequestid, pickuprequestid;
     int source, item, count, durability, owner, created, pickupmillis, picker, physicsmillis, settledmillis;
     float fallvelocity;
-    bool confirmed, picking, removed, pickupblocked, settled, landingknown;
+    bool confirmed, picking, removed, pickupblocked, settled, landingknown, geometryready;
     vec o, pickupfrom, landing;
 
     worlddrop() : id(0), sourcerequestid(0), pickuprequestid(0), source(-1), item(-1), count(0), durability(0), owner(-1), created(0), pickupmillis(0),
                   picker(-1), physicsmillis(0), settledmillis(0), fallvelocity(0), confirmed(false), picking(false), removed(false),
-                  pickupblocked(false), settled(false), landingknown(false), o(0, 0, 0), pickupfrom(0, 0, 0), landing(0, 0, 0)
+                  pickupblocked(false), settled(false), landingknown(false), geometryready(true), o(0, 0, 0), pickupfrom(0, 0, 0), landing(0, 0, 0)
     {
     }
 };
@@ -373,6 +373,25 @@ struct fallingblock
           landingknown(false), origin(0, 0, 0), o(0, 0, 0), serverposition(0, 0, 0), landing(0, 0, 0)
     {
     }
+};
+
+struct chunkfallingblockstate
+{
+    int item;
+    ivec origin;
+    vec position;
+    float velocity;
+
+    chunkfallingblockstate() : item(-1), origin(0, 0, 0), position(0, 0, 0), velocity(0) {}
+};
+
+struct chunkdropstate
+{
+    int item, count, durability, age;
+    vec position;
+    string ownerid;
+
+    chunkdropstate() : item(-1), count(0), durability(0), age(0), position(0, 0, 0) { ownerid[0] = '\0'; }
 };
 
 struct gameent : dynent
@@ -534,11 +553,14 @@ namespace game
     extern bool loadlocalchests(const char *world);
     extern bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data);
     extern bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length);
+    extern bool haslocalchunkdynamicstate(int chunkx, int chunky);
     extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
     extern bool capturechunkdata(int chunkx, int chunky, const vector<furnaceinstance *> &furnaces, const vector<chestinstance *> &chests,
-                                 const vector<uchar> &npcdata, vector<uchar> &data);
+                                 const vector<uchar> &npcdata, const vector<chunkfallingblockstate> &falling,
+                                 const vector<chunkdropstate> &drops, vector<uchar> &data);
     extern bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
-                                vector<chestinstance *> &chests, vector<uchar> &npcdata);
+                                vector<chestinstance *> &chests, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
+                                vector<chunkdropstate> &drops);
     extern bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data);
     extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length);
     extern bool debuglocalchunknpcs(stream *file, const uchar *data, int length);
