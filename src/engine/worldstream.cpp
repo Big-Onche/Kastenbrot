@@ -12,9 +12,6 @@ static void setworldchunksectioncontent(worldchunk &chunk, int tile, int section
 static void setworldchunksectionopaque(worldchunk &chunk, int tile, int section, bool opaque);
 static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, const int *sections, int numsections);
 static int processworldchunkvaupdates();
-static void applyworlddiffnode(cube *root, const worlddiffnode &node, bool prepared, int &families);
-static void applyworldscatterchange(vector<worldscatterinstance> &scatter, const vector<worldscatterinstance> &before,
-                                    const vector<worldscatterinstance> &after);
 
 static bool worldchunkmounted(const worldchunk &chunk);
 static int worldchunkvaupdatekey(const ivec &origin);
@@ -22,7 +19,7 @@ static int worldchunkvaupdatekey(const ivec &origin);
 VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generation/load
 
 worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
-    : x(x), y(y), families(0), optimized(0), loaderror(0), revision(0), canonicalhash(0), epoch(epoch), request(request), loaded(false),
+    : x(x), y(y), families(0), optimized(0), loaderror(0), epoch(epoch), request(request),
       cached(false),
       remip(chunkremip != 0), leavesalpha(::leavesalpha != 0), sectionstatesready(false), root(NULL), seed(game::getworldseed()),
       worldgenhash(game::worldgenerationparameterhash()), generation(NULL)
@@ -33,7 +30,6 @@ worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
     memclear(portalcellmasks);
     SDL_AtomicSet(&cancelled, 0);
     generation = game::createworldgeneration(true, remip, &cancelled);
-    filename[0] = '\0';
     cachefilename[0] = '\0';
 }
 
@@ -45,12 +41,9 @@ worldchunkjob::~worldchunkjob()
 static vector<worldchunk> worldchunks;
 static vector<worldscatterinstance> reconstructedworldscatter;
 static worldsectionrenderdata reconstructedworldrenderdata;
-static bool reconstructedworldscatterready = false;
 static vector<worldchunkjob *> worldchunkjobs, worldchunkactivejobs, worldchunkresults;
 static vector<worldchunkcachewritejob *> worldchunkcachewrites, worldchunkactivecachewrites;
-static vector<worldchunkdiffstate *> worldchunkdiffstates;
 static string worldfolder = "";
-static bool applyloadworlddefaults = false;
 static int activeworldchunk = -1;
 static int worldfirstchunkx = 0, worldfirstchunky = 0;
 static int lastplayerchunkx = INT_MIN, lastplayerchunky = INT_MIN, lastchunkdist = -1;
@@ -85,10 +78,6 @@ static ivec worldsectionvisibilityfocus(INT_MIN, INT_MIN, INT_MIN);
 static float worldchunkvasectionmillis = 2.0f;
 static int worldvaevictionsframe = 0, worldvanorenderskipsframe = 0;
 static int worldvaresidentcounts[WORLD_VA_GEOMETRY_COUNT], worldvapendingbuildcount = 0, worldvapendinguploadcount = 0;
-static worlddiffmetadata activeworldmetadata;
-static int worldeditauthor = -1, lastworlddiffflush = 0;
-static ullong worldeditrevision = 0, incomingworldeditrevision = 0;
-static vector<worldeditrecord *> worldredostack;
 
 static ivec worldchunkindexkey(int x, int y)
 {
@@ -179,7 +168,6 @@ VAR(chunkinteriorradius, 1, 2, 8);
 VAR(drawfullchunk, 0, 0, 1);
 
 static cube *prepareworldchunk(worldchunkjob &job);
-static cube *newpreparedfamily(int &families);
 static int worldchunkloader(void *);
 static void shutdownworldchunkloader();
 static void updateworldscatterers();
@@ -194,18 +182,7 @@ static int remipworldchunkbounded(cube *root, bool prepared, int &families, SDL_
 static bool subdivideworldmip(const cube &c, cube *children);
 static bool prepareworldchunksectionstates(worldchunkjob &job);
 static int pruneworldchunkcache(int chunkx, int chunky, int limit);
-static bool saveworldconfig();
 static void worldchunkname(char *name, size_t len, const worldchunk &chunk);
-static worldchunkdiffstate *findworldchunkdiffstate(int x, int y, bool create = false);
-static void queuependingworldedit(worldchunkdiffstate &state, worldeditrecord *record);
-static bool applyworldchunkdiff(cube *root, int x, int y, const char *filename, vector<worldscatterinstance> &scatter, bool prepared, int &families,
-                                ullong &revision, ullong &canonicalhash, worldchunkdirtybounds *dirty = NULL);
-static ullong hashworldchunk(cube *root);
-static void flushworlddiffjournals(bool force = false);
-static bool compactworldchunkdiff(worldchunk &chunk);
-static void shutdownworlddiffwriter();
-static ullong currentworldparameterhash();
-static bool loadworldmetadata(const char *folder, int &chunkx, int &chunky, worldspawnmetadata &spawn, worlddiffmetadata &metadata);
 void setmapfilenames(const char *fname, const char *cname);
 
 int getworldsectionsize()
@@ -327,8 +304,6 @@ ICOMMAND(getdebugtectoniccave, "", (), debugworldvalueresult(currentworlddebugst
 void clearworldchunks()
 {
     ZoneScopedN("Chunks/Clear all chunks");
-    flushworlddiffjournals(true);
-    shutdownworlddiffwriter();
     cancelworldedit();
     clearworldscattererentities();
     clearworldscattermeshes();
@@ -355,12 +330,7 @@ void clearworldchunks()
     worldchunks.setsize(0);
     reconstructedworldscatter.setsize(0);
     reconstructedworldrenderdata.clear();
-    reconstructedworldscatterready = false;
-    worldchunkdiffstates.deletecontents();
-    worldredostack.deletecontents();
     worldfolder[0] = '\0';
-    activeworldmetadata = worlddiffmetadata();
-    worldeditrevision = incomingworldeditrevision = 0;
     activeworldchunk = -1;
     worldfirstchunkx = worldfirstchunky = 0;
     lastplayerchunkx = lastplayerchunky = INT_MIN;
@@ -389,19 +359,6 @@ static void copyworldcube(const cube &src, cube &dst)
     }
 }
 
-static cube &lookupworldchunkrootcube(cube *root, const ivec &pos, int size)
-{
-    int scale = WORLD_CHUNK_SCALE - 1;
-    cube *c = &root[octastep(pos.x, pos.y, pos.z, scale)];
-    while(!(size >> scale))
-    {
-        if(!c->children) subdividecube(*c);
-        --scale;
-        c = &c->children[octastep(pos.x, pos.y, pos.z, scale)];
-    }
-    return *c;
-}
-
 static const cube &lookupworldchunkrootcube(const cube *root, const ivec &pos, int size)
 {
     int scale = WORLD_CHUNK_SCALE - 1;
@@ -412,46 +369,6 @@ static const cube &lookupworldchunkrootcube(const cube *root, const ivec &pos, i
         c = &c->children[octastep(pos.x, pos.y, pos.z, scale)];
     }
     return *c;
-}
-
-static void setworldcubetreematerial(cube &c, int material)
-{
-    if(c.children)
-    {
-        loopi(8) setworldcubetreematerial(c.children[i], material);
-        return;
-    }
-    emptyfaces(c);
-    c.material = material;
-}
-
-static cube *copyworldchunkforsave(const worldchunk &chunk)
-{
-    cube *root = newcubes(F_EMPTY);
-    loopi(8) copyworldcube(chunk.root[i], root[i]);
-
-    vector<ivec> flowing;
-    getflowingwatercells(flowing);
-    const int absolutex = chunk.x * WORLD_CHUNK_SIZE,
-              absolutey = chunk.y * WORLD_CHUNK_SIZE;
-    loopv(flowing)
-    {
-        const ivec &position = flowing[i];
-        if(position.x < absolutex || position.x >= absolutex + WORLD_CHUNK_SIZE ||
-           position.y < absolutey || position.y >= absolutey + WORLD_CHUNK_SIZE ||
-           position.z < 0 || position.z >= WORLD_MAP_SIZE)
-            continue;
-        const ivec local(position.x - absolutex, position.y - absolutey, position.z);
-        cube &cell = lookupworldchunkrootcube(root, local, WORLD_BLOCK_SIZE);
-        setworldcubetreematerial(cell, MAT_AIR);
-    }
-    return root;
-}
-
-static void pasteworldcube(const cube &src, cube &dst)
-{
-    discardchildren(dst);
-    copyworldcube(src, dst);
 }
 
 static void resetworldcube(cube &c)
@@ -860,39 +777,9 @@ void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
         renderdirty.valid = renderdirty.minimum.x < renderdirty.maximum.x && renderdirty.minimum.y < renderdirty.maximum.y &&
                             renderdirty.minimum.z < renderdirty.maximum.z;
         reclassifyworldchunkrenderdata(&chunk, chunk.root, chunk.renderdata, renderdirty);
-        chunk.dirty = true;
         visibilitychanged = true;
     }
     if(visibilitychanged) invalidateworldsectionvisibility();
-}
-
-static bool syncmountedworldchunk(worldchunk &chunk)
-{
-    if(!worldchunkmounted(chunk) || !chunk.root || !worldroot) return !chunk.corrupted;
-    ZoneScopedN("Chunks/Sync mounted chunk");
-    ZoneTextF("%d_%d", chunk.x, chunk.y);
-    bool valid = !chunk.corrupted;
-    loopi(WORLD_SECTION_LAYERS) if(chunk.mountedtiles[i]) loopj(WORLD_SECTION_TILES)
-    {
-        if(!(chunk.mountedtiles[i] & (1U << j))) continue;
-        int x = j % WORLD_SECTION_COLUMNS, y = j / WORLD_SECTION_COLUMNS;
-        ivec pos(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, i * WORLD_SECTION_SIZE);
-        ivec runtimepos = ivec(worldchunkorigin(chunk)).add(pos);
-        int key = worldchunkvaupdatekey(runtimepos);
-        worldsectionowner *owner = worldsectionowners.access(key);
-        if(!owner || !owner->matches(chunk, i, j))
-        {
-            conoutf(CON_ERROR, "refusing to sync chunk %d_%d section %d:%d: runtime ownership mismatch",
-                    chunk.x, chunk.y, i, j);
-            chunk.corrupted = true;
-            invalidateworldsectionvisibility();
-            valid = false;
-            continue;
-        }
-        pasteworldcube(lookupcube(runtimepos, WORLD_SECTION_SIZE),
-                       lookupworldchunkcube(chunk, pos, WORLD_SECTION_SIZE));
-    }
-    return valid;
 }
 
 static bool mountworldchunktile(worldchunk &chunk, int section, int tile)
@@ -1345,7 +1232,7 @@ static void clearworldchunkcache()
         SDL_UnlockMutex(worldchunkmutex);
     }
     const int removed = removeworldchunkcachefiles(worldfolder);
-    conoutf("removed %d disposable generated chunk cache files for %s; player diffs were preserved", removed, worldfolder);
+    conoutf("removed %d disposable generated chunk cache files for %s", removed, worldfolder);
 }
 
 static void worldchunkcachestats()
@@ -1411,13 +1298,6 @@ static int acquireworldchunksync(int x, int y, int &generated)
 
     ZoneScopedN("Chunks/Load synchronous");
     ZoneTextF("%d_%d", x, y);
-    defformatstring(diffname, "media/map/%s/chunks/%d_%d_%d.diff",
-                    worldfolder, x, y, WORLD_DIFF_Z);
-    path(diffname);
-    const char *found = findfile(diffname, "rb");
-    string diffpath;
-    diffpath[0] = '\0';
-    if(found && fileexists(found, "r")) copystring(diffpath, diffname);
     vector<worldscatterinstance> scatter;
     string cachefilename;
     worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, x, y);
@@ -1437,22 +1317,7 @@ static int acquireworldchunksync(int x, int y, int &generated)
             queueworldchunkcachewrite(x, y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, cachepayload);
     }
     if(root) setworldleavesalpha(root, leavesalpha != 0);
-    bool loaded = diffpath[0] != '\0';
-    if(root && loaded)
-    {
-        int families = 0;
-        ullong revision = 0, canonicalhash = 0;
-        worldchunkdirtybounds dirty;
-        applyworldchunkdiff(root, x, y, diffpath, scatter, false, families,
-                            revision, canonicalhash, &dirty);
-        if(chunkremip && dirty.valid) remipworldchunkbounded(root, false, families, NULL, &dirty);
-        reclassifyworldchunkrenderdata(NULL, root, renderdata, dirty);
-        worldchunkdiffstate *state = findworldchunkdiffstate(x, y, true);
-        state->revision = revision;
-        worldeditrevision = max(worldeditrevision, revision);
-        state->canonicalhash = hashworldchunk(root);
-    }
-    worldchunk &chunk = worldchunks.add(worldchunk(x, y, root, false, loaded));
+    worldchunk &chunk = worldchunks.add(worldchunk(x, y, root));
     indexworldchunk(worldchunks.length() - 1);
     chunk.scatter.move(scatter);
     chunk.renderdata = renderdata;
@@ -1505,12 +1370,6 @@ static int queueworldchunk(int x, int y)
     if(!request) request = ++worldchunkrequest;
     worldchunkjob *job = new worldchunkjob(x, y, worldchunkepoch, request);
     if(generatedchunkcache && worldfolder[0]) worldchunkcachefilename(job->cachefilename, sizeof(job->cachefilename), worldfolder, x, y);
-    defformatstring(chunkfile, "media/map/%s/chunks/%d_%d_%d.diff",
-                    worldfolder, x, y, WORLD_DIFF_Z);
-    path(chunkfile);
-    const char *found = findfile(chunkfile, "rb");
-    if(found && fileexists(found, "r"))
-        copystring(job->filename, chunkfile);
 
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, NULL, true));
     indexworldchunk(worldchunks.length() - 1);
@@ -1733,12 +1592,6 @@ static int processworldchunkresults()
             }
             chunk.loading = false;
             chunk.generating = false;
-            chunk.saved = job->loaded;
-            chunk.dirty = false;
-            worldchunkdiffstate *diffstate = findworldchunkdiffstate(chunk.x, chunk.y, true);
-            diffstate->revision = max(diffstate->revision, job->revision);
-            worldeditrevision = max(worldeditrevision, job->revision);
-            diffstate->canonicalhash = job->canonicalhash;
             allocnodes += job->families;
             if(!job->cached && corruptworldchunkcacheerror(job->loaderror))
                 conoutf(CON_WARN, "generated chunk cache %d_%d failed validation at stage %d; regenerated it",
@@ -1875,7 +1728,7 @@ static int pruneworldchunkcache(int chunkx, int chunky, int limit)
     for(int i = worldchunks.length() - 1; i >= 0; --i)
     {
         worldchunk &chunk = worldchunks[i];
-        if(chunk.loading || worldchunkmounted(chunk) || chunk.dirty || !chunk.root ||
+        if(chunk.loading || worldchunkmounted(chunk) || !chunk.root ||
            worldchunkdistance(chunk.x, chunk.y, chunkx, chunky) <= cachedist)
             continue;
         {
@@ -2004,7 +1857,6 @@ void updateworldchunks(bool force)
 {
     if(worldchunks.empty() || rebuildingworldchunks || !worldroot) return;
     ZoneScopedN("Chunks/Update world chunks");
-    flushworlddiffjournals(false);
     if(stopworldchunkgeneration) return;
 
     int localchunkx = 0, localchunky = 0;
@@ -2427,15 +2279,6 @@ static cube *prepareworldchunk(worldchunkjob &job)
     }
     setworldleavesalpha(root, job.leavesalpha);
     if(!job.cached && job.cachefilename[0]) serializeworldchunkcache(root, job.scatter, job.cachepayload, &job.renderdata);
-    if(job.filename[0])
-    {
-        worldchunkdirtybounds dirty;
-        applyworldchunkdiff(root, job.x, job.y, job.filename, job.scatter, true, job.families, job.revision, job.canonicalhash, &dirty);
-        if(job.remip && dirty.valid) job.optimized += remipworldchunkbounded(root, true, job.families, NULL, &dirty);
-        reclassifyworldchunkrenderdata(NULL, root, job.renderdata, dirty);
-        job.loaded = true;
-    }
-    job.canonicalhash = hashworldchunk(root);
     return root;
 }
 

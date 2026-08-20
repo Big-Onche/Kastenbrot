@@ -478,8 +478,7 @@ namespace game
     void beginlocalworld()
     {
 #ifndef STANDALONE
-        // A listen server owns a separate seed and journal. Leaving it connected
-        // would make its N_WORLDSTATE replace the saved world after loading.
+        // A listen server owns a separate session seed.
         if(isconnected(false, false)) disconnect(false, false);
         if(isconnected(false, true)) server::localdisconnect(false);
 #endif
@@ -590,8 +589,6 @@ namespace game
         if(edit.type == N_WORLDAUTH)
         {
             if(player1 && edit.author == player1->clientnum && edit.requestid && findpredictedworldaction(edit.requestid)) return true;
-            setworldeditauthor(edit.author);
-            setworldeditrevision(edit.revision);
             return applyworldaction(edit.args[0], ivec(edit.args[1], edit.args[2], edit.args[3]), edit.args[4], edit.args[5]);
         }
 
@@ -599,8 +596,6 @@ namespace game
         worldselectiontolocal(sel);
         if(!sel.validate() || !worldselectionready(sel)) return false;
 
-        setworldeditauthor(edit.author);
-        setworldeditrevision(edit.revision);
         switch(edit.type)
         {
             case N_EDITF:
@@ -1532,7 +1527,7 @@ namespace game
                 if(pending >= 0)
                 {
                     // The inventory snapshot is the authoritative load-time
-                    // record. Repair a missing scatter journal entry once its
+                    // record. Repair a missing scatter entry once its
                     // chunk is ready instead of discarding all chest contents.
                     const int worldindex = getworlditemindex(chest.worlditem);
                     if(worldindex >= 0 && editworldscatter(worldindex, support.o, WORLD_ORIENT_TOP, true))

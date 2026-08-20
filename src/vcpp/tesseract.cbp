@@ -213,10 +213,6 @@
 		</Unit>
 		<Unit filename="../engine/worlddef.cpp" />
 		<Unit filename="../engine/worlddef.h" />
-		<Unit filename="../engine/worlddiff.cpp">
-			<Option compile="0" />
-			<Option link="0" />
-		</Unit>
 		<Unit filename="../engine/worldedit.cpp">
 			<Option compile="0" />
 			<Option link="0" />

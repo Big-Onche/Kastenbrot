@@ -929,7 +929,7 @@ void swapundo(undolist &a, undolist &b, int op)
     if(noedit()) return;
     if(game::waitforserveredit())
     {
-        game::requestworldcommand(op == EDIT_REDO ? "worldredo 1" : "worldundo 1");
+        conoutf(CON_WARN, "%s is unavailable while waiting for the server", op == EDIT_REDO ? "redo" : "undo");
         return;
     }
     if(a.empty()) { conoutf(CON_WARN, "nothing more to %s", op == EDIT_REDO ? "redo" : "undo"); return; }
@@ -3125,4 +3125,3 @@ EDITSTAT(glde, int, glde);
 EDITSTAT(geombatch, int, gbatches);
 EDITSTAT(oq, int, getnumqueries());
 EDITSTAT(pvs, int, getnumviewcells());
-

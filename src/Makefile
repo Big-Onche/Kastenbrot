@@ -473,7 +473,7 @@ engine/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/world.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/world.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
 engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldruntime.h engine/worldstream.cpp engine/worldlod.cpp engine/worldvisibility.cpp
-engine/worldio.o: engine/worlddiff.cpp engine/worldedit.cpp game/worldcontent.cpp game/worldrender.cpp game/worldgen.h shared/cube.h shared/tools.h shared/geom.h
+engine/worldio.o: engine/worldedit.cpp game/worldcontent.cpp game/worldrender.cpp game/worldgen.h shared/cube.h shared/tools.h shared/geom.h
 engine/worldio.o: shared/ents.h shared/command.h shared/glexts.h
 engine/worldio.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/worldio.o: engine/world.h engine/octa.h engine/light.h

@@ -170,7 +170,6 @@
 		D1FCB12518832B7500AFC227 /* worldio.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldio.cpp; sourceTree = "<group>"; };
 		F00000000000000000000010 /* worldstream.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldstream.cpp; sourceTree = "<group>"; };
 		F00000000000000000000011 /* worldvisibility.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldvisibility.cpp; sourceTree = "<group>"; };
-		F00000000000000000000012 /* worlddiff.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worlddiff.cpp; sourceTree = "<group>"; };
 		F00000000000000000000013 /* worldedit.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldedit.cpp; sourceTree = "<group>"; };
 		F00000000000000000000014 /* worldruntime.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = worldruntime.h; sourceTree = "<group>"; };
 		F00000000000000000000015 /* worldcache.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldcache.cpp; sourceTree = "<group>"; };
@@ -410,7 +409,6 @@
 				D1FCB12418832B7500AFC227 /* world.h */,
 				D1FCB12518832B7500AFC227 /* worldio.cpp */,
 				F00000000000000000000015 /* worldcache.cpp */,
-				F00000000000000000000012 /* worlddiff.cpp */,
 				F00000000000000000000013 /* worldedit.cpp */,
 				F00000000000000000000014 /* worldruntime.h */,
 				F00000000000000000000010 /* worldstream.cpp */,

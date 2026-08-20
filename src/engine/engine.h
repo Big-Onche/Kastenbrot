@@ -213,7 +213,7 @@ extern int neighbourdepth;
 extern const cube &neighbourcube(const cube &c, int orient, const ivec &co, int size, ivec &ro = lu, int &rsize = lusize);
 extern void resetclipplanes();
 extern void clearworldchunks();
-extern void closeproceduralworld(bool save);
+extern void closeproceduralworld();
 extern int getworldsectionsize();
 extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section);
 extern bool worldsectionvaenabled(const ivec &origin, int size);
@@ -425,9 +425,7 @@ extern void beginworldedit(int operation, const selinfo &sel,
                            int arg1 = 0, int arg2 = 0, int arg3 = 0, int arg4 = 0);
 extern void commitworldedit();
 extern void cancelworldedit();
-extern void setworldeditauthor(int author);
-extern void setworldeditrevision(uint revision);
-// Invalidates a half-open world-space region plus its face-neighbour halo without recording a persistent world edit.
+// Invalidates a half-open world-space region plus its face-neighbour halo.
 extern void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit = true);
 extern void changed(const ivec &bbmin, const ivec &bbmax, bool commit = true);
 extern void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit = true);

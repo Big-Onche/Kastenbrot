@@ -188,8 +188,8 @@ void trydisconnect(bool local)
         // Offline procedural worlds have no network peer, but Disconnect is
         // still the user's "save, leave world, return to menu" action. Save
         // before gamedisconnect() clears transient player state, including the
-        // survival inventory that is serialized into world.meta.
-        closeproceduralworld(true);
+        // survival inventory is session-local for the procedural world.
+        closeproceduralworld();
         game::gamedisconnect(false);
         mainmenu = 1;
         conoutf("left single-player world");

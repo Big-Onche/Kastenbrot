@@ -22,8 +22,6 @@ namespace server
     {
         SERVER_DAY_MILLIS = 20 * 60 * 1000,
         SERVER_START_MILLIS = 8 * SERVER_DAY_MILLIS / 24,
-        SERVER_JOURNAL_VERSION = 1,
-        MIN_SERVER_JOURNAL_PROTOCOL = 8,
         SERVER_IDENTITY_DB_VERSION = 2,
         PLAYER_IDENTITY_VERSION = 1,
         PLAYER_IDENTITY_TIMEOUT = 15000,
@@ -334,14 +332,14 @@ namespace server
     static chestinstance *findserverchest(const ivec &target);
 
     vector<clientinfo *> clients;
-    vector<serveredit *> worldhistory, worldredostack;
+    vector<serveredit *> worldhistory;
     string smapname = "";
     stream *mapdata = NULL;
     int gamemode = STARTGAMEMODE;
     uint worldeditrevision = 0;
     int worldclockmillis = SERVER_START_MILLIS, lastworldtimesync = 0;
     uint weatherclockmillis = 0;
-    bool worldtimefrozen = false, serverworldready = true, journalinitialized = false;
+    bool worldtimefrozen = false, serverworldready = true, serverworldinitialized = false;
 
     static bool servercreative()
     {
@@ -513,27 +511,6 @@ namespace server
         return ok;
     }
 
-    static void journalput32(vector<uchar> &out, uint value)
-    {
-        value = lilswap(value);
-        out.put((uchar *)&value, sizeof(value));
-    }
-
-    static uint journalchecksum(const uchar *data, int length)
-    {
-        uint hash = 2166136261U;
-        loopi(length) { hash ^= data[i]; hash *= 16777619U; }
-        return hash;
-    }
-
-    static bool journalread32(ucharbuf &p, uint &value)
-    {
-        if(p.remaining() < 4) return false;
-        memcpy(&value, p.pad(4), 4);
-        value = lilswap(value);
-        return true;
-    }
-
     static bool readselection(ucharbuf &p, selinfo &sel)
     {
         sel.o.x = getint(p); sel.o.y = getint(p); sel.o.z = getint(p);
@@ -571,107 +548,9 @@ namespace server
     static int worldmountorient(int orient) { return ((orient % 6) + 6) % 6; }
     static int worldplaceyaw(int orient) { return clamp(orient / 6, 0, 3) * 90; }
 
-    static void updateservereditmetadata(serveredit &edit)
-    {
-        edit.hasselection = false;
-        if(edit.type == N_WORLDAUTH)
-        {
-            ucharbuf p(edit.payload.getbuf(), edit.payload.length());
-            const int action = getint(p);
-            ivec target;
-            target.x = getint(p); target.y = getint(p); target.z = getint(p);
-            const int packed = getint(p), orient = worldmountorient(packed);
-            const ullong itemid = getpersistentid(p);
-            const int item = itemid ? getinventoryitempersistentindex(itemid) : -1;
-            if(!p.overread() && !p.remaining() && packed >= 0 && packed < 24)
-            {
-                setworldactionstate(worldactionstatecell(target, action, orient), action, orient, item, edit.author >= 0);
-            }
-            return;
-        }
-        if(!editselectiontype(edit.type)) return;
-        ucharbuf p(edit.payload.getbuf(), edit.payload.length());
-        if(readselection(p, edit.selection)) edit.hasselection = true;
-    }
-
-    static void serverjournalname(char *name, size_t len)
-    {
-        string safe;
-        int n = 0;
-        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
-        for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
-            if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
-        safe[n] = '\0';
-        if(!safe[0]) copystring(safe, "multiplayer");
-        snprintf(name, len, "media/map/%s/server.diff", safe);
-        path(name);
-    }
-
-    static bool writeserverjournalheader(stream &file)
-    {
-        return file.write("CCJ1", 4) == 4 &&
-               file.putlil<uint>(SERVER_JOURNAL_VERSION) &&
-               file.putlil<uint>(PROTOCOL_VERSION) &&
-               file.putlil<uint>(uint(serverworldseed)) &&
-               file.putlil<uint>(worldeditrevision);
-    }
-
-    static bool writeserveredit(stream &file, const serveredit &edit)
-    {
-        vector<uchar> body;
-        journalput32(body, edit.revision);
-        journalput32(body, edit.timestamp);
-        journalput32(body, uint(edit.author));
-        journalput32(body, uint(edit.type));
-        journalput32(body, edit.active ? 1U : 0U);
-        journalput32(body, uint(edit.payload.length()));
-        journalput32(body, uint(strlen(edit.ownerid)));
-        body.put((const uchar *)edit.ownerid, strlen(edit.ownerid));
-        body.put(edit.payload.getbuf(), edit.payload.length());
-        return file.write("OP02", 4) == 4 &&
-               file.putlil<uint>(uint(body.length())) &&
-               file.putlil<uint>(journalchecksum(body.getbuf(), body.length())) &&
-               file.write(body.getbuf(), body.length()) == size_t(body.length());
-    }
-
-    static bool rewriteserverjournal()
-    {
-        string filename;
-        serverjournalname(filename, sizeof(filename));
-        defformatstring(temporary, "%s.tmp", filename);
-        string finalpath, temporarypath;
-        copystring(finalpath, findfile(filename, "wb"));
-        copystring(temporarypath, findfile(temporary, "wb"));
-        stream *file = openrawfile(temporary, "wb");
-        if(!file) return false;
-        bool ok = writeserverjournalheader(*file);
-        loopv(worldhistory) if(ok) ok = writeserveredit(*file, *worldhistory[i]);
-        if(ok) ok = file->flush();
-        delete file;
-        if(!ok || !replaceserveridentityfile(temporarypath, finalpath))
-        {
-            remove(temporarypath);
-            conoutf(CON_ERROR, "could not atomically write authoritative world journal %s", filename);
-            return false;
-        }
-        return true;
-    }
-
-    static bool appendserveredit(const serveredit &edit)
-    {
-        string filename;
-        serverjournalname(filename, sizeof(filename));
-        stream *file = openrawfile(filename, "ab");
-        if(!file) return false;
-        bool ok = writeserveredit(*file, edit) && file->flush();
-        delete file;
-        return ok;
-    }
-
-    static void loadserverjournal()
+    static void loadserverstate()
     {
         worldhistory.deletecontents();
-        worldredostack.deletecontents();
         serverworldactions.deletecontents();
         serverdrops.deletecontents();
         serverfallingblocks.deletecontents();
@@ -689,98 +568,6 @@ namespace server
         worldeditrevision = 0;
         serverworldready = true;
 
-        string filename;
-        serverjournalname(filename, sizeof(filename));
-        stream *file = openrawfile(filename, "rb");
-        if(!file)
-        {
-            if(!rewriteserverjournal()) serverworldready = false;
-            if(!loadserverpassivenpcs()) serverworldready = false;
-            return;
-        }
-
-        char magic[4];
-        uint version = 0, protocol = 0, seed = 0, headerrevision = 0;
-        if(file->read(magic, 4) != 4 || memcmp(magic, "CCJ1", 4) ||
-           (version = file->getlil<uint>()) != SERVER_JOURNAL_VERSION ||
-           ((protocol = file->getlil<uint>()) < MIN_SERVER_JOURNAL_PROTOCOL ||
-            protocol > PROTOCOL_VERSION) ||
-           (seed = file->getlil<uint>()) != uint(serverworldseed))
-        {
-            conoutf(CON_ERROR, "authoritative journal %s is incompatible (version %u, protocol %u, seed %u; configured seed %d)",
-                    filename, version, protocol, seed, serverworldseed);
-            serverworldready = false;
-            delete file;
-            return;
-        }
-        headerrevision = file->getlil<uint>();
-        worldeditrevision = headerrevision;
-
-        bool recovered = false;
-        while(!file->end())
-        {
-            if(file->read(magic, 4) != 4) break;
-            uint length = file->getlil<uint>(), checksum = file->getlil<uint>();
-            bool hasowner = !memcmp(magic, "OP02", 4);
-            if((!hasowner && memcmp(magic, "OP01", 4)) ||
-               length < uint(hasowner ? 28 : 24) || length > uint(MAXTRANS + MAXSTRLEN + 64))
-            {
-                recovered = true;
-                break;
-            }
-            vector<uchar> body;
-            // vector::setsize() only shrinks an existing allocation. Using it
-            // here left getbuf() unallocated in release builds, so every valid
-            // first record looked like a corrupt tail after a restart.
-            uchar *bodybuf = body.pad(length);
-            if(file->read(bodybuf, length) != length ||
-               journalchecksum(body.getbuf(), body.length()) != checksum)
-            {
-                recovered = true;
-                break;
-            }
-            ucharbuf p(body.getbuf(), body.length());
-            uint revision, timestamp, author, type, active, payloadlen, ownerlen = 0;
-            if(!journalread32(p, revision) || !journalread32(p, timestamp) ||
-               !journalread32(p, author) || !journalread32(p, type) ||
-               !journalread32(p, active) || !journalread32(p, payloadlen) ||
-               (hasowner && !journalread32(p, ownerlen)) ||
-               ownerlen >= MAXSTRLEN || ownerlen + payloadlen != uint(p.remaining()))
-            {
-                recovered = true;
-                break;
-            }
-            serveredit *edit = new serveredit;
-            edit->revision = revision;
-            edit->timestamp = timestamp;
-            edit->author = int(author);
-            edit->type = int(type);
-            edit->active = active != 0;
-            if(ownerlen)
-            {
-                memcpy(edit->ownerid, p.pad(ownerlen), ownerlen);
-                edit->ownerid[ownerlen] = '\0';
-                if(!valididentityhex(edit->ownerid, 48, 48))
-                {
-                    delete edit;
-                    recovered = true;
-                    break;
-                }
-            }
-            edit->payload.put(p.pad(payloadlen), payloadlen);
-            updateservereditmetadata(*edit);
-            worldhistory.add(edit);
-            worldeditrevision = max(worldeditrevision, revision);
-        }
-        delete file;
-        if(recovered)
-        {
-            conoutf(CON_WARN, "authoritative journal had a corrupt tail; recovered %d valid revisions", worldhistory.length());
-            // Remove an actually incomplete tail before future appends;
-            // otherwise every later record would remain hidden behind it.
-            if(!rewriteserverjournal()) serverworldready = false;
-        }
-        conoutf("loaded %d authoritative world revisions for seed %d", worldhistory.length(), serverworldseed);
         if(!loadserverfurnaces()) serverworldready = false;
         if(!loadserverchests()) serverworldready = false;
         if(!loadserverpassivenpcs()) serverworldready = false;
@@ -788,10 +575,10 @@ namespace server
 
     static bool ensureserverworld()
     {
-        if(!journalinitialized)
+        if(!serverworldinitialized)
         {
-            journalinitialized = true;
-            loadserverjournal();
+            serverworldinitialized = true;
+            loadserverstate();
         }
         return serverworldready;
     }
@@ -1107,7 +894,7 @@ namespace server
     {
         string safe;
         int n = 0;
-        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
         for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
             if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
         safe[n] = '\0';
@@ -1256,7 +1043,7 @@ namespace server
     {
         string safe;
         int n = 0;
-        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
         for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
             if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
         safe[n] = '\0';
@@ -1347,7 +1134,7 @@ namespace server
     {
         string safe;
         int n = 0;
-        const char *storageworld = journalinitialized && smapname[0] ? smapname : serverworld;
+        const char *storageworld = serverworldinitialized && smapname[0] ? smapname : serverworld;
         for(const char *s = storageworld; *s && n < int(sizeof(safe)) - 1; ++s)
             if(iscubealnum(*s) || *s == '_' || *s == '-') safe[n++] = *s;
         safe[n] = '\0';
@@ -3494,21 +3281,13 @@ namespace server
             sendplayerstate(clients[i]->clientnum, ci);
     }
 
-    static void resetallclients()
-    {
-        loopv(clients)
-        {
-            if(clients[i] && clients[i]->connected) sendworldstate(*clients[i], true);
-        }
-    }
-
     void serverinit()
     {
-        if(journalinitialized && furnacesdirty && !saveserverfurnaces(true))
+        if(serverworldinitialized && furnacesdirty && !saveserverfurnaces(true))
             conoutf(CON_ERROR, "could not save authoritative furnace state before server reinitialization");
-        if(journalinitialized && chestsdirty && !saveserverchests(true))
+        if(serverworldinitialized && chestsdirty && !saveserverchests(true))
             conoutf(CON_ERROR, "could not save authoritative chest state before server reinitialization");
-        if(journalinitialized && passivenpcsdirty && !saveserverpassivenpcs(true))
+        if(serverworldinitialized && passivenpcsdirty && !saveserverpassivenpcs(true))
             conoutf(CON_ERROR, "could not save authoritative passive NPC state before server reinitialization");
 #ifndef STANDALONE
         personaldrops = serverpersonaldrops;
@@ -3519,7 +3298,7 @@ namespace server
 #endif
         gamemode = creativemode ? STARTGAMEMODE : STARTGAMEMODE + 2;
         copystring(smapname, serverworld);
-        journalinitialized = false;
+        serverworldinitialized = false;
         if(!loadserveridentities()) serverworldready = false;
         servernpcs.deletecontents();
         servercollisionchunks.deletecontents();
@@ -3771,16 +3550,7 @@ namespace server
     {
         edit->revision = ++worldeditrevision;
         edit->timestamp = uint(time(NULL));
-        if(!appendserveredit(*edit))
-        {
-            --worldeditrevision;
-            clientinfo *ci = getinfo(edit->author);
-            if(ci) sendf(ci->clientnum, 1, "ris", N_SERVMSG, "world edit rejected: server could not persist it");
-            delete edit;
-            return false;
-        }
         worldhistory.add(edit);
-        worldredostack.deletecontents();
         loopv(clients)
         {
             clientinfo *recipient = clients[i];
@@ -4975,7 +4745,7 @@ namespace server
 
     void servershutdown()
     {
-        if(!journalinitialized) return;
+        if(!serverworldinitialized) return;
         if(furnacesdirty && !saveserverfurnaces(true))
             conoutf(CON_ERROR, "could not save authoritative furnace state during server shutdown");
         if(chestsdirty && !saveserverchests(true))
@@ -5054,27 +4824,6 @@ namespace server
         return true;
     }
 
-    static serveredit *cloneserveredit(const serveredit &source)
-    {
-        serveredit *edit = new serveredit;
-        edit->revision = source.revision;
-        edit->timestamp = source.timestamp;
-        edit->author = source.author;
-        edit->requestid = source.requestid;
-        copystring(edit->ownerid, source.ownerid);
-        edit->type = source.type;
-        edit->active = source.active;
-        edit->hasselection = source.hasselection;
-        edit->selection = source.selection;
-        edit->payload.put(source.payload.getbuf(), source.payload.length());
-        return edit;
-    }
-
-    static bool sameserveredit(const serveredit &a, const serveredit &b)
-    {
-        return a.type == b.type && a.payload.length() == b.payload.length() && (!a.payload.length() || !memcmp(a.payload.getbuf(), b.payload.getbuf(), a.payload.length()));
-    }
-
     static void sendcommandresult(clientinfo &ci, const char *message)
     {
         sendf(ci.clientnum, 1, "ris", N_SERVMSG, message);
@@ -5089,15 +4838,6 @@ namespace server
             if(candidate && candidate->connected && !cubecasecmp(candidate->name, name)) return candidate;
         }
         return NULL;
-    }
-
-    static bool editinarea(const serveredit &edit, const ivec &minimum, const ivec &maximum)
-    {
-        if(!edit.hasselection) return false;
-        ivec end = ivec(edit.selection.s).mul(edit.selection.grid).add(edit.selection.o);
-        return edit.selection.o.x < maximum.x && end.x > minimum.x &&
-               edit.selection.o.y < maximum.y && end.y > minimum.y &&
-               edit.selection.o.z < maximum.z && end.z > minimum.z;
     }
 
     static void serverworldcommand(clientinfo &ci, const char *request)
@@ -5409,186 +5149,6 @@ namespace server
             }
             sendworldtime();
             sendcommandresult(ci, "authoritative world time updated");
-            return;
-        }
-
-        if(cubecaseequal(command, "worldundo"))
-        {
-            int requested = args[0] ? clamp(atoi(args), 1, 1000) : 1, applied = 0;
-            for(int i = worldhistory.length() - 1; i >= 0 && applied < requested; --i)
-            {
-                serveredit *edit = worldhistory[i];
-                if(!edit->active || !editselectiontype(edit->type)) continue;
-                edit->active = false;
-                serveredit *redo = cloneserveredit(*edit);
-                redo->active = true;
-                worldredostack.add(redo);
-                ++worldeditrevision;
-                ++applied;
-            }
-            if(applied)
-            {
-                rewriteserverjournal();
-                resetallclients();
-            }
-            defformatstring(message, "worldundo: %d authoritative change%s reverted", applied, applied == 1 ? "" : "s");
-            sendcommandresult(ci, message);
-            return;
-        }
-
-        if(cubecaseequal(command, "worldredo"))
-        {
-            int requested = args[0] ? clamp(atoi(args), 1, 1000) : 1, applied = 0;
-            while(applied < requested)
-            {
-                serveredit *edit = NULL;
-                if(!worldredostack.empty()) edit = worldredostack.pop();
-                else for(int i = worldhistory.length() - 1; i >= 0; --i)
-                    if(!worldhistory[i]->active && editselectiontype(worldhistory[i]->type))
-                    {
-                        bool alreadyactive = false;
-                        for(int j = i + 1; j < worldhistory.length(); ++j)
-                            if(worldhistory[j]->active &&
-                               sameserveredit(*worldhistory[i], *worldhistory[j]))
-                            {
-                                alreadyactive = true;
-                                break;
-                            }
-                        if(alreadyactive) continue;
-                        edit = cloneserveredit(*worldhistory[i]);
-                        break;
-                    }
-                if(!edit) break;
-                edit->revision = ++worldeditrevision;
-                edit->timestamp = uint(time(NULL));
-                edit->author = ci.clientnum;
-                copystring(edit->ownerid, ci.playerid);
-                edit->active = true;
-                worldhistory.add(edit);
-                ++applied;
-            }
-            if(applied)
-            {
-                rewriteserverjournal();
-                resetallclients();
-            }
-            defformatstring(message, "worldredo: %d authoritative change%s restored", applied, applied == 1 ? "" : "s");
-            sendcommandresult(ci, message);
-            return;
-        }
-
-        if(cubecaseequal(command, "worldlog"))
-        {
-            int shown = 0;
-            for(int i = worldhistory.length() - 1; i >= 0 && shown < 20; --i)
-            {
-                const serveredit &edit = *worldhistory[i];
-                if(!editselectiontype(edit.type)) continue;
-                defformatstring(message, "rev %u author %d op %d at %d %d %d%s",
-                                edit.revision, edit.author, edit.type,
-                                edit.hasselection ? edit.selection.o.x : 0,
-                                edit.hasselection ? edit.selection.o.y : 0,
-                                edit.hasselection ? edit.selection.o.z : 0,
-                                edit.active ? "" : " (undone)");
-                sendcommandresult(ci, message);
-                ++shown;
-            }
-            if(!shown) sendcommandresult(ci, "worldlog: no authoritative edits");
-            return;
-        }
-
-        if(cubecaseequal(command, "worldrevert"))
-        {
-            int applied = 0;
-            if(!strncmp(args, "player ", 7))
-            {
-                int author = atoi(args + 7);
-                loopv(worldhistory)
-                {
-                    serveredit &edit = *worldhistory[i];
-                    if(edit.active && edit.author == author && editselectiontype(edit.type))
-                    {
-                        edit.active = false;
-                        ++worldeditrevision;
-                        ++applied;
-                    }
-                }
-            }
-            else if(!strncmp(args, "area ", 5))
-            {
-                int x1, y1, z1, x2, y2, z2;
-                if(sscanf(args + 5, "%d %d %d %d %d %d", &x1, &y1, &z1, &x2, &y2, &z2) != 6)
-                {
-                    sendcommandresult(ci, "usage: /worldrevert player <id> | area <x1 y1 z1> <x2 y2 z2>");
-                    return;
-                }
-                ivec minimum(min(x1, x2), min(y1, y2), min(z1, z2)), maximum(max(x1, x2) + 1, max(y1, y2) + 1, max(z1, z2) + 1);
-                loopv(worldhistory)
-                {
-                    serveredit &edit = *worldhistory[i];
-                    if(edit.active && editinarea(edit, minimum, maximum))
-                    {
-                        edit.active = false;
-                        ++worldeditrevision;
-                        ++applied;
-                    }
-                }
-            }
-            else
-            {
-                sendcommandresult(ci, "usage: /worldrevert player <id> | area <x1 y1 z1> <x2 y2 z2>");
-                return;
-            }
-            if(applied)
-            {
-                worldredostack.deletecontents();
-                rewriteserverjournal();
-                resetallclients();
-            }
-            defformatstring(message, "worldrevert: %d authoritative change%s reverted", applied, applied == 1 ? "" : "s");
-            sendcommandresult(ci, message);
-            return;
-        }
-
-        if(cubecaseequal(command, "worldrestore"))
-        {
-            int x, y, z;
-            uint revision;
-            if(sscanf(args, "chunk %d %d %d %u", &x, &y, &z, &revision) != 4)
-            {
-                sendcommandresult(ci, "usage: /worldrestore chunk <x y z> <revision>");
-                return;
-            }
-            int applied = 0;
-            ivec minimum(x * 1024, y * 1024, 0), maximum((x + 1) * 1024, (y + 1) * 1024, 8192);
-            loopv(worldhistory)
-            {
-                serveredit &edit = *worldhistory[i];
-                if(edit.active && edit.revision > revision && editinarea(edit, minimum, maximum))
-                {
-                    edit.active = false;
-                    ++worldeditrevision;
-                    ++applied;
-                }
-            }
-            if(applied) { rewriteserverjournal(); resetallclients(); }
-            defformatstring(message, "worldrestore: %d change%s reverted in chunk %d %d", applied, applied == 1 ? "" : "s", x, y);
-            sendcommandresult(ci, message);
-            return;
-        }
-
-        if(cubecaseequal(command, "worlddiff"))
-        {
-            int active = 0;
-            loopv(worldhistory) if(worldhistory[i]->active) ++active;
-            if(!strncmp(args, "compact", 7)) rewriteserverjournal();
-            if(strncmp(args, "stats", 5) && strncmp(args, "compact", 7) && strncmp(args, "verify", 6))
-            {
-                sendcommandresult(ci, "usage: /worlddiff <stats|compact|verify>");
-                return;
-            }
-            defformatstring(message, "worlddiff: %d active, %d audit records, revision %u, seed %d", active, worldhistory.length(), worldeditrevision, serverworldseed);
-            sendcommandresult(ci, message);
             return;
         }
 
@@ -6233,7 +5793,7 @@ namespace server
 
     void serverupdate()
     {
-        if(!journalinitialized) return;
+        if(!serverworldinitialized) return;
         updateserverfurnaces();
         updateserverchests();
         if(passivenpcsdirty && totalmillis - lastpassivenpcsave >= 5000 && !saveserverpassivenpcs())

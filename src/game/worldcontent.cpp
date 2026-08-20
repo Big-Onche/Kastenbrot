@@ -3,17 +3,6 @@
 #ifdef WORLDIO_MODULE_IMPLEMENTATION
 
 #ifndef STANDALONE
-static bool parseworldpersistentid(const char *text, ullong &id)
-{
-    if(!text || !text[0]) return false;
-    char *end = NULL;
-    errno = 0;
-    id = strtoull(text, &end, 10);
-    return end && !*end && errno != ERANGE;
-}
-#endif
-
-#ifndef STANDALONE
 struct worldcubetexturekey
 {
     ushort top, side, bottom;

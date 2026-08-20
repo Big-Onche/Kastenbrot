@@ -36,11 +36,7 @@ enum
 
 enum
 {
-    WORLD_SAVE_FORMAT_VERSION = 2,
-    WORLDGEN_VERSION = 8,
-    WORLD_DIFF_Z = 0,
-    WORLD_DIFF_FRAME_MAX = 64 << 20,
-    WORLD_DIFF_FLUSH_MILLIS = 10000
+    WORLDGEN_VERSION = 8
 };
 
 enum
@@ -114,80 +110,12 @@ struct worldscatterinstance
     }
 };
 
-struct worlddiffnode
-{
-    int x, y, z, size;
-    uchar edges[12];
-    ushort texture[6], material;
-    int block;
-
-    worlddiffnode() : x(0), y(0), z(0), size(0), material(MAT_AIR), block(-1)
-    {
-        memset(edges, 0, sizeof(edges));
-        loopi(6) texture[i] = DEFAULT_GEOM;
-    }
-};
-
 struct worldchunkdirtybounds
 {
     ivec minimum, maximum;
     bool valid;
 
     worldchunkdirtybounds() : minimum(0, 0, 0), maximum(0, 0, 0), valid(false) {}
-
-    void include(const worlddiffnode &node)
-    {
-        const ivec nodemin(node.x, node.y, node.z), nodemax = ivec(nodemin).add(node.size);
-        if(!valid)
-        {
-            minimum = nodemin;
-            maximum = nodemax;
-            valid = true;
-        }
-        else
-        {
-            minimum.min(nodemin);
-            maximum.max(nodemax);
-        }
-    }
-
-    void expandforrebuild()
-    {
-        if(!valid) return;
-        minimum.sub(1).max(0);
-        maximum.add(1).min(WORLD_CHUNK_MAP_SIZE);
-    }
-};
-
-struct worldeditrecord
-{
-    int chunkx, chunky, chunkz, operation, author;
-    int args[4];
-    ullong revision, timestamp;
-    selinfo selection;
-    vector<worlddiffnode> before, after;
-    vector<worldscatterinstance> scatterbefore, scatterafter;
-
-    worldeditrecord() : chunkx(0), chunky(0), chunkz(WORLD_DIFF_Z), operation(0), author(-1), revision(0), timestamp(0)
-    {
-        memset(args, 0, sizeof(args));
-    }
-};
-
-struct worldchunkdiffstate
-{
-    int x, y, z;
-    ullong revision, snapshotrevision, canonicalhash;
-    vector<worldeditrecord *> pending, journal, audit;
-
-    worldchunkdiffstate(int x, int y, int z = WORLD_DIFF_Z) : x(x), y(y), z(z), revision(0), snapshotrevision(0), canonicalhash(0) {}
-
-    ~worldchunkdiffstate()
-    {
-        pending.deletecontents();
-        journal.deletecontents();
-        audit.deletecontents();
-    }
 };
 
 struct worldgencubetextures
@@ -217,11 +145,11 @@ struct worldchunk
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request;
     int varesidencylod;
-    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saved, dirty, corrupted;
+    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, corrupted;
 
-    worldchunk(int x, int y, cube *root, bool loading = false, bool saved = false)
+    worldchunk(int x, int y, cube *root, bool loading = false)
         : x(x), y(y), root(root), request(0), varesidencylod(-1), varesidencydirty(true), scattermeshesregistered(false),
-          placeablesregistered(false), loading(loading), generating(false), saved(saved), dirty(false), corrupted(false)
+          placeablesregistered(false), loading(loading), generating(false), corrupted(false)
     {
         memclear(mountedtiles);
         memclear(contentknown);
@@ -261,14 +189,13 @@ struct worldchunkjob
     uchar portals[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
-    ullong revision, canonicalhash;
     uint epoch, request;
-    bool loaded, cached, remip, leavesalpha, sectionstatesready;
+    bool cached, remip, leavesalpha, sectionstatesready;
     SDL_atomic_t cancelled;
     cube *root;
     vector<worldscatterinstance> scatter;
     vector<uchar> cachepayload;
-    string filename, cachefilename;
+    string cachefilename;
     int seed;
     ullong worldgenhash;
     worldgencontext *generation;
