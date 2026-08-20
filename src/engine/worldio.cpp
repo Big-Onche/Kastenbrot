@@ -9,6 +9,8 @@
 #endif
 #include <errno.h>
 
+VARP(compresschunks, 0, 1, 1);
+
 #ifdef WIN32
 #define WORLD_ULL_FORMAT "%I64u"
 #else

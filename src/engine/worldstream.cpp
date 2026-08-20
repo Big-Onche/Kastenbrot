@@ -1153,7 +1153,7 @@ static int worldchunkloader(void *)
                 ZoneScopedN("Chunks/Worker save snapshot");
                 ZoneTextF("%d_%d", savejob->x, savejob->y);
                 savejob->success = writeworldchunksnapshot(savejob->folder, savejob->x, savejob->y, savejob->revision, savejob->playeredited,
-                                                           savejob->root, savejob->renderdata, savejob->scatter, savejob->gameplay,
+                                                           savejob->compress, savejob->root, savejob->renderdata, savejob->scatter, savejob->gameplay,
                                                            savejob->error);
                 freeocta(savejob->root);
                 savejob->root = NULL;
@@ -1389,7 +1389,7 @@ static int acquireworldchunksync(int x, int y, int &generated)
     bool snapshotplayeredited = false;
     const worldsnapshotloadresult snapshotresult = worldfolder[0]
                                                    ? loadworldchunksnapshot(worldfolder, x, y, root, scatter, renderdata, snapshoterror,
-                                                                            &snapshotrevision, &snapshotplayeredited)
+                                                                            &snapshotrevision, &snapshotplayeredited, false)
                                                    : WORLD_SNAPSHOT_MISSING;
     if(snapshotresult == WORLD_SNAPSHOT_INVALID)
         conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerating it", x, y, snapshoterror);
@@ -2464,7 +2464,7 @@ static cube *prepareworldchunk(worldchunkjob &job)
     ZoneScopedN("Chunks/Prepare");
     ZoneTextF("%d_%d", job.x, job.y);
     if(SDL_AtomicGet(&job.cancelled)) return NULL;
-    ZoneScopedN("Chunks/Generate unsaved");
+    {ZoneScopedN("Chunks/Generate unsaved");}
     cube *root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized, &job.renderdata);
     if(!root) return NULL;
     game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);

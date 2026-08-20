@@ -2,11 +2,15 @@
 
 #ifdef WORLDIO_MODULE_IMPLEMENTATION
 
+extern int compresschunks;
+
 enum
 {
     WORLD_SNAPSHOT_VOX_VERSION = 2,
     WORLD_SNAPSHOT_DAT_VERSION = 2,
+    WORLD_SNAPSHOT_COMPRESSION_VERSION = 1,
     WORLD_SNAPSHOT_MAX_FILE_SIZE = 512 << 20,
+    WORLD_SNAPSHOT_MAX_STORED_FILE_SIZE = WORLD_SNAPSHOT_MAX_FILE_SIZE + (WORLD_SNAPSHOT_MAX_FILE_SIZE >> 8) + 65536,
     WORLD_SNAPSHOT_EMPTY = 1 << 0,
     WORLD_SNAPSHOT_SOLID = 1 << 1,
     WORLD_SNAPSHOT_SCATTER = 1
@@ -83,10 +87,10 @@ struct worldchunksavejob
     vector<worldscatterinstance> scatter;
     vector<uchar> gameplay;
     string folder, error;
-    bool success, playeredited;
+    bool success, playeredited, compress;
 
     worldchunksavejob(int x, int y, uint epoch, uint revision, const char *folder)
-        : x(x), y(y), epoch(epoch), revision(revision), root(NULL), success(false), playeredited(false)
+        : x(x), y(y), epoch(epoch), revision(revision), root(NULL), success(false), playeredited(false), compress(compresschunks != 0)
     {
         copystring(this->folder, folder ? folder : "");
         error[0] = '\0';
@@ -191,15 +195,37 @@ static void worldchunksnapshotfilename(char *name, size_t length, const char *fo
     path(name);
 }
 
-static bool readworldsnapshotfile(const char *filename, vector<uchar> &contents)
+static bool readworldsnapshotfile(const char *filename, vector<uchar> &contents, bool allowcompression = true)
 {
     stream *file = openrawfile(filename, "rb");
     if(!file) return false;
     const stream::offset length = file->size();
-    if(length <= 0 || length > WORLD_SNAPSHOT_MAX_FILE_SIZE) { delete file; return false; }
-    const bool read = file->read(contents.pad(int(length)), size_t(length)) == size_t(length);
+    if(length <= 0 || length > WORLD_SNAPSHOT_MAX_STORED_FILE_SIZE) { delete file; return false; }
+    vector<uchar> stored;
+    const bool read = file->read(stored.pad(int(length)), size_t(length)) == size_t(length);
     delete file;
-    return read;
+    if(!read) return false;
+    if(stored.length() < 4 || memcmp(stored.getbuf(), "CCZL", 4))
+    {
+        if(stored.length() > WORLD_SNAPSHOT_MAX_FILE_SIZE) return false;
+        contents.move(stored);
+        return true;
+    }
+    if(!allowcompression || stored.length() < 12) return false;
+    worldsnapshotreader reader(stored.getbuf() + 4, 8);
+    uint version, uncompressedsize;
+    if(!reader.readuint(version) || version != WORLD_SNAPSHOT_COMPRESSION_VERSION || !reader.readuint(uncompressedsize) ||
+       !uncompressedsize || uncompressedsize > WORLD_SNAPSHOT_MAX_FILE_SIZE)
+        return false;
+    uLongf destinationlength = uLongf(uncompressedsize);
+    uchar *destination = contents.pad(int(uncompressedsize));
+    const int result = uncompress((Bytef *)destination, &destinationlength, (const Bytef *)stored.getbuf() + 12, uLong(stored.length() - 12));
+    if(result != Z_OK || destinationlength != uncompressedsize)
+    {
+        contents.setsize(0);
+        return false;
+    }
+    return true;
 }
 
 static bool replaceworldsnapshotfile(const char *temporary, const char *finalname)
@@ -211,14 +237,31 @@ static bool replaceworldsnapshotfile(const char *temporary, const char *finalnam
 #endif
 }
 
-static bool writeworldsnapshotfile(const char *filename, const vector<uchar> &contents)
+static bool writeworldsnapshotfile(const char *filename, const vector<uchar> &contents, bool compress)
 {
+    vector<uchar> compressed;
+    const vector<uchar> *stored = &contents;
+    if(compress)
+    {
+        compressed.put((const uchar *)"CCZL", 4);
+        loopi(4) compressed.add(uchar(WORLD_SNAPSHOT_COMPRESSION_VERSION >> (8 * i)));
+        loopi(4) compressed.add(uchar(uint(contents.length()) >> (8 * i)));
+        const uLong bound = compressBound(uLong(contents.length()));
+        if(bound > uLong(INT_MAX - compressed.length())) return false;
+        uLongf compressedlength = bound;
+        uchar *destination = compressed.pad(int(bound));
+        const int result = compress2((Bytef *)destination, &compressedlength, (const Bytef *)contents.getbuf(), uLong(contents.length()),
+                                     Z_DEFAULT_COMPRESSION);
+        if(result != Z_OK) return false;
+        compressed.setsize(12 + int(compressedlength));
+        stored = &compressed;
+    }
     defformatstring(temporary, "%s.tmp", filename);
     string temporarypath, finalpath;
     copystring(temporarypath, findfile(temporary, "wb"));
     copystring(finalpath, findfile(filename, "wb"));
     stream *file = openrawfile(temporary, "wb");
-    const bool written = file && file->write(contents.getbuf(), contents.length()) == size_t(contents.length()) && file->flush();
+    const bool written = file && file->write(stored->getbuf(), stored->length()) == size_t(stored->length()) && file->flush();
     delete file;
     if(!written || !replaceworldsnapshotfile(temporarypath, finalpath))
     {
@@ -490,7 +533,7 @@ static bool serializeworldchunksnapshot(cube *root, int x, int y, uint revision,
 }
 
 #if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
-static bool writeworldchunksnapshot(const char *folder, int x, int y, uint revision, bool playeredited, cube *root,
+static bool writeworldchunksnapshot(const char *folder, int x, int y, uint revision, bool playeredited, bool compress, cube *root,
                                     const worldsectionrenderdata &renderdata, const vector<worldscatterinstance> &scatter,
                                     const vector<uchar> &gameplay, string &error)
 {
@@ -499,7 +542,7 @@ static bool writeworldchunksnapshot(const char *folder, int x, int y, uint revis
     string voxname, datname;
     worldchunksnapshotfilename(voxname, sizeof(voxname), folder, x, y, "vox");
     worldchunksnapshotfilename(datname, sizeof(datname), folder, x, y, "dat");
-    if(!writeworldsnapshotfile(voxname, vox) || !writeworldsnapshotfile(datname, dat))
+    if(!writeworldsnapshotfile(voxname, vox, compress) || !writeworldsnapshotfile(datname, dat, compress))
     {
         copystring(error, "could not write authoritative chunk snapshot files");
         return false;
@@ -673,7 +716,8 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
 
 static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
                                                            worldsectionrenderdata &renderdata, vector<uchar> &gameplay, string &error,
-                                                           uint *revision = NULL, bool *playeredited = NULL)
+                                                           uint *revision = NULL, bool *playeredited = NULL, vector<uchar> *voxpayload = NULL,
+                                                           vector<uchar> *datpayload = NULL, bool allowcompression = true)
 {
     root = NULL;
     scatter.setsize(0);
@@ -687,7 +731,7 @@ static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, in
     if(!hasvox && !hasdat) return WORLD_SNAPSHOT_MISSING;
     if(!hasvox || !hasdat) { copystring(error, "authoritative chunk is missing its .vox or .dat sidecar"); return WORLD_SNAPSHOT_INVALID; }
     vector<uchar> voxcontents, datcontents;
-    if(!readworldsnapshotfile(voxname, voxcontents) || !readworldsnapshotfile(datname, datcontents))
+    if(!readworldsnapshotfile(voxname, voxcontents, allowcompression) || !readworldsnapshotfile(datname, datcontents, allowcompression))
     {
         copystring(error, "could not read .vox/.dat files");
         return WORLD_SNAPSHOT_INVALID;
@@ -711,17 +755,19 @@ static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, in
     gameplay.move(snapshot.gameplay);
     if(revision) *revision = snapshot.revision;
     if(playeredited) *playeredited = snapshot.playeredited;
+    if(voxpayload) voxpayload->move(voxcontents);
+    if(datpayload) datpayload->move(datcontents);
     return WORLD_SNAPSHOT_LOADED;
 }
 
 #if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
                                                        worldsectionrenderdata &renderdata, string &error, uint *revision = NULL,
-                                                       bool *playeredited = NULL)
+                                                       bool *playeredited = NULL, bool allowcompression = true)
 {
     vector<uchar> gameplay;
     const worldsnapshotloadresult result = loadworldchunksnapshotdata(folder, x, y, root, scatter, renderdata, gameplay, error, revision,
-                                                                       playeredited);
+                                                                       playeredited, NULL, NULL, allowcompression);
     if(result != WORLD_SNAPSHOT_LOADED) return result;
     if(game::restorelocalchunkdata(x, y, gameplay.getbuf(), gameplay.length())) return result;
     copystring(error, "invalid sparse gameplay data");

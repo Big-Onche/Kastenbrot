@@ -275,11 +275,12 @@ namespace server
         worldsectionrenderdata renderdata;
         vector<worldscatterinstance> scatter;
         vector<uchar> gameplay, vox, dat;
-        bool playeredited, success, missing;
+        bool playeredited, success, missing, compress;
         string error;
 
         serverchunkjob(int type, int x, int y)
-            : type(type), x(x), y(y), revision(1), storageversion(1), root(NULL), playeredited(false), success(false), missing(false)
+            : type(type), x(x), y(y), revision(1), storageversion(1), root(NULL), playeredited(false), success(false), missing(false),
+              compress(compresschunks != 0)
         {
             error[0] = '\0';
         }
@@ -673,7 +674,7 @@ namespace server
             {
                 const worldsnapshotloadresult loaded = loadworldchunksnapshotdata(folder, job->x, job->y, job->root, job->scatter,
                                                                                   job->renderdata, job->gameplay, job->error, &job->revision,
-                                                                                  &job->playeredited);
+                                                                                  &job->playeredited, &job->vox, &job->dat);
                 if(loaded == WORLD_SNAPSHOT_MISSING)
                 {
                     job->missing = true;
@@ -687,14 +688,7 @@ namespace server
                     job->success = job->root != NULL;
                     if(!job->success && !job->error[0]) copystring(job->error, "world generation failed");
                 }
-                else if(loaded == WORLD_SNAPSHOT_LOADED)
-                {
-                    string voxname, datname;
-                    worldchunksnapshotfilename(voxname, sizeof(voxname), folder, job->x, job->y, "vox");
-                    worldchunksnapshotfilename(datname, sizeof(datname), folder, job->x, job->y, "dat");
-                    job->success = readworldsnapshotfile(voxname, job->vox) && readworldsnapshotfile(datname, job->dat);
-                    if(!job->success) copystring(job->error, "could not cache loaded chunk payload");
-                }
+                else if(loaded == WORLD_SNAPSHOT_LOADED) job->success = true;
             }
             else
             {
@@ -705,7 +699,8 @@ namespace server
                     string voxname, datname;
                     worldchunksnapshotfilename(voxname, sizeof(voxname), folder, job->x, job->y, "vox");
                     worldchunksnapshotfilename(datname, sizeof(datname), folder, job->x, job->y, "dat");
-                    job->success = writeworldsnapshotfile(voxname, job->vox) && writeworldsnapshotfile(datname, job->dat);
+                    job->success = writeworldsnapshotfile(voxname, job->vox, job->compress) &&
+                                   writeworldsnapshotfile(datname, job->dat, job->compress);
                     if(!job->success) copystring(job->error, "could not write .vox/.dat chunk pair");
                 }
             }
