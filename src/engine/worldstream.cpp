@@ -19,10 +19,8 @@ static int worldchunkvaupdatekey(const ivec &origin);
 VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generation/load
 
 worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
-    : x(x), y(y), families(0), optimized(0), loaderror(0), epoch(epoch), request(request),
-      cached(false),
-      remip(chunkremip != 0), leavesalpha(::leavesalpha != 0), sectionstatesready(false), root(NULL), seed(game::getworldseed()),
-      worldgenhash(game::worldgenerationparameterhash()), generation(NULL)
+    : x(x), y(y), families(0), optimized(0), epoch(epoch), request(request), remip(chunkremip != 0), leavesalpha(::leavesalpha != 0),
+      sectionstatesready(false), root(NULL), generation(NULL)
 {
     memclear(contenttiles);
     memclear(opaquetiles);
@@ -30,7 +28,6 @@ worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request)
     memclear(portalcellmasks);
     SDL_AtomicSet(&cancelled, 0);
     generation = game::createworldgeneration(true, remip, &cancelled);
-    cachefilename[0] = '\0';
 }
 
 worldchunkjob::~worldchunkjob()
@@ -42,8 +39,26 @@ static vector<worldchunk> worldchunks;
 static vector<worldscatterinstance> reconstructedworldscatter;
 static worldsectionrenderdata reconstructedworldrenderdata;
 static vector<worldchunkjob *> worldchunkjobs, worldchunkactivejobs, worldchunkresults;
-static vector<worldchunkcachewritejob *> worldchunkcachewrites, worldchunkactivecachewrites;
 static string worldfolder = "";
+
+static bool saveworldchunksnapshots()
+{
+    if(!game::islocalworld() || !worldfolder[0])
+    {
+        conoutf(CON_ERROR, "authoritative chunk saving is only available for a loaded local world");
+        return false;
+    }
+    int saved = 0;
+    loopv(worldchunks)
+    {
+        const worldchunk &chunk = worldchunks[i];
+        if(chunk.loading || !chunk.root) continue;
+        if(!writeworldchunksnapshot(worldfolder, chunk)) return false;
+        ++saved;
+    }
+    conoutf("saved %d authoritative chunk snapshots for %s", saved, worldfolder);
+    return true;
+}
 static int activeworldchunk = -1;
 static int worldfirstchunkx = 0, worldfirstchunky = 0;
 static int lastplayerchunkx = INT_MIN, lastplayerchunky = INT_MIN, lastchunkdist = -1;
@@ -54,7 +69,6 @@ static SDL_mutex *worldchunkmutex = NULL;
 static SDL_cond *worldchunkcond = NULL;
 static bool stopworldchunkthread = false;
 static uint worldchunkepoch = 1;
-static uint worldchunkcachewriteid = 1;
 static uint worldchunkrequest = 1;
 static int lastworldchunkpublish = -1;
 static bool stopworldchunkgeneration = false;
@@ -156,7 +170,6 @@ static void updateleavesalpha()
 
 VARP(asyncchunkloads, 2, 4, 4);
 VARP(chunkthreads, 0, 0, 16);
-VAR(generatedchunkcache, 0, 1, 1);
 VAR(chunkcachedist, 0, 0, 0);
 VAR(chunkpendinglimit, 4, 8, 16);
 VAR(chunklookahead, 0, 2, 8);
@@ -181,7 +194,7 @@ static int remipworldchunkbounded(cube *root, bool prepared, int &families, SDL_
                                   const worldchunkdirtybounds *dirty);
 static bool subdivideworldmip(const cube &c, cube *children);
 static bool prepareworldchunksectionstates(worldchunkjob &job);
-static int pruneworldchunkcache(int chunkx, int chunky, int limit);
+static int pruneworldchunkresidency(int chunkx, int chunky, int limit);
 static void worldchunkname(char *name, size_t len, const worldchunk &chunk);
 void setmapfilenames(const char *fname, const char *cname);
 
@@ -410,6 +423,34 @@ static ivec worldchunkorigin(const worldchunk &chunk, int z = 0)
 {
     return ivec((chunk.x - worldfirstchunkx) * WORLD_CHUNK_SIZE,
                 (chunk.y - worldfirstchunky) * WORLD_CHUNK_SIZE, z);
+}
+
+static cube &lookupworldsnapshotrootcube(cube *root, const ivec &pos, int size)
+{
+    int scale = WORLD_CHUNK_SCALE - 1;
+    cube *c = &root[octastep(pos.x, pos.y, pos.z, scale)];
+    while(!(size >> scale))
+    {
+        if(!c->children) subdividecube(*c);
+        --scale;
+        c = &c->children[octastep(pos.x, pos.y, pos.z, scale)];
+    }
+    return *c;
+}
+
+static void mergeworldsnapshotmountedsections(const worldchunk &chunk, cube *snapshotroot)
+{
+    const ivec runtimeorigin = worldchunkorigin(chunk);
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+    {
+        if(!(chunk.mountedtiles[section] & (1U << tile))) continue;
+        const ivec position((tile % WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE,
+                            (tile / WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE,
+                            section * WORLD_SECTION_SIZE);
+        cube &destination = lookupworldsnapshotrootcube(snapshotroot, position, WORLD_SECTION_SIZE);
+        discardchildren(destination);
+        copyworldsnapshotcube(lookupcube(ivec(runtimeorigin).add(position), WORLD_SECTION_SIZE), destination);
+    }
 }
 
 static void collectworldsupportnode(const cube &c, const ivec &origin, int size, const ivec &minimum, const ivec &maximum,
@@ -974,7 +1015,7 @@ static int worldchunkloader(void *)
     for(;;)
     {
         SDL_LockMutex(worldchunkmutex);
-        while(worldchunkjobs.empty() && worldchunkcachewrites.empty() && !stopworldchunkthread)
+        while(worldchunkjobs.empty() && !stopworldchunkthread)
             SDL_CondWait(worldchunkcond, worldchunkmutex);
         if(stopworldchunkthread)
         {
@@ -982,7 +1023,6 @@ static int worldchunkloader(void *)
             return 0;
         }
         worldchunkjob *job = NULL;
-        worldchunkcachewritejob *cachewrite = NULL;
         {
             ZoneScopedN("Chunks/Worker select job");
             ZoneValue(worldchunkjobs.length());
@@ -999,27 +1039,8 @@ static int worldchunkloader(void *)
                 TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
                 TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
             }
-            else
-            {
-                cachewrite = worldchunkcachewrites.remove(0);
-                worldchunkactivecachewrites.add(cachewrite);
-                TracyPlot("Chunks/Queued cache writes", int64_t(worldchunkcachewrites.length()));
-            }
         }
         SDL_UnlockMutex(worldchunkmutex);
-
-        if(cachewrite)
-        {
-            ZoneScopedN("Chunks/Cache write job");
-            ZoneTextF("%d_%d", cachewrite->x, cachewrite->y);
-            writeworldchunkcache(*cachewrite);
-            SDL_LockMutex(worldchunkmutex);
-            worldchunkactivecachewrites.removeobj(cachewrite);
-            delete cachewrite;
-            SDL_CondBroadcast(worldchunkcond);
-            SDL_UnlockMutex(worldchunkmutex);
-            continue;
-        }
 
         {
             ZoneScopedN("Chunks/Worker job");
@@ -1109,7 +1130,6 @@ static void shutdownworldchunkloader()
         SDL_LockMutex(worldchunkmutex);
         stopworldchunkthread = true;
         loopv(worldchunkactivejobs) SDL_AtomicSet(&worldchunkactivejobs[i]->cancelled, 1);
-        loopv(worldchunkactivecachewrites) SDL_AtomicSet(&worldchunkactivecachewrites[i]->cancelled, 1);
         SDL_CondBroadcast(worldchunkcond);
         SDL_UnlockMutex(worldchunkmutex);
         {
@@ -1121,10 +1141,7 @@ static void shutdownworldchunkloader()
 
     loopv(worldchunkjobs) delete worldchunkjobs[i];
     worldchunkjobs.setsize(0);
-    loopv(worldchunkcachewrites) delete worldchunkcachewrites[i];
-    worldchunkcachewrites.setsize(0);
     ASSERT(worldchunkactivejobs.empty());
-    ASSERT(worldchunkactivecachewrites.empty());
     loopv(worldchunkresults)
     {
         {
@@ -1169,80 +1186,6 @@ static void setworldchunkgenerationstopped(bool stopped)
 }
 
 ICOMMAND(stopchunkgen, "", (), setworldchunkgenerationstopped(!stopworldchunkgeneration));
-
-static void queueworldchunkcachewrite(int x, int y, int seed, ullong worldgenhash, bool remip, vector<uchar> &payload)
-{
-    if(!generatedchunkcache || !worldfolder[0] || payload.empty() || !startworldchunkloader()) return;
-    uint id = ++worldchunkcachewriteid;
-    if(!id) id = ++worldchunkcachewriteid;
-    worldchunkcachewritejob *write = new worldchunkcachewritejob(x, y, seed, worldgenhash, remip, id);
-    worldchunkcachefilename(write->filename, sizeof(write->filename), worldfolder, x, y);
-    write->payload.move(payload);
-    SDL_LockMutex(worldchunkmutex);
-    for(int i = worldchunkcachewrites.length() - 1; i >= 0; --i)
-    {
-        worldchunkcachewritejob *queued = worldchunkcachewrites[i];
-        if(queued->x != x || queued->y != y) continue;
-        if(queued->seed == seed && queued->worldgenhash == worldgenhash && queued->remip == remip)
-        {
-            SDL_UnlockMutex(worldchunkmutex);
-            delete write;
-            return;
-        }
-        delete worldchunkcachewrites.remove(i);
-    }
-    loopv(worldchunkactivecachewrites)
-    {
-        worldchunkcachewritejob *active = worldchunkactivecachewrites[i];
-        if(active->x != x || active->y != y) continue;
-        if(active->seed == seed && active->worldgenhash == worldgenhash && active->remip == remip)
-        {
-            SDL_UnlockMutex(worldchunkmutex);
-            delete write;
-            return;
-        }
-        SDL_AtomicSet(&active->cancelled, 1);
-    }
-    if(worldchunkcachewrites.length() >= WORLD_MAX_PREPARED_CHUNKS)
-    {
-        SDL_UnlockMutex(worldchunkmutex);
-        delete write;
-        return;
-    }
-    worldchunkcachewrites.add(write);
-    TracyPlot("Chunks/Queued cache writes", int64_t(worldchunkcachewrites.length()));
-    SDL_CondSignal(worldchunkcond);
-    SDL_UnlockMutex(worldchunkmutex);
-}
-
-static void clearworldchunkcache()
-{
-    if(!worldfolder[0])
-    {
-        conoutf(CON_WARN, "no streamed world is loaded");
-        return;
-    }
-    if(worldchunkmutex)
-    {
-        SDL_LockMutex(worldchunkmutex);
-        loopv(worldchunkcachewrites) delete worldchunkcachewrites[i];
-        worldchunkcachewrites.setsize(0);
-        loopv(worldchunkactivecachewrites) SDL_AtomicSet(&worldchunkactivecachewrites[i]->cancelled, 1);
-        while(!worldchunkactivecachewrites.empty()) SDL_CondWait(worldchunkcond, worldchunkmutex);
-        SDL_UnlockMutex(worldchunkmutex);
-    }
-    const int removed = removeworldchunkcachefiles(worldfolder);
-    conoutf("removed %d disposable generated chunk cache files for %s", removed, worldfolder);
-}
-
-static void worldchunkcachestats()
-{
-    if(!worldfolder[0]) conoutf(CON_WARN, "no streamed world is loaded");
-    else reportworldchunkcachestats(worldfolder);
-}
-
-COMMAND(clearworldchunkcache, "");
-COMMAND(worldchunkcachestats, "");
 
 static void worldsectionrenderstats()
 {
@@ -1299,22 +1242,20 @@ static int acquireworldchunksync(int x, int y, int &generated)
     ZoneScopedN("Chunks/Load synchronous");
     ZoneTextF("%d_%d", x, y);
     vector<worldscatterinstance> scatter;
-    string cachefilename;
-    worldchunkcachefilename(cachefilename, sizeof(cachefilename), worldfolder, x, y);
-    int cachefamilies = 0, cacheerror = 0;
     worldsectionrenderdata renderdata;
-    cube *root = generatedchunkcache && worldfolder[0] ? loadworldchunkcache(cachefilename, x, y, game::getworldseed(),
-                                                                           game::worldgenerationparameterhash(), chunkremip != 0, scatter, false,
-                                                                           cachefamilies, cacheerror, &renderdata) : NULL;
+    cube *root = NULL;
+    string snapshoterror;
+    const worldsnapshotloadresult snapshotresult = worldfolder[0]
+                                                   ? loadworldchunksnapshot(worldfolder, x, y, root, scatter, renderdata, snapshoterror)
+                                                   : WORLD_SNAPSHOT_MISSING;
+    if(snapshotresult == WORLD_SNAPSHOT_INVALID)
+        conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerating it", x, y, snapshoterror);
     if(!root)
     {
-        ZoneScopedN("Chunks/Generate uncached");
+        ZoneScopedN("Chunks/Generate unsaved");
         root = game::generateworldchunk(x, y, &renderdata);
         if(root) game::generateworldscatter(root, x, y, scatter);
         generated++;
-        vector<uchar> cachepayload;
-        if(generatedchunkcache && worldfolder[0] && root && serializeworldchunkcache(root, scatter, cachepayload, &renderdata))
-            queueworldchunkcachewrite(x, y, game::getworldseed(), game::worldgenerationparameterhash(), chunkremip != 0, cachepayload);
     }
     if(root) setworldleavesalpha(root, leavesalpha != 0);
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, root));
@@ -1322,6 +1263,8 @@ static int acquireworldchunksync(int x, int y, int &generated)
     chunk.scatter.move(scatter);
     chunk.renderdata = renderdata;
     addworldsectionvisibilitychunk(x, y);
+    if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !writeworldchunksnapshot(worldfolder, chunk))
+        conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", x, y);
     return worldchunks.length() - 1;
 }
 
@@ -1360,6 +1303,13 @@ static int queueworldchunk(int x, int y)
     int index = findworldchunk(x, y);
     if(index >= 0) return index;
 
+    // Snapshot IO is deliberately synchronous and main-thread-only in this phase.
+    if(worldfolder[0] && worldchunksnapshotexists(worldfolder, x, y))
+    {
+        int generated = 0;
+        return acquireworldchunksync(x, y, generated);
+    }
+
     if(!startworldchunkloader())
     {
         int generated = 0;
@@ -1369,7 +1319,6 @@ static int queueworldchunk(int x, int y)
     uint request = ++worldchunkrequest;
     if(!request) request = ++worldchunkrequest;
     worldchunkjob *job = new worldchunkjob(x, y, worldchunkepoch, request);
-    if(generatedchunkcache && worldfolder[0]) worldchunkcachefilename(job->cachefilename, sizeof(job->cachefilename), worldfolder, x, y);
 
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, NULL, true));
     indexworldchunk(worldchunks.length() - 1);
@@ -1520,7 +1469,7 @@ static int processworldchunkresults()
     if(worldchunkworkers.empty()) return 0;
     ZoneScopedN("Chunks/Process worker results");
 
-    int handled = 0, published = 0, cached = 0, generated = 0, optimized = 0;
+    int handled = 0, published = 0, generated = 0, optimized = 0;
     while(handled < asyncchunkloads)
     {
         worldchunkjob *job = NULL;
@@ -1567,8 +1516,7 @@ static int processworldchunkresults()
 
         {
             ZoneScopedN("Chunks/Publish worker result");
-            ZoneTextF("%d_%d %s families %d", job->x, job->y,
-                      job->cached ? "cache" : "generated", job->families);
+            ZoneTextF("%d_%d generated families %d", job->x, job->y, job->families);
             ZoneValue(job->families);
             worldchunk &chunk = worldchunks[index];
             chunk.root = job->root;
@@ -1593,24 +1541,18 @@ static int processworldchunkresults()
             chunk.loading = false;
             chunk.generating = false;
             allocnodes += job->families;
-            if(!job->cached && corruptworldchunkcacheerror(job->loaderror))
-                conoutf(CON_WARN, "generated chunk cache %d_%d failed validation at stage %d; regenerated it",
-                        job->x, job->y, job->loaderror);
-            else if(!job->cached && job->loaderror == WORLD_CACHE_ERROR_STALE)
-                conoutf(CON_DEBUG, "discarded stale generated chunk cache %d_%d", job->x, job->y);
-            if(job->cached) cached++; else generated++;
+            generated++;
             optimized += job->optimized;
             addworldsectionvisibilitychunk(chunk.x, chunk.y);
-            if(!job->cachepayload.empty())
-                queueworldchunkcachewrite(job->x, job->y, job->seed, job->worldgenhash, job->remip, job->cachepayload);
+            if(worldfolder[0] && game::islocalworld() && !writeworldchunksnapshot(worldfolder, chunk))
+                conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", chunk.x, chunk.y);
             published++;
         }
         delete job;
     }
 
     if(published)
-        conoutf(CON_DEBUG, "prepared %d chunks asynchronously (%d cache hits, %d generated, %d octree families remipped)",
-                published, cached, generated, optimized);
+        conoutf(CON_DEBUG, "prepared %d chunks asynchronously (%d generated, %d octree families remipped)", published, generated, optimized);
     return published;
 }
 
@@ -1625,7 +1567,7 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
     queueworldchunkview(chunkx, chunky, aheadx, aheady);
     mountworldchunksafetyregion(chunkx, chunky);
     processworldchunkchanges(chunkx, chunky);
-    pruneworldchunkcache(chunkx, chunky, INT_MAX);
+    pruneworldchunkresidency(chunkx, chunky, INT_MAX);
     activeworldchunk = findworldchunk(chunkx, chunky);
 }
 
@@ -1662,8 +1604,8 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
     {
         player->o.x -= float(shiftx);
         player->o.y -= float(shifty);
-        game::rebasenpcs(float(shiftx), float(shifty));
     }
+    if(shiftx || shifty) game::rebasenpcs(float(shiftx), float(shifty));
     conoutf(CON_DEBUG, "rebased chunk window around %d_%d", chunkx, chunky);
 }
 
@@ -1718,7 +1660,7 @@ static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeome
     }
 }
 
-static int pruneworldchunkcache(int chunkx, int chunky, int limit)
+static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
 {
     ZoneScopedN("Chunks/Prune cache");
     ZoneTextF("focus %d_%d limit %d", chunkx, chunky, limit);
@@ -1734,6 +1676,12 @@ static int pruneworldchunkcache(int chunkx, int chunky, int limit)
         {
             ZoneScopedN("Chunks/Release cache");
             ZoneTextF("%d_%d", chunk.x, chunk.y);
+            if(worldfolder[0] && game::islocalworld() && !writeworldchunksnapshot(worldfolder, chunk))
+            {
+                conoutf(CON_ERROR, "refusing to release unsaved authoritative chunk %d_%d", chunk.x, chunk.y);
+                break;
+            }
+            if(game::islocalworld()) game::unloadlocalchunknpcs(chunk.x, chunk.y);
             freeocta(chunk.root);
         }
         worldchunks.removeunordered(i);
@@ -1790,7 +1738,7 @@ static void rebuildworldchunks(int chunkx, int chunky, int aheadx, int aheady, b
     // In optimized builds their startup used to overlap VA/material creation.
     if(load) queued = queueworldchunkview(chunkx, chunky, aheadx, aheady);
 
-    int released = pruneworldchunkcache(chunkx, chunky, 1);
+    int released = pruneworldchunkresidency(chunkx, chunky, 1);
     activeworldchunk = findworldchunk(chunkx, chunky);
     if(worldchunks.inrange(activeworldchunk))
     {
@@ -2268,17 +2216,11 @@ static cube *prepareworldchunk(worldchunkjob &job)
     ZoneScopedN("Chunks/Prepare");
     ZoneTextF("%d_%d", job.x, job.y);
     if(SDL_AtomicGet(&job.cancelled)) return NULL;
-    cube *root = job.cachefilename[0] ? loadworldchunkcache(job.cachefilename, job.x, job.y, job.seed, job.worldgenhash, job.remip, job.scatter, true, job.families, job.loaderror, &job.renderdata) : NULL;
-    if(root) job.cached = true;
-    else
-    {
-        ZoneScopedN("Chunks/Generate uncached");
-        root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized, &job.renderdata);
-        if(!root) return NULL;
-        game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);
-    }
+    ZoneScopedN("Chunks/Generate unsaved");
+    cube *root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized, &job.renderdata);
+    if(!root) return NULL;
+    game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);
     setworldleavesalpha(root, job.leavesalpha);
-    if(!job.cached && job.cachefilename[0]) serializeworldchunkcache(root, job.scatter, job.cachepayload, &job.renderdata);
     return root;
 }
 

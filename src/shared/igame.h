@@ -65,8 +65,14 @@ namespace game
     extern void resetchests();
     extern bool savelocalchests(const char *world);
     extern bool loadlocalchests(const char *world);
+    extern bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data);
+    extern bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length);
+    extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
+    extern void unloadlocalchunknpcs(int chunkx, int chunky);
     extern bool savelocalpassivenpcs(const char *world);
     extern bool loadlocalpassivenpcs(const char *world);
+    extern void resetlocalpassivenpcstates();
+    extern void resetnpcs();
     extern float getchestlidangle(const ivec &target);
     extern int getchestyaw(const ivec &target);
     extern void forceedit(const char *name);

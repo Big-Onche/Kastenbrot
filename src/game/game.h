@@ -530,6 +530,13 @@ namespace game
     extern bool loadlocalfurnaces(const char *world);
     extern bool savelocalchests(const char *world);
     extern bool loadlocalchests(const char *world);
+    extern bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data);
+    extern bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length);
+    extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
+    extern bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data);
+    extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length);
+    extern bool debuglocalchunknpcs(stream *file, const uchar *data, int length);
+    extern void unloadlocalchunknpcs(int chunkx, int chunky);
     extern void receiveactionresult(uint requestid, int result, const char *reason);
     extern void receivebreakstate(int actor, uint requestid, int phase, int action, const ivec &target, int orient, int stage);
     extern int smoothmove, smoothdist;

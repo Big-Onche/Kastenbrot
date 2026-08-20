@@ -726,11 +726,11 @@ namespace game
         if(damage <= 0) return;
         if(d == player1)
         {
-            if(!multiplayer(false)) damageplayer(float(damage), vec(d->o).addz(distance));
+            if(!waitforserveredit()) damageplayer(float(damage), vec(d->o).addz(distance));
             return;
         }
 #ifndef STANDALONE
-        if(!multiplayer(false)) damagefallingnpc(d, float(damage));
+        if(!waitforserveredit()) damagefallingnpc(d, float(damage));
 #endif
     }
     void bounced(physent *d, const vec &surface) {}
@@ -1571,7 +1571,7 @@ namespace game
 #ifdef STANDALONE
         return authoritativenpcsimulationmaxdist;
 #else
-        return multiplayer(false) ? authoritativenpcsimulationmaxdist : simulationmaxdist;
+        return waitforserveredit() ? authoritativenpcsimulationmaxdist : simulationmaxdist;
 #endif
     }
 
@@ -1858,6 +1858,259 @@ namespace game
         if(ok) ok = file->tell() == file->size();
         delete file;
         if(!ok) resetchests();
+        return ok;
+    }
+
+    struct localchunkdatareader
+    {
+        const uchar *position, *end;
+
+        localchunkdatareader(const uchar *data, int length) : position(data), end(data + length) {}
+
+        bool readuint(uint &value)
+        {
+            if(end - position < 4) return false;
+            value = uint(position[0]) | uint(position[1]) << 8 | uint(position[2]) << 16 | uint(position[3]) << 24;
+            position += 4;
+            return true;
+        }
+
+        bool readint(int &value) { uint raw; if(!readuint(raw)) return false; value = int(raw); return true; }
+
+        bool readstring(char *value, int size)
+        {
+            uint length;
+            if(!readuint(length) || !length || length >= uint(size) || end - position < int(length)) return false;
+            memcpy(value, position, length);
+            value[length] = '\0';
+            position += length;
+            return true;
+        }
+
+        bool finished() const { return position == end; }
+    };
+
+    static void localchunkdataputuint(vector<uchar> &data, uint value) { loopi(4) data.add(uchar(value >> (8 * i))); }
+
+    static bool localchunkdataputstring(vector<uchar> &data, const char *value)
+    {
+        const int length = value ? int(strlen(value)) : 0;
+        if(length <= 0 || length >= MAXSTRLEN) return false;
+        localchunkdataputuint(data, uint(length));
+        data.put((const uchar *)value, length);
+        return true;
+    }
+
+    static bool localchunkdataputstack(vector<uchar> &data, int item, int count, int durability)
+    {
+        if(!localchunkdataputstring(data, count > 0 ? getinventoryitemid(item) : "air")) return false;
+        localchunkdataputuint(data, uint(max(count, 0)));
+        localchunkdataputuint(data, uint(max(durability, 0)));
+        return true;
+    }
+
+    static bool localchunkdatareadstack(localchunkdatareader &reader, int &item, int &count, int &durability, int limit)
+    {
+        string id;
+        if(!reader.readstring(id, sizeof(id)) || !reader.readint(count) || !reader.readint(durability) || count < 0 || durability < 0) return false;
+        item = !strcmp(id, "air") ? -1 : getinventoryitemindex(id);
+        if(item < 0)
+        {
+            if(strcmp(id, "air") || count) return false;
+            count = durability = 0;
+        }
+        else if(count <= 0 || count > min(max(getinventoryitemmaxstack(item), 1), max(limit, 1))) return false;
+        return true;
+    }
+
+    static bool localchunkcontains(const ivec &target, int chunkx, int chunky)
+    {
+        const int chunksize = CREATIVE_GRID * 64;
+        return int(floor(double(target.x) / chunksize)) == chunkx && int(floor(double(target.y) / chunksize)) == chunky;
+    }
+
+    bool capturelocalchunkdata(int chunkx, int chunky, vector<uchar> &data)
+    {
+        data.setsize(0);
+        localchunkdataputuint(data, 1);
+        int furnacecount = 0;
+        loopv(localfurnaces) if(localchunkcontains(localfurnaces[i]->target, chunkx, chunky)) ++furnacecount;
+        localchunkdataputuint(data, uint(furnacecount));
+        loopv(localfurnaces) if(localchunkcontains(localfurnaces[i]->target, chunkx, chunky))
+        {
+            const furnaceinstance &furnace = *localfurnaces[i];
+            localchunkdataputuint(data, uint(furnace.target.x));
+            localchunkdataputuint(data, uint(furnace.target.y));
+            localchunkdataputuint(data, uint(furnace.target.z));
+            if(!localchunkdataputstring(data, getinventoryitemid(furnace.worlditem))) return false;
+            loopj(FURNACE_INPUT_MAX)
+                if(!localchunkdataputstack(data, furnace.inputitems[j], furnace.inputcounts[j], furnace.inputdurabilities[j])) return false;
+            if(!localchunkdataputstack(data, furnace.fuelitem, furnace.fuelcount, furnace.fueldurability) ||
+               !localchunkdataputstack(data, furnace.outputitem, furnace.outputcount, furnace.outputdurability) ||
+               !localchunkdataputstring(data, furnace.activerecipe >= 0 ? getfurnacerecipeid(furnace.activerecipe) : "none")) return false;
+            localchunkdataputuint(data, uint(max(furnace.progress, 0)));
+            localchunkdataputuint(data, uint(max(furnace.heat, 0)));
+            localchunkdataputuint(data, uint(max(furnace.heatcapacity, 0)));
+            localchunkdataputuint(data, furnace.baking ? 1U : 0U);
+        }
+        int chestcount = 0;
+        loopv(localchests) if(localchunkcontains(localchests[i]->target, chunkx, chunky)) ++chestcount;
+        localchunkdataputuint(data, uint(chestcount));
+        loopv(localchests) if(localchunkcontains(localchests[i]->target, chunkx, chunky))
+        {
+            const chestinstance &chest = *localchests[i];
+            localchunkdataputuint(data, uint(chest.target.x));
+            localchunkdataputuint(data, uint(chest.target.y));
+            localchunkdataputuint(data, uint(chest.target.z));
+            if(!localchunkdataputstring(data, getinventoryitemid(chest.worlditem))) return false;
+            localchunkdataputuint(data, uint(chest.yaw));
+            loopj(CHEST_SLOTS_MAX) if(!localchunkdataputstack(data, chest.items[j], chest.counts[j], chest.durabilities[j])) return false;
+        }
+        vector<uchar> npcdata;
+#ifndef STANDALONE
+        if(!capturelocalchunknpcs(chunkx, chunky, npcdata)) return false;
+#endif
+        localchunkdataputuint(data, uint(npcdata.length()));
+        if(!npcdata.empty()) data.put(npcdata.getbuf(), npcdata.length());
+        return true;
+    }
+
+    static bool decodelocalchunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
+                                     vector<chestinstance *> &chests, vector<uchar> &npcdata)
+    {
+        localchunkdatareader reader(data, length);
+        uint version, furnacecount, chestcount;
+        if(!reader.readuint(version) || version != 1 || !reader.readuint(furnacecount) || furnacecount > 100000U) return false;
+        loopi(furnacecount)
+        {
+            ivec target;
+            string worlditemid, recipeid;
+            if(!reader.readint(target.x) || !reader.readint(target.y) || !reader.readint(target.z) ||
+               !reader.readstring(worlditemid, sizeof(worlditemid)) || !localchunkcontains(target, chunkx, chunky)) return false;
+            const int worlditem = getinventoryitemindex(worlditemid);
+            int inputslots, inputlimit;
+            if(worlditem < 0 || !getworldfurnaceconfig(worlditem, inputslots, inputlimit)) return false;
+            furnaceinstance *furnace = new furnaceinstance(target, worlditem, inputslots, inputlimit);
+            bool ok = true;
+            loopj(FURNACE_INPUT_MAX) if(ok)
+                ok = localchunkdatareadstack(reader, furnace->inputitems[j], furnace->inputcounts[j], furnace->inputdurabilities[j], inputlimit);
+            if(ok) ok = localchunkdatareadstack(reader, furnace->fuelitem, furnace->fuelcount, furnace->fueldurability, INT_MAX) &&
+                        localchunkdatareadstack(reader, furnace->outputitem, furnace->outputcount, furnace->outputdurability, INT_MAX) &&
+                        reader.readstring(recipeid, sizeof(recipeid)) && reader.readint(furnace->progress) && reader.readint(furnace->heat) &&
+                        reader.readint(furnace->heatcapacity);
+            int baking = 0;
+            if(ok) ok = reader.readint(baking) && furnace->progress >= 0 && furnace->heat >= 0 && furnace->heatcapacity >= furnace->heat;
+            if(!ok) { delete furnace; return false; }
+            furnace->activerecipe = !strcmp(recipeid, "none") ? -1 : getfurnacerecipeindex(recipeid);
+            if(furnace->activerecipe < 0 && strcmp(recipeid, "none")) { delete furnace; return false; }
+            furnace->baking = baking != 0;
+            furnaces.add(furnace);
+        }
+        if(!reader.readuint(chestcount) || chestcount > 100000U) return false;
+        loopi(chestcount)
+        {
+            ivec target;
+            string worlditemid;
+            int yaw;
+            if(!reader.readint(target.x) || !reader.readint(target.y) || !reader.readint(target.z) ||
+               !reader.readstring(worlditemid, sizeof(worlditemid)) || !reader.readint(yaw) ||
+               !localchunkcontains(target, chunkx, chunky)) return false;
+            const int worlditem = getinventoryitemindex(worlditemid);
+            int slots;
+            if(worlditem < 0 || !getworldchestconfig(worlditem, slots)) return false;
+            chestinstance *chest = new chestinstance(target, worlditem, slots, yaw);
+            bool ok = true;
+            loopj(CHEST_SLOTS_MAX) if(ok)
+                ok = localchunkdatareadstack(reader, chest->items[j], chest->counts[j], chest->durabilities[j], INT_MAX);
+            if(!ok) { delete chest; return false; }
+            chests.add(chest);
+        }
+        uint npclength;
+        if(!reader.readuint(npclength) || npclength > uint(reader.end - reader.position)) return false;
+        if(npclength)
+        {
+            npcdata.put(reader.position, int(npclength));
+            reader.position += npclength;
+        }
+        return reader.finished();
+    }
+
+    bool restorelocalchunkdata(int chunkx, int chunky, const uchar *data, int length)
+    {
+        vector<furnaceinstance *> furnaces;
+        vector<chestinstance *> chests;
+        vector<uchar> npcdata;
+        if(!decodelocalchunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata))
+        {
+            furnaces.deletecontents();
+            chests.deletecontents();
+            return false;
+        }
+#ifndef STANDALONE
+        if(!restorelocalchunknpcs(chunkx, chunky, npcdata.getbuf(), npcdata.length()))
+        {
+            furnaces.deletecontents();
+            chests.deletecontents();
+            return false;
+        }
+#endif
+        loopv(furnaces)
+        {
+            removelocalfurnace(furnaces[i]->target);
+            localfurnaces.add(furnaces[i]);
+        }
+        furnaces.setsize(0);
+        loopv(chests)
+        {
+            removelocalchest(chests[i]->target, false);
+            localchests.add(chests[i]);
+            localchestrestorepending.add(chests[i]->target);
+            setchestvisual(chests[i]->target, chests[i]->yaw);
+        }
+        chests.setsize(0);
+        return true;
+    }
+
+    bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length)
+    {
+        if(!file) return false;
+        vector<furnaceinstance *> furnaces;
+        vector<chestinstance *> chests;
+        vector<uchar> npcdata;
+        if(!decodelocalchunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata)) return false;
+        bool ok = true;
+        loopv(furnaces) if(ok)
+        {
+            const furnaceinstance &furnace = *furnaces[i];
+            ok = file->printf("\nfurnace %d %d %d %s progress %d heat %d capacity %d baking %d\n", furnace.target.x, furnace.target.y,
+                              furnace.target.z, getinventoryitemid(furnace.worlditem), furnace.progress, furnace.heat, furnace.heatcapacity,
+                              furnace.baking ? 1 : 0) > 0;
+            loopj(FURNACE_INPUT_MAX) if(ok && furnace.inputcounts[j] > 0)
+                ok = file->printf("input %d %s %d durability %d\n", j, getinventoryitemid(furnace.inputitems[j]), furnace.inputcounts[j],
+                                  furnace.inputdurabilities[j]) > 0;
+            if(ok && furnace.fuelcount > 0)
+                ok = file->printf("fuel %s %d durability %d\n", getinventoryitemid(furnace.fuelitem), furnace.fuelcount,
+                                  furnace.fueldurability) > 0;
+            if(ok && furnace.outputcount > 0)
+                ok = file->printf("output %s %d durability %d\n", getinventoryitemid(furnace.outputitem), furnace.outputcount,
+                                  furnace.outputdurability) > 0;
+            if(ok && furnace.activerecipe >= 0)
+                ok = file->printf("recipe %s\n", getfurnacerecipeid(furnace.activerecipe)) > 0;
+        }
+        loopv(chests) if(ok)
+        {
+            const chestinstance &chest = *chests[i];
+            ok = file->printf("\nchest %d %d %d %s yaw %d\n", chest.target.x, chest.target.y, chest.target.z,
+                              getinventoryitemid(chest.worlditem), chest.yaw) > 0;
+            loopj(CHEST_SLOTS_MAX) if(ok && chest.counts[j] > 0)
+                ok = file->printf("slot %d %s %d durability %d\n", j, getinventoryitemid(chest.items[j]), chest.counts[j],
+                                  chest.durabilities[j]) > 0;
+        }
+#ifndef STANDALONE
+        if(ok && !npcdata.empty()) ok = debuglocalchunknpcs(file, npcdata.getbuf(), npcdata.length());
+#endif
+        furnaces.deletecontents();
+        chests.deletecontents();
         return ok;
     }
 
@@ -2891,7 +3144,7 @@ namespace game
 
     void damageplayer(float damage, const vec &source)
     {
-        if(!m_survival || multiplayer(false) || !player1 || player1->state != CS_ALIVE || damage <= 0) return;
+        if(!m_survival || waitforserveredit() || !player1 || player1->state != CS_ALIVE || damage <= 0) return;
         player1->health = max(player1->health - damage, 0.0f);
         if(player1->health > 0) return;
         vec impulse = vec(player1->o).sub(source);
@@ -2971,7 +3224,7 @@ namespace game
     ICOMMAND(respawnplayer, "", (),
     {
         if(!player1 || player1->state != CS_DEAD) return;
-        if(multiplayer(false)) addmsg(N_RESPAWN, "r");
+        if(waitforserveredit()) addmsg(N_RESPAWN, "r");
         else
         {
             vec worldspawn;

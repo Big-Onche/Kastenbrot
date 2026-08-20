@@ -184,20 +184,16 @@ struct worldgencontext;
 
 struct worldchunkjob
 {
-    int x, y, families, optimized, loaderror;
+    int x, y, families, optimized;
     uint contenttiles[WORLD_SECTION_LAYERS], opaquetiles[WORLD_SECTION_LAYERS];
     uchar portals[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
     uint epoch, request;
-    bool cached, remip, leavesalpha, sectionstatesready;
+    bool remip, leavesalpha, sectionstatesready;
     SDL_atomic_t cancelled;
     cube *root;
     vector<worldscatterinstance> scatter;
-    vector<uchar> cachepayload;
-    string cachefilename;
-    int seed;
-    ullong worldgenhash;
     worldgencontext *generation;
 
     worldchunkjob(int x, int y, uint epoch, uint request);

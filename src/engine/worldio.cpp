@@ -190,43 +190,6 @@ void backup(const char *name, const char *backupname)
 // Leaf payloads contain only shape, face type IDs, and an optional material ID.
 enum { OCTSAV_CHILDREN = 0, OCTSAV_EMPTY, OCTSAV_SOLID, OCTSAV_NORMAL };
 
-static int savemapprogress = 0;
-
-void savec(cube *c, const ivec &o, int size, stream *f)
-{
-    if((savemapprogress++&0xFFF)==0) renderprogress(float(savemapprogress)/allocnodes, "saving octree...");
-
-    loopi(8)
-    {
-        ivec co(i, o, size);
-        if(c[i].children)
-        {
-            f->putchar(OCTSAV_CHILDREN);
-            savec(c[i].children, co, size>>1, f);
-        }
-        else
-        {
-            ushort material = c[i].material;
-            if((material&MATF_VOLUME) == MAT_WATER)
-            {
-                bool falling = false;
-                const int level = getwatercelllevel(co, falling);
-                if(level > 0 || falling) material = MAT_AIR;
-            }
-            int octsav = isempty(c[i]) ? OCTSAV_EMPTY :
-                         isentirelysolid(c[i]) ? OCTSAV_SOLID : OCTSAV_NORMAL;
-            if(material != MAT_AIR) octsav |= 0x40;
-            f->putchar(octsav);
-            if((octsav & 0x7) == OCTSAV_NORMAL) f->write(c[i].edges, sizeof(c[i].edges));
-            if((octsav & 0x7) != OCTSAV_EMPTY)
-            {
-                loopj(6) f->putlil<ushort>(c[i].texture[j]);
-            }
-            if(octsav & 0x40) f->putlil<ushort>(material);
-        }
-    }
-}
-
 cube *loadchildren(stream *f, const ivec &co, int size, bool &failed);
 
 void loadc(stream *f, cube &c, const ivec &co, int size, bool &failed)
@@ -262,33 +225,17 @@ cube *loadchildren(stream *f, const ivec &co, int size, bool &failed)
     return c;
 }
 
+static bool saveactiveworld();
+
 bool save_world(const char *mname)
 {
-    if(!*mname) mname = game::getclientmap();
-    setmapfilenames(*mname ? mname : "untitled");
-    if(savebak) backup(ogzname, bakname);
-    stream *f = openrawfile(ogzname, "wb");
-    if(!f) { conoutf(CON_WARN, "could not write map to %s", ogzname); return false; }
-
-    savemapprogress = 0;
-    renderprogress(0, "saving lightweight octree...");
-
-    mapheader hdr;
-    memcpy(hdr.magic, "TMAP", 4);
-    hdr.version = MAPVERSION;
-    hdr.worldsize = worldsize;
-    hdr.chunkx = hdr.chunky = INT_MIN;
-    const char *forwardslash = strrchr(mname, '/'), *backslash = strrchr(mname, '\\'), *basename = !forwardslash ? backslash : !backslash || forwardslash > backslash ? forwardslash : backslash;
-    basename = basename ? basename + 1 : mname;
-    chunkcoords(basename, hdr.chunkx, hdr.chunky);
-    lilswap(&hdr.version, 4);
-    f->write(&hdr, sizeof(hdr));
-
-    savec(worldroot, ivec(0, 0, 0), worldsize>>1, f);
-
-    delete f;
-    conoutf("wrote lightweight octree %s", ogzname);
-    return true;
+    (void)mname;
+    if(!game::islocalworld())
+    {
+        conoutf(CON_ERROR, "world saving is disabled outside local mode");
+        return false;
+    }
+    return saveactiveworld();
 }
 
 static bool preparedworldspawn = false;
@@ -424,6 +371,110 @@ static void applypreparedworldspawn()
     player->resetinterp();
 }
 
+enum { WORLD_SNAPSHOT_METADATA_VERSION = 1 };
+
+struct worldsnapshotmetadata
+{
+    int seed, mode, entryx, entryy;
+    worldspawnmetadata spawn;
+
+    worldsnapshotmetadata() : seed(0), mode(0), entryx(0), entryy(0) {}
+};
+
+static bool saveworldmetadata()
+{
+    if(!worldfolder[0]) return false;
+    int entryx = 0, entryy = 0;
+    worldspawnmetadata spawn;
+    if(player)
+    {
+        spawn.valid = true;
+        spawn.x = double(worldfirstchunkx) * WORLD_CHUNK_SIZE + player->o.x;
+        spawn.y = double(worldfirstchunky) * WORLD_CHUNK_SIZE + player->o.y;
+        spawn.z = player->o.z;
+        spawn.yaw = player->yaw;
+        spawn.pitch = player->pitch;
+        entryx = int(floor(spawn.x / WORLD_CHUNK_SIZE));
+        entryy = int(floor(spawn.y / WORLD_CHUNK_SIZE));
+    }
+    if(findworldchunk(entryx, entryy) < 0 && worldchunks.inrange(activeworldchunk))
+    {
+        entryx = worldchunks[activeworldchunk].x;
+        entryy = worldchunks[activeworldchunk].y;
+    }
+
+    defformatstring(name, "media/map/%s/world.meta", worldfolder);
+    defformatstring(temporary, "%s.tmp", name);
+    string finalpath, temporarypath;
+    copystring(finalpath, findfile(name, "wb"));
+    copystring(temporarypath, findfile(temporary, "wb"));
+    stream *file = openrawfile(temporary, "w");
+    bool written = file && file->printf("CUBECRAFT_SNAPSHOT_WORLD %d\n", WORLD_SNAPSHOT_METADATA_VERSION) > 0 &&
+                   file->printf("dimensions %d %d %d\n", WORLD_CHUNK_BLOCKS, WORLD_CHUNK_BLOCKS, WORLD_HEIGHT_BLOCKS) > 0 &&
+                   file->printf("world_seed %d\n", game::getworldseed()) > 0 && file->printf("game_mode %d\n", game::gamemode) > 0 &&
+                   file->printf("entry %d %d\n", entryx, entryy) > 0;
+    if(written && spawn.valid)
+        written = file->printf("spawn %.17g %.17g %.9g %.9g %.9g\n", spawn.x, spawn.y, spawn.z, spawn.yaw, spawn.pitch) > 0;
+    if(written) written = file->flush();
+    delete file;
+    if(!written || !replaceworldsnapshotfile(temporarypath, finalpath))
+    {
+        remove(temporarypath);
+        conoutf(CON_ERROR, "could not write world metadata %s", name);
+        return false;
+    }
+    return true;
+}
+
+static bool loadworldmetadata(const char *folder, worldsnapshotmetadata &metadata)
+{
+    defformatstring(name, "media/map/%s/world.meta", folder);
+    stream *file = openrawfile(path(name), "r");
+    if(!file) return false;
+    int version = 0, width = 0, depth = 0, height = 0;
+    bool header = false, dimensions = false, seed = false, mode = false, entry = false;
+    string line;
+    while(file->getline(line, sizeof(line)))
+    {
+        if(sscanf(line, "CUBECRAFT_SNAPSHOT_WORLD %d", &version) == 1) { header = true; continue; }
+        if(sscanf(line, "dimensions %d %d %d", &width, &depth, &height) == 3) { dimensions = true; continue; }
+        if(sscanf(line, "world_seed %d", &metadata.seed) == 1) { seed = true; continue; }
+        if(sscanf(line, "game_mode %d", &metadata.mode) == 1) { mode = true; continue; }
+        if(sscanf(line, "entry %d %d", &metadata.entryx, &metadata.entryy) == 2) { entry = true; continue; }
+        if(sscanf(line, "spawn %lf %lf %f %f %f", &metadata.spawn.x, &metadata.spawn.y, &metadata.spawn.z, &metadata.spawn.yaw,
+                  &metadata.spawn.pitch) == 5)
+            metadata.spawn.valid = true;
+    }
+    delete file;
+    if(!header || version != WORLD_SNAPSHOT_METADATA_VERSION || !dimensions || width != WORLD_CHUNK_BLOCKS || depth != WORLD_CHUNK_BLOCKS ||
+       height != WORLD_HEIGHT_BLOCKS || !seed || !mode || !game::validgamemode(metadata.mode) || !entry)
+    {
+        conoutf(CON_ERROR, "saved world %s has invalid or incompatible metadata", folder);
+        return false;
+    }
+    return true;
+}
+
+static bool saveactiveworld()
+{
+    if(!saveworldchunksnapshots()) return false;
+    if(!saveworldmetadata()) return false;
+    conoutf("saved local world %s", worldfolder);
+    return true;
+}
+
+static void saveworld()
+{
+    if(worldchunks.empty() || activeworldchunk < 0)
+    {
+        conoutf(CON_ERROR, "no local world is active; use newworld first");
+        return;
+    }
+    saveactiveworld();
+}
+
+COMMAND(saveworld, "");
+
 static void createworld(const char *requestedname)
 {
     chooseworldfolder(requestedname);
@@ -440,6 +491,8 @@ static void createworld(const char *requestedname)
     game::resetsurvivalinventory();
     game::resetfurnaces();
     game::resetchests();
+    game::resetnpcs();
+    game::resetlocalpassivenpcstates();
     game::beginlocalworld();
     if(!emptymap(WORLD_RUNTIME_SCALE, true, activechunkname)) return;
     copystring(worldfolder, chosenfolder);
@@ -469,6 +522,9 @@ static void createworld(const char *requestedname)
     updateworldchunks(true);
     applypreparedworldspawn();
 
+    renderprogress(0.94f, "saving your new world...");
+    if(!saveactiveworld()) conoutf(CON_ERROR, "new world %s is active but its metadata could not be committed", worldfolder);
+
     int mounted = 0;
     loopv(worldchunks) if(worldchunkmounted(worldchunks[i])) mounted++;
     conoutf("generated infinite world %s with seed %d and %d initial chunks; %d chunks queued asynchronously",
@@ -493,6 +549,67 @@ ICOMMAND(newworld, "ssN", (char *arg1, char *arg2, int *numargs),
     }
     createworld(name);
 });
+
+static void loadworldcommand(const char *requested)
+{
+    if(!requested || !requested[0])
+    {
+        conoutf(CON_ERROR, "usage: loadworld <worldname>");
+        return;
+    }
+    string folder;
+    normalizeworldfolder(folder, sizeof(folder), requested);
+    worldsnapshotmetadata metadata;
+    if(!loadworldmetadata(folder, metadata))
+    {
+        conoutf(CON_ERROR, "could not find a saved snapshot world named %s", folder);
+        return;
+    }
+
+    game::resetsurvivalinventory();
+    game::resetfurnaces();
+    game::resetchests();
+    game::resetnpcs();
+    game::resetlocalpassivenpcstates();
+    game::beginlocalworld();
+    game::gamemode = metadata.mode;
+    defformatstring(activechunkname, "%s/%d_%d", folder, metadata.entryx, metadata.entryy);
+    if(!emptymap(WORLD_RUNTIME_SCALE, true, activechunkname)) return;
+    copystring(worldfolder, folder);
+    worldfirstchunkx = metadata.entryx - WORLD_RUNTIME_CENTER;
+    worldfirstchunky = metadata.entryy - WORLD_RUNTIME_CENTER;
+    if(!loadworlddefinitions()) return;
+    game::loadworldseed(metadata.seed);
+    game::weather::preparemap(worldfolder, metadata.seed);
+
+    freeocta(worldroot);
+    worldroot = NULL;
+    int generated = 0;
+    activeworldchunk = acquireworldchunksync(metadata.entryx, metadata.entryy, generated);
+    if(!worldchunks.inrange(activeworldchunk) || !worldchunks[activeworldchunk].root)
+    {
+        conoutf(CON_ERROR, "could not load entry chunk %d_%d for world %s", metadata.entryx, metadata.entryy, folder);
+        return;
+    }
+    loadinitialworldchunks(metadata.entryx, metadata.entryy);
+
+    setvar("mapscale", WORLD_RUNTIME_SCALE, true, false);
+    setvar("mapsize", WORLD_RUNTIME_SIZE, true, false);
+    worldroot = newcubes(F_EMPTY);
+    if(player)
+    {
+        player->o = vec((metadata.entryx - worldfirstchunkx) * WORLD_CHUNK_SIZE + WORLD_CHUNK_SIZE / 2,
+                        (metadata.entryy - worldfirstchunky) * WORLD_CHUNK_SIZE + WORLD_CHUNK_SIZE / 2,
+                        WORLD_GROUND_HEIGHT + player->eyeheight + 1);
+    }
+    preparedworldspawn = false;
+    if(!prepareworldspawn(metadata.spawn)) return;
+    updateworldchunks(true);
+    applypreparedworldspawn();
+    conoutf("loaded authoritative snapshot world %s at chunk %d_%d", worldfolder, metadata.entryx, metadata.entryy);
+}
+
+ICOMMAND(loadworld, "s", (char *name), loadworldcommand(name));
 
 void startnetworkworld(int seed)
 {

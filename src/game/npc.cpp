@@ -398,7 +398,7 @@ namespace game
     static const char * const playerroot = "game/player";
     static const float HIP_HEIGHT = 11.25f;
     static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
-    static vector<npc *> npcs;
+    static vector<npc *> npcs, pendinglocalnpcs;
     static vector<severedlimb *> severedlimbs;
     static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastnpcspawnattempt = 0, lastpassivenpcscan = 0;
     static uint nextnpcattackrequest = 1;
@@ -469,6 +469,7 @@ namespace game
     void resetnpcs()
     {
         npcs.deletecontents();
+        pendinglocalnpcs.deletecontents();
         severedlimbs.deletecontents();
         nextnpcid = 1;
         nextnpcattackrequest = 1;
@@ -555,6 +556,20 @@ namespace game
                 mob.hitboxes[j].center.y -= shifty;
             }
             translateragdoll(&mob, ragdolloffset);
+        }
+        loopv(pendinglocalnpcs)
+        {
+            npc &mob = *pendinglocalnpcs[i];
+            mob.o.x -= shiftx;
+            mob.o.y -= shifty;
+            mob.newpos.x -= shiftx;
+            mob.newpos.y -= shifty;
+            mob.spawn.x -= shiftx;
+            mob.spawn.y -= shifty;
+            mob.destination.x -= shiftx;
+            mob.destination.y -= shifty;
+            mob.serverposition.x -= shiftx;
+            mob.serverposition.y -= shifty;
         }
         loopv(severedlimbs)
         {
@@ -1307,6 +1322,7 @@ namespace game
 
     void receivenpcspawn(uint id, const char *definitionid, const vec &absoluteposition, float yaw, float health, uint detachedparts, int stateflags)
     {
+        if(!waitforserveredit()) return;
         npcdefinition *definition = findnpcdefinition(definitionid);
         if(!id || !definition) return;
         vec position(absoluteposition);
@@ -1340,6 +1356,7 @@ namespace game
 
     void receivenpcdespawn(uint id)
     {
+        if(!waitforserveredit()) return;
         loopv(npcs) if(npcs[i]->instanceid == int(id) && npcs[i]->replicated)
         {
             delete npcs.remove(i);
@@ -1350,6 +1367,7 @@ namespace game
 
     void receivenpcsnapshot(uint id, int tick, const vec &absoluteposition, const vec &velocity, float yaw, int stateflags)
     {
+        if(!waitforserveredit()) return;
         npc *mob = findnpc(id);
         if(!mob || !mob->replicated || tick <= mob->servertick) return;
         vec position(absoluteposition);
@@ -1365,6 +1383,7 @@ namespace game
 
     void receivenpcevent(uint id, int event, int tick, float health, uint detachedparts, int part, const vec &absoluteposition, const vec &impulse)
     {
+        if(!waitforserveredit()) return;
         npc *mob = findnpc(id);
         if(!mob || !mob->replicated) return;
         mob->servertick = max(mob->servertick, tick);
@@ -1432,7 +1451,7 @@ namespace game
         if(!hitmob && !hitlimb) return false;
 
         const vec hitposition = vec(camera1->o).madd(camdir, hitdistance);
-        if(multiplayer(false))
+        if(waitforserveredit())
         {
             if(hitmob && hitmob->replicated)
             {
@@ -1755,6 +1774,7 @@ namespace game
     {
         int count = 0;
         loopv(npcs) if(npcs[i]->state != CS_DEAD && npcs[i]->attitude == NPC_AGGRESSIVE) ++count;
+        loopv(pendinglocalnpcs) if(pendinglocalnpcs[i]->state != CS_DEAD && pendinglocalnpcs[i]->attitude == NPC_AGGRESSIVE) ++count;
         return count;
     }
 
@@ -1819,7 +1839,42 @@ namespace game
     static npc *findlocalpassivenpc(ullong key)
     {
         loopv(npcs) if(npcs[i]->spawnkey == key) return npcs[i];
+        loopv(pendinglocalnpcs) if(pendinglocalnpcs[i]->spawnkey == key) return pendinglocalnpcs[i];
         return NULL;
+    }
+
+    static bool localnpcworldready(const npc &mob)
+    {
+        const float padding = 1.0f;
+        selinfo occupied;
+        occupied.grid = 1;
+        occupied.o = ivec(int(floorf(mob.o.x - mob.xradius - padding)), int(floorf(mob.o.y - mob.yradius - padding)),
+                             int(floorf(mob.o.z - mob.eyeheight - padding)));
+        const ivec end(int(ceilf(mob.o.x + mob.xradius + padding)), int(ceilf(mob.o.y + mob.yradius + padding)),
+                       int(ceilf(mob.o.z + mob.aboveeye + padding)));
+        occupied.s = ivec(max(end.x - occupied.o.x, 1), max(end.y - occupied.o.y, 1), max(end.z - occupied.o.z, 1));
+        return occupied.validate() && worldselectionready(occupied);
+    }
+
+    static void activatependinglocalnpcs()
+    {
+        int activated = 0;
+        for(int i = pendinglocalnpcs.length() - 1; i >= 0; --i)
+        {
+            npc *mob = pendinglocalnpcs[i];
+            if(!localnpcworldready(*mob)) continue;
+            pendinglocalnpcs.remove(i);
+            mob->instanceid = nextnpcid++;
+            mob->newpos = mob->o;
+            mob->spawn = mob->destination = mob->o;
+            beginwanderpause(*mob);
+            updatenpchitboxes(*mob);
+            npcs.add(mob);
+            ++activated;
+        }
+        if(!activated) return;
+        cleardynentcache();
+        conoutf(CON_DEBUG, "activated %d persistent NPCs after their chunk geometry became ready", activated);
     }
 
     static bool localnaturalspawnposition(const npcdefinition &definition, worldgenerator &generator, const passivenpcspawn &spawn, vec &position)
@@ -1907,7 +1962,7 @@ namespace game
 
     void updatenpcs()
     {
-        if(multiplayer(false))
+        if(waitforserveredit())
         {
             bool removedlocal = false;
             for(int i = npcs.length() - 1; i >= 0; --i) if(!npcs[i]->replicated)
@@ -1942,24 +1997,8 @@ namespace game
             return;
         }
 
+        activatependinglocalnpcs();
         const vec focus = camera1 ? camera1->o : player1 ? player1->o : vec(0, 0, 0);
-        const float despawndistance = npcmaxdist * GAMEUNITSPERMETER;
-        bool removed = false;
-        for(int i = 0; i < npcs.length();)
-        {
-            npc *mob = npcs[i];
-            if(mob->o.squaredist(focus) <= despawndistance * despawndistance)
-            {
-                ++i;
-                continue;
-            }
-            loopv(npcs) if(npcs[i]->target == mob) npcs[i]->target = NULL;
-            delete mob;
-            npcs.remove(i);
-            removed = true;
-        }
-        if(removed) cleardynentcache();
-
         tryspawnlocalaggressivenpc();
         tryspawnlocalpassivenpcs();
 
@@ -2129,7 +2168,7 @@ namespace game
 
     static bool spawnnpc(const char *id)
     {
-        if(multiplayer(false))
+        if(waitforserveredit())
         {
             defformatstring(command, "spawn %s", id ? id : "");
             requestworldcommand(command);
@@ -2180,6 +2219,209 @@ namespace game
         cleardynentcache();
         conoutf("spawned %s #%d", definition->name, mob->instanceid);
         return true;
+    }
+
+    static void chunknpcputuint(vector<uchar> &data, uint value) { loopi(4) data.add(uchar(value >> (8 * i))); }
+
+    static void chunknpcputfloat(vector<uchar> &data, float value)
+    {
+        union { float f; uint u; } bits;
+        bits.f = value;
+        chunknpcputuint(data, bits.u);
+    }
+
+    static bool chunknpcputstring(vector<uchar> &data, const char *value)
+    {
+        const int length = value ? int(strlen(value)) : 0;
+        if(length <= 0 || length >= MAXSTRLEN) return false;
+        chunknpcputuint(data, uint(length));
+        data.put((const uchar *)value, length);
+        return true;
+    }
+
+    struct chunknpcreader
+    {
+        const uchar *position, *end;
+
+        chunknpcreader(const uchar *data, int length) : position(data), end(data + length) {}
+
+        bool readuint(uint &value)
+        {
+            if(end - position < 4) return false;
+            value = uint(position[0]) | uint(position[1]) << 8 | uint(position[2]) << 16 | uint(position[3]) << 24;
+            position += 4;
+            return true;
+        }
+
+        bool readint(int &value) { uint raw; if(!readuint(raw)) return false; value = int(raw); return true; }
+
+        bool readfloat(float &value)
+        {
+            union { float f; uint u; } bits;
+            if(!readuint(bits.u)) return false;
+            value = bits.f;
+            return isfinite(value);
+        }
+
+        bool readstring(char *value, int size)
+        {
+            uint length;
+            if(!readuint(length) || !length || length >= uint(size) || end - position < int(length)) return false;
+            memcpy(value, position, length);
+            value[length] = '\0';
+            position += length;
+            return true;
+        }
+
+        bool finished() const { return position == end; }
+    };
+
+    static bool chunknpcposition(const vec &runtime, int chunkx, int chunky, vec *absolute = NULL)
+    {
+        vec position = runtime;
+        worldpositiontoabsolute(position);
+        if(absolute) *absolute = position;
+        const int chunksize = GAMEUNITSPERMETER * 64;
+        return int(floor(double(position.x) / chunksize)) == chunkx && int(floor(double(position.y) / chunksize)) == chunky;
+    }
+
+    static bool persistentlocalnpc(const npc &mob) { return !mob.replicated || islocalworld(); }
+
+    static bool capturechunknpc(const npc &mob, int chunkx, int chunky, vector<uchar> &data)
+    {
+        vec absolute;
+        chunknpcposition(mob.o, chunkx, chunky, &absolute);
+        if(!chunknpcputstring(data, mob.definition->id)) return false;
+        chunknpcputfloat(data, absolute.x);
+        chunknpcputfloat(data, absolute.y);
+        chunknpcputfloat(data, absolute.z);
+        chunknpcputfloat(data, mob.yaw);
+        chunknpcputfloat(data, mob.pitch);
+        chunknpcputfloat(data, mob.totalhealth);
+        chunknpcputuint(data, uint(mob.attitude));
+        chunknpcputuint(data, uint(mob.behavior));
+        chunknpcputuint(data, uint(mob.detachedparts));
+        chunknpcputuint(data, uint(mob.spawnkey));
+        chunknpcputuint(data, uint(mob.spawnkey >> 32));
+        return true;
+    }
+
+    bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data)
+    {
+        data.setsize(0);
+        chunknpcputuint(data, 1);
+        int count = 0;
+        loopv(npcs) if(persistentlocalnpc(*npcs[i]) && npcs[i]->state != CS_DEAD && chunknpcposition(npcs[i]->o, chunkx, chunky)) ++count;
+        loopv(pendinglocalnpcs)
+            if(pendinglocalnpcs[i]->state != CS_DEAD && chunknpcposition(pendinglocalnpcs[i]->o, chunkx, chunky)) ++count;
+        chunknpcputuint(data, uint(count));
+        loopv(npcs) if(persistentlocalnpc(*npcs[i]) && npcs[i]->state != CS_DEAD && chunknpcposition(npcs[i]->o, chunkx, chunky))
+        {
+            if(!capturechunknpc(*npcs[i], chunkx, chunky, data)) return false;
+        }
+        loopv(pendinglocalnpcs)
+            if(pendinglocalnpcs[i]->state != CS_DEAD && chunknpcposition(pendinglocalnpcs[i]->o, chunkx, chunky) &&
+               !capturechunknpc(*pendinglocalnpcs[i], chunkx, chunky, data)) return false;
+        if(count) conoutf(CON_DEBUG, "captured %d persistent NPCs in chunk %d_%d", count, chunkx, chunky);
+        return true;
+    }
+
+    static bool decodechunknpcs(const uchar *data, int length, vector<npc *> &decoded)
+    {
+        chunknpcreader reader(data, length);
+        uint version, count;
+        if(!reader.readuint(version) || version != 1 || !reader.readuint(count) || count > 100000U) return false;
+        loopi(count)
+        {
+            string id;
+            vec absolute;
+            float yaw, pitch, health;
+            int attitude, behavior;
+            uint detachedparts, keylow, keyhigh;
+            if(!reader.readstring(id, sizeof(id)) || !reader.readfloat(absolute.x) || !reader.readfloat(absolute.y) ||
+               !reader.readfloat(absolute.z) || !reader.readfloat(yaw) || !reader.readfloat(pitch) || !reader.readfloat(health) ||
+               !reader.readint(attitude) || !reader.readint(behavior) || !reader.readuint(detachedparts) || !reader.readuint(keylow) ||
+               !reader.readuint(keyhigh) || health <= 0) return false;
+            npcdefinition *definition = findnpcdefinition(id);
+            if(!definition) return false;
+            npc *mob = new npc(definition, 0);
+            mob->o = absolute;
+            worldpositiontolocal(mob->o);
+            mob->spawn = mob->destination = mob->o;
+            mob->yaw = yaw;
+            mob->pitch = pitch;
+            mob->totalhealth = health;
+            mob->parthealth[HITBOX_TORSO] = health;
+            mob->attitude = attitude;
+            mob->behavior = behavior;
+            mob->detachedparts = detachedparts;
+            mob->spawnkey = ullong(keylow) | ullong(keyhigh) << 32;
+            decoded.add(mob);
+        }
+        return reader.finished();
+    }
+
+    bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length)
+    {
+        vector<npc *> decoded;
+        if(!decodechunknpcs(data, length, decoded)) { decoded.deletecontents(); return false; }
+        loopv(decoded) if(!chunknpcposition(decoded[i]->o, chunkx, chunky))
+        {
+            decoded.deletecontents();
+            return false;
+        }
+        for(int i = npcs.length() - 1; i >= 0; --i)
+        {
+            npc *mob = npcs[i];
+            if(!persistentlocalnpc(*mob) || !chunknpcposition(mob->o, chunkx, chunky)) continue;
+            loopvj(npcs) if(npcs[j]->target == mob) npcs[j]->target = NULL;
+            delete npcs.remove(i);
+        }
+        for(int i = pendinglocalnpcs.length() - 1; i >= 0; --i)
+            if(chunknpcposition(pendinglocalnpcs[i]->o, chunkx, chunky)) delete pendinglocalnpcs.remove(i);
+        const int queued = decoded.length();
+        loopv(decoded) pendinglocalnpcs.add(decoded[i]);
+        decoded.setsize(0);
+        cleardynentcache();
+        if(queued) conoutf(CON_DEBUG, "queued %d persistent NPCs from chunk %d_%d until its geometry is ready", queued, chunkx, chunky);
+        return true;
+    }
+
+    void unloadlocalchunknpcs(int chunkx, int chunky)
+    {
+        bool removed = false;
+        for(int i = npcs.length() - 1; i >= 0; --i)
+        {
+            npc *mob = npcs[i];
+            if(!persistentlocalnpc(*mob) || !chunknpcposition(mob->o, chunkx, chunky)) continue;
+            loopvj(npcs) if(npcs[j]->target == mob) npcs[j]->target = NULL;
+            delete npcs.remove(i);
+            removed = true;
+        }
+        for(int i = pendinglocalnpcs.length() - 1; i >= 0; --i)
+        {
+            npc *mob = pendinglocalnpcs[i];
+            if(!chunknpcposition(mob->o, chunkx, chunky)) continue;
+            delete pendinglocalnpcs.remove(i);
+        }
+        if(removed) cleardynentcache();
+    }
+
+    bool debuglocalchunknpcs(stream *file, const uchar *data, int length)
+    {
+        vector<npc *> decoded;
+        if(!file || !decodechunknpcs(data, length, decoded)) { decoded.deletecontents(); return false; }
+        bool ok = true;
+        loopv(decoded) if(ok)
+        {
+            vec absolute = decoded[i]->o;
+            worldpositiontoabsolute(absolute);
+            ok = file->printf("\nnpc %s position %.9g %.9g %.9g yaw %.9g pitch %.9g health %.9g behavior %d attitude %d\n",
+                              decoded[i]->definition->id, absolute.x, absolute.y, absolute.z, decoded[i]->yaw, decoded[i]->pitch,
+                              decoded[i]->totalhealth, decoded[i]->behavior, decoded[i]->attitude) > 0;
+        }
+        decoded.deletecontents();
+        return ok;
     }
 
     ICOMMAND(spawn, "s", (char *id), spawnnpc(id));
