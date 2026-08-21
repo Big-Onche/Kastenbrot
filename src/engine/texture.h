@@ -581,8 +581,10 @@ struct Texture
     bool mipmap, canreduce;
     GLuint id;
     uchar *alphamask;
+    bvec gialbedo;
+    bool gialbedoready;
 
-    Texture() : alphamask(NULL) {}
+    Texture() : alphamask(NULL), gialbedo(0, 0, 0), gialbedoready(false) {}
 };
 
 enum

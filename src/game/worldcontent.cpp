@@ -63,6 +63,12 @@ int getworldcubebytextures(const ushort *textures)
     return index ? *index : -1;
 }
 
+static bvec getworldcubegialbedo(const cube &c)
+{
+    const int index = getworldcubebytextures(c.texture);
+    return worldcubedefinitions.inrange(index) ? worldcubedefinitions[index]->gialbedo : bvec(0, 0, 0);
+}
+
 int getworldcubeindex(int slot)
 {
     if(worldcubedefinitions.inrange(worlderrorcube))
@@ -707,6 +713,38 @@ static bool buildworldcubetextureindexes()
     return valid;
 }
 
+static bvec worldslotgialbedo(int index, vector<Texture *> &textures)
+{
+    VSlot &vslot = lookupvslot(index, true);
+    Slot &slot = *vslot.slot;
+    const int diffuse = slot.findtextype(1 << TEX_DIFFUSE);
+    if(!slot.sts.inrange(diffuse) || !slot.sts[diffuse].t || !slot.sts[diffuse].t->gialbedoready) return bvec(0, 0, 0);
+    Texture *texture = slot.sts[diffuse].t;
+    if(textures.find(texture) < 0) textures.add(texture);
+    return bvec(uchar(clamp(int(texture->gialbedo.r * vslot.colorscale.r + 0.5f), 0, 255)),
+                uchar(clamp(int(texture->gialbedo.g * vslot.colorscale.g + 0.5f), 0, 255)),
+                uchar(clamp(int(texture->gialbedo.b * vslot.colorscale.b + 0.5f), 0, 255)));
+}
+
+static void prebakelocalambientgialbedo()
+{
+    const Uint64 start = SDL_GetPerformanceCounter();
+    vector<Texture *> textures;
+    loopv(worldcubedefinitions)
+    {
+        worlddefinition &type = *worldcubedefinitions[i];
+        const bvec top = worldslotgialbedo(type.slot, textures), side = worldslotgialbedo(type.sideslot, textures),
+                   bottom = worldslotgialbedo(type.bottomslot, textures);
+        type.gialbedo = bvec(uchar((int(top.r) + int(bottom.r) + 4 * int(side.r) + 3) / 6),
+                              uchar((int(top.g) + int(bottom.g) + 4 * int(side.g) + 3) / 6),
+                              uchar((int(top.b) + int(bottom.b) + 4 * int(side.b) + 3) / 6));
+    }
+    const double milliseconds = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
+    conoutf(CON_INIT, "local ambient GI: prebaked %d block colors from %d textures in %.2f ms", worldcubedefinitions.length(),
+            textures.length(), milliseconds);
+    invalidatelocalambient();
+}
+
 static bool loadworlddefinitions(bool assets = true)
 {
     worldreset();
@@ -826,6 +864,8 @@ static bool loadworlddefinitions(bool assets = true)
         type.sideslot = errorcube.sideslot;
         type.bottomslot = errorcube.bottomslot;
     }
+
+    prebakelocalambientgialbedo();
 
     if(!buildworldcubetextureindexes()) return false;
 

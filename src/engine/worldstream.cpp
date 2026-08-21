@@ -1034,9 +1034,9 @@ bool sampleworldsolid(const ivec &position, int &leafbottom)
     return !isempty(*c);
 }
 
-void captureworldsolid(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid)
+void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid, bvec4 *albedo)
 {
-    if(!solid || dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0 || resolution <= 0) return;
+    if(!solid || !albedo || dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0 || resolution <= 0) return;
     const int halfresolution = resolution / 2;
     int cachedlocalchunkx = INT_MIN, cachedlocalchunky = INT_MIN, cachedchunkindex = -1;
     loop(z, dimensions.z) loop(y, dimensions.y) loop(x, dimensions.x)
@@ -1044,10 +1044,14 @@ void captureworldsolid(const ivec &origin, const ivec &dimensions, int resolutio
         const ivec position(origin.x + x * resolution + halfresolution, origin.y + y * resolution + halfresolution,
                             origin.z + z * resolution + halfresolution);
         bool occupied = true;
+        bvec color(0, 0, 0);
         if(worldchunks.empty())
         {
-            int leafbottom;
-            occupied = sampleworldsolid(position, leafbottom);
+            ivec cubeorigin;
+            int size;
+            const cube &c = lookupcube(position, -1, cubeorigin, size);
+            occupied = !isempty(c);
+            if(occupied) color = getworldcubegialbedo(c);
         }
         else if(position.x >= 0 && position.y >= 0 && position.z >= 0 && position.x < worldsize && position.y < worldsize &&
                 position.z < WORLD_MAP_SIZE)
@@ -1067,12 +1071,13 @@ void captureworldsolid(const ivec &origin, const ivec &dimensions, int resolutio
                           tile = (local.y / WORLD_SECTION_SIZE) * WORLD_SECTION_COLUMNS + local.x / WORLD_SECTION_SIZE;
                 const uint tilebit = 1U << tile;
                 if((chunk.contentknown[section] & tilebit) && !(chunk.contenttiles[section] & tilebit)) occupied = false;
-                else if((chunk.opaqueknown[section] & tilebit) && (chunk.opaquetiles[section] & tilebit)) occupied = true;
                 else if(chunk.mountedtiles[section] & tilebit)
                 {
                     ivec cubeorigin;
                     int size;
-                    occupied = !isempty(lookupcube(position, -1, cubeorigin, size));
+                    const cube &c = lookupcube(position, -1, cubeorigin, size);
+                    occupied = !isempty(c);
+                    if(occupied) color = getworldcubegialbedo(c);
                 }
                 else
                 {
@@ -1084,10 +1089,13 @@ void captureworldsolid(const ivec &origin, const ivec &dimensions, int resolutio
                         c = &c->children[octastep(local.x, local.y, local.z, scale)];
                     }
                     occupied = !isempty(*c);
+                    if(occupied) color = getworldcubegialbedo(*c);
                 }
             }
         }
-        solid[(z * dimensions.y + y) * dimensions.x + x] = occupied ? 255 : 0;
+        const int destination = (z * dimensions.y + y) * dimensions.x + x;
+        solid[destination] = occupied ? 255 : 0;
+        albedo[destination] = bvec4(color, occupied ? 255 : 0);
     }
 }
 

@@ -1224,6 +1224,44 @@ bool floatformat(GLenum format)
     }
 }
 
+static float texturegilinear(uchar value)
+{
+    const float srgb = value / 255.0f;
+    return srgb <= 0.04045f ? srgb / 12.92f : powf((srgb + 0.055f) / 1.055f, 2.4f);
+}
+
+static bool texturegialbedo(const ImageData &image, bvec &albedo)
+{
+    if(!image.data || image.compressed || image.bpp < 1 || image.bpp > 4) return false;
+    double red = 0, green = 0, blue = 0, weight = 0;
+    loop(y, image.h)
+    {
+        const uchar *pixel = image.data + y * image.pitch;
+        loop(x, image.w)
+        {
+            const float alpha = image.bpp == 2 || image.bpp == 4 ? pixel[image.bpp - 1] / 255.0f : 1.0f;
+            if(alpha > 0)
+            {
+                const uchar r = pixel[0], g = image.bpp >= 3 ? pixel[1] : r, b = image.bpp >= 3 ? pixel[2] : r;
+                red += texturegilinear(r) * alpha;
+                green += texturegilinear(g) * alpha;
+                blue += texturegilinear(b) * alpha;
+                weight += alpha;
+            }
+            pixel += image.bpp;
+        }
+    }
+    if(weight <= 0)
+    {
+        albedo = bvec(0, 0, 0);
+        return true;
+    }
+    albedo = bvec(uchar(clamp(int(red * 255.0 / weight + 0.5), 0, 255)),
+                  uchar(clamp(int(green * 255.0 / weight + 0.5), 0, 255)),
+                  uchar(clamp(int(blue * 255.0 / weight + 0.5), 0, 255)));
+    return true;
+}
+
 static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clamp = 0, bool mipit = true, bool canreduce = false, bool transient = false, int compress = 0, bool geometry = false)
 {
     if(!t)
@@ -1240,6 +1278,8 @@ static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clam
     if(geometry) t->type |= Texture::GEOMETRY;
     if(transient) t->type |= Texture::TRANSIENT;
     if(clamp&0x300) t->type |= Texture::MIRROR;
+    t->gialbedoready = texturegialbedo(s, t->gialbedo);
+    if(!t->gialbedoready) t->gialbedo = bvec(0, 0, 0);
     if(!s.data)
     {
         t->type |= Texture::STUB;

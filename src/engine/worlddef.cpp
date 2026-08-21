@@ -27,7 +27,7 @@ worlddefinition::worlddefinition(const char *id)
       maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
       furnaceinputlimit(0), chestslots(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0),
       toolcornerpush(TOOL_CORNER_PUSH_NONE),
-      supportdistance(0), hasitem(false),
+      supportdistance(0), gialbedo(0, 0, 0), hasitem(false),
       hasheld(false), hascube(false),
       scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), haschest(false), hasfood(false), hassupport(false),
       itemstackset(false),

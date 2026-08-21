@@ -31,6 +31,7 @@ struct worlddefinition
     int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit, chestslots, foodtime;
     int requiredtier, toolwear, tooltier, maxdurability, toolcornerpush, supportdistance;
     vector<worlddropdefinition> drops;
+    bvec gialbedo;
     bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasfood, hassupport;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
     bool explicitdrops, errorfallback, fall, heldflipx, heldflipy, handbreakable, supportdecay, supportpersistentonplace;
