@@ -129,6 +129,7 @@ enum { DRAWTEX_NONE = 0, DRAWTEX_ENVMAP, DRAWTEX_MINIMAP, DRAWTEX_MODELPREVIEW }
 extern int vieww, viewh;
 extern int fov;
 extern float curfov, fovy, aspect, forceaspect;
+extern float getfovscale(float ref = 100.0f);
 extern float nearplane;
 extern int farplane;
 extern bool hdrfloat;
@@ -557,6 +558,13 @@ extern void rendersolidmaterials();
 extern void rendereditmaterials();
 extern void renderminimapmaterials();
 extern int visiblematerial(const cube &c, int orient, const ivec &co, int size, ushort matmask = MATF_VOLUME);
+
+namespace flares
+{
+    extern void addFlares(const vec &o, int color, float size, bool unlimitedDistance, bool lensGhosts, int maxDistance);
+    extern void render();
+    extern void cleanup();
+}
 
 // water
 extern int vertwater, waterreflect, caustics;

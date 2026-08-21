@@ -5400,6 +5400,7 @@ void cleanuplights()
     cleanupbloom();
     cleanupao();
     cleanupvolumetric();
+    flares::cleanup();
     cleanupshadowatlas();
     cleanupradiancehints();
     lightsphere::cleanup();

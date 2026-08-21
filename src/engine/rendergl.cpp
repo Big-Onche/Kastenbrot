@@ -1371,6 +1371,11 @@ void computezoom()
     curavatarfov = avatarzoomfov*zoomprogress + avatarfov*(1 - zoomprogress);
 }
 
+float getfovscale(float ref)
+{
+    return clamp(tanf(0.5f * ref * RAD) / max(tanf(0.5f * curfov * RAD), 1.0e-4f), 0.25f, 8.0f);
+}
+
 FVARP(zoomsens, 1e-4f, 4.5f, 1e4f);
 FVARP(zoomaccel, 0, 0, 1000);
 VARP(zoomautosens, 0, 1, 1);
@@ -2648,6 +2653,11 @@ void gl_drawview()
     {
         ZoneScopedN("Render/Fog overlay");
         drawfogoverlay(fogmat, fogbelow, clamp(fogbelow, 0.0f, 1.0f), abovemat);
+    }
+
+    {
+        ZoneScopedN("Render/Lens flares");
+        flares::render();
     }
 
     {

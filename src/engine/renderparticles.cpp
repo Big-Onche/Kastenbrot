@@ -876,7 +876,6 @@ typedef varenderer<PT_TRAIL> trailrenderer;
 typedef varenderer<PT_VERTICAL_TRAIL> verticaltrailrenderer;
 
 #include "explosion.h"
-#include "lensflare.h"
 #include "lightning.h"
 
 struct softquadrenderer : quadrenderer
@@ -1128,7 +1127,6 @@ static partrenderer *parts[] =
     &metervs,                                                                                  // meter vs.
     new quadrenderer("<grey>media/particle/smoke.png", PT_PART|PT_FLIP|PT_RND4|PT_LERP|PT_TRACK|PT_HUDTRACK),       // held smoke
     new quadrenderer("<grey>media/particle/flames.png", PT_PART|PT_HFLIP|PT_RND4|PT_BRIGHT|PT_TRACK|PT_HUDTRACK),   // held flame
-    &flares                                                                                    // lens flares - must be done last
 };
 
 VARFP(maxparticles, 10, 4000, 10000, initparticles());
@@ -1715,12 +1713,6 @@ static void makeparticles(entity &e)
             regularflame(PART_SMOKE, e.o, float(e.attr2)/100.0f, float(e.attr3)/100.0f, colorfromattr(e.attr4), 1, 4.0f, 100.0f, 2000.0f, -20);
             break;
         case 13: // obsolete legacy snow emitter
-            break;
-        case 32: //lens flares - plain/sparkle/sun/sparklesun <red> <green> <blue>
-        case 33:
-        case 34:
-        case 35:
-            flares.addflare(e.o, e.attr2, e.attr3, e.attr4, (e.attr1&0x02)!=0, (e.attr1&0x01)!=0);
             break;
         default:
             if(!editmode)
