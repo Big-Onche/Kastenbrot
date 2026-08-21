@@ -2364,6 +2364,8 @@ namespace game
 
     static void giveitems(const char *itemid, int quantity, const char *playername)
     {
+        if(quantity == INT_MIN) quantity = 1;
+
         if(waitforserveredit())
         {
             if(playername && playername[0])
@@ -2381,9 +2383,10 @@ namespace game
 
         if(!itemid || !itemid[0] || quantity <= 0)
         {
-            conoutf(CON_WARN, "usage: /give <item_name> <amount> [player name]");
+            conoutf(CON_WARN, "usage: /give <item_name> [amount] [player name]");
             return;
         }
+
         if(playername && playername[0] && (!player1 || cubecasecmp(player1->name, playername)))
         {
             conoutf(CON_WARN, "giving items to another player is only available in multiplayer");
@@ -2396,6 +2399,7 @@ namespace game
             conoutf(CON_WARN, "give failed: unknown item '%s'", itemid);
             return;
         }
+
         if(!survivalhasroom(item, quantity))
         {
             conoutf(CON_WARN, "give failed: inventory does not have room for %d x %s", quantity, itemid);
@@ -2405,7 +2409,7 @@ namespace game
         conoutf("gave %d x %s", quantity, itemid);
     }
 
-    ICOMMAND(give, "siS", (char *itemid, int *quantity, char *playername), giveitems(itemid, *quantity, playername));
+    ICOMMAND(give, "sbS", (char *itemid, int *quantity, char *playername), giveitems(itemid, *quantity, playername));
 
     static ivec worlddropcell(const ivec &target, int action, int orient)
     {
@@ -4750,7 +4754,7 @@ namespace game
         {
             vec flame;
             if(heldtorchflame(players[i], flame))
-                adddynlight(flame, 14.0f * CREATIVE_GRID, vec(1.0f, 0.58f, 0.24f), 0, 0, 0, 0, vec(0, 0, 0), players[i]);
+                adddynlight(flame, 14.0f * CREATIVE_GRID, vec(1.0f, 0.58f, 0.24f), 0, 0, L_VOLUMETRIC, 0, vec(0, 0, 0), players[i]);
         }
     }
 
