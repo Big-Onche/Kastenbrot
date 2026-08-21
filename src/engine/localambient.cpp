@@ -5,8 +5,6 @@
 
 static void localambienttogglechanged();
 static void localambientfieldchanged();
-static bool uselocalambientgpucompute();
-static void addlocalambientboundaryseeds(struct localambientjob &job);
 
 VARFP(localambient, 0, 0, 1, localambienttogglechanged());
 VARFP(localambientresolution, 4, 16, 128, localambientfieldchanged());
@@ -15,8 +13,6 @@ VARFP(localambientattenuation, 1, 16, 255, localambientfieldchanged());
 FVARFP(localambientverticalbias, 0, 0.25f, 1, localambientfieldchanged());
 FVARP(localambientstrength, 0, 1, 1);
 FVARP(localambientmin, 0, 0.04f, 1);
-VARP(localambientupdates, 1, 1, 8);
-VARFP(localambientgpu, 0, 1, 1, localambientfieldchanged());
 VARP(localambientgpupasses, 0, 0, 64);
 VARP(localambientcapturecells, 4096, 131072, 524288);
 VARP(localambientscroll, 0, 1, 1);
@@ -33,7 +29,7 @@ enum
 
 
 // Compute shaders are core in OpenGL 4.3. Tesseract's legacy GL loader does not expose
-// these entry points, so keep the dependency local to this feature and fall back to CPU.
+// these entry points, so keep the dependency local to this feature.
 #ifndef GL_COMPUTE_SHADER
 #define GL_COMPUTE_SHADER 0x91B9
 #endif
@@ -62,15 +58,12 @@ struct localambientjob
     int resolution, attenuation, downwardattenuation;
     bool full, scroll;
     int capturerow;
-    vector<uchar> solid, seeds, light;
-    int cellsprocessed, maxqueuesize;
-    double buildmilliseconds;
+    vector<uchar> solid;
 
     localambientjob(uint serial, const ivec &origin, const ivec &dimensions, const ivec &regionorigin,
                     const ivec &regiondimensions, int resolution, int attenuation, int downwardattenuation, bool full, bool scroll)
         : serial(serial), origin(origin), dimensions(dimensions), regionorigin(regionorigin), regiondimensions(regiondimensions),
-          resolution(resolution), attenuation(attenuation), downwardattenuation(downwardattenuation), full(full), scroll(scroll), capturerow(0),
-          cellsprocessed(0), maxqueuesize(0), buildmilliseconds(0)
+          resolution(resolution), attenuation(attenuation), downwardattenuation(downwardattenuation), full(full), scroll(scroll), capturerow(0)
     {
         const int cells = regiondimensions.x * regiondimensions.y * regiondimensions.z;
         solid.pad(cells);
@@ -82,12 +75,6 @@ struct localambientjob
         return (z * regiondimensions.y + y) * regiondimensions.x + x;
     }
 };
-
-static SDL_mutex *localambientmutex = NULL;
-static SDL_cond *localambientcond = NULL;
-static SDL_Thread *localambientthread = NULL;
-static localambientjob *localambientpendingjob = NULL, *localambientresultjob = NULL;
-static bool stoplocalambientthread = false, localambientworkeractive = false;
 
 static localambientjob *localambientcapturejob = NULL;
 
@@ -102,12 +89,11 @@ struct localambientregion
 static localambientregion localambientscrollregions[LOCALAMBIENT_SCROLL_REGIONS];
 static int localambientscrollregioncount = 0, localambientscrollregionindex = 0;
 static vector<uchar> localambientscrollscratch;
-static vector<uchar> localambientfield;
 static vector<uchar> localambientsolidfield;
 static ivec localambientfieldorigin(0, 0, 0), localambientfielddimensions(0, 0, 0);
 static int localambientfieldresolution = 0;
 static bool localambientfieldready = false, localambientbootstrap = false;
-static GLuint localambienttexture = 0, localambientwhitetexture = 0;
+static GLuint localambientwhitetexture = 0;
 static GLuint localambientoccupancytexture = 0, localambientgputextures[2] = { 0, 0 }, localambientgpuprogram = 0,
               localambientgpuseedprogram = 0, localambientgpushiftprogram = 0;
 static ivec localambientgputexturedimensions(0, 0, 0);
@@ -155,22 +141,9 @@ static void finishlocalambientscrollregion()
     if(localambientscrollregionindex >= localambientscrollregioncount) clearlocalambientscrollregions();
 }
 
-static bool localambientworkerbusy()
-{
-    bool busy = false;
-    if(localambientmutex)
-    {
-        SDL_LockMutex(localambientmutex);
-        busy = localambientpendingjob || localambientresultjob || localambientworkeractive;
-        SDL_UnlockMutex(localambientmutex);
-    }
-    else busy = localambientresultjob != NULL;
-    return busy;
-}
-
 static bool localambientupdatebusy()
 {
-    return localambientcapturejob || haslocalambientscrollregions() || localambientworkerbusy();
+    return localambientcapturejob || haslocalambientscrollregions();
 }
 
 static uint nextlocalambientserial()
@@ -182,147 +155,6 @@ static uint nextlocalambientserial()
 static int localambientindex(const ivec &dimensions, int x, int y, int z)
 {
     return (z * dimensions.y + y) * dimensions.x + x;
-}
-
-static int localambientpropagationloss(const localambientjob &job, int sourcez, int neighborz)
-{
-    return neighborz < sourcez ? job.downwardattenuation : job.attenuation;
-}
-
-static void buildlocalambient(localambientjob &job)
-{
-    ZoneScopedN("LocalAmbient/Build");
-    const Uint64 start = SDL_GetPerformanceCounter();
-    const int cells = job.regiondimensions.x * job.regiondimensions.y * job.regiondimensions.z;
-    vector<int> queue;
-    queue.reserve(cells);
-    uchar *seeds = job.seeds.pad(cells), *light = job.light.pad(cells);
-    memset(seeds, 0, cells);
-    memset(light, 0, cells);
-
-    {
-        ZoneScopedN("LocalAmbient/Seed");
-        loop(y, job.regiondimensions.y) loop(x, job.regiondimensions.x)
-        {
-            bool skyvisible = true;
-            for(int z = job.regiondimensions.z - 1; z >= 0; --z)
-            {
-                const int index = job.index(x, y, z);
-                if(job.solid[index]) skyvisible = false;
-                else if(skyvisible) job.seeds[index] = 255;
-            }
-        }
-        addlocalambientboundaryseeds(job);
-        loopi(cells) if(!job.solid[i] && job.seeds[i])
-        {
-            job.light[i] = job.seeds[i];
-            queue.add(i);
-        }
-    }
-
-    {
-        ZoneScopedN("LocalAmbient/Propagate");
-        static const int directions[6][3] =
-        {
-            { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
-        };
-        for(int head = 0; head < queue.length(); ++head)
-        {
-            const int current = queue[head], plane = job.regiondimensions.x * job.regiondimensions.y,
-                      z = current / plane, remainder = current - z * plane,
-                      y = remainder / job.regiondimensions.x, x = remainder - y * job.regiondimensions.x;
-            const int source = job.light[current];
-            loopi(6)
-            {
-                const int nx = x + directions[i][0], ny = y + directions[i][1], nz = z + directions[i][2];
-                if(nx < 0 || ny < 0 || nz < 0 || nx >= job.regiondimensions.x || ny >= job.regiondimensions.y ||
-                   nz >= job.regiondimensions.z)
-                    continue;
-                const int neighbor = job.index(nx, ny, nz);
-                if(job.solid[neighbor]) continue;
-                const int candidate = source - localambientpropagationloss(job, z, nz);
-                if(candidate <= job.light[neighbor]) continue;
-                job.light[neighbor] = uchar(candidate);
-                queue.add(neighbor);
-            }
-            job.cellsprocessed++;
-        }
-        job.maxqueuesize = queue.length();
-    }
-
-    job.buildmilliseconds = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
-    TracyPlot("LocalAmbient/Cells processed", int64_t(job.cellsprocessed));
-    TracyPlot("LocalAmbient/Propagation queue", int64_t(job.maxqueuesize));
-    TracyPlot("LocalAmbient/Build milliseconds", job.buildmilliseconds);
-}
-
-static int localambientworker(void *)
-{
-    for(;;)
-    {
-        SDL_LockMutex(localambientmutex);
-        while(!localambientpendingjob && !stoplocalambientthread) SDL_CondWait(localambientcond, localambientmutex);
-        if(stoplocalambientthread)
-        {
-            SDL_UnlockMutex(localambientmutex);
-            return 0;
-        }
-        localambientjob *job = localambientpendingjob;
-        localambientpendingjob = NULL;
-        localambientworkeractive = true;
-        SDL_UnlockMutex(localambientmutex);
-
-        buildlocalambient(*job);
-
-        SDL_LockMutex(localambientmutex);
-        localambientworkeractive = false;
-        while(localambientresultjob && !stoplocalambientthread) SDL_CondWait(localambientcond, localambientmutex);
-        if(stoplocalambientthread)
-        {
-            SDL_UnlockMutex(localambientmutex);
-            delete job;
-            return 0;
-        }
-        localambientresultjob = job;
-        SDL_CondBroadcast(localambientcond);
-        SDL_UnlockMutex(localambientmutex);
-    }
-}
-
-static bool startlocalambientworker()
-{
-    if(localambientthread) return true;
-    if(!localambientmutex) localambientmutex = SDL_CreateMutex();
-    if(!localambientcond) localambientcond = SDL_CreateCond();
-    if(!localambientmutex || !localambientcond) return false;
-    stoplocalambientthread = false;
-    localambientthread = SDL_CreateThread(localambientworker, "local ambient worker", NULL);
-    return localambientthread != NULL;
-}
-
-static void stoplocalambientworker()
-{
-    if(localambientmutex)
-    {
-        SDL_LockMutex(localambientmutex);
-        stoplocalambientthread = true;
-        SDL_CondBroadcast(localambientcond);
-        SDL_UnlockMutex(localambientmutex);
-    }
-    if(localambientthread)
-    {
-        SDL_WaitThread(localambientthread, NULL);
-        localambientthread = NULL;
-    }
-    delete localambientpendingjob;
-    delete localambientresultjob;
-    localambientpendingjob = localambientresultjob = NULL;
-    localambientworkeractive = false;
-    if(localambientcond) SDL_DestroyCond(localambientcond);
-    if(localambientmutex) SDL_DestroyMutex(localambientmutex);
-    localambientcond = NULL;
-    localambientmutex = NULL;
-    stoplocalambientthread = false;
 }
 
 static void discardlocalambientcapture()
@@ -374,22 +206,12 @@ void invalidatelocalambient(const ivec &minimum, const ivec &maximum)
 void resetlocalambient()
 {
     marklocalambientfull();
-    localambientfield.setsize(0);
     localambientsolidfield.setsize(0);
     localambientscrollscratch.setsize(0);
     localambientgpuready = false;
     localambientfieldready = false;
     localambientbootstrap = false;
     localambientdesiredvalid = false;
-    if(localambientmutex)
-    {
-        SDL_LockMutex(localambientmutex);
-        delete localambientpendingjob;
-        delete localambientresultjob;
-        localambientpendingjob = localambientresultjob = NULL;
-        SDL_CondBroadcast(localambientcond);
-        SDL_UnlockMutex(localambientmutex);
-    }
 }
 
 static void localambienttogglechanged()
@@ -473,35 +295,6 @@ static void calclocalambientfield(ivec &origin, ivec &dimensions, int &resolutio
     origin.z = clamp((origin.z / resolution) * resolution, 0, max(skylimit - dimensions.z * resolution, 0));
 }
 
-static void addlocalambientboundaryseeds(localambientjob &job)
-{
-    if(job.full || !localambientfieldready || !sameivec(job.origin, localambientfieldorigin) ||
-       !sameivec(job.dimensions, localambientfielddimensions) || job.resolution != localambientfieldresolution)
-        return;
-    static const int directions[6][3] =
-    {
-        { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
-    };
-    loop(z, job.regiondimensions.z) loop(y, job.regiondimensions.y) loop(x, job.regiondimensions.x)
-    {
-        if(x && x + 1 < job.regiondimensions.x && y && y + 1 < job.regiondimensions.y && z && z + 1 < job.regiondimensions.z) continue;
-        const int fieldx = job.regionorigin.x + x, fieldy = job.regionorigin.y + y, fieldz = job.regionorigin.z + z,
-                  target = job.index(x, y, z);
-        loopi(6)
-        {
-            const int nx = fieldx + directions[i][0], ny = fieldy + directions[i][1], nz = fieldz + directions[i][2];
-            if(nx < 0 || ny < 0 || nz < 0 || nx >= job.dimensions.x || ny >= job.dimensions.y || nz >= job.dimensions.z ||
-               (nx >= job.regionorigin.x && nx < job.regionorigin.x + job.regiondimensions.x &&
-                ny >= job.regionorigin.y && ny < job.regionorigin.y + job.regiondimensions.y &&
-                nz >= job.regionorigin.z && nz < job.regionorigin.z + job.regiondimensions.z))
-                continue;
-            const int source = localambientfield[localambientindex(job.dimensions, nx, ny, nz)],
-                      loss = localambientpropagationloss(job, nz, fieldz), candidate = source - loss;
-            if(candidate > job.seeds[target]) job.seeds[target] = uchar(candidate);
-        }
-    }
-}
-
 static bool capturelocalambient(localambientjob &job)
 {
     ZoneScopedN("LocalAmbient/Occupancy capture");
@@ -542,14 +335,6 @@ static localambientjob *createlocalambientjob()
         if(maximum.x <= 0 || maximum.y <= 0 || maximum.z <= 0 || minimum.x >= localambientdesireddimensions.x ||
            minimum.y >= localambientdesireddimensions.y || minimum.z >= localambientdesireddimensions.z)
             return NULL;
-        if(!uselocalambientgpucompute())
-        {
-            const int propagation = (255 + downwardattenuation - 1) / downwardattenuation;
-            minimum.x -= propagation;
-            minimum.y -= propagation;
-            maximum.x += propagation;
-            maximum.y += propagation;
-        }
         minimum.z = 0;
         maximum.z = localambientdesireddimensions.z;
         minimum.max(0);
@@ -576,23 +361,6 @@ static localambientjob *createlocalambientscrolljob()
     const int downwardattenuation = max(int(ceilf(localambientattenuation * (1.0f - 0.75f * localambientverticalbias))), 1);
     return new localambientjob(localambientserial, localambientdesiredorigin, localambientdesireddimensions, region.origin, region.dimensions,
                                localambientdesiredresolution, localambientattenuation, downwardattenuation, false, true);
-}
-
-static void queuelocalambientjob(localambientjob *job)
-{
-    if(!startlocalambientworker())
-    {
-        buildlocalambient(*job);
-        delete localambientresultjob;
-        localambientresultjob = job;
-        return;
-    }
-    SDL_LockMutex(localambientmutex);
-    delete localambientpendingjob;
-    localambientpendingjob = job;
-    TracyPlot("LocalAmbient/Pending builds", int64_t(1));
-    SDL_CondSignal(localambientcond);
-    SDL_UnlockMutex(localambientmutex);
 }
 
 static void configurelocalambienttexture(GLuint texture)
@@ -734,7 +502,7 @@ static bool initlocalambientgpu()
     localambientgpuinitialized = true;
     localambientgpuavailable = false;
 
-    if(!localambientgpu || !hasTRG) return false;
+    if(!hasTRG) return false;
 
     localambientDispatchCompute = (localambientdispatchcomputeproc)SDL_GL_GetProcAddress("glDispatchCompute");
     localambientBindImageTexture = (localambientbindimagetextureproc)SDL_GL_GetProcAddress("glBindImageTexture");
@@ -775,11 +543,6 @@ static bool initlocalambientgpu()
     localambientgpuavailable = true;
     conoutf(CON_DEBUG, "local ambient: GPU compute propagation enabled");
     return true;
-}
-
-static bool uselocalambientgpucompute()
-{
-    return localambientgpu && initlocalambientgpu();
 }
 
 static void configurelocalambientgpuvolume(GLuint texture, bool linear, bool whiteborder)
@@ -878,7 +641,7 @@ static bool shiftlocalambientgpuoccupancy(const ivec &dimensions, const ivec &sh
 static bool rebuildlocalambientgpu(const ivec &origin, const ivec &dimensions, int resolution, int attenuation, int downwardattenuation,
                                    const localambientjob *uploadjob = NULL, bool uploadoccupancy = true)
 {
-    if(!uselocalambientgpucompute()) return false;
+    if(!initlocalambientgpu()) return false;
     const int cells = dimensions.x * dimensions.y * dimensions.z;
     if(localambientsolidfield.length() != cells) return false;
     const bool texturesready = localambientoccupancytexture && localambientgputextures[0] && localambientgputextures[1] &&
@@ -1036,151 +799,10 @@ static bool scrolllocalambientgpufield(const ivec &origin)
     return haslocalambientscrollregions();
 }
 
-static bool scrolllocalambientfield(const ivec &origin)
-{
-    if(uselocalambientgpucompute()) return scrolllocalambientgpufield(origin);
-    if(!localambientscroll || !localambientfieldready || !localambienttexture ||
-       !sameivec(localambientfielddimensions, localambientdesireddimensions) ||
-       localambientfieldresolution != localambientdesiredresolution) return false;
-
-    const ivec delta(origin.x - localambientfieldorigin.x, origin.y - localambientfieldorigin.y, origin.z - localambientfieldorigin.z);
-    if(delta.x % localambientfieldresolution || delta.y % localambientfieldresolution || delta.z % localambientfieldresolution) return false;
-    const ivec shift(delta.x / localambientfieldresolution, delta.y / localambientfieldresolution,
-                     delta.z / localambientfieldresolution);
-    if(!shift.x && !shift.y && !shift.z) return true;
-    if(abs(shift.x) >= localambientfielddimensions.x || abs(shift.y) >= localambientfielddimensions.y ||
-       abs(shift.z) >= localambientfielddimensions.z) return false;
-
-    const int cells = localambientfielddimensions.x * localambientfielddimensions.y * localambientfielddimensions.z;
-    if(localambientfield.length() != cells) return false;
-
-    ZoneScopedN("LocalAmbient/Scroll");
-    nextlocalambientserial();
-    clearlocalambientscrollregions();
-    localambientscrollscratch.setsize(0);
-    uchar *shifted = localambientscrollscratch.pad(cells);
-
-    loop(z, localambientfielddimensions.z) loop(y, localambientfielddimensions.y) loop(x, localambientfielddimensions.x)
-    {
-        int sourcex = x + shift.x, sourcey = y + shift.y, sourcez = z + shift.z;
-        if(sourcex < 0 || sourcey < 0 || sourcez < 0 || sourcex >= localambientfielddimensions.x ||
-           sourcey >= localambientfielddimensions.y || sourcez >= localambientfielddimensions.z)
-        {
-            sourcex = clamp(sourcex, 0, localambientfielddimensions.x - 1);
-            sourcey = clamp(sourcey, 0, localambientfielddimensions.y - 1);
-            sourcez = clamp(sourcez, 0, localambientfielddimensions.z - 1);
-        }
-        shifted[localambientindex(localambientfielddimensions, x, y, z)] =
-            localambientfield[localambientindex(localambientfielddimensions, sourcex, sourcey, sourcez)];
-    }
-    memcpy(localambientfield.getbuf(), shifted, cells);
-    localambientfieldorigin = origin;
-
-    const GLenum format = hasTRG ? GL_RED : GL_LUMINANCE;
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    configurelocalambienttexture(localambienttexture);
-    glTexSubImage3D_(GL_TEXTURE_3D, 0, 0, 0, 0, localambientfielddimensions.x, localambientfielddimensions.y,
-                     localambientfielddimensions.z, format, GL_UNSIGNED_BYTE, localambientfield.getbuf());
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glBindTexture(GL_TEXTURE_3D, 0);
-
-    const int x0 = max(-shift.x, 0), x1 = min(localambientfielddimensions.x - shift.x, localambientfielddimensions.x),
-              y0 = max(-shift.y, 0), y1 = min(localambientfielddimensions.y - shift.y, localambientfielddimensions.y),
-              z0 = max(-shift.z, 0), z1 = min(localambientfielddimensions.z - shift.z, localambientfielddimensions.z);
-
-    if(shift.x > 0) addlocalambientscrollregion(ivec(x1, 0, 0), ivec(localambientfielddimensions.x - x1, localambientfielddimensions.y, localambientfielddimensions.z));
-    else if(shift.x < 0) addlocalambientscrollregion(ivec(0, 0, 0), ivec(x0, localambientfielddimensions.y, localambientfielddimensions.z));
-
-    if(shift.y > 0) addlocalambientscrollregion(ivec(x0, y1, 0), ivec(x1 - x0, localambientfielddimensions.y - y1, localambientfielddimensions.z));
-    else if(shift.y < 0) addlocalambientscrollregion(ivec(x0, 0, 0), ivec(x1 - x0, y0, localambientfielddimensions.z));
-
-    if(shift.z > 0) addlocalambientscrollregion(ivec(x0, y0, z1), ivec(x1 - x0, y1 - y0, localambientfielddimensions.z - z1));
-    else if(shift.z < 0) addlocalambientscrollregion(ivec(x0, y0, 0), ivec(x1 - x0, y1 - y0, z0));
-
-    int refreshcells = 0;
-    loopi(localambientscrollregioncount)
-        refreshcells += localambientscrollregions[i].dimensions.x * localambientscrollregions[i].dimensions.y *
-                        localambientscrollregions[i].dimensions.z;
-    TracyPlot("LocalAmbient/Scroll reused cells", int64_t(cells - refreshcells));
-    TracyPlot("LocalAmbient/Scroll refresh cells", int64_t(refreshcells));
-    TracyPlot("LocalAmbient/Scroll regions", int64_t(localambientscrollregioncount));
-    return haslocalambientscrollregions();
-}
-
-static void uploadlocalambient(localambientjob &job)
-{
-    ZoneScopedN("LocalAmbient/Upload");
-    const GLenum component = hasTRG ? GL_R8 : GL_LUMINANCE8, format = hasTRG ? GL_RED : GL_LUMINANCE;
-    const int bytes = job.regiondimensions.x * job.regiondimensions.y * job.regiondimensions.z;
-    (void)bytes;
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    if(job.full || !localambienttexture || !localambientfieldready)
-    {
-        if(!localambienttexture) glGenTextures(1, &localambienttexture);
-        create3dtexture(localambienttexture, job.dimensions.x, job.dimensions.y, job.dimensions.z, job.light.getbuf(), 7, 1, component);
-        configurelocalambienttexture(localambienttexture);
-        localambientfield = job.light;
-        localambientfieldorigin = job.origin;
-        localambientfielddimensions = job.dimensions;
-        localambientfieldresolution = job.resolution;
-        localambientfieldready = true;
-        localambientbootstrap = false;
-    }
-    else
-    {
-        configurelocalambienttexture(localambienttexture);
-        glTexSubImage3D_(GL_TEXTURE_3D, 0, job.regionorigin.x, job.regionorigin.y, job.regionorigin.z, job.regiondimensions.x,
-                         job.regiondimensions.y, job.regiondimensions.z, format, GL_UNSIGNED_BYTE, job.light.getbuf());
-        loop(z, job.regiondimensions.z) loop(y, job.regiondimensions.y)
-        {
-            const int destination = localambientindex(job.dimensions, job.regionorigin.x, job.regionorigin.y + y, job.regionorigin.z + z),
-                      source = job.index(0, y, z);
-            memcpy(localambientfield.getbuf() + destination, job.light.getbuf() + source, job.regiondimensions.x);
-        }
-    }
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glBindTexture(GL_TEXTURE_3D, 0);
-    TracyPlot("LocalAmbient/Upload bytes", int64_t(bytes));
-    TracyPlot("LocalAmbient/Resident bytes", int64_t(localambientfield.length() * 2));
-}
-
-static int processlocalambientresults()
-{
-    int uploads = 0;
-    for(;;)
-    {
-        localambientjob *job = NULL;
-        if(localambientmutex)
-        {
-            SDL_LockMutex(localambientmutex);
-            job = localambientresultjob;
-            localambientresultjob = NULL;
-            if(job) SDL_CondBroadcast(localambientcond);
-            SDL_UnlockMutex(localambientmutex);
-        }
-        else
-        {
-            job = localambientresultjob;
-            localambientresultjob = NULL;
-        }
-        if(!job) break;
-        if(job->serial == localambientserial && uploads < localambientupdates)
-        {
-            uploadlocalambient(*job);
-            if(job->scroll) finishlocalambientscrollregion();
-            uploads++;
-        }
-        delete job;
-        if(uploads >= localambientupdates) break;
-    }
-    return uploads;
-}
-
 void updatelocalambient()
 {
     if(!localambient || !camera1 || !worldroot || drawtex) return;
-    if(localambientgpu) initlocalambientgpu();
-    processlocalambientresults();
+    const bool computeavailable = initlocalambientgpu();
 
     ivec origin, dimensions;
     int resolution, skylimit;
@@ -1202,16 +824,18 @@ void updatelocalambient()
     {
         if(localambientdirtyfull)
         {
-            if(!localambientcapturejob && !localambientworkerbusy()) localambientdesiredorigin = origin;
+            if(!localambientcapturejob) localambientdesiredorigin = origin;
         }
         else if(localambientfieldready && !localambientupdatebusy())
         {
             localambientdesiredorigin = origin;
-            if(!scrolllocalambientfield(origin)) marklocalambientfull();
+            if(!scrolllocalambientgpufield(origin)) marklocalambientfull();
         }
     }
 
-    if(!localambientcapturejob && haslocalambientscrollregions() && !localambientworkerbusy())
+    if(!computeavailable) return;
+
+    if(!localambientcapturejob && haslocalambientscrollregions())
         localambientcapturejob = createlocalambientscrolljob();
     else if(!localambientcapturejob && !haslocalambientscrollregions() && localambientdirty)
     {
@@ -1225,19 +849,15 @@ void updatelocalambient()
     {
         localambientjob *job = localambientcapturejob;
         localambientcapturejob = NULL;
-        if(uselocalambientgpucompute())
+        if(job->serial == localambientserial)
         {
-            if(job->serial == localambientserial)
+            if(uploadlocalambientgpu(*job))
             {
-                if(uploadlocalambientgpu(*job))
-                {
-                    if(job->scroll) finishlocalambientscrollregion();
-                }
-                else marklocalambientfull();
+                if(job->scroll) finishlocalambientscrollregion();
             }
-            delete job;
+            else marklocalambientfull();
         }
-        else queuelocalambientjob(job);
+        delete job;
     }
 }
 
@@ -1252,12 +872,8 @@ void bindlocalambient()
     }
     glActiveTexture_(GL_TEXTURE9);
     GLuint texture = localambientwhitetexture;
-    if(localambientfieldready && !localambientbootstrap)
-    {
-        if(localambientgpu && localambientgpuavailable && localambientgpuready)
-            texture = localambientgputextures[localambientgpufinaltexture];
-        else if(localambienttexture) texture = localambienttexture;
-    }
+    if(localambientfieldready && !localambientbootstrap && localambientgpuready)
+        texture = localambientgputextures[localambientgpufinaltexture];
     glBindTexture(GL_TEXTURE_3D, texture);
     glActiveTexture_(GL_TEXTURE0);
 }
@@ -1277,22 +893,12 @@ void setlocalambientparams(bool enabled)
 
 static void localambientstats()
 {
-    int pending = 0, active = 0, ready = 0;
-    if(localambientmutex)
-    {
-        SDL_LockMutex(localambientmutex);
-        pending = localambientpendingjob ? 1 : 0;
-        active = localambientworkeractive ? 1 : 0;
-        ready = localambientresultjob ? 1 : 0;
-        SDL_UnlockMutex(localambientmutex);
-    }
     const int cells = localambientfielddimensions.x * localambientfielddimensions.y * localambientfielddimensions.z;
-    const bool gpu = localambientgpu && localambientgpuavailable;
-    const int resident = gpu ? cells * 4 : localambientfield.length() * 2;
-    conoutf(CON_DEBUG, "local ambient: %s, %s, field %dx%dx%d at %d, resident ~%d bytes, capture %d, pending %d, active %d, ready %d, scroll %d/%d",
-            localambientfieldready ? "resident" : "not resident", gpu ? "GPU compute" : "CPU fallback",
+    const int resident = localambientgpuavailable ? cells * 4 : 0;
+    conoutf(CON_DEBUG, "local ambient: %s, %s, field %dx%dx%d at %d, resident ~%d bytes, capture %d, scroll %d/%d",
+            localambientfieldready ? "resident" : "not resident", localambientgpuavailable ? "GPU compute" : "daylight bootstrap",
             localambientfielddimensions.x, localambientfielddimensions.y, localambientfielddimensions.z, localambientfieldresolution, resident,
-            localambientcapturejob ? 1 : 0, pending, active, ready, localambientscrollregionindex, localambientscrollregioncount);
+            localambientcapturejob ? 1 : 0, localambientscrollregionindex, localambientscrollregioncount);
 }
 
 COMMAND(localambientstats, "");
@@ -1300,10 +906,8 @@ COMMAND(localambientstats, "");
 void cleanuplocalambient()
 {
     discardlocalambientcapture();
-    stoplocalambientworker();
-    if(localambienttexture) glDeleteTextures(1, &localambienttexture);
     if(localambientwhitetexture) glDeleteTextures(1, &localambientwhitetexture);
-    localambienttexture = localambientwhitetexture = 0;
+    localambientwhitetexture = 0;
     deletelocalambientgputextures();
     if(localambientgpuprogram) glDeleteProgram_(localambientgpuprogram);
     if(localambientgpuseedprogram) glDeleteProgram_(localambientgpuseedprogram);
@@ -1315,7 +919,6 @@ void cleanuplocalambient()
     localambientDispatchCompute = NULL;
     localambientBindImageTexture = NULL;
     localambientMemoryBarrier = NULL;
-    localambientfield.setsize(0);
     localambientsolidfield.setsize(0);
     localambientscrollscratch.setsize(0);
     clearlocalambientscrollregions();
