@@ -7,11 +7,13 @@ dark_wood.png
 dark_wood_plank.png
 dark_wood_top.png
 diamond.png
+diamond_block.png
 dirt.png
 gold.png
 grass.png
 grass_dirt.png
 iron.png
+moon_dust_block.png
 sand.png
 sandstone.png
 snow.png
@@ -26,11 +28,13 @@ crafting_table_top.png
 furnace_side.png
 furnace_top.png
 gabbro.png
+iron_block.png - Based on JoeEnderman's work
 leaves.png
 moon_dust.png
+moonstone.png - Based on JoeEnderman's work
 needles.pg
 peridotitis.png
-sandstone_brick.png
+sandstone_brick.png - Based on JoeEnderman's work
 stoe.png
 stone_brick.png
 wood_top.png
