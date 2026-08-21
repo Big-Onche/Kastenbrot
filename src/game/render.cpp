@@ -976,11 +976,10 @@ namespace game
                              getinventoryitemheldflipy(selected));
     }
 
-    bool heldtorchemitterposition(gameent *d, vec &position)
+    static bool calcheldtorchemitterposition(gameent *d, vec &position, bool hud)
     {
         const int selected = heldcreativeitem(d), worldindex = getworlditemindex(selected);
         if(getworlditemtype(selected) != WORLD_ITEM_PLACEABLE || !isworldtorch(worldindex)) return false;
-        const bool hud = d == player1 && !isthirdperson();
         if(hud && !hudgun) return false;
 
         const char *model = getworldscattermodel(worldindex);
@@ -995,6 +994,16 @@ namespace game
 
         if(hud) position = calcavatardepthpos(position);
         return true;
+    }
+
+    bool heldtorchemitterposition(gameent *d, vec &position)
+    {
+        return calcheldtorchemitterposition(d, position, d == player1 && !isthirdperson());
+    }
+
+    bool heldtorchworldemitterposition(gameent *d, vec &position)
+    {
+        return calcheldtorchemitterposition(d, position, false);
     }
 
     void renderavatar()

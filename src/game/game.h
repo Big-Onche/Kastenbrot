@@ -589,6 +589,7 @@ namespace game
     extern dynent *iternpc(int index);
     extern void getplayerhitboxes(gameent *d, vector<characterhitbox> &hitboxes);
     extern bool heldtorchemitterposition(gameent *d, vec &position);
+    extern bool heldtorchworldemitterposition(gameent *d, vec &position);
     extern void resetclientreceive();
     extern bool pendingnetworkworld, pendingnetworkreset, pendingnetworkfrozen,
                 pendingnetworkrestoreposition;

@@ -1626,8 +1626,9 @@ struct lightinfo
         spoty = orient.invertedrotate(vec(0, 1, 0));
     }
 
-    bool noshadow() const { return flags&L_NOSHADOW || radius <= smminradius; }
+    bool noshadow() const { return flags&(L_NOSHADOW | L_ALLFACES) || radius <= smminradius; }
     bool nospec() const { return (flags&L_NOSPEC) != 0; }
+    bool allfaces() const { return (flags&L_ALLFACES) != 0; }
     bool volumetric() const { return (flags&L_VOLUMETRIC) != 0; }
     bool colorshadow() const { return (flags&L_SMALPHA) != 0; }
 
@@ -2615,7 +2616,7 @@ FVAR(volminstep, 0, 0.0625f, 1e3f);
 FVAR(volprefilter, 0, 4, 1e3f);
 FVAR(voldistclamp, 0, 0.99f, 2);
 CVAR1R(volcolour, 0x808080);
-FVARR(volscale, 0, 1, 16);
+FVARR(volscale, 0, 0.5, 16);
 VAR(volderiv, -1, 1, 1);
 
 static Shader *deferredlightshader = NULL, *deferredminimapshader = NULL, *deferredmsaapixelshader = NULL, *deferredmsaasampleshader = NULL;
@@ -3010,9 +3011,11 @@ static inline void setlightglobals(bool transparent = false)
     GLOBALPARAM(lightmatrix, lightmatrix);
 }
 
-static LocalShaderParam lightpos("lightpos"), lightcolor("lightcolor"), spotparams("spotparams"), shadowparams("shadowparams"), shadowoffset("shadowoffset");
+static LocalShaderParam lightpos("lightpos"), lightcolor("lightcolor"), lightallfaces("lightallfaces"), spotparams("spotparams"),
+                        shadowparams("shadowparams"), shadowoffset("shadowoffset");
 static vec4 lightposv[8], shadowlightposv[8], lightcolorv[8], spotparamsv[8], shadowparamsv[8];
 static vec2 shadowoffsetv[8];
+static float lightallfacesv[8];
 
 static inline void setlightparams(int i, const lightinfo &l)
 {
@@ -3021,6 +3024,7 @@ static inline void setlightparams(int i, const lightinfo &l)
     lightcolorv[i] = localambientdebugging()
                      ? vec4(0, 0, 0, 0)
                      : vec4(vec(l.color).mul(2*ldrscaleb), l.nospec() ? 0 : 1);
+    lightallfacesv[i] = l.allfaces() ? 1.0f : 0.0f;
     if(l.spot > 0) spotparamsv[i] = vec4(vec(l.dir).neg(), 1/(1 - cos360(l.spot)));
     if(l.shadowmap >= 0)
     {
@@ -3054,6 +3058,7 @@ static inline void setlightshader(Shader *s, int n, bool baselight, bool shadowm
     s->setvariant(n - (variant&7 ? 1 : 0), variant);
     lightpos.setv(shadowmap ? shadowlightposv : lightposv, n);
     lightcolor.setv(lightcolorv, n);
+    lightallfaces.setv(lightallfacesv, n);
     if(spotlight) spotparams.setv(spotparamsv, n);
     if(shadowmap)
     {
@@ -3349,7 +3354,7 @@ extern int volumetriclights;
 
 void rendervolumetric()
 {
-    if(!volumetric || !volumetriclights || !volscale) return;
+    if(!volumetric || !volscale) return;
 
     float bsx1 = 1, bsy1 = 1, bsx2 = -1, bsy2 = -1;
     loopv(lightorder)
@@ -3360,6 +3365,10 @@ void rendervolumetric()
         l.addscissor(bsx1, bsy1, bsx2, bsy2);
     }
     if(bsx1 >= bsx2 || bsy1 >= bsy2) return;
+
+    // volumetriclights only counts static ET_LIGHT entities. Dynamic lights can
+    // also request this pass, so allocate its buffers once one is visible.
+    if(volw < 0 || volh < 0) setupvolumetric(gw, gh);
 
     timer *voltimer = begintimer("volumetric lights");
 
@@ -4523,7 +4532,7 @@ void rendercsmshadowmaps()
 
 int calcshadowinfo(const extentity &e, vec &origin, float &radius, vec &spotloc, int &spotangle, float &bias)
 {
-    if(e.attr5&L_NOSHADOW || e.attr1 <= smminradius) return SM_NONE;
+    if(e.attr5&(L_NOSHADOW | L_ALLFACES) || e.attr1 <= smminradius) return SM_NONE;
 
     origin = e.o;
     radius = e.attr1;

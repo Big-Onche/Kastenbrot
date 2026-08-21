@@ -624,7 +624,10 @@ void addworldtorchlights()
             const float distance = sqrtf(distancesquared);
             const int flags = distance <= fullshadowdistance ? 0 : distance <= dynshadowdistance ? L_NODYNSHADOW : L_NOSHADOW;
             const worlddefinition &type = *worldscatterdefinitions[scatter.type];
-            adddynlight(flame, type.lightradius * WORLD_BLOCK_SIZE, worldplacelightcolor(type), 0, 0, flags | DL_NODIST);
+            const float radius = type.lightradius * WORLD_BLOCK_SIZE;
+            const vec color = worldplacelightcolor(type);
+            adddynlight(flame, radius, vec(color).mul(0.55f), 0, 0, flags | DL_NODIST | L_VOLUMETRIC);
+            adddynlight(flame, radius, vec(color).mul(0.20f), 0, 0, L_ALLFACES | DL_NODIST);
         }
     }
 }

@@ -4752,9 +4752,14 @@ namespace game
         addworldtorchlights();
         loopv(players)
         {
+            gameent *d = players[i];
             vec flame;
-            if(heldtorchflame(players[i], flame))
-                adddynlight(flame, 14.0f * CREATIVE_GRID, vec(1.0f, 0.58f, 0.24f), 0, 0, L_VOLUMETRIC, 0, vec(0, 0, 0), players[i]);
+            if(!heldtorchworldemitterposition(d, flame)) continue;
+
+            const float radius = 14.0f * CREATIVE_GRID;
+            vec color = vec(1.0f, 0.58f, 0.24f);
+            adddynlight(flame, radius, color.mul(0.55f), 0, 0, DL_NODIST | L_VOLUMETRIC);
+            adddynlight(flame, radius, color.mul(0.20f), 0, 0, L_ALLFACES | DL_NODIST);
         }
     }
 
