@@ -218,6 +218,7 @@ extern void closeproceduralworld();
 extern int getworldsectionsize();
 extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section);
 extern bool sampleworldsolid(const ivec &position, int &leafbottom);
+extern void captureworldsolid(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid);
 extern bool worldsectionvaenabled(const ivec &origin, int size);
 extern bool isworldleafcube(const cube &c);
 extern int getmippedtexture(const cube &p, int orient);

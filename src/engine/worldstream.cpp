@@ -1034,6 +1034,63 @@ bool sampleworldsolid(const ivec &position, int &leafbottom)
     return !isempty(*c);
 }
 
+void captureworldsolid(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid)
+{
+    if(!solid || dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0 || resolution <= 0) return;
+    const int halfresolution = resolution / 2;
+    int cachedlocalchunkx = INT_MIN, cachedlocalchunky = INT_MIN, cachedchunkindex = -1;
+    loop(z, dimensions.z) loop(y, dimensions.y) loop(x, dimensions.x)
+    {
+        const ivec position(origin.x + x * resolution + halfresolution, origin.y + y * resolution + halfresolution,
+                            origin.z + z * resolution + halfresolution);
+        bool occupied = true;
+        if(worldchunks.empty())
+        {
+            int leafbottom;
+            occupied = sampleworldsolid(position, leafbottom);
+        }
+        else if(position.x >= 0 && position.y >= 0 && position.z >= 0 && position.x < worldsize && position.y < worldsize &&
+                position.z < WORLD_MAP_SIZE)
+        {
+            const int localchunkx = position.x / WORLD_CHUNK_SIZE, localchunky = position.y / WORLD_CHUNK_SIZE;
+            if(localchunkx != cachedlocalchunkx || localchunky != cachedlocalchunky)
+            {
+                cachedlocalchunkx = localchunkx;
+                cachedlocalchunky = localchunky;
+                cachedchunkindex = findworldchunk(worldfirstchunkx + localchunkx, worldfirstchunky + localchunky);
+            }
+            if(worldchunks.inrange(cachedchunkindex) && !worldchunks[cachedchunkindex].loading && worldchunks[cachedchunkindex].root)
+            {
+                const worldchunk &chunk = worldchunks[cachedchunkindex];
+                const ivec local(position.x - localchunkx * WORLD_CHUNK_SIZE, position.y - localchunky * WORLD_CHUNK_SIZE, position.z);
+                const int section = local.z / WORLD_SECTION_SIZE,
+                          tile = (local.y / WORLD_SECTION_SIZE) * WORLD_SECTION_COLUMNS + local.x / WORLD_SECTION_SIZE;
+                const uint tilebit = 1U << tile;
+                if((chunk.contentknown[section] & tilebit) && !(chunk.contenttiles[section] & tilebit)) occupied = false;
+                else if((chunk.opaqueknown[section] & tilebit) && (chunk.opaquetiles[section] & tilebit)) occupied = true;
+                else if(chunk.mountedtiles[section] & tilebit)
+                {
+                    ivec cubeorigin;
+                    int size;
+                    occupied = !isempty(lookupcube(position, -1, cubeorigin, size));
+                }
+                else
+                {
+                    int scale = WORLD_CHUNK_SCALE - 1;
+                    const cube *c = &chunk.root[octastep(local.x, local.y, local.z, scale)];
+                    while(c->children)
+                    {
+                        --scale;
+                        c = &c->children[octastep(local.x, local.y, local.z, scale)];
+                    }
+                    occupied = !isempty(*c);
+                }
+            }
+        }
+        solid[(z * dimensions.y + y) * dimensions.x + x] = occupied ? 255 : 0;
+    }
+}
+
 static void indexworldchunk(int index)
 {
     if(!worldchunks.inrange(index)) return;
