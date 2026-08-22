@@ -2438,6 +2438,24 @@ namespace server
         sendcraftstate(ci);
     }
 
+    static bool killserverplayer(clientinfo &ci, const vec &impulse = vec(0, 0, 0))
+    {
+        if(ci.dead) return false;
+        ci.health = 0;
+        ci.dead = true;
+        ci.velocity = ci.falling = vec(0, 0, 0);
+        ci.falldistance = 0;
+        ci.positionphysstate = PHYS_FALL;
+        cancelfooduse(ci);
+        ci.position.setsize(0);
+        if(ci.breakactive) cancelbreak(ci);
+        dropserverplayerinventory(ci);
+        ci.positiondirty = true;
+        saveplayerstate(ci, true);
+        broadcastplayerstate(ci, impulse);
+        return true;
+    }
+
     static void damageserverplayer(clientinfo &ci, float damage, const vec &source)
     {
         if(servercreative() || ci.dead || damage <= 0) return;
@@ -2447,16 +2465,8 @@ namespace server
         if(impulse.squaredlen() > 1e-4f) impulse.normalize().mul(45.0f);
         if(ci.health <= 0)
         {
-            ci.dead = true;
-            ci.velocity = ci.falling = vec(0, 0, 0);
-            ci.falldistance = 0;
-            ci.positionphysstate = PHYS_FALL;
-            cancelfooduse(ci);
-            ci.position.setsize(0);
-            if(ci.breakactive) cancelbreak(ci);
-            dropserverplayerinventory(ci);
-            ci.positiondirty = true;
-            saveplayerstate(ci, true);
+            killserverplayer(ci, impulse);
+            return;
         }
         broadcastplayerstate(ci, impulse);
     }
@@ -4895,6 +4905,34 @@ namespace server
         while(*args && !iscubespace(*args)) ++args;
         if(*args) *args++ = '\0';
         while(iscubespace(*args)) ++args;
+
+        if(cubecaseequal(command, "kill"))
+        {
+            char *tail = args + strlen(args);
+            while(tail > args && iscubespace(tail[-1])) *--tail = '\0';
+            clientinfo *target = args[0] ? findconnectedplayer(args) : &ci;
+            if(!target)
+            {
+                defformatstring(message, "kill failed: player '%s' is not connected", args);
+                sendcommandresult(ci, message);
+                return;
+            }
+            if(!killserverplayer(*target))
+            {
+                defformatstring(message, "kill failed: %s is already dead", target->name);
+                sendcommandresult(ci, message);
+                return;
+            }
+
+            if(target == &ci) sendcommandresult(ci, "you died");
+            else
+            {
+                defformatstring(message, "killed %s", target->name);
+                sendcommandresult(ci, message);
+                sendcommandresult(*target, "you were killed by an administrator");
+            }
+            return;
+        }
 
         if(cubecaseequal(command, "give"))
         {

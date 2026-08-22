@@ -3380,6 +3380,40 @@ namespace game
         cleardynentcache();
     }
 
+    static void killplayer(const char *playername)
+    {
+        if(waitforserveredit())
+        {
+            string command;
+            if(playername && playername[0]) formatstring(command, "kill %s", playername);
+            else copystring(command, "kill");
+            requestworldcommand(command);
+            return;
+        }
+
+        if(!islocalworld() || !player1)
+        {
+            conoutf(CON_WARN, "kill is only available in a local game or to a multiplayer admin");
+            return;
+        }
+        if(playername && playername[0])
+        {
+            conoutf(CON_WARN, "usage in a local game: /kill");
+            return;
+        }
+        if(player1->state == CS_DEAD)
+        {
+            conoutf(CON_WARN, "kill failed: you are already dead");
+            return;
+        }
+
+        player1->health = 0;
+        droplocalplayerinventory(player1->feetpos());
+        setplayerdead(*player1, vec(0, 0, 0));
+    }
+
+    ICOMMAND(kill, "S", (char *playername), killplayer(playername));
+
     static void setplayeralive(gameent &d, const vec &position)
     {
         clearplayerragdoll(&d);
