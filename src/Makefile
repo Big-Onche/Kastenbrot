@@ -86,6 +86,7 @@ CLIENT_OBJS= \
 	engine/console.o \
 	engine/dynlight.o \
 	engine/grass.o \
+	engine/lensflare.o \
 	engine/light.o \
 	engine/localambient.o \
 	engine/main.o \
