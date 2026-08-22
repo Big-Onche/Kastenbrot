@@ -779,6 +779,7 @@ extern void seedparticles();
 extern void updateparticles();
 extern void debugparticles();
 extern void renderparticles(int layer = PL_ALL);
+extern void renderdeferredblockchips();
 extern bool printparticles(extentity &e, char *buf, int len);
 extern void cleanupparticles();
 

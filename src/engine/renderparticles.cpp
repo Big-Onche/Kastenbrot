@@ -2,7 +2,8 @@
 
 #include "engine.h"
 
-Shader *particleshader = NULL, *particlenotextureshader = NULL, *particlesoftshader = NULL, *particletextshader = NULL;
+Shader *particleshader = NULL, *particlenotextureshader = NULL, *particlesoftshader = NULL, *particletextshader = NULL,
+       *blockchipshader = NULL;
 
 VARP(particlelayers, 0, 1, 1);
 FVARP(particlebright, 0, 2, 100);
@@ -922,7 +923,11 @@ struct blockchiprenderer
         lastupdate = -1;
     }
 
-    bool haswork() const { return !chips.empty(); }
+    bool haswork(bool hud) const
+    {
+        loopv(chips) if((chips[i].owner != NULL) == hud) return true;
+        return false;
+    }
 
     bool supported(const blockchip &chip) const
     {
@@ -998,6 +1003,7 @@ struct blockchiprenderer
             lastupdate = lastmillis;
             return;
         }
+        if(lastupdate == lastmillis) return;
         const int elapsed = clamp(lastmillis - lastupdate, 0, 50);
         lastupdate = lastmillis;
         if(elapsed <= 0) return;
@@ -1050,7 +1056,7 @@ struct blockchiprenderer
         }
     }
 
-    void render(bool step)
+    void render(bool step, bool hud)
     {
         if(step) update();
         if(chips.empty()) return;
@@ -1061,9 +1067,11 @@ struct blockchiprenderer
         int start = 0;
         while(start < chips.length())
         {
+            while(start < chips.length() && (chips[start].owner != NULL) != hud) ++start;
+            if(start >= chips.length()) break;
             const Texture *tex = chips[start].tex;
             int end = start + 1;
-            while(end < chips.length() && chips[end].tex == tex) ++end;
+            while(end < chips.length() && chips[end].tex == tex && (chips[end].owner != NULL) == hud) ++end;
             glBindTexture(GL_TEXTURE_2D, tex->id);
             gle::begin(GL_QUADS, (end - start)*4);
             for(int i = start; i < end; ++i)
@@ -1139,6 +1147,7 @@ void initparticles()
     if(!particlenotextureshader) particlenotextureshader = lookupshaderbyname("particlenotexture");
     if(!particlesoftshader) particlesoftshader = lookupshaderbyname("particlesoft");
     if(!particletextshader) particletextshader = lookupshaderbyname("particletext");
+    if(!blockchipshader) blockchipshader = lookupshaderbyname("blockchip");
     loopi(sizeof(parts)/sizeof(parts[0])) parts[i]->init(parts[i]->type&PT_FEW ? min(fewparticles, maxparticles) : maxparticles);
     loopi(sizeof(parts)/sizeof(parts[0]))
     {
@@ -1250,7 +1259,7 @@ void renderparticles(int layer)
         p->render();
     }
 
-    if(layer != PL_NOLAYER && blockchips.haswork())
+    if(layer != PL_NOLAYER && blockchips.haswork(true))
     {
         if(!rendered)
         {
@@ -1265,7 +1274,7 @@ void renderparticles(int layer)
             glActiveTexture_(GL_TEXTURE0);
         }
         setparticlerenderstate(PT_LERP, lastflags);
-        blockchips.render(canstep);
+        blockchips.render(canstep, true);
     }
 
     if(rendered)
@@ -1275,6 +1284,18 @@ void renderparticles(int layer)
         glDisable(GL_BLEND);
         glDepthMask(GL_TRUE);
     }
+}
+
+void renderdeferredblockchips()
+{
+    if(!blockchips.haswork(false)) return;
+
+    blockchips.update();
+    if(!blockchips.haswork(false)) return;
+
+    blockchipshader->set();
+    LOCALPARAMF(chipnormal, -camdir.x, -camdir.y, -camdir.z);
+    blockchips.render(false, false);
 }
 
 static int addedparticles = 0;

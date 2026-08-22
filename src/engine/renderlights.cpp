@@ -5267,6 +5267,11 @@ void rendergbuffer(bool depthclear)
             GLERROR;
         }
         {
+            ZoneScopedN("Render/G-buffer/Block chips");
+            renderdeferredblockchips();
+            GLERROR;
+        }
+        {
             ZoneScopedN("Render/G-buffer/Stains");
             renderstains(STAINBUF_OPAQUE, true);
             renderstains(STAINBUF_MAPMODEL, true);
@@ -5415,4 +5420,3 @@ void cleanuplights()
     lightsphere::cleanup();
     cleanupaa();
 }
-
