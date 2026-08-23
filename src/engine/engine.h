@@ -38,17 +38,18 @@ struct font
     struct charinfo
     {
         float x, y, w, h, offsetx, offsety, advance;
-        int tex;
+
+        charinfo() : x(0), y(0), w(0), h(0), offsetx(0), offsety(0), advance(0) {}
     };
 
-    char *name;
-    vector<Texture *> texs;
+    char *name, *file;
+    TTF_Font *ttf;
+    GLuint tex;
     vector<charinfo> chars;
-    int charoffset, defaultw, defaulth, scale;
-    float bordermin, bordermax, outlinemin, outlinemax;
+    int pointsize, outline, defaultw, defaulth, scale, texw, texh;
 
-    font() : name(NULL) {}
-    ~font() { DELETEA(name); }
+    font() : name(NULL), file(NULL), ttf(NULL), tex(0), pointsize(0), outline(0), defaultw(0), defaulth(0), scale(0), texw(0), texh(0) {}
+    ~font() { DELETEA(name); DELETEA(file); }
 };
 
 #define FONTH (curfont->scale)
@@ -63,6 +64,7 @@ extern float textscale;
 
 extern font *findfont(const char *name);
 extern void reloadfonts();
+extern void cleanupfonts(bool full = true);
 
 static inline void setfont(font *f) { if(f) curfont = f; }
 

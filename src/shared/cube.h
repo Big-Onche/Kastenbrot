@@ -50,6 +50,7 @@
     #include <SDL.h>
     #include <SDL_opengl.h>
   #endif
+  #include <SDL_ttf.h>
 #endif
 
 #include <enet/enet.h>
