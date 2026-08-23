@@ -43,7 +43,7 @@ static bool buildfont(font &f)
     TTF_SetFontOutline(f.ttf, 0);
     // Keep the established line layout while letting the glyphs occupy more
     // of it; the previous bitmap font had less empty space around each glyph.
-    f.defaulth = max(5*f.pointsize/6, 1);
+    f.defaulth = max(4*f.pointsize/6, 1);
     int minx, maxx, miny, maxy, advance;
     f.defaultw = TTF_GlyphMetrics(f.ttf, ' ', &minx, &maxx, &miny, &maxy, &advance) ? f.defaulth/2 : max(advance, 1);
 
@@ -201,9 +201,40 @@ void draw_textf(const char *fstr, float left, float top, ...)
 const matrix4x3 *textmatrix = NULL;
 float textscale = 1;
 
-static float draw_char(int c, float x, float y, float scale)
+static bool stripfontsuffix(char *name, const char *suffix)
 {
-    font::charinfo &info = curfont->chars[c];
+    int namelen = strlen(name), suffixlen = strlen(suffix);
+    if(namelen < suffixlen || strcmp(name + namelen - suffixlen, suffix)) return false;
+    name[namelen - suffixlen] = '\0';
+    return true;
+}
+
+static font *fontvariant(font *base, char style)
+{
+    string root;
+    copystring(root, base->name);
+    bool outlined = stripfontsuffix(root, "_outline");
+    if(!stripfontsuffix(root, "_bold")) stripfontsuffix(root, "_italic");
+
+    string name;
+    copystring(name, root);
+    if(style == 'b') concatstring(name, "_bold");
+    else if(style == 'i') concatstring(name, "_italic");
+    if(outlined) concatstring(name, "_outline");
+    font *variant = fonts.access(name);
+    return variant ? variant : base;
+}
+
+static float draw_char(GLuint &tex, font *f, int c, float x, float y, float scale)
+{
+    font::charinfo &info = f->chars[c];
+
+    if(tex != f->tex)
+    {
+        xtraverts += gle::end();
+        tex = f->tex;
+        glBindTexture(GL_TEXTURE_2D, tex);
+    }
 
     x *= textscale;
     y *= textscale;
@@ -215,10 +246,10 @@ static float draw_char(int c, float x, float y, float scale)
           y1 = y + scale*info.offsety,
           x2 = x + scale*(info.offsetx + info.w),
           y2 = y + scale*(info.offsety + info.h),
-          tx1 = info.x / curfont->texw,
-          ty1 = info.y / curfont->texh,
-          tx2 = (info.x + info.w) / curfont->texw,
-          ty2 = (info.y + info.h) / curfont->texh;
+          tx1 = info.x / f->texw,
+          ty1 = info.y / f->texh,
+          tx2 = (info.x + info.w) / f->texw,
+          ty2 = (info.y + info.h) / f->texh;
 
     if(textmatrix)
     {
@@ -272,36 +303,65 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
     }
 }
 
+#define TEXTFORMAT(idx) \
+    {\
+        int fmt = uchar(str[idx]);\
+        if(fmt == 'b' || fmt == 'i' || fmt == 'n')\
+        {\
+            textfont = fontvariant(basefont, fmt);\
+            scale = textfont->scale/float(textfont->defaulth);\
+        }\
+        else { TEXTCOLOR(idx) }\
+    }
+
 #define TEXTSKELETON \
-    float y = 0, x = 0, scale = curfont->scale/float(curfont->defaulth);\
+    font *basefont = curfont, *textfont = curfont;\
+    float lineheight = basefont->scale, y = 0, x = 0, scale = textfont->scale/float(textfont->defaulth);\
     int i;\
     for(i = 0; str[i]; i++)\
     {\
         TEXTINDEX(i)\
         int c = uchar(str[i]);\
         if(c=='\t')      { x = TEXTTAB(x); TEXTWHITE(i) }\
-        else if(c==' ')  { x += scale*curfont->defaultw; TEXTWHITE(i) }\
-        else if(c=='\n') { TEXTLINE(i) x = 0; y += FONTH; }\
-        else if(c=='\f') { if(str[i+1]) { i++; TEXTCOLOR(i) }}\
-        else if(curfont->chars.inrange(c))\
+        else if(c==' ')  { x += scale*textfont->defaultw; TEXTWHITE(i) }\
+        else if(c=='\n') { TEXTLINE(i) x = 0; y += lineheight; }\
+        else if(c=='\f') { if(str[i+1]) { i++; TEXTFORMAT(i) }}\
+        else if(textfont->chars.inrange(c))\
         {\
-            float cw = scale*curfont->chars[c].advance;\
+            float cw = scale*textfont->chars[c].advance;\
             if(cw <= 0) continue;\
             if(maxwidth >= 0)\
             {\
                 int j = i;\
                 float w = cw;\
+                font *wrapfont = textfont;\
+                float wrapscale = scale;\
                 for(; str[i+1]; i++)\
                 {\
                     int c = uchar(str[i+1]);\
-                    if(c=='\f') { if(str[i+2]) i++; continue; }\
-                    if(!curfont->chars.inrange(c)) break;\
-                    float cw = scale*curfont->chars[c].advance;\
+                    if(c=='\f')\
+                    {\
+                        if(str[i+2])\
+                        {\
+                            int fmt = uchar(str[i+2]);\
+                            if(fmt == 'b' || fmt == 'i' || fmt == 'n')\
+                            {\
+                                wrapfont = fontvariant(basefont, fmt);\
+                                wrapscale = wrapfont->scale/float(wrapfont->defaulth);\
+                            }\
+                            i++;\
+                        }\
+                        continue;\
+                    }\
+                    if(!wrapfont->chars.inrange(c)) break;\
+                    float cw = wrapscale*wrapfont->chars[c].advance;\
                     if(cw <= 0 || w + cw > maxwidth) break;\
                     w += cw;\
                 }\
-                if(x + w > maxwidth && x > 0) { (void)j; TEXTLINE(j-1) x = 0; y += FONTH; }\
+                if(x + w > maxwidth && x > 0) { (void)j; TEXTLINE(j-1) x = 0; y += lineheight; }\
                 TEXTWORD\
+                textfont = wrapfont;\
+                scale = wrapscale;\
             }\
             else { TEXTCHAR(i) }\
         }\
@@ -313,8 +373,8 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
                 {\
                     TEXTINDEX(j)\
                     int c = uchar(str[j]);\
-                    if(c=='\f') { if(str[j+1]) { j++; TEXTCOLOR(j) }}\
-                    else { float cw = scale*curfont->chars[c].advance; TEXTCHAR(j) }\
+                    if(c=='\f') { if(str[j+1]) { j++; TEXTFORMAT(j) }}\
+                    else { float cw = scale*textfont->chars[c].advance; TEXTCHAR(j) }\
                 }
 
 #define TEXTEND(cursor) if(cursor >= i) { do { TEXTINDEX(cursor); } while(0); }
@@ -322,8 +382,8 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
 int text_visible(const char *str, float hitx, float hity, int maxwidth)
 {
     #define TEXTINDEX(idx)
-    #define TEXTWHITE(idx) if(y+FONTH > hity && x >= hitx) return idx;
-    #define TEXTLINE(idx) if(y+FONTH > hity) return idx;
+    #define TEXTWHITE(idx) if(y+lineheight > hity && x >= hitx) return idx;
+    #define TEXTLINE(idx) if(y+lineheight > hity) return idx;
     #define TEXTCOLOR(idx)
     #define TEXTCHAR(idx) x += cw; TEXTWHITE(idx)
     #define TEXTWORD TEXTWORDSKELETON
@@ -367,7 +427,7 @@ void text_boundsf(const char *str, float &width, float &height, int maxwidth)
     #define TEXTWORD x += w;
     width = 0;
     TEXTSKELETON
-    height = y + FONTH;
+    height = y + lineheight;
     TEXTLINE(_)
     #undef TEXTINDEX
     #undef TEXTWHITE
@@ -381,11 +441,11 @@ Shader *textshader = NULL;
 
 void draw_text(const char *str, float left, float top, int r, int g, int b, int a, int cursor, int maxwidth)
 {
-    #define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; }
+    #define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; cursorfont = textfont; cursorscale = scale; }
     #define TEXTWHITE(idx)
     #define TEXTLINE(idx)
     #define TEXTCOLOR(idx) if(usecolor) text_color(str[idx], colorstack, sizeof(colorstack), colorpos, color, a);
-    #define TEXTCHAR(idx) draw_char(c, left+x, top+y, scale); x += cw;
+    #define TEXTCHAR(idx) draw_char(tex, textfont, c, left+x, top+y, scale); x += cw;
     #define TEXTWORD TEXTWORDSKELETON
     char colorstack[10];
     colorstack[0] = '\0'; //indicate user color
@@ -393,11 +453,14 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     if(textbright != 100) color.scale(textbright, 100);
     int colorpos = 0;
     float cx = -FONTW, cy = 0;
+    font *cursorfont = curfont;
+    float cursorscale = curfont->scale/float(curfont->defaulth);
     bool usecolor = true;
     if(a < 0) { usecolor = false; a = -a; }
     (textshader ? textshader : hudtextshader)->set();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glBindTexture(GL_TEXTURE_2D, curfont->tex);
+    GLuint tex = curfont->tex;
+    glBindTexture(GL_TEXTURE_2D, tex);
     gle::color(color, a);
     gle::defvertex(textmatrix ? 3 : 2);
     gle::deftexcoord0();
@@ -408,8 +471,8 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     if(cursor >= 0 && (totalmillis/250)&1)
     {
         gle::color(color, a);
-        if(maxwidth >= 0 && cx >= maxwidth && cx > 0) { cx = 0; cy += FONTH; }
-        draw_char('_', left+cx, top+cy, scale);
+        if(maxwidth >= 0 && cx >= maxwidth && cx > 0) { cx = 0; cy += curfont->scale; }
+        draw_char(tex, cursorfont, '_', left+cx, top+cy, cursorscale);
         xtraverts += gle::end();
     }
     #undef TEXTINDEX
@@ -418,6 +481,7 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     #undef TEXTCOLOR
     #undef TEXTCHAR
     #undef TEXTWORD
+    #undef TEXTFORMAT
 }
 
 void reloadfonts()
