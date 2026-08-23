@@ -16,9 +16,9 @@
 				<Compiler>
 					<Add option="-fomit-frame-pointer" />
 					<Add option="-O3" />
-					<Add option="-ffast-math" />
 					<Add option="-Wall" />
 					<Add option="-m64" />
+					<Add option="-ffast-math" />
 					<Add option="-fsigned-char" />
 					<Add option="-fno-exceptions" />
 					<Add option="-fno-rtti" />
@@ -39,6 +39,7 @@
 					<Add library="SDL2" />
 					<Add library="SDL2_image" />
 					<Add library="SDL2_mixer" />
+					<Add library="SDL2_ttf" />
 					<Add library="zlib1" />
 					<Add library="opengl32" />
 					<Add library="enet" />
@@ -60,15 +61,15 @@
 				<Option parameters="-t0 -w640 -h480 -qhome" />
 				<Compiler>
 					<Add option="-O3" />
+					<Add option="-Wall" />
+					<Add option="-std=gnu++17" />
+					<Add option="-m64" />
 					<Add option="-g" />
 					<Add option="-ffast-math" />
-					<Add option="-Wall" />
-					<Add option="-m64" />
-					<Add option="-std=gnu++17" />
-					<Add option="-DTRACY_ENABLE" />
 					<Add option="-fsigned-char" />
 					<Add option="-fno-exceptions" />
 					<Add option="-fno-rtti" />
+					<Add option="-DTRACY_ENABLE" />
 					<Add directory="../enet/include" />
 					<Add directory="../include" />
 					<Add directory="../engine" />
@@ -85,6 +86,7 @@
 					<Add library="SDL2" />
 					<Add library="SDL2_image" />
 					<Add library="SDL2_mixer" />
+					<Add library="SDL2_ttf" />
 					<Add library="zlib1" />
 					<Add library="opengl32" />
 					<Add library="enet" />
@@ -129,6 +131,7 @@
 					<Add library="SDL2" />
 					<Add library="SDL2_image" />
 					<Add library="SDL2_mixer" />
+					<Add library="SDL2_ttf" />
 					<Add library="zlib1" />
 					<Add library="opengl32" />
 					<Add library="enet" />
@@ -163,7 +166,7 @@
 		<Unit filename="../engine/grass.cpp" />
 		<Unit filename="../engine/hitzone.h" />
 		<Unit filename="../engine/iqm.h" />
-		<Unit filename="../engine/lensflare.h" />
+		<Unit filename="../engine/lensflare.cpp" />
 		<Unit filename="../engine/light.cpp" />
 		<Unit filename="../engine/light.h" />
 		<Unit filename="../engine/lightning.h" />
