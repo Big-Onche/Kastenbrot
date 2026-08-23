@@ -13,7 +13,11 @@
 
 extern vector<worldgencubetextures> worldgentextures;
 extern int worldgrassscatter, worldrosescatter, worldtulipscatter, worlddandelionscatter;
+#ifdef STANDALONE
+int chunkremip = 1, leavesalpha = 1;
+#else
 extern int chunkremip, leavesalpha;
+#endif
 extern int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled);
 
 static void resetworldgencube(cube &c)
@@ -2272,4 +2276,3 @@ namespace game
         ::cacheworldscattertransforms(chunkx, chunky, maxoffset, scatter);
     }
 }
-

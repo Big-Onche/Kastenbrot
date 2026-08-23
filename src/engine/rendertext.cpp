@@ -1,129 +1,128 @@
 #include "engine.h"
 
 static hashnameset<font> fonts;
-static font *fontdef = NULL;
-static int fontdeftex = 0;
 
 font *curfont = NULL;
-int curfonttex = 0;
 
-void newfont(char *name, char *tex, int *defaultw, int *defaulth, int *scale)
+static const int FONT_ATLAS_SIZE = 2048;
+
+static Uint32 surfacepixel(SDL_Surface *surface, int x, int y)
 {
-    font *f = &fonts[name];
-    if(!f->name) f->name = newstring(name);
-    f->texs.shrink(0);
-    f->texs.add(textureload(tex));
-    f->chars.shrink(0);
-    f->charoffset = '!';
-    f->defaultw = *defaultw;
-    f->defaulth = *defaulth;
-    f->scale = *scale > 0 ? *scale : f->defaulth;
-    f->bordermin = 0.49f;
-    f->bordermax = 0.5f;
-    f->outlinemin = -1;
-    f->outlinemax = 0;
-
-    fontdef = f;
-    fontdeftex = 0;
-}
-
-void fontborder(float *bordermin, float *bordermax)
-{
-    if(!fontdef) return;
-
-    fontdef->bordermin = *bordermin;
-    fontdef->bordermax = max(*bordermax, *bordermin+0.01f);
-}
-
-void fontoutline(float *outlinemin, float *outlinemax)
-{
-    if(!fontdef) return;
-
-    fontdef->outlinemin = min(*outlinemin, *outlinemax-0.01f);
-    fontdef->outlinemax = *outlinemax;
-}
-
-void fontoffset(char *c)
-{
-    if(!fontdef) return;
-
-    fontdef->charoffset = c[0];
-}
-
-void fontscale(int *scale)
-{
-    if(!fontdef) return;
-
-    fontdef->scale = *scale > 0 ? *scale : fontdef->defaulth;
-}
-
-void fonttex(char *s)
-{
-    if(!fontdef) return;
-
-    Texture *t = textureload(s);
-    loopv(fontdef->texs) if(fontdef->texs[i] == t) { fontdeftex = i; return; }
-    fontdeftex = fontdef->texs.length();
-    fontdef->texs.add(t);
-}
-
-void fontchar(float *x, float *y, float *w, float *h, float *offsetx, float *offsety, float *advance)
-{
-    if(!fontdef) return;
-
-    font::charinfo &c = fontdef->chars.add();
-    c.x = *x;
-    c.y = *y;
-    c.w = *w ? *w : fontdef->defaultw;
-    c.h = *h ? *h : fontdef->defaulth;
-    c.offsetx = *offsetx;
-    c.offsety = *offsety;
-    c.advance = *advance ? *advance : c.offsetx + c.w;
-    c.tex = fontdeftex;
-}
-
-void fontskip(int *n)
-{
-    if(!fontdef) return;
-    loopi(max(*n, 1))
+    const uchar *p = (const uchar *)surface->pixels + y*surface->pitch + x*surface->format->BytesPerPixel;
+    switch(surface->format->BytesPerPixel)
     {
-        font::charinfo &c = fontdef->chars.add();
-        c.x = c.y = c.w = c.h = c.offsetx = c.offsety = c.advance = 0;
-        c.tex = 0;
+        case 1: return *p;
+        case 2: return *(const Uint16 *)p;
+        case 3: return SDL_BYTEORDER == SDL_BIG_ENDIAN ? p[0]<<16 | p[1]<<8 | p[2] : p[0] | p[1]<<8 | p[2]<<16;
+        default: return *(const Uint32 *)p;
     }
 }
 
-COMMANDN(font, newfont, "ssiii");
-COMMAND(fontborder, "ff");
-COMMAND(fontoutline, "ff");
-COMMAND(fontoffset, "s");
-COMMAND(fontscale, "i");
-COMMAND(fonttex, "s");
-COMMAND(fontchar, "fffffff");
-COMMAND(fontskip, "i");
-
-void fontalias(const char *dst, const char *src)
+static void copyglyph(SDL_Surface *surface, vector<uchar> &atlas, int atlasx, int atlasy, bool inner)
 {
-    font *s = fonts.access(src);
-    if(!s) return;
-    font *d = &fonts[dst];
-    if(!d->name) d->name = newstring(dst);
-    d->texs = s->texs;
-    d->chars = s->chars;
-    d->charoffset = s->charoffset;
-    d->defaultw = s->defaultw;
-    d->defaulth = s->defaulth;
-    d->scale = s->scale;
-    d->bordermin = s->bordermin;
-    d->bordermax = s->bordermax;
-    d->outlinemin = s->outlinemin;
-    d->outlinemax = s->outlinemax;
-
-    fontdef = d;
-    fontdeftex = d->texs.length()-1;
+    if(SDL_MUSTLOCK(surface) && SDL_LockSurface(surface) < 0) fatal("failed to lock SDL_ttf glyph: %s", SDL_GetError());
+    loopi(surface->h) loopj(surface->w)
+    {
+        uchar r, g, b, a;
+        SDL_GetRGBA(surfacepixel(surface, j, i), surface->format, &r, &g, &b, &a);
+        uchar *dst = &atlas[((atlasy+i)*FONT_ATLAS_SIZE + atlasx+j)*4];
+        if(inner) dst[0] = dst[1] = dst[2] = max(dst[0], a);
+        else dst[3] = max(dst[3], a);
+    }
+    if(SDL_MUSTLOCK(surface)) SDL_UnlockSurface(surface);
 }
 
-COMMAND(fontalias, "ss");
+static bool buildfont(font &f)
+{
+    if(!f.ttf) return false;
+
+    SDL_Surface *outer[256] = { NULL }, *inner[256] = { NULL };
+    f.chars.shrink(0);
+    loopi(256) f.chars.add();
+
+    TTF_SetFontOutline(f.ttf, 0);
+    // Keep the established line layout while letting the glyphs occupy more
+    // of it; the previous bitmap font had less empty space around each glyph.
+    f.defaulth = max(4*f.pointsize/6, 1);
+    int minx, maxx, miny, maxy, advance;
+    f.defaultw = TTF_GlyphMetrics(f.ttf, ' ', &minx, &maxx, &miny, &maxy, &advance) ? f.defaulth/2 : max(advance, 1);
+
+    SDL_Color white = { 255, 255, 255, 255 };
+    int packx = 1, packy = 1, rowheight = 0;
+    loopi(256) if(iscubeprint(i))
+    {
+        Uint16 glyph = Uint16(cube2uni(i));
+        if(!TTF_GlyphIsProvided(f.ttf, glyph)) glyph = 0xFFFD;
+        if(TTF_GlyphMetrics(f.ttf, glyph, &minx, &maxx, &miny, &maxy, &advance)) continue;
+
+        TTF_SetFontOutline(f.ttf, f.outline);
+        int outerascent = TTF_FontAscent(f.ttf);
+        outer[i] = TTF_RenderGlyph_Blended(f.ttf, glyph, white);
+        TTF_SetFontOutline(f.ttf, 0);
+        if(!outer[i]) fatal("SDL_ttf failed rendering glyph U+%04X from %s: %s", glyph, f.file, TTF_GetError());
+        inner[i] = f.outline ? TTF_RenderGlyph_Blended(f.ttf, glyph, white) : outer[i];
+        if(!inner[i]) fatal("SDL_ttf failed rendering glyph U+%04X from %s: %s", glyph, f.file, TTF_GetError());
+
+        if(packx + outer[i]->w + 1 > FONT_ATLAS_SIZE)
+        {
+            packx = 1;
+            packy += rowheight + 1;
+            rowheight = 0;
+        }
+        if(packy + outer[i]->h + 1 > FONT_ATLAS_SIZE) fatal("SDL_ttf font atlas is too small for %s", f.file);
+
+        font::charinfo &info = f.chars[i];
+        info.x = packx;
+        info.y = packy;
+        info.w = outer[i]->w;
+        info.h = outer[i]->h;
+        info.offsetx = min(minx, 0) - f.outline;
+        info.offsety = 7*f.defaulth/8 - outerascent;
+        info.advance = max(advance, 1);
+        packx += outer[i]->w + 1;
+        rowheight = max(rowheight, outer[i]->h);
+    }
+
+    f.texw = FONT_ATLAS_SIZE;
+    f.texh = min(FONT_ATLAS_SIZE, packy + rowheight + 1);
+    vector<uchar> atlas;
+    atlas.pad(f.texw*f.texh*4);
+    memset(atlas.getbuf(), 0, atlas.length());
+
+    loopi(256) if(outer[i])
+    {
+        font::charinfo &info = f.chars[i];
+        copyglyph(outer[i], atlas, int(info.x), int(info.y), false);
+        copyglyph(inner[i], atlas, int(info.x)+f.outline, int(info.y)+f.outline, true);
+        if(inner[i] != outer[i]) SDL_FreeSurface(inner[i]);
+        SDL_FreeSurface(outer[i]);
+    }
+
+    glGenTextures(1, &f.tex);
+    createtexture(f.tex, f.texw, f.texh, atlas.getbuf(), 3, 1, GL_RGBA8, GL_TEXTURE_2D, 0, 0, 0, false);
+    return true;
+}
+
+void newfont(char *name, char *file, int *pointsize, int *scale, int *outline)
+{
+    if(!TTF_WasInit() && TTF_Init() < 0) fatal("Unable to initialize SDL_ttf: %s", TTF_GetError());
+
+    font *f = &fonts[name];
+    if(!f->name) f->name = newstring(name);
+    if(f->tex) { glDeleteTextures(1, &f->tex); f->tex = 0; }
+    if(f->ttf) { TTF_CloseFont(f->ttf); f->ttf = NULL; }
+    DELETEA(f->file);
+
+    f->file = newstring(file);
+    f->pointsize = max(*pointsize, 1);
+    f->outline = max(*outline, 0);
+    f->scale = *scale > 0 ? *scale : f->pointsize;
+    f->ttf = TTF_OpenFont(findfile(file, "rb"), f->pointsize);
+    if(!f->ttf) fatal("Unable to load TrueType font %s: %s", file, TTF_GetError());
+    if(!buildfont(*f)) fatal("Unable to build TrueType font %s", file);
+}
+
+COMMANDN(font, newfont, "ssiii");
 
 font *findfont(const char *name)
 {
@@ -202,28 +201,55 @@ void draw_textf(const char *fstr, float left, float top, ...)
 const matrix4x3 *textmatrix = NULL;
 float textscale = 1;
 
-static float draw_char(Texture *&tex, int c, float x, float y, float scale)
+static bool stripfontsuffix(char *name, const char *suffix)
 {
-    font::charinfo &info = curfont->chars[c-curfont->charoffset];
-    if(tex != curfont->texs[info.tex])
+    int namelen = strlen(name), suffixlen = strlen(suffix);
+    if(namelen < suffixlen || strcmp(name + namelen - suffixlen, suffix)) return false;
+    name[namelen - suffixlen] = '\0';
+    return true;
+}
+
+static font *fontvariant(font *base, char style)
+{
+    string root;
+    copystring(root, base->name);
+    bool outlined = stripfontsuffix(root, "_outline");
+    if(!stripfontsuffix(root, "_bold")) stripfontsuffix(root, "_italic");
+
+    string name;
+    copystring(name, root);
+    if(style == 'b') concatstring(name, "_bold");
+    else if(style == 'i') concatstring(name, "_italic");
+    if(outlined) concatstring(name, "_outline");
+    font *variant = fonts.access(name);
+    return variant ? variant : base;
+}
+
+static float draw_char(GLuint &tex, font *f, int c, float x, float y, float scale)
+{
+    font::charinfo &info = f->chars[c];
+
+    if(tex != f->tex)
     {
         xtraverts += gle::end();
-        tex = curfont->texs[info.tex];
-        glBindTexture(GL_TEXTURE_2D, tex->id);
+        tex = f->tex;
+        glBindTexture(GL_TEXTURE_2D, tex);
     }
 
     x *= textscale;
     y *= textscale;
     scale *= textscale;
 
+    if(info.w <= 0 || info.h <= 0) return scale*info.advance;
+
     float x1 = x + scale*info.offsetx,
           y1 = y + scale*info.offsety,
           x2 = x + scale*(info.offsetx + info.w),
           y2 = y + scale*(info.offsety + info.h),
-          tx1 = info.x / tex->xs,
-          ty1 = info.y / tex->ys,
-          tx2 = (info.x + info.w) / tex->xs,
-          ty2 = (info.y + info.h) / tex->ys;
+          tx1 = info.x / f->texw,
+          ty1 = info.y / f->texh,
+          tx2 = (info.x + info.w) / f->texw,
+          ty2 = (info.y + info.h) / f->texh;
 
     if(textmatrix)
     {
@@ -277,36 +303,65 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
     }
 }
 
+#define TEXTFORMAT(idx) \
+    {\
+        int fmt = uchar(str[idx]);\
+        if(fmt == 'b' || fmt == 'i' || fmt == 'n')\
+        {\
+            textfont = fontvariant(basefont, fmt);\
+            scale = textfont->scale/float(textfont->defaulth);\
+        }\
+        else { TEXTCOLOR(idx) }\
+    }
+
 #define TEXTSKELETON \
-    float y = 0, x = 0, scale = curfont->scale/float(curfont->defaulth);\
+    font *basefont = curfont, *textfont = curfont;\
+    float lineheight = basefont->scale, y = 0, x = 0, scale = textfont->scale/float(textfont->defaulth);\
     int i;\
     for(i = 0; str[i]; i++)\
     {\
         TEXTINDEX(i)\
         int c = uchar(str[i]);\
         if(c=='\t')      { x = TEXTTAB(x); TEXTWHITE(i) }\
-        else if(c==' ')  { x += scale*curfont->defaultw; TEXTWHITE(i) }\
-        else if(c=='\n') { TEXTLINE(i) x = 0; y += FONTH; }\
-        else if(c=='\f') { if(str[i+1]) { i++; TEXTCOLOR(i) }}\
-        else if(curfont->chars.inrange(c-curfont->charoffset))\
+        else if(c==' ')  { x += scale*textfont->defaultw; TEXTWHITE(i) }\
+        else if(c=='\n') { TEXTLINE(i) x = 0; y += lineheight; }\
+        else if(c=='\f') { if(str[i+1]) { i++; TEXTFORMAT(i) }}\
+        else if(textfont->chars.inrange(c))\
         {\
-            float cw = scale*curfont->chars[c-curfont->charoffset].advance;\
+            float cw = scale*textfont->chars[c].advance;\
             if(cw <= 0) continue;\
             if(maxwidth >= 0)\
             {\
                 int j = i;\
                 float w = cw;\
+                font *wrapfont = textfont;\
+                float wrapscale = scale;\
                 for(; str[i+1]; i++)\
                 {\
                     int c = uchar(str[i+1]);\
-                    if(c=='\f') { if(str[i+2]) i++; continue; }\
-                    if(!curfont->chars.inrange(c-curfont->charoffset)) break;\
-                    float cw = scale*curfont->chars[c-curfont->charoffset].advance;\
+                    if(c=='\f')\
+                    {\
+                        if(str[i+2])\
+                        {\
+                            int fmt = uchar(str[i+2]);\
+                            if(fmt == 'b' || fmt == 'i' || fmt == 'n')\
+                            {\
+                                wrapfont = fontvariant(basefont, fmt);\
+                                wrapscale = wrapfont->scale/float(wrapfont->defaulth);\
+                            }\
+                            i++;\
+                        }\
+                        continue;\
+                    }\
+                    if(!wrapfont->chars.inrange(c)) break;\
+                    float cw = wrapscale*wrapfont->chars[c].advance;\
                     if(cw <= 0 || w + cw > maxwidth) break;\
                     w += cw;\
                 }\
-                if(x + w > maxwidth && x > 0) { (void)j; TEXTLINE(j-1) x = 0; y += FONTH; }\
+                if(x + w > maxwidth && x > 0) { (void)j; TEXTLINE(j-1) x = 0; y += lineheight; }\
                 TEXTWORD\
+                textfont = wrapfont;\
+                scale = wrapscale;\
             }\
             else { TEXTCHAR(i) }\
         }\
@@ -318,8 +373,8 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
                 {\
                     TEXTINDEX(j)\
                     int c = uchar(str[j]);\
-                    if(c=='\f') { if(str[j+1]) { j++; TEXTCOLOR(j) }}\
-                    else { float cw = scale*curfont->chars[c-curfont->charoffset].advance; TEXTCHAR(j) }\
+                    if(c=='\f') { if(str[j+1]) { j++; TEXTFORMAT(j) }}\
+                    else { float cw = scale*textfont->chars[c].advance; TEXTCHAR(j) }\
                 }
 
 #define TEXTEND(cursor) if(cursor >= i) { do { TEXTINDEX(cursor); } while(0); }
@@ -327,8 +382,8 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
 int text_visible(const char *str, float hitx, float hity, int maxwidth)
 {
     #define TEXTINDEX(idx)
-    #define TEXTWHITE(idx) if(y+FONTH > hity && x >= hitx) return idx;
-    #define TEXTLINE(idx) if(y+FONTH > hity) return idx;
+    #define TEXTWHITE(idx) if(y+lineheight > hity && x >= hitx) return idx;
+    #define TEXTLINE(idx) if(y+lineheight > hity) return idx;
     #define TEXTCOLOR(idx)
     #define TEXTCHAR(idx) x += cw; TEXTWHITE(idx)
     #define TEXTWORD TEXTWORDSKELETON
@@ -372,7 +427,7 @@ void text_boundsf(const char *str, float &width, float &height, int maxwidth)
     #define TEXTWORD x += w;
     width = 0;
     TEXTSKELETON
-    height = y + FONTH;
+    height = y + lineheight;
     TEXTLINE(_)
     #undef TEXTINDEX
     #undef TEXTWHITE
@@ -386,11 +441,11 @@ Shader *textshader = NULL;
 
 void draw_text(const char *str, float left, float top, int r, int g, int b, int a, int cursor, int maxwidth)
 {
-    #define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; }
+    #define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; cursorfont = textfont; cursorscale = scale; }
     #define TEXTWHITE(idx)
     #define TEXTLINE(idx)
     #define TEXTCOLOR(idx) if(usecolor) text_color(str[idx], colorstack, sizeof(colorstack), colorpos, color, a);
-    #define TEXTCHAR(idx) draw_char(tex, c, left+x, top+y, scale); x += cw;
+    #define TEXTCHAR(idx) draw_char(tex, textfont, c, left+x, top+y, scale); x += cw;
     #define TEXTWORD TEXTWORDSKELETON
     char colorstack[10];
     colorstack[0] = '\0'; //indicate user color
@@ -398,13 +453,14 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     if(textbright != 100) color.scale(textbright, 100);
     int colorpos = 0;
     float cx = -FONTW, cy = 0;
+    font *cursorfont = curfont;
+    float cursorscale = curfont->scale/float(curfont->defaulth);
     bool usecolor = true;
     if(a < 0) { usecolor = false; a = -a; }
-    Texture *tex = curfont->texs[0];
     (textshader ? textshader : hudtextshader)->set();
-    LOCALPARAMF(textparams, curfont->bordermin, curfont->bordermax, curfont->outlinemin, curfont->outlinemax);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glBindTexture(GL_TEXTURE_2D, tex->id);
+    GLuint tex = curfont->tex;
+    glBindTexture(GL_TEXTURE_2D, tex);
     gle::color(color, a);
     gle::defvertex(textmatrix ? 3 : 2);
     gle::deftexcoord0();
@@ -415,8 +471,8 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     if(cursor >= 0 && (totalmillis/250)&1)
     {
         gle::color(color, a);
-        if(maxwidth >= 0 && cx >= maxwidth && cx > 0) { cx = 0; cy += FONTH; }
-        draw_char(tex, '_', left+cx, top+cy, scale);
+        if(maxwidth >= 0 && cx >= maxwidth && cx > 0) { cx = 0; cy += curfont->scale; }
+        draw_char(tex, cursorfont, '_', left+cx, top+cy, cursorscale);
         xtraverts += gle::end();
     }
     #undef TEXTINDEX
@@ -425,12 +481,20 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     #undef TEXTCOLOR
     #undef TEXTCHAR
     #undef TEXTWORD
+    #undef TEXTFORMAT
 }
 
 void reloadfonts()
 {
-    enumerate(fonts, font, f,
-        loopv(f.texs) if(!reloadtexture(*f.texs[i])) fatal("failed to reload font texture");
-    );
+    enumerate(fonts, font, f, { f.tex = 0; if(!buildfont(f)) fatal("failed to reload TrueType font %s", f.file); });
 }
 
+void cleanupfonts(bool full)
+{
+    enumerate(fonts, font, f,
+    {
+        if(f.tex) { glDeleteTextures(1, &f.tex); f.tex = 0; }
+        if(full && f.ttf) { TTF_CloseFont(f.ttf); f.ttf = NULL; }
+    });
+    if(full && TTF_WasInit()) TTF_Quit();
+}

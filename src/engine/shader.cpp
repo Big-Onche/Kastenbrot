@@ -1037,15 +1037,12 @@ void setupshaders()
         "    colorscale = vcolor;\n"
         "}\n",
         "uniform sampler2D tex0;\n"
-        "uniform vec4 textparams;\n"
         "varying vec2 texcoord0;\n"
         "varying vec4 colorscale;\n"
         "fragdata(0) vec4 fragcolor;\n"
         "void main(void) {\n"
-        "    float dist = texture2D(tex0, texcoord0).r;\n"
-        "    float border = smoothstep(textparams.x, textparams.y, dist);\n"
-        "    float outline = smoothstep(textparams.z, textparams.w, dist);\n"
-        "    fragcolor = vec4(colorscale.rgb * outline, colorscale.a * border);\n"
+        "    vec4 glyph = texture2D(tex0, texcoord0);\n"
+        "    fragcolor = vec4(colorscale.rgb * glyph.r, colorscale.a * glyph.a);\n"
         "}\n");
     hudnotextureshader = newshader(0, "<init>hudnotexture",
         "attribute vec4 vvertex, vcolor;\n"
@@ -1611,4 +1608,3 @@ void setblurshader(int pass, int size, int radius, float *weights, float *offset
     loopk(8) scaledoffsets[k] = offsets[k]/size;
     LOCALPARAMV(offsets, scaledoffsets, 8);
 }
-

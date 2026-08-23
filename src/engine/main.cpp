@@ -35,6 +35,7 @@ void cleanup()
     extern void clear_console(); clear_console();
     extern void clear_models();  clear_models();
     extern void clear_sound();   clear_sound();
+    cleanupfonts();
     closelogfile();
     #ifdef __APPLE__
         if(screen) SDL_SetWindowFullscreen(screen, 0);
@@ -879,6 +880,7 @@ void resetgl()
     game::cleanupitemsprites();
     cleanupmodels();
     cleanupprefabs();
+    cleanupfonts(false);
     cleanuptextures();
     cleanupblendmap();
     cleanuplights();

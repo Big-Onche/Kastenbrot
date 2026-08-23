@@ -34,7 +34,8 @@ struct worlddefinition
     bvec gialbedo;
     bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasfood, hassupport;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
-    bool explicitdrops, errorfallback, fall, heldflipx, heldflipy, handbreakable, supportdecay, supportpersistentonplace;
+    bool explicitdrops, errorfallback, fall, placeableblockcollision, heldflipx, heldflipy, handbreakable, supportdecay,
+         supportpersistentonplace;
 
     worlddefinition(const char *id = "");
 };

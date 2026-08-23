@@ -33,7 +33,7 @@ worlddefinition::worlddefinition(const char *id)
       itemstackset(false),
       scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
-      heldflipx(false), heldflipy(false), handbreakable(true), supportdecay(false), supportpersistentonplace(false)
+      placeableblockcollision(false), heldflipx(false), heldflipy(false), handbreakable(true), supportdecay(false), supportpersistentonplace(false)
 {
     copystring(this->id, id);
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
@@ -276,6 +276,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
     else if(component == WORLDDEF_SCATTER || component == WORLDDEF_PLACEABLE)
     {
         if(!strcmp(command, "model")) return "worlddef_model";
+        if(component == WORLDDEF_PLACEABLE && !strcmp(command, "blockcollision")) return "worlddef_placeableblockcollision";
         if(component == WORLDDEF_PLACEABLE && !strcmp(command, "light")) return "worlddef_light";
         if(component == WORLDDEF_PLACEABLE && !strcmp(command, "lightcolor")) return "worlddef_lightcolor";
     }
@@ -778,6 +779,7 @@ ICOMMANDS("worlddef_model", "s", (char *value),
 });
 ICOMMANDS("worlddef_light", "f", (float *value), currentworlddefinition->lightradius = *value);
 ICOMMANDS("worlddef_lightcolor", "s", (char *value), copystring(currentworlddefinition->lightcolor, value));
+ICOMMANDS("worlddef_placeableblockcollision", "i", (int *value), currentworlddefinition->placeableblockcollision = *value != 0);
 ICOMMANDS("worlddef_hardness", "f", (float *value),
 {
     currentworlddefinition->hardness = *value;

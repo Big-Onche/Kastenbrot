@@ -1177,7 +1177,7 @@ namespace server
         if(!persistent) return item == -1 && count == 0 && durability == 0;
         if(item < 0 || item >= numinventoryitems() || getinventoryitempersistentid(item) != persistent || count <= 0 ||
            count > max(getinventoryitemmaxstack(item), 1)) return false;
-        return isinventorytool(item) ? count == 1 && durability > 0 && durability <= getinventorytoolmaxdurability(item) : durability == 0;
+        return isinventorytool(item) ? count == 1 && validatetooldurability(item, durability) : durability == 0;
     }
 
     static bool saveplayerstate(clientinfo &ci, bool force = false)
@@ -1666,7 +1666,7 @@ namespace server
         if(!servercreative()) ci.inventorydirty = true;
     }
 
-    static bool addinventoryitem(clientinfo &ci, int item)
+    static bool addinventoryitem(clientinfo &ci, int item, int quality = TOOL_QUALITY_AVERAGE)
     {
         if(item < 0) return false;
         const int maxstack = max(getinventoryitemmaxstack(item), 1);
@@ -1680,7 +1680,7 @@ namespace server
         {
             ci.inventoryitems[i] = item;
             ci.inventorycounts[i] = 1;
-            ci.inventorydurabilities[i] = getinventorytoolmaxdurability(item);
+            ci.inventorydurabilities[i] = maketooldurability(item, quality);
             markinventorydirty(ci);
             return true;
         }
@@ -1709,8 +1709,8 @@ namespace server
             {
                 ci.inventoryitems[i] = item;
                 ci.inventorycounts[i] = 1;
-                ci.inventorydurabilities[i] = clamp(durability > 0 ? durability : getinventorytoolmaxdurability(item),
-                                                    1, getinventorytoolmaxdurability(item));
+                ci.inventorydurabilities[i] = validatetooldurability(item, durability)
+                                              ? durability : maketooldurability(item, TOOL_QUALITY_AVERAGE);
                 markinventorydirty(ci);
                 return true;
             }
@@ -2401,7 +2401,7 @@ namespace server
         drop->source = ci.clientnum;
         drop->item = item;
         drop->count = count;
-        drop->durability = isinventorytool(item) ? clamp(durability, 1, getinventorytoolmaxdurability(item)) : 0;
+        drop->durability = isinventorytool(item) && validatetooldurability(item, durability) ? durability : 0;
         drop->created = max(totalmillis, 1);
         drop->o = vec(origin).add(vec(cosf(angle) * radius, sinf(angle) * radius, 3.0f));
         copystring(drop->ownerid, ci.playerid);
@@ -2438,6 +2438,24 @@ namespace server
         sendcraftstate(ci);
     }
 
+    static bool killserverplayer(clientinfo &ci, const vec &impulse = vec(0, 0, 0))
+    {
+        if(ci.dead) return false;
+        ci.health = 0;
+        ci.dead = true;
+        ci.velocity = ci.falling = vec(0, 0, 0);
+        ci.falldistance = 0;
+        ci.positionphysstate = PHYS_FALL;
+        cancelfooduse(ci);
+        ci.position.setsize(0);
+        if(ci.breakactive) cancelbreak(ci);
+        dropserverplayerinventory(ci);
+        ci.positiondirty = true;
+        saveplayerstate(ci, true);
+        broadcastplayerstate(ci, impulse);
+        return true;
+    }
+
     static void damageserverplayer(clientinfo &ci, float damage, const vec &source)
     {
         if(servercreative() || ci.dead || damage <= 0) return;
@@ -2447,16 +2465,8 @@ namespace server
         if(impulse.squaredlen() > 1e-4f) impulse.normalize().mul(45.0f);
         if(ci.health <= 0)
         {
-            ci.dead = true;
-            ci.velocity = ci.falling = vec(0, 0, 0);
-            ci.falldistance = 0;
-            ci.positionphysstate = PHYS_FALL;
-            cancelfooduse(ci);
-            ci.position.setsize(0);
-            if(ci.breakactive) cancelbreak(ci);
-            dropserverplayerinventory(ci);
-            ci.positiondirty = true;
-            saveplayerstate(ci, true);
+            killserverplayer(ci, impulse);
+            return;
         }
         broadcastplayerstate(ci, impulse);
     }
@@ -2934,7 +2944,9 @@ namespace server
             kickviolation(ci, "invalid equipped item in NPC attack");
             return;
         }
-        const float basedamage = equipped >= 0 && isinventorytool(equipped) ? getinventorytooldamage(equipped) : 1.0f,
+        const int equippeddurability = !servercreative() && equipped >= 0 ? ci.inventorydurabilities[ci.selectedslot] : 0;
+        const float basedamage = equipped >= 0 && isinventorytool(equipped)
+                               ? getinventorytooldamage(equipped) * gettoolqualitymultiplier(gettoolquality(equipped, equippeddurability)) : 1.0f,
                     reach = 5.0f * GAMEUNITSPERMETER;
         vec origin = vec(ci.o).addz(28.0f), direction = serverdirection(float(ci.positionyaw), float(ci.positionpitch));
         servernpc *hit = NULL;
@@ -2966,8 +2978,8 @@ namespace server
         if(!servercreative() && equipped >= 0 && isinventorytool(equipped))
         {
             const int slot = ci.selectedslot;
-            ci.inventorydurabilities[slot] = max(ci.inventorydurabilities[slot] - 1, 0);
-            if(ci.inventorydurabilities[slot] <= 0)
+            ci.inventorydurabilities[slot] = weartooldurability(equipped, ci.inventorydurabilities[slot], 1);
+            if(!ci.inventorydurabilities[slot])
             {
                 ci.inventoryitems[slot] = -1;
                 ci.inventorycounts[slot] = ci.inventorydurabilities[slot] = 0;
@@ -4234,7 +4246,7 @@ namespace server
         if(!actionrate(ci, false)) return rejectaction(ci, requestid, "excessive shaping rate", true);
 
         if(servercreative() || slot < 0 || slot >= SURVIVAL_HOTBAR_SLOTS || slot != ci.selectedslot || ci.inventorycounts[slot] != 1 ||
-           ci.inventorydurabilities[slot] <= 0 || getinventorytoolcornerpush(ci.inventoryitems[slot]) == TOOL_CORNER_PUSH_NONE)
+           !validatetooldurability(ci.inventoryitems[slot], ci.inventorydurabilities[slot]) || getinventorytoolcornerpush(ci.inventoryitems[slot]) == TOOL_CORNER_PUSH_NONE)
             return rejectaction(ci, requestid, "a shaping tool is not owned in the selected inventory slot", true, true);
         const int tool = ci.inventoryitems[slot];
 
@@ -4277,7 +4289,8 @@ namespace server
         if(!acceptededit(edit)) return rejectaction(ci, requestid, "server could not persist the corner push");
 
         if(ci.breakactive) cancelbreak(ci);
-        if(--ci.inventorydurabilities[slot] <= 0)
+        ci.inventorydurabilities[slot] = weartooldurability(ci.inventoryitems[slot], ci.inventorydurabilities[slot], 1);
+        if(!ci.inventorydurabilities[slot])
         {
             ci.inventoryitems[slot] = -1;
             ci.inventorycounts[slot] = ci.inventorydurabilities[slot] = 0;
@@ -4322,7 +4335,7 @@ namespace server
         ci.breakitem = state ? state->item : item;
         ci.breaktoolslot = ci.selectedslot;
         ci.breaktoolitem = ci.breaktoolslot >= 0 && ci.breaktoolslot < SURVIVAL_HOTBAR_SLOTS && ci.inventorycounts[ci.breaktoolslot] > 0 &&
-                           isinventorytool(ci.inventoryitems[ci.breaktoolslot]) && ci.inventorydurabilities[ci.breaktoolslot] > 0
+                           isinventorytool(ci.inventoryitems[ci.breaktoolslot]) && validatetooldurability(ci.inventoryitems[ci.breaktoolslot], ci.inventorydurabilities[ci.breaktoolslot])
                          ? ci.inventoryitems[ci.breaktoolslot] : -1;
         ci.breaktooldurability = ci.breaktoolitem >= 0 ? ci.inventorydurabilities[ci.breaktoolslot] : 0;
         const int type = getworlditemtype(ci.breakitem), index = getworlditemindex(ci.breakitem);
@@ -4332,7 +4345,8 @@ namespace server
             return rejectaction(ci, requestid, "target cannot be broken by hand");
         }
         ci.breakduration = action == WORLD_ACTION_BREAK_SCATTER_START && index < 0
-                         ? survivalscatterbreakmillis : getworldbreakmillis(type, index, ci.breaktoolitem);
+                         ? survivalscatterbreakmillis : getworldbreakmillis(type, index, ci.breaktoolitem,
+                            gettoolqualitymultiplier(gettoolquality(ci.breaktoolitem, ci.breaktooldurability)));
         ci.breakdropeligible = getworlddropeligible(type, index, ci.breaktoolitem);
         ci.breakstage = 0;
         ci.breakrelease = 0;
@@ -4438,8 +4452,8 @@ namespace server
         if(!servercreative() && ci.breaktoolitem >= 0)
         {
             const int type = getworlditemtype(item), index = getworlditemindex(item), wear = getworldbreaktoolwear(type, index, ci.breaktoolitem);
-            ci.inventorydurabilities[ci.breaktoolslot] = max(ci.inventorydurabilities[ci.breaktoolslot] - wear, 0);
-            if(ci.inventorydurabilities[ci.breaktoolslot] <= 0)
+            ci.inventorydurabilities[ci.breaktoolslot] = weartooldurability(ci.breaktoolitem, ci.inventorydurabilities[ci.breaktoolslot], wear);
+            if(!ci.inventorydurabilities[ci.breaktoolslot])
             {
                 ci.inventoryitems[ci.breaktoolslot] = -1;
                 ci.inventorycounts[ci.breaktoolslot] = ci.inventorydurabilities[ci.breaktoolslot] = 0;
@@ -4579,15 +4593,14 @@ namespace server
                 break;
             case CRAFT_ACTION_OPEN_TABLE:
             {
-                const int tableitem = getinventoryitemindex("crafting_table");
                 const ivec target(first, second, third);
                 serverworldaction *state = findworldaction(target, WORLD_ACTION_PLACE_CUBE);
-                if(tableitem < 0 || !state || state->action != WORLD_ACTION_PLACE_CUBE || state->item != tableitem)
+                if(!state || state->action != WORLD_ACTION_PLACE_CUBE || getcraftingtablequality(state->item) < 0)
                     return rejectcraftaction(ci, requestid, "the requested crafting table does not exist");
                 if(!ci.hasposition || vec(first + 8, second + 8, third + 8).dist(ci.o) > 144.0f)
                     return rejectcraftaction(ci, requestid, "the crafting table is out of reach");
                 ci.craftinggridsize = 3;
-                ci.craftingstationitem = tableitem;
+                ci.craftingstationitem = state->item;
                 ci.craftingstationtarget = target;
                 break;
             }
@@ -4648,7 +4661,8 @@ namespace server
                 }
                 ci.inventoryitems[second] = match.outputitem;
                 ci.inventorycounts[second] += match.outputcount;
-                ci.inventorydurabilities[second] = getinventorytoolmaxdurability(match.outputitem);
+                const int quality = isqualitytool(match.outputitem) ? getcraftingtablequality(ci.craftingstationitem) : TOOL_QUALITY_AVERAGE;
+                ci.inventorydurabilities[second] = maketooldurability(match.outputitem, quality);
                 markinventorydirty(ci);
                 break;
             }
@@ -4674,7 +4688,8 @@ namespace server
                 }
                 ci.inventorycursoritem = match.outputitem;
                 ci.inventorycursorcount += match.outputcount;
-                ci.inventorycursordurability = getinventorytoolmaxdurability(match.outputitem);
+                const int quality = isqualitytool(match.outputitem) ? getcraftingtablequality(ci.craftingstationitem) : TOOL_QUALITY_AVERAGE;
+                ci.inventorycursordurability = maketooldurability(match.outputitem, quality);
                 markinventorydirty(ci);
                 break;
             }
@@ -4896,6 +4911,34 @@ namespace server
         if(*args) *args++ = '\0';
         while(iscubespace(*args)) ++args;
 
+        if(cubecaseequal(command, "kill"))
+        {
+            char *tail = args + strlen(args);
+            while(tail > args && iscubespace(tail[-1])) *--tail = '\0';
+            clientinfo *target = args[0] ? findconnectedplayer(args) : &ci;
+            if(!target)
+            {
+                defformatstring(message, "kill failed: player '%s' is not connected", args);
+                sendcommandresult(ci, message);
+                return;
+            }
+            if(!killserverplayer(*target))
+            {
+                defformatstring(message, "kill failed: %s is already dead", target->name);
+                sendcommandresult(ci, message);
+                return;
+            }
+
+            if(target == &ci) sendcommandresult(ci, "you died");
+            else
+            {
+                defformatstring(message, "killed %s", target->name);
+                sendcommandresult(ci, message);
+                sendcommandresult(*target, "you were killed by an administrator");
+            }
+            return;
+        }
+
         if(cubecaseequal(command, "give"))
         {
             char *itemid = args;
@@ -4920,10 +4963,24 @@ namespace server
                 return;
             }
 
+            int quality = TOOL_QUALITY_AVERAGE;
+            bool explicitquality = false;
+            if(!parsetoolqualitysuffix(itemid, quality, explicitquality))
+            {
+                sendcommandresult(ci, "give failed: quality suffix must be #lq, #aq, or #hq");
+                return;
+            }
+
             const int item = getinventoryitemindex(itemid);
             if(item < 0)
             {
                 defformatstring(message, "give failed: unknown item '%s'", itemid);
+                sendcommandresult(ci, message);
+                return;
+            }
+            if(explicitquality && !isqualitytool(item))
+            {
+                defformatstring(message, "give failed: '%s' is not registered for quality tiers", itemid);
                 sendcommandresult(ci, message);
                 return;
             }
@@ -4942,13 +4999,15 @@ namespace server
                 return;
             }
 
-            loopi(int(amount)) addinventoryitem(*target, item);
+            loopi(int(amount)) addinventoryitem(*target, item, quality);
             sendinventory(*target);
-            defformatstring(message, "gave %ld x %s to %s", amount, itemid, target->name);
+            const char *qualityname = !isqualitytool(item) ? "" : quality == TOOL_QUALITY_LOW ? "low-quality "
+                                    : quality == TOOL_QUALITY_HIGH ? "high-quality " : "average-quality ";
+            defformatstring(message, "gave %ld x %s%s to %s", amount, qualityname, itemid, target->name);
             sendcommandresult(ci, message);
             if(target != &ci)
             {
-                defformatstring(notification, "an administrator gave you %ld x %s", amount, itemid);
+                defformatstring(notification, "an administrator gave you %ld x %s%s", amount, qualityname, itemid);
                 sendcommandresult(*target, notification);
             }
             return;
