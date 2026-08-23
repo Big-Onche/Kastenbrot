@@ -4337,7 +4337,7 @@ CMPSCMD(>s, >);
 CMPSCMD(<=s, <=);
 CMPSCMD(>=s, >=);
 
-ICOMMAND(echo, "C", (char *s), conoutf(CON_ECHO, "\f1%s", s));
+ICOMMAND(echo, "C", (char *s), conoutf(CON_ECHO, "\fc69F%s", s));
 ICOMMAND(error, "C", (char *s), conoutf(CON_ERROR, "%s", s));
 ICOMMAND(strstr, "ss", (char *a, char *b), { char *s = strstr(a, b); intret(s ? s-a : -1); });
 ICOMMAND(strrstr, "ss", (char *a, char *b),

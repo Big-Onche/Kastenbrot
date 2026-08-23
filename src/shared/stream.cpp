@@ -219,6 +219,7 @@ size_t encodeutf8(uchar *dstbuf, size_t dstlen, const uchar *srcbuf, size_t srcl
                 if(uni == '\f')
                 {
                     if(++src >= srcend) goto done;
+                    if(*src == 'c' && srcend-src >= 4 && isxdigit(src[1]) && isxdigit(src[2]) && isxdigit(src[3])) src += 3;
                     goto uni1;
                 }
                 *dst++ = uni;

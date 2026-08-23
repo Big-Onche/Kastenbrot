@@ -199,6 +199,7 @@ void filtertext(char *dst, const char *src, bool whitespace, bool forcespace, si
         if(c == '\f')
         {
             if(!*++src) break;
+            if(*src == 'c' && isxdigit(uchar(src[1])) && isxdigit(uchar(src[2])) && isxdigit(uchar(src[3]))) src += 3;
             continue;
         }
         if(!iscubeprint(c))
@@ -262,4 +263,3 @@ int ipmask::print(char *buf) const
     if(!bits && range%8) buf += sprintf(buf, "/%d", range);
     return int(buf-start);
 }
-

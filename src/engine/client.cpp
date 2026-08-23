@@ -99,7 +99,7 @@ void connectserv(const char *servername, int serverport, const char *serverpassw
         conoutf("attempting to connect to %s:%d", servername, serverport);
         if(!resolverwait(servername, &address))
         {
-            conoutf(CON_ERROR, "\f3could not resolve server %s", servername);
+            conoutf(CON_ERROR, "\fcF44could not resolve server %s", servername);
             return;
         }
     }
@@ -116,7 +116,7 @@ void connectserv(const char *servername, int serverport, const char *serverpassw
         clienthost = enet_host_create(NULL, 2, server::numchannels(), rate*1024, rate*1024);
         if(!clienthost)
         {
-            conoutf(CON_ERROR, "\f3could not connect to server");
+            conoutf(CON_ERROR, "\fcF44could not connect to server");
             return;
         }
         clienthost->duplicatePeers = 0;
@@ -217,7 +217,7 @@ void flushclient()
 
 void neterr(const char *s, bool disc)
 {
-    conoutf(CON_ERROR, "\f3illegal network message (%s)", s);
+    conoutf(CON_ERROR, "\fcF44illegal network message (%s)", s);
     if(disc) disconnect();
 }
 
@@ -240,7 +240,7 @@ void gets2c()           // get updates from the server
         ++connattempts;
         if(connattempts > 3)
         {
-            conoutf(CON_ERROR, "\f3could not connect to server");
+            conoutf(CON_ERROR, "\fcF44could not connect to server");
             abortconnect();
             return;
         }
@@ -269,7 +269,7 @@ void gets2c()           // get updates from the server
             if(event.data>=DISC_NUM) event.data = DISC_NONE;
             if(event.peer==connpeer)
             {
-                conoutf(CON_ERROR, "\f3could not connect to server");
+                conoutf(CON_ERROR, "\fcF44could not connect to server");
                 abortconnect();
             }
             else
@@ -277,8 +277,8 @@ void gets2c()           // get updates from the server
                 if(!discmillis || event.data)
                 {
                     const char *msg = disconnectreason(event.data);
-                    if(msg) conoutf(CON_ERROR, "\f3server network error, disconnecting (%s) ...", msg);
-                    else conoutf(CON_ERROR, "\f3server network error, disconnecting...");
+                    if(msg) conoutf(CON_ERROR, "\fcF44server network error, disconnecting (%s) ...", msg);
+                    else conoutf(CON_ERROR, "\fcF44server network error, disconnecting...");
                 }
                 disconnect();
             }

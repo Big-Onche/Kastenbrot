@@ -599,7 +599,7 @@ ICOMMAND(servinfoplayers, "i", (int *i),
     GETSERVERINFO(*i, si,
     {
         if(si.maxplayers <= 0) intret(si.numplayers);
-        else result(tempformatstring(si.numplayers >= si.maxplayers ? "\f3%d/%d" : "%d/%d", si.numplayers, si.maxplayers));
+        else result(tempformatstring(si.numplayers >= si.maxplayers ? "\fcF44%d/%d" : "%d/%d", si.numplayers, si.maxplayers));
     }));
 ICOMMAND(servinfoattr, "ii", (int *i, int *n), GETSERVERINFO(*i, si, { if(si.attr.inrange(*n)) intret(si.attr[*n]); }));
 
@@ -699,7 +699,7 @@ void updatefrommaster()
                 int port;
                 if(sscanf(args, "%100s %d", ip, &port) == 2) addserver(ip, port);
             }
-            else if(matchstring(line, cmdlen, "echo")) conoutf("\f1%s", args);
+            else if(matchstring(line, cmdlen, "echo")) conoutf("\fc69F%s", args);
 
             line = end + 1;
         }

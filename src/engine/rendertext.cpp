@@ -271,36 +271,46 @@ static float draw_char(GLuint &tex, font *f, int c, float x, float y, float scal
 
 VARP(textbright, 0, 85, 100);
 
-//stack[sp] is current color index
-static void text_color(char c, char *stack, int size, int &sp, bvec color, int a)
+static int text_hex_digit(int c)
+{
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool text_hex_color(const char *s, bvec &color)
+{
+    if(!s[0] || !s[1] || !s[2]) return false;
+    int r = text_hex_digit(uchar(s[0])), g = text_hex_digit(uchar(s[1])), b = text_hex_digit(uchar(s[2]));
+    if(r < 0 || g < 0 || b < 0) return false;
+    color = bvec(r*17, g*17, b*17);
+    return true;
+}
+
+// stack[sp] is the current rendered color
+static void text_color(char c, bvec *stack, int size, int &sp, int a)
 {
     if(c=='s') // save color
     {
-        c = stack[sp];
-        if(sp<size-1) stack[++sp] = c;
+        if(sp<size-1) stack[sp+1] = stack[sp], ++sp;
     }
-    else
+    else if(c=='r') // restore color
     {
         xtraverts += gle::end();
-        if(c=='r') { if(sp > 0) --sp; c = stack[sp]; } // restore color
-        else stack[sp] = c;
-        switch(c)
-        {
-            case '0': color = bvec( 64, 255, 128); break;   // green: player talk
-            case '1': color = bvec( 96, 160, 255); break;   // blue: "echo" command
-            case '2': color = bvec(255, 192,  64); break;   // yellow: gameplay messages
-            case '3': color = bvec(255,  64,  64); break;   // red: important errors
-            case '4': color = bvec(128, 128, 128); break;   // gray
-            case '5': color = bvec(192,  64, 192); break;   // magenta
-            case '6': color = bvec(255, 128,   0); break;   // orange
-            case '7': color = bvec(255, 255, 255); break;   // white
-            case '8': color = bvec( 80, 207, 229); break;   // "Tesseract Blue"
-            case '9': color = bvec(160, 240, 120); break;
-            default: gle::color(color, a); return;          // provided color: everything else
-        }
-        if(textbright != 100) color.scale(textbright, 100);
-        gle::color(color, a);
+        if(sp > 0) --sp;
+        gle::color(stack[sp], a);
     }
+}
+
+static void text_set_hex_color(const char *s, bvec *stack, int &sp, int a)
+{
+    bvec color;
+    if(!text_hex_color(s, color)) return;
+    if(textbright != 100) color.scale(textbright, 100);
+    xtraverts += gle::end();
+    stack[sp] = color;
+    gle::color(color, a);
 }
 
 #define TEXTFORMAT(idx) \
@@ -311,11 +321,17 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
             textfont = fontvariant(basefont, fmt);\
             scale = textfont->scale/float(textfont->defaulth);\
         }\
+        else if(fmt == 'c' && text_hex_color(&str[idx+1], textformatcolor))\
+        {\
+            TEXTCOLORHEX(idx+1)\
+            idx += 3;\
+        }\
         else { TEXTCOLOR(idx) }\
     }
 
 #define TEXTSKELETON \
     font *basefont = curfont, *textfont = curfont;\
+    bvec textformatcolor;\
     float lineheight = basefont->scale, y = 0, x = 0, scale = textfont->scale/float(textfont->defaulth);\
     int i;\
     for(i = 0; str[i]; i++)\
@@ -349,7 +365,8 @@ static void text_color(char c, char *stack, int size, int &sp, bvec color, int a
                                 wrapfont = fontvariant(basefont, fmt);\
                                 wrapscale = wrapfont->scale/float(wrapfont->defaulth);\
                             }\
-                            i++;\
+                            if(fmt == 'c' && text_hex_color(&str[i+3], textformatcolor)) i += 4;\
+                            else i++;\
                         }\
                         continue;\
                     }\
@@ -385,6 +402,7 @@ int text_visible(const char *str, float hitx, float hity, int maxwidth)
     #define TEXTWHITE(idx) if(y+lineheight > hity && x >= hitx) return idx;
     #define TEXTLINE(idx) if(y+lineheight > hity) return idx;
     #define TEXTCOLOR(idx)
+    #define TEXTCOLORHEX(idx)
     #define TEXTCHAR(idx) x += cw; TEXTWHITE(idx)
     #define TEXTWORD TEXTWORDSKELETON
     TEXTSKELETON
@@ -392,6 +410,7 @@ int text_visible(const char *str, float hitx, float hity, int maxwidth)
     #undef TEXTWHITE
     #undef TEXTLINE
     #undef TEXTCOLOR
+    #undef TEXTCOLORHEX
     #undef TEXTCHAR
     #undef TEXTWORD
     return i;
@@ -404,6 +423,7 @@ void text_posf(const char *str, int cursor, float &cx, float &cy, int maxwidth)
     #define TEXTWHITE(idx)
     #define TEXTLINE(idx)
     #define TEXTCOLOR(idx)
+    #define TEXTCOLORHEX(idx)
     #define TEXTCHAR(idx) x += cw;
     #define TEXTWORD TEXTWORDSKELETON if(i >= cursor) break;
     cx = cy = 0;
@@ -413,6 +433,7 @@ void text_posf(const char *str, int cursor, float &cx, float &cy, int maxwidth)
     #undef TEXTWHITE
     #undef TEXTLINE
     #undef TEXTCOLOR
+    #undef TEXTCOLORHEX
     #undef TEXTCHAR
     #undef TEXTWORD
 }
@@ -423,6 +444,7 @@ void text_boundsf(const char *str, float &width, float &height, int maxwidth)
     #define TEXTWHITE(idx)
     #define TEXTLINE(idx) if(x > width) width = x;
     #define TEXTCOLOR(idx)
+    #define TEXTCOLORHEX(idx)
     #define TEXTCHAR(idx) x += cw;
     #define TEXTWORD x += w;
     width = 0;
@@ -433,6 +455,7 @@ void text_boundsf(const char *str, float &width, float &height, int maxwidth)
     #undef TEXTWHITE
     #undef TEXTLINE
     #undef TEXTCOLOR
+    #undef TEXTCOLORHEX
     #undef TEXTCHAR
     #undef TEXTWORD
 }
@@ -444,13 +467,14 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     #define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; cursorfont = textfont; cursorscale = scale; }
     #define TEXTWHITE(idx)
     #define TEXTLINE(idx)
-    #define TEXTCOLOR(idx) if(usecolor) text_color(str[idx], colorstack, sizeof(colorstack), colorpos, color, a);
+    #define TEXTCOLOR(idx) if(usecolor) text_color(str[idx], colorstack, int(sizeof(colorstack)/sizeof(colorstack[0])), colorpos, a);
+    #define TEXTCOLORHEX(idx) if(usecolor) text_set_hex_color(&str[idx], colorstack, colorpos, a);
     #define TEXTCHAR(idx) draw_char(tex, textfont, c, left+x, top+y, scale); x += cw;
     #define TEXTWORD TEXTWORDSKELETON
-    char colorstack[10];
-    colorstack[0] = '\0'; //indicate user color
     bvec color(r, g, b);
     if(textbright != 100) color.scale(textbright, 100);
+    bvec colorstack[10];
+    colorstack[0] = color;
     int colorpos = 0;
     float cx = -FONTW, cy = 0;
     font *cursorfont = curfont;
@@ -479,6 +503,7 @@ void draw_text(const char *str, float left, float top, int r, int g, int b, int 
     #undef TEXTWHITE
     #undef TEXTLINE
     #undef TEXTCOLOR
+    #undef TEXTCOLORHEX
     #undef TEXTCHAR
     #undef TEXTWORD
     #undef TEXTFORMAT
