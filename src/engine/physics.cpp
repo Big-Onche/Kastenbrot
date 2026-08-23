@@ -5,6 +5,7 @@
 
 #include "engine.h"
 #include "mpr.h"
+#include "worldruntime.h"
 
 const int MAXCLIPOFFSET = 4;
 const int MAXCLIPPLANES = 1024;
@@ -1091,6 +1092,25 @@ static inline bool octacollide(physent *d, const vec &dir, float cutoff, const i
     return cubecollide(d, dir, cutoff, *c, ivec(bo).mask(cmask), csize, solid);
 }
 
+static bool worldplaceablecollide(physent *d, const vec &dir, float cutoff, const ivec &bo, const ivec &bs)
+{
+    // Placeable collision is a logical full voxel, independent of the streamed
+    // mapmodel's lifetime and collision mesh.
+    const int mask = ~(WORLD_BLOCK_SIZE - 1);
+    for(int x = bo.x & mask; x <= bs.x; x += WORLD_BLOCK_SIZE)
+        for(int y = bo.y & mask; y <= bs.y; y += WORLD_BLOCK_SIZE)
+            for(int z = bo.z & mask; z <= bs.z; z += WORLD_BLOCK_SIZE)
+            {
+                const ivec cell(x, y, z);
+                if(!worldplaceableblockcollisionat(cell)) continue;
+                cube collisioncube = {};
+                solidfaces(collisioncube);
+                collisioncube.visible = 0x3F;
+                if(cubecollide(d, dir, cutoff, collisioncube, cell, WORLD_BLOCK_SIZE, true)) return true;
+            }
+    return false;
+}
+
 // all collision happens here
 bool collide(physent *d, const vec &dir, float cutoff, bool playercol, bool insideplayercol)
 {
@@ -1100,7 +1120,8 @@ bool collide(physent *d, const vec &dir, float cutoff, bool playercol, bool insi
     ivec bo(int(d->o.x-d->radius), int(d->o.y-d->radius), int(d->o.z-d->eyeheight)),
          bs(int(d->o.x+d->radius), int(d->o.y+d->radius), int(d->o.z+d->aboveeye));
     bo.sub(1); bs.add(1);  // guard space for rounding errors
-    return octacollide(d, dir, cutoff, bo, bs) || (playercol && plcollide(d, dir, insideplayercol)); // collide with world
+    return octacollide(d, dir, cutoff, bo, bs) || worldplaceablecollide(d, dir, cutoff, bo, bs) ||
+           (playercol && plcollide(d, dir, insideplayercol)); // collide with world
 }
 
 void recalcdir(physent *d, const vec &oldvel, vec &dir)
@@ -2047,4 +2068,3 @@ bool entinmap(dynent *d, bool avoidplayers)        // brute force but effective 
     conoutf(CON_WARN, "can't find entity spawn spot! (%.1f, %.1f, %.1f)", d->o.x, d->o.y, d->o.z);
     return false;
 }
-

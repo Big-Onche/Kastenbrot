@@ -220,6 +220,12 @@ bool isworldplaceable(int index)
     return worldscatterdefinitions.inrange(index) && worldscatterdefinitions[index]->placeable;
 }
 
+bool getworldplaceableblockcollision(int index)
+{
+    return worldscatterdefinitions.inrange(index) && worldscatterdefinitions[index]->placeable &&
+           worldscatterdefinitions[index]->placeableblockcollision;
+}
+
 int numworldplaceables()
 {
     int count = 0;
@@ -1133,6 +1139,12 @@ int getworldscatteritem(int index)
 bool isworldplaceable(int index)
 {
     return worldscatterdefinitions.inrange(index) && worldscatterdefinitions[index]->placeable;
+}
+
+bool getworldplaceableblockcollision(int index)
+{
+    return worldscatterdefinitions.inrange(index) && worldscatterdefinitions[index]->placeable &&
+           worldscatterdefinitions[index]->placeableblockcollision;
 }
 
 int getworlditemtype(int item)

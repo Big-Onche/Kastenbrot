@@ -97,6 +97,29 @@ bool worldtorchincell(const ivec &cell)
     return false;
 }
 
+bool worldplaceableblockcollisionat(const ivec &cell)
+{
+    if(cell.x < 0 || cell.y < 0 || cell.z < 0 ||
+       cell.x >= worldsize || cell.y >= worldsize ||
+       cell.z + WORLD_BLOCK_SIZE > WORLD_MAP_SIZE)
+        return false;
+    const int chunkx = worldfirstchunkx + cell.x / WORLD_CHUNK_SIZE,
+              chunky = worldfirstchunky + cell.y / WORLD_CHUNK_SIZE,
+              chunkindex = findworldchunk(chunkx, chunky);
+    if(!worldchunks.inrange(chunkindex)) return false;
+    const worldchunk &chunk = worldchunks[chunkindex];
+    if(chunk.loading || !chunk.root || !worldchunkmounted(chunk)) return false;
+    const ivec origin = worldchunkorigin(chunk);
+    loopv(chunk.scatter)
+    {
+        const worldscatterinstance &scatter = chunk.scatter[i];
+        if(scatter.x == cell.x - origin.x && scatter.y == cell.y - origin.y && scatter.z == cell.z &&
+           getworldplaceableblockcollision(scatter.type))
+            return true;
+    }
+    return false;
+}
+
 int getworldscatterindexat(const ivec &support, int orient)
 {
     const ivec target = ivec(support).add(ivec(worldorientnormal(orient)).mul(WORLD_BLOCK_SIZE));
