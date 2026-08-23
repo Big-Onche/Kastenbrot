@@ -1126,7 +1126,8 @@ namespace game
     static float heldattackdamage()
     {
         const int item = selectedcreativeblock();
-        return item >= 0 && isinventorytool(item) ? getinventorytooldamage(item) : 1.0f;
+        return item >= 0 && isinventorytool(item)
+             ? getinventorytooldamage(item) * gettoolqualitymultiplier(selectedtoolquality()) : 1.0f;
     }
 
     static void spawnlocalnpcdrops(npc &mob)

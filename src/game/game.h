@@ -171,7 +171,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 32
+#define PROTOCOL_VERSION 33
 
 enum
 {
@@ -512,6 +512,7 @@ namespace game
     extern float playerfooduseamount(const gameent *d);
     extern float creativearmwave(int elapsed);
     extern int selectedcreativeblock();
+    extern int selectedtoolquality();
     extern void wearselectedsurvivaltool();
     extern void damageplayer(float damage, const vec &source);
     extern float getlocalplayerhealth();
