@@ -26,7 +26,14 @@ static void copyglyph(SDL_Surface *surface, vector<uchar> &atlas, int atlasx, in
         uchar r, g, b, a;
         SDL_GetRGBA(surfacepixel(surface, j, i), surface->format, &r, &g, &b, &a);
         uchar *dst = &atlas[((atlasy+i)*FONT_ATLAS_SIZE + atlasx+j)*4];
-        if(inner) dst[0] = dst[1] = dst[2] = max(dst[0], a);
+        // Keep fill and outline coverage exclusive. The fill is copied second
+        // and replaces the outline wherever the glyph itself has coverage, so
+        // the outline cannot darken or eat into the letter strokes.
+        if(inner && a)
+        {
+            dst[0] = dst[1] = dst[2] = 255;
+            dst[3] = a;
+        }
         else dst[3] = max(dst[3], a);
     }
     if(SDL_MUSTLOCK(surface)) SDL_UnlockSurface(surface);
