@@ -1136,7 +1136,7 @@ namespace game
     {
         if(!m_survival) return;
         const int slot = clampcreativehotbarslot(), item = survivalitems[slot];
-        if(survivalcounts[slot] <= 0 || !validatetooldurability(item, survivaldurabilities[slot])) return;
+        if(survivalcounts[slot] <= 0 || !isinventorytool(item) || !validatetooldurability(item, survivaldurabilities[slot])) return;
 
         survivaldurabilities[slot] = weartooldurability(item, survivaldurabilities[slot], 1);
         if(!survivaldurabilities[slot])
@@ -3974,7 +3974,7 @@ namespace game
     static bool usesurvivalcornertool(int button)
     {
         const int slot = clampcreativehotbarslot(), tool = survivalitems[slot];
-        if(survivalcounts[slot] <= 0 || !validatetooldurability(tool, survivaldurabilities[slot]) || getinventorytoolcornerpush(tool) != button)
+        if(survivalcounts[slot] <= 0 || !isinventorytool(tool) || !validatetooldurability(tool, survivaldurabilities[slot]) || getinventorytoolcornerpush(tool) != button)
             return false;
 
         creativetarget target;
@@ -4068,7 +4068,7 @@ namespace game
     static int selectedsurvivaltool()
     {
         const int slot = clampcreativehotbarslot();
-        return survivalcounts[slot] > 0 && validatetooldurability(survivalitems[slot], survivaldurabilities[slot]) ? survivalitems[slot] : -1;
+        return survivalcounts[slot] > 0 && isinventorytool(survivalitems[slot]) && validatetooldurability(survivalitems[slot], survivaldurabilities[slot]) ? survivalitems[slot] : -1;
     }
 
     static void emitsurvivalblockchips(const creativetarget &target, int num)
