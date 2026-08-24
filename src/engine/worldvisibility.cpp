@@ -288,11 +288,9 @@ static uchar worldchunksectionfocusfaces(worldchunk &chunk, int tile, int sectio
     {
         ivec actualorigin;
         int actualsize;
-        state = classifyworldsection(lookupcube(runtimepos, -WORLD_SECTION_SIZE, actualorigin, actualsize), portals, facemasks, focuscell,
-                                     &focusfaces);
+        state = classifyworldsection(lookupcube(runtimepos, -WORLD_SECTION_SIZE, actualorigin, actualsize), portals, facemasks, focuscell, &focusfaces);
     }
-    else state = classifyworldsection(lookupworldchunkcube(static_cast<const worldchunk &>(chunk), pos, WORLD_SECTION_SIZE), portals,
-                                      facemasks, focuscell, &focusfaces);
+    else state = classifyworldsection(lookupworldchunkcube(static_cast<const worldchunk &>(chunk), pos, WORLD_SECTION_SIZE), portals, facemasks, focuscell, &focusfaces);
     cacheworldchunksectionclassification(chunk, tile, section, state, portals, facemasks);
     return focusfaces;
 }
@@ -348,8 +346,7 @@ static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, con
         // changedstreaming() adds the face-neighbour halo, so a section edge
         // also invalidates the immediately adjacent section VA.
         bbmins[numregions] = center;
-        bbmaxs[numregions] = ivec(center).add(WORLD_SECTION_SIZE).min(
-            ivec(worldsize, worldsize, WORLD_MAP_SIZE));
+        bbmaxs[numregions] = ivec(center).add(WORLD_SECTION_SIZE).min(ivec(worldsize, worldsize, WORLD_MAP_SIZE));
         numregions++;
     }
     if(numregions)
@@ -371,8 +368,8 @@ static bool worldchunksectionnearplayer(const worldchunk &chunk, int tile, int s
     const ivec origin = worldchunkorigin(chunk);
     const int sectionx = origin.x / WORLD_SECTION_SIZE + x,
               sectiony = origin.y / WORLD_SECTION_SIZE + y;
-    return abs(sectionx - focussection.x) <= radius && abs(sectiony - focussection.y) <= radius &&
-           abs(section - focussection.z) <= radius;
+
+    return abs(sectionx - focussection.x) <= radius && abs(sectiony - focussection.y) <= radius && abs(section - focussection.z) <= radius;
 }
 
 struct worldsectionnode
@@ -384,8 +381,7 @@ struct worldsectionnode
         : chunkindex(chunkindex), tile(tile), section(section), exits(exits) {}
 };
 
-static bool findworldsectionneighbor(int chunkindex, int tile, int section, int dx, int dy, int dz, int focusx, int focusy,
-                                     int &neighborindex, int &neighbortile, int &neighborsection)
+static bool findworldsectionneighbor(int chunkindex, int tile, int section, int dx, int dy, int dz, int focusx, int focusy, int &neighborindex, int &neighbortile, int &neighborsection)
 {
     worldchunk &chunk = worldchunks[chunkindex];
     int chunkx = chunk.x, chunky = chunk.y,
@@ -405,8 +401,7 @@ static bool findworldsectionneighbor(int chunkindex, int tile, int section, int 
     return true;
 }
 
-static bool worldsectionfacesoverlap(int chunkindex, int tile, int section, int face, int neighborindex, int neighbortile,
-                                     int neighborsection)
+static bool worldsectionfacesoverlap(int chunkindex, int tile, int section, int face, int neighborindex, int neighbortile, int neighborsection)
 {
     const uint *facemask = worldchunksectionfacemask(worldchunks[chunkindex], tile, section, face),
                *neighbormask = worldchunksectionfacemask(worldchunks[neighborindex], neighbortile, neighborsection, face^1);
@@ -519,8 +514,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
                         continue;
                     const worldchunk &neighbor = worldchunks[neighborindex];
                     if(!(neighbor.reachablefaces[neighborsection][neighbortile] & (1<<(l^1)))) continue;
-                    revealworldsection(queue, index, j, k,
-                                       worldsectionfacesoverlap(index, j, k, l, neighborindex, neighbortile, neighborsection) ? 1<<l : 0);
+                    revealworldsection(queue, index, j, k, worldsectionfacesoverlap(index, j, k, l, neighborindex, neighbortile, neighborsection) ? 1<<l : 0);
                 }
             }
         }
@@ -542,8 +536,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
                 int tilex = clamp(int(floorf((focus->x - origin.x) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1),
                     tiley = clamp(int(floorf((focus->y - origin.y) / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_COLUMNS) - 1);
                 int tile = tiley * WORLD_SECTION_COLUMNS + tilex;
-                revealworldsectionfromfocus(queue, cameraindex, tile, focussection.z,
-                                            worldchunksectionfocusfaces(chunk, tile, focussection.z, *focus));
+                revealworldsectionfromfocus(queue, cameraindex, tile, focussection.z, worldchunksectionfocusfaces(chunk, tile, focussection.z, *focus));
             }
         }
     }
@@ -624,6 +617,19 @@ static int worldsectionrenderflagsat(const vec &focus)
               tile = tiley * WORLD_SECTION_COLUMNS + tilex,
               section = clamp(int(floorf(focus.z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1);
     return chunk.renderdata.flags[section][tile];
+}
+
+float worldplayercavefactor()
+{
+    if(!player) return 0.0f;
+    const int flags = worldsectionrenderflagsat(player->o);
+    if(!(flags&SECTION_INTERIOR) || flags&(SECTION_EXTERIOR | SECTION_WATER | SECTION_CAVE_ENTRANCE)) return 0.0f;
+
+    // A sealed interior supplies half the cave confidence. Depth below sea
+    // level supplies the other half, reaching full confidence at -64 blocks
+    // (1,024 engine units) and remaining clamped below that elevation.
+    const float depth = clamp(-worldpositionheight(player->o.z) / 64.0f, 0.0f, 1.0f);
+    return 0.5f + 0.5f * depth;
 }
 
 static int worldplayersectionrenderflags(bool &nearentrance)
@@ -802,8 +808,7 @@ struct worldsectioncandidate
     long long score;
 };
 
-static int findworldchunkmountsections(int chunkx, int chunky,
-                                       worldsectioncandidate *candidates, int maxcandidates)
+static int findworldchunkmountsections(int chunkx, int chunky, worldsectioncandidate *candidates, int maxcandidates)
 {
     ZoneScopedN("Chunks/Select render sections");
     if(maxcandidates <= 0) return 0;

@@ -895,6 +895,7 @@ namespace game
 #ifndef STANDALONE
         if(pendingnetworkworld) environment::synctime(pendingnetworktime, pendingnetworkfrozen);
         else environment::reset();
+        sound::contextMusicWorldLoaded();
         if(!initing)
         {
             if(!localworldactive && !remote && !isconnected()) localconnect();

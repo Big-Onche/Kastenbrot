@@ -219,6 +219,7 @@ extern void clearworldchunks();
 extern void closeproceduralworld();
 extern int getworldsectionsize();
 extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int section);
+extern float worldplayercavefactor();
 extern bool sampleworldsolid(const ivec &position, int &leafbottom);
 extern void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid, bvec4 *albedo);
 extern bool worldsectionvaenabled(const ivec &origin, int size);

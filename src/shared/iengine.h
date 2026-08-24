@@ -662,6 +662,7 @@ namespace sound
     extern void init();
     extern void reset();
     extern void cleanup();
+    extern void contextMusicWorldLoaded();
 }
 
 extern int playsound(int n, const vec *loc = NULL, extentity *ent = NULL, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);

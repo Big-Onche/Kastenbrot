@@ -10,6 +10,8 @@
 
 extern vec hitsurface;
 
+namespace game { namespace environment { extern float getdayprogress(), gethourafter(int millis); } }
+
 namespace acoustics { extern int soundacoustics, soundacousticsmooth; }
 
 namespace sound
@@ -644,7 +646,7 @@ namespace sound
             return true;
         }
 
-        bool startFile(const char *file, const char *cmd)
+        bool startFile(const char *file, const char *cmd, bool loop = true)
         {
             cleanup(true);
             if(!audio.open(file)) return false;
@@ -670,7 +672,7 @@ namespace sound
                 return false;
             }
 
-            looping = !cmd[0];
+            looping = loop && !cmd[0];
             filename = newstring(file);
             if(cmd[0]) donecmd = newstring(cmd);
 
@@ -780,6 +782,233 @@ namespace sound
 
     static MusicPlayer music;
 
+    enum
+    {
+        MUSIC_MORNING = 0,
+        MUSIC_AFTERNOON,
+        MUSIC_EVENING,
+        MUSIC_NIGHT,
+        MUSIC_CAVE,
+        MUSIC_CONTEXTS
+    };
+
+    struct ContextMusicTrack
+    {
+        string filename;
+        int context;
+
+        ContextMusicTrack() : context(MUSIC_AFTERNOON) { filename[0] = '\0'; }
+    };
+
+    static vector<ContextMusicTrack> contextMusicTracks;
+    static bool contextMusicScanned = false, contextualMusicPlaying = false, manualMusicPlaying = false,
+                initialContextMusicPending = false;
+    static int nextContextMusicMillis = -1, contextMusicExpectedEndMillis = -1, lastMusicDebugMillis = -5000;
+    static string lastContextMusicTrack = "";
+
+    VARP(contextmusic, 0, 1, 1);
+    VAR(debugmusic, 0, 0, 1);
+    VARP(musicinitialdelaymin, 0, 90000, 1800000);
+    VARP(musicinitialdelaymax, 0, 300000, 1800000);
+    VARP(musicdelaymin, 0, 300000, 1800000);
+    VARP(musicdelaymax, 0, 900000, 1800000);
+    FVARP(musiccrosscontextweight, 0.0f, 0.08f, 1.0f);
+    FVARP(musicweightmorning, 0.0f, 1.0f, 10.0f);
+    FVARP(musicweightafternoon, 0.0f, 1.0f, 10.0f);
+    FVARP(musicweightevening, 0.0f, 1.0f, 10.0f);
+    FVARP(musicweightnight, 0.0f, 1.0f, 10.0f);
+    FVARP(musicweightcave, 0.0f, 1.0f, 10.0f);
+    FVARP(musiccavethreshold, 0.0f, 0.75f, 1.0f);
+
+    static const char *contextMusicFolder(int context)
+    {
+        static const char *folders[MUSIC_CONTEXTS] = { "morning", "afternoon", "evening", "night", "cave" };
+        return folders[context];
+    }
+
+    static void scanContextMusic()
+    {
+        if(contextMusicScanned) return;
+        contextMusicScanned = true;
+        loop(context, MUSIC_CONTEXTS)
+        {
+            defformatstring(dir, "media/music/%s", contextMusicFolder(context));
+            vector<char *> files;
+            listfiles(dir, "ogg", files);
+            loopv(files)
+            {
+                defformatstring(filename, "%s/%s.ogg", dir, files[i]);
+                bool duplicate = false;
+                loopvk(contextMusicTracks) if(!strcmp(contextMusicTracks[k].filename, filename)) { duplicate = true; break; }
+                if(!duplicate)
+                {
+                    ContextMusicTrack &track = contextMusicTracks.add();
+                    copystring(track.filename, filename);
+                    track.context = context;
+                }
+            }
+            files.deletearrays();
+        }
+        if(contextMusicTracks.length()) conoutf(CON_INIT, "registered %d contextual music tracks", contextMusicTracks.length());
+    }
+
+    static void scheduleContextMusic(bool initial = false)
+    {
+        const int minimum = initial ? musicinitialdelaymin : musicdelaymin,
+                  maximum = initial ? musicinitialdelaymax : musicdelaymax,
+                  low = min(minimum, maximum), high = max(minimum, maximum);
+        nextContextMusicMillis = totalmillis + low + (high > low ? rnd(high - low + 1) : 0);
+        contextMusicExpectedEndMillis = -1;
+    }
+
+    void contextMusicWorldLoaded()
+    {
+        initialContextMusicPending = true;
+        if(!music.active && !manualMusicPlaying)
+            scheduleContextMusic(true);
+    }
+
+    static float musicSmoothStep(float value)
+    {
+        value = clamp(value, 0.0f, 1.0f);
+        return value * value * (3.0f - 2.0f * value);
+    }
+
+    static void surfaceMusicWeights(float weights[4])
+    {
+        const float hour = game::environment::getdayprogress() * 24.0f;
+        int from = MUSIC_NIGHT, to = MUSIC_NIGHT;
+        float start = 0.0f, end = 5.0f;
+        if(hour >= 5.0f && hour < 6.0f) { from = MUSIC_NIGHT; to = MUSIC_MORNING; start = 5.0f; end = 6.0f; }
+        if(hour >= 6.0f && hour < 10.0f) { from = MUSIC_MORNING; to = MUSIC_AFTERNOON; start = 6.0f; end = 10.0f; }
+        else if(hour >= 10.0f && hour < 18.0f) { from = MUSIC_AFTERNOON; to = MUSIC_EVENING; start = 10.0f; end = 18.0f; }
+        else if(hour >= 18.0f && hour < 21.0f) { from = MUSIC_EVENING; to = MUSIC_NIGHT; start = 18.0f; end = 21.0f; }
+        else if(hour >= 21.0f) { from = MUSIC_NIGHT; to = MUSIC_NIGHT; start = 21.0f; end = 24.0f; }
+
+        const float blend = from == to ? 0.0f : musicSmoothStep((hour - start) / (end - start));
+        loopi(4) weights[i] = musiccrosscontextweight;
+        weights[from] += 1.0f - blend;
+        weights[to] += blend;
+        weights[MUSIC_MORNING] *= musicweightmorning;
+        weights[MUSIC_AFTERNOON] *= musicweightafternoon;
+        weights[MUSIC_EVENING] *= musicweightevening;
+        weights[MUSIC_NIGHT] *= musicweightnight;
+    }
+
+    static int chooseContextMusicTrack()
+    {
+        const bool cave = worldplayercavefactor() > musiccavethreshold;
+        float weights[4] = { 0, 0, 0, 0 };
+        if(!cave) surfaceMusicWeights(weights);
+
+        float total = 0.0f;
+        loopv(contextMusicTracks)
+        {
+            const ContextMusicTrack &track = contextMusicTracks[i];
+            if(lastContextMusicTrack[0] && !strcmp(track.filename, lastContextMusicTrack)) continue;
+            if(cave ? track.context == MUSIC_CAVE : track.context != MUSIC_CAVE)
+                total += track.context == MUSIC_CAVE ? musicweightcave : weights[track.context];
+        }
+        const bool allowRepeat = total <= 0.0f;
+        if(allowRepeat) loopv(contextMusicTracks)
+        {
+            const ContextMusicTrack &track = contextMusicTracks[i];
+            if(cave ? track.context == MUSIC_CAVE : track.context != MUSIC_CAVE)
+                total += track.context == MUSIC_CAVE ? musicweightcave : weights[track.context];
+        }
+        if(total <= 0.0f) return -1;
+
+        float choice = rndscale(total);
+        loopv(contextMusicTracks)
+        {
+            const ContextMusicTrack &track = contextMusicTracks[i];
+            if(!allowRepeat && lastContextMusicTrack[0] && !strcmp(track.filename, lastContextMusicTrack)) continue;
+            if(cave ? track.context != MUSIC_CAVE : track.context == MUSIC_CAVE) continue;
+            choice -= track.context == MUSIC_CAVE ? musicweightcave : weights[track.context];
+            if(choice <= 0.0f) return i;
+        }
+        return -1;
+    }
+
+    static int contextMusicTrackType(const char *filename)
+    {
+        if(!filename) return -1;
+        loopv(contextMusicTracks) if(!strcmp(contextMusicTracks[i].filename, filename)) return contextMusicTracks[i].context;
+        return -1;
+    }
+
+    static void updateMusicDebug()
+    {
+        if(!debugmusic || totalmillis - lastMusicDebugMillis < 5000) return;
+        lastMusicDebugMillis = totalmillis;
+
+        const float hour = game::environment::getdayprogress() * 24.0f,
+                    cavefactor = worldplayercavefactor();
+        float weights[4] = { 0, 0, 0, 0 };
+        surfaceMusicWeights(weights);
+
+        const char *state = nosound ? "audio-off" : manualMusicPlaying && music.active ? "manual" :
+                            contextualMusicPlaying && music.active ? "playing" : !contextmusic ? "disabled" :
+                            mainmenu ? "menu" : contextMusicTracks.empty() ? "no-tracks" : "silence";
+        const int tracktype = music.active ? contextMusicTrackType(music.filename) : -1;
+        const char *trackcontext = tracktype >= 0 ? contextMusicFolder(tracktype) : manualMusicPlaying ? "manual" : "none";
+        const char *track = music.filename ? music.filename : "none";
+
+        int untilnext = -1;
+        bool approximate = false;
+        if(!music.active && nextContextMusicMillis >= 0) untilnext = max(nextContextMusicMillis - totalmillis, 0);
+        else if(contextualMusicPlaying && music.active && contextMusicExpectedEndMillis >= 0)
+        {
+            const int minimum = initialContextMusicPending ? musicinitialdelaymin : musicdelaymin,
+                      maximum = initialContextMusicPending ? musicinitialdelaymax : musicdelaymax,
+                      low = min(minimum, maximum), high = max(minimum, maximum);
+            untilnext = max(contextMusicExpectedEndMillis - totalmillis, 0) + low + (high - low) / 2;
+            approximate = true;
+        }
+
+        if(untilnext >= 0)
+            conoutf(CON_DEBUG,
+                "music: state=%s track=%s context=%s hour=%.2f cave=%.2f/%.2f next%s=%.2f in%s=%ds weights[m/a/e/n]=%.2f/%.2f/%.2f/%.2f",
+                state, track, trackcontext, hour, cavefactor, musiccavethreshold, approximate ? "~" : "",
+                game::environment::gethourafter(untilnext), approximate ? "~" : "", untilnext / 1000,
+                weights[MUSIC_MORNING], weights[MUSIC_AFTERNOON], weights[MUSIC_EVENING], weights[MUSIC_NIGHT]);
+        else conoutf(CON_DEBUG,
+                "music: state=%s track=%s context=%s hour=%.2f cave=%.2f/%.2f next=n/a weights[m/a/e/n]=%.2f/%.2f/%.2f/%.2f",
+                state, track, trackcontext, hour, cavefactor, musiccavethreshold,
+                weights[MUSIC_MORNING], weights[MUSIC_AFTERNOON], weights[MUSIC_EVENING], weights[MUSIC_NIGHT]);
+    }
+
+    static void updateContextMusic()
+    {
+        if(!contextmusic || manualMusicPlaying || mainmenu || contextMusicTracks.empty()) return;
+        if(music.active) return;
+        if(contextualMusicPlaying)
+        {
+            contextualMusicPlaying = false;
+            scheduleContextMusic(initialContextMusicPending);
+        }
+        if(nextContextMusicMillis < 0)
+            scheduleContextMusic(initialContextMusicPending);
+        if(totalmillis < nextContextMusicMillis || !soundvol || !musicvol) return;
+
+        const int selected = chooseContextMusicTrack();
+        if(selected < 0) { scheduleContextMusic(initialContextMusicPending); return; }
+        ContextMusicTrack &track = contextMusicTracks[selected];
+        if(music.startFile(track.filename, "", false))
+        {
+            copystring(lastContextMusicTrack, track.filename);
+            contextualMusicPlaying = true;
+            initialContextMusicPending = false;
+            contextMusicExpectedEndMillis = totalmillis + int(music.audio.info.frames * 1000 / max(music.audio.info.samplerate, 1));
+            nextContextMusicMillis = -1;
+        }
+        else
+        {
+            conoutf(CON_ERROR, "could not play contextual music: %s", track.filename);
+            scheduleContextMusic(initialContextMusicPending);
+        }
+    }
+
     static void setMusicVolume(int vol)
     {
         if(nosound) return;
@@ -790,6 +1019,8 @@ namespace sound
     {
         if(nosound) return;
         music.cleanup(true);
+        contextualMusicPlaying = manualMusicPlaying = false;
+        nextContextMusicMillis = contextMusicExpectedEndMillis = -1;
     }
 
     #ifdef WIN32
@@ -979,6 +1210,7 @@ namespace sound
 
     void init()
     {
+        scanContextMusic();
         if(shouldInitAudio)
         {
             shouldInitAudio = false;
@@ -998,6 +1230,7 @@ namespace sound
         }
         maxChannels = soundchans;
         nosound = false;
+        if(nextContextMusicMillis < 0) scheduleContextMusic();
     }
 
     static bool loadSoundFile(const char *name, ALuint &buffer)
@@ -1756,7 +1989,7 @@ namespace sound
     void update()
     {
         updatemumble();
-        if(nosound) return;
+        if(nosound) { updateMusicDebug(); return; }
         if(minimized && !minimizedsounds) stopAll();
         else
         {
@@ -1767,6 +2000,8 @@ namespace sound
             syncChannels();
         }
         music.update();
+        updateContextMusic();
+        updateMusicDebug();
     }
 
     VARP(maxsoundsatonce, 0, 7, 100);
@@ -1951,6 +2186,7 @@ namespace sound
         clearchanges(CHANGE_SOUND);
         char *oldfile = music.filename ? newstring(music.filename) : NULL;
         char *oldcmd = music.donecmd ? newstring(music.donecmd) : NULL;
+        const bool oldlooping = music.looping;
 
         music.cleanup(true);
         gameSounds.cleanupSamples();
@@ -1978,11 +2214,13 @@ namespace sound
 
         if(oldfile)
         {
-            if(!music.startFile(oldfile, oldcmd ? oldcmd : ""))
+            if(!music.startFile(oldfile, oldcmd ? oldcmd : "", oldlooping))
             {
                 DELETEA(music.filename);
                 DELETEA(music.donecmd);
             }
+            else if(contextualMusicPlaying)
+                contextMusicExpectedEndMillis = totalmillis + int(music.audio.info.frames * 1000 / max(music.audio.info.samplerate, 1));
             DELETEA(oldfile);
             DELETEA(oldcmd);
         }
@@ -1992,9 +2230,16 @@ namespace sound
     {
         if(nosound) return;
         music.cleanup(true);
+        contextualMusicPlaying = false;
+        manualMusicPlaying = false;
+        nextContextMusicMillis = contextMusicExpectedEndMillis = -1;
         if(soundvol && musicvol && *name)
         {
-            if(music.startPackage(name, cmd)) intret(1);
+            if(music.startPackage(name, cmd))
+            {
+                manualMusicPlaying = true;
+                intret(1);
+            }
             else
             {
                 conoutf(CON_ERROR, "could not play music: packages/%s", name);

@@ -604,6 +604,8 @@ namespace game
         extern void update();
         extern void synctime(int millis, bool frozen);
         extern int gettimemillis();
+        extern float getdayprogress();
+        extern float gethourafter(int millis);
         extern bool istimefrozen();
         extern float getambientlightlevel();
     }

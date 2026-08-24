@@ -233,6 +233,12 @@ namespace game
 
         // getters
         int gettimemillis() { return int(cyclemillis); }
+        float getdayprogress() { return float(cyclemillis / CYCLE_MILLIS); }
+        float gethourafter(int millis)
+        {
+            const double futuremillis = timefrozen ? cyclemillis : fmod(cyclemillis + max(millis, 0), double(CYCLE_MILLIS));
+            return float(futuremillis * HOURS_PER_DAY / CYCLE_MILLIS);
+        }
         bool istimefrozen() { return timefrozen; }
         float getambientlightlevel() { return worldambientlightlevel; }
 
