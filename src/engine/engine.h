@@ -833,9 +833,18 @@ extern void menuprocess();
 extern void clearmainmenu();
 
 // sound
+namespace sound
+{
+    extern void clearMapSounds();
+    extern void checkMapSounds();
+    extern void update();
+    extern void preloadMapSounds();
+}
+
 extern void clearmapsounds();
 extern void checkmapsounds();
 extern void updatesounds();
+extern void rendersounddebug();
 extern void preloadmapsounds();
 
 extern void initmumble();

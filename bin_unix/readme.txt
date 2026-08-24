@@ -14,7 +14,8 @@ Clients will need the following dynamic link libraries present:
 * libGL (OpenGL)
 * SDL2 (>= 2.0.0)
 * SDL2_image
-* SDL2_mixer
+* OpenAL Soft
+* libsndfile
 * libpng
 * libjpeg
 * zlib
@@ -98,4 +99,3 @@ exec ${TESS_SERV_BIN} ${TESS_SERV_OPTIONS} "$@"
 With respect to libraries, make sure that you do not link Tesseract against any other ENet package
 than the one that comes included with the Tesseract, as it may be different from the official ENet
 releases and might fail to compile or communicate properly.
-

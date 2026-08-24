@@ -445,7 +445,7 @@ extern int getworldsize();
 extern int getworldlightlevel(const vec &position);
 extern void updateworldchunks(bool force = false);
 extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata,
-                                     int datlength);
+                                     int datlength, const uchar *acousticdata, int acousticlength);
 extern int getmapversion();
 extern void renderentcone(const extentity &e, const vec &dir, float radius, float angle);
 extern void renderentarrow(const extentity &e, const vec &dir, float radius);
@@ -643,8 +643,26 @@ enum
 {
     SND_MAP     = 1<<0,
     SND_NO_ALT  = 1<<1,
-    SND_USE_ALT = 1<<2
+    SND_USE_ALT = 1<<2,
+    SND_HUD     = 1<<3
 };
+
+namespace sound
+{
+    extern int usesound, soundchans, soundfreq, soundbufferlen, soundvol, musicvol;
+    extern char *audiodriver;
+
+    extern int play(int n, const vec *loc = NULL, extentity *ent = NULL, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);
+    extern int playName(const char *s, const vec *loc = NULL, int vol = 0, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);
+    extern void preload(int n);
+    extern void preloadMap(int n);
+    extern bool stop(int n, int chanid, int fade = 0);
+    extern void stopAll();
+    extern void clearEntities();
+    extern void init();
+    extern void reset();
+    extern void cleanup();
+}
 
 extern int playsound(int n, const vec *loc = NULL, extentity *ent = NULL, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);
 extern int playsoundname(const char *s, const vec *loc = NULL, int vol = 0, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);
@@ -652,6 +670,7 @@ extern void preloadsound(int n);
 extern void preloadmapsound(int n);
 extern bool stopsound(int n, int chanid, int fade = 0);
 extern void stopsounds();
+extern void clearsoundentities();
 extern void initsound();
 
 // rendermodel

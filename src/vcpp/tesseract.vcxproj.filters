@@ -148,6 +148,9 @@
     <ClCompile Include="..\engine\shader.cpp">
       <Filter>engine</Filter>
     </ClCompile>
+    <ClCompile Include="..\engine\acoustics.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
     <ClCompile Include="..\engine\sound.cpp">
       <Filter>engine</Filter>
     </ClCompile>

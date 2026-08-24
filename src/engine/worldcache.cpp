@@ -85,7 +85,7 @@ struct worldchunksavejob
     cube *root;
     worldsectionrenderdata renderdata;
     vector<worldscatterinstance> scatter;
-    vector<uchar> gameplay;
+    vector<uchar> gameplay, acoustics;
     string folder, error;
     bool success, playeredited, compress;
 
@@ -194,6 +194,35 @@ static void worldchunksnapshotfilename(char *name, size_t length, const char *fo
     snprintf(name, length, "media/map/%s/chunks/%d_%d.%s", folder, x, y, extension);
     path(name);
 }
+
+#ifdef WORLD_SNAPSHOT_SERVER_CODEC
+static void worldchunkacousticputuint(vector<uchar> &data, uint value) { loopi(4) data.add(uchar(value >> (i*8))); }
+
+static bool serializeworldchunkacoustics(const worldsectionrenderdata &renderdata, int x, int y, vector<uchar> &data)
+{
+    data.setsize(0);
+    data.put((const uchar *)"KCAG", 4);
+    worldchunkacousticputuint(data, 1);
+    worldchunkacousticputuint(data, uint(x));
+    worldchunkacousticputuint(data, uint(y));
+    worldchunkacousticputuint(data, WORLD_SECTION_SIZE);
+    const int countoffset = data.length();
+    worldchunkacousticputuint(data, 0);
+    uint count = 0;
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+    {
+        const uchar flags = renderdata.flags[section][tile];
+        if(flags&(SECTION_FULLY_SOLID | SECTION_NO_RENDER)) continue;
+        data.add(uchar(tile % WORLD_SECTION_COLUMNS));
+        data.add(uchar(tile / WORLD_SECTION_COLUMNS));
+        data.add(uchar(section));
+        data.add(flags);
+        ++count;
+    }
+    loopi(4) data[countoffset + i] = uchar(count >> (i*8));
+    return true;
+}
+#endif
 
 static bool readworldsnapshotfile(const char *filename, vector<uchar> &contents, bool allowcompression = true)
 {
@@ -535,16 +564,23 @@ static bool serializeworldchunksnapshot(cube *root, int x, int y, uint revision,
 #if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 static bool writeworldchunksnapshot(const char *folder, int x, int y, uint revision, bool playeredited, bool compress, cube *root,
                                     const worldsectionrenderdata &renderdata, const vector<worldscatterinstance> &scatter,
-                                    const vector<uchar> &gameplay, string &error)
+                                    const vector<uchar> &gameplay, vector<uchar> &chunkacoustics, string &error)
 {
     vector<uchar> vox, dat;
     if(!serializeworldchunksnapshot(root, x, y, revision, playeredited, renderdata, scatter, gameplay, vox, dat, error)) return false;
-    string voxname, datname;
+    if(!acoustics::bakeChunkAcoustics(renderdata, x, y, chunkacoustics))
+    {
+        copystring(error, "could not bake chunk acoustics");
+        return false;
+    }
+    string voxname, datname, acgname;
     worldchunksnapshotfilename(voxname, sizeof(voxname), folder, x, y, "vox");
     worldchunksnapshotfilename(datname, sizeof(datname), folder, x, y, "dat");
-    if(!writeworldsnapshotfile(voxname, vox, compress) || !writeworldsnapshotfile(datname, dat, compress))
+    worldchunksnapshotfilename(acgname, sizeof(acgname), folder, x, y, "acg");
+    if(!writeworldsnapshotfile(voxname, vox, compress) || !writeworldsnapshotfile(datname, dat, compress) ||
+       !writeworldsnapshotfile(acgname, chunkacoustics, compress))
     {
-        copystring(error, "could not write authoritative chunk snapshot files");
+        copystring(error, "could not write authoritative .vox/.dat/.acg chunk files");
         return false;
     }
     return true;

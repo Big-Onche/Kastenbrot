@@ -51,7 +51,7 @@ USAGE
 Compiling the sources should be straight forward.
 
 Unix users need to make sure to have the development version of all libs
-installed (OpenGL, SDL, SDL_mixer, SDL_image, zlib). The included
+installed (OpenGL, SDL, OpenAL, libsndfile, SDL_image, zlib). The included
 Makefile can be used to build.
 
 Windows users can use the included Visual Studio project files in the vcpp 
@@ -93,4 +93,3 @@ Quinton "Quin" Reeves
 http://www.redeclipse.net
 
 For additional authors/contributors, see the Sauerbraten binary distribution readme.
-

@@ -38,7 +38,8 @@
 					<Add option="-mwindows" />
 					<Add library="SDL2" />
 					<Add library="SDL2_image" />
-					<Add library="SDL2_mixer" />
+					<Add library="OpenAL32" />
+					<Add library="sndfile" />
 					<Add library="SDL2_ttf" />
 					<Add library="zlib1" />
 					<Add library="opengl32" />
@@ -85,7 +86,8 @@
 					<Add option="-mwindows" />
 					<Add library="SDL2" />
 					<Add library="SDL2_image" />
-					<Add library="SDL2_mixer" />
+					<Add library="OpenAL32" />
+					<Add library="sndfile" />
 					<Add library="SDL2_ttf" />
 					<Add library="zlib1" />
 					<Add library="opengl32" />
@@ -130,7 +132,8 @@
 					<Add option="-mwindows" />
 					<Add library="SDL2" />
 					<Add library="SDL2_image" />
-					<Add library="SDL2_mixer" />
+					<Add library="OpenAL32" />
+					<Add library="sndfile" />
 					<Add library="SDL2_ttf" />
 					<Add library="zlib1" />
 					<Add library="opengl32" />
@@ -201,6 +204,8 @@
 		<Unit filename="../engine/shader.cpp" />
 		<Unit filename="../engine/skelmodel.h" />
 		<Unit filename="../engine/smd.h" />
+		<Unit filename="../engine/acoustics.cpp" />
+		<Unit filename="../engine/acoustics.h" />
 		<Unit filename="../engine/sound.cpp" />
 		<Unit filename="../engine/stain.cpp" />
 		<Unit filename="../engine/textedit.h" />

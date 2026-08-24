@@ -6,6 +6,7 @@
 #include "../game/worldgen.h"
 #include "../game/weather.h"
 #include "worldruntime.h"
+#include "acoustics.h"
 #endif
 #include <errno.h>
 

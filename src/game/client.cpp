@@ -437,13 +437,15 @@ namespace game
             {
                 const int chunkx = getint(p), chunky = getint(p);
                 const uint revision = uint(getint(p));
-                const int voxlength = getint(p), datlength = getint(p);
-                if(voxlength <= 0 || datlength <= 0 || voxlength > p.remaining()) return;
+                const int voxlength = getint(p), datlength = getint(p), acousticlength = getint(p);
+                if(voxlength <= 0 || datlength <= 0 || acousticlength <= 0 || voxlength > p.remaining()) return;
                 ucharbuf vox = p.subbuf(voxlength);
                 if(datlength > p.remaining()) return;
                 ucharbuf dat = p.subbuf(datlength);
+                if(acousticlength > p.remaining()) return;
+                ucharbuf acoustic = p.subbuf(acousticlength);
                 if(p.overread() || p.remaining() ||
-                   !receivenetworkworldchunk(chunkx, chunky, revision, vox.buf, vox.maxlen, dat.buf, dat.maxlen))
+                   !receivenetworkworldchunk(chunkx, chunky, revision, vox.buf, vox.maxlen, dat.buf, dat.maxlen, acoustic.buf, acoustic.maxlen))
                     conoutf(CON_ERROR, "rejected authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
                 else conoutf(CON_DEBUG, "applied authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
             }

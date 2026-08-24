@@ -253,7 +253,7 @@ namespace server
         cube *root;
         worldsectionrenderdata renderdata;
         vector<worldscatterinstance> scatter;
-        vector<uchar> gameplay, vox, dat;
+        vector<uchar> gameplay, vox, dat, acoustics;
         bool loading, saving, dirty, playeredited, corrupted;
 
         serverchunk(int x, int y)
@@ -274,7 +274,7 @@ namespace server
         cube *root;
         worldsectionrenderdata renderdata;
         vector<worldscatterinstance> scatter;
-        vector<uchar> gameplay, vox, dat;
+        vector<uchar> gameplay, vox, dat, acoustics;
         bool playeredited, success, missing, compress;
         string error;
 
@@ -691,6 +691,16 @@ namespace server
                     if(!job->success && !job->error[0]) copystring(job->error, "world generation failed");
                 }
                 else if(loaded == WORLD_SNAPSHOT_LOADED) job->success = true;
+                if(job->success)
+                {
+                    string acgname;
+                    worldchunksnapshotfilename(acgname, sizeof(acgname), folder, job->x, job->y, "acg");
+                    if(!readworldsnapshotfile(acgname, job->acoustics))
+                    {
+                        serializeworldchunkacoustics(job->renderdata, job->x, job->y, job->acoustics);
+                        writeworldsnapshotfile(acgname, job->acoustics, compresschunks != 0);
+                    }
+                }
             }
             else
             {
@@ -698,12 +708,15 @@ namespace server
                                                            job->scatter, job->gameplay, job->vox, job->dat, job->error);
                 if(job->success)
                 {
-                    string voxname, datname;
+                    serializeworldchunkacoustics(job->renderdata, job->x, job->y, job->acoustics);
+                    string voxname, datname, acgname;
                     worldchunksnapshotfilename(voxname, sizeof(voxname), folder, job->x, job->y, "vox");
                     worldchunksnapshotfilename(datname, sizeof(datname), folder, job->x, job->y, "dat");
+                    worldchunksnapshotfilename(acgname, sizeof(acgname), folder, job->x, job->y, "acg");
                     job->success = writeworldsnapshotfile(voxname, job->vox, job->compress) &&
-                                   writeworldsnapshotfile(datname, job->dat, job->compress);
-                    if(!job->success) copystring(job->error, "could not write .vox/.dat chunk pair");
+                                   writeworldsnapshotfile(datname, job->dat, job->compress) &&
+                                   writeworldsnapshotfile(acgname, job->acoustics, job->compress);
+                    if(!job->success) copystring(job->error, "could not write .vox/.dat/.acg chunk set");
                 }
             }
 
@@ -912,6 +925,7 @@ namespace server
         job->renderdata = chunk.renderdata;
         if(!chunk.scatter.empty()) job->scatter.put(chunk.scatter.getbuf(), chunk.scatter.length());
         if(!chunk.gameplay.empty()) job->gameplay.put(chunk.gameplay.getbuf(), chunk.gameplay.length());
+        if(!chunk.acoustics.empty()) job->acoustics.put(chunk.acoustics.getbuf(), chunk.acoustics.length());
         chunk.saving = true;
         SDL_LockMutex(serverchunkmutex);
         serverchunkjobs.add(job);
@@ -964,6 +978,7 @@ namespace server
                     chunk->gameplay.move(job->gameplay);
                     chunk->vox.move(job->vox);
                     chunk->dat.move(job->dat);
+                    chunk->acoustics.move(job->acoustics);
                     chunk->serializedrevision = chunk->vox.empty() ? 0 : chunk->revision;
                     if(job->missing) chunk->dirty = true;
                 }
@@ -975,6 +990,7 @@ namespace server
                 {
                     chunk->vox.move(job->vox);
                     chunk->dat.move(job->dat);
+                    chunk->acoustics.move(job->acoustics);
                     chunk->serializedrevision = job->revision;
                     if(chunk->storageversion == job->storageversion) chunk->dirty = false;
                 }
@@ -1016,13 +1032,14 @@ namespace server
 
     static void sendserverchunk(clientinfo &ci, serverchunk &chunk)
     {
-        if(!chunk.playeredited || chunk.serializedrevision != chunk.revision || chunk.vox.empty() || chunk.dat.empty()) return;
-        packetbuf packet(MAXTRANS + chunk.vox.length() + chunk.dat.length(), ENET_PACKET_FLAG_RELIABLE);
+        if(!chunk.playeredited || chunk.serializedrevision != chunk.revision || chunk.vox.empty() || chunk.dat.empty() || chunk.acoustics.empty()) return;
+        packetbuf packet(MAXTRANS + chunk.vox.length() + chunk.dat.length() + chunk.acoustics.length(), ENET_PACKET_FLAG_RELIABLE);
         putint(packet, N_CHUNKDATA);
         putint(packet, chunk.x); putint(packet, chunk.y); putint(packet, int(chunk.revision));
-        putint(packet, chunk.vox.length()); putint(packet, chunk.dat.length());
+        putint(packet, chunk.vox.length()); putint(packet, chunk.dat.length()); putint(packet, chunk.acoustics.length());
         packet.put(chunk.vox.getbuf(), chunk.vox.length());
         packet.put(chunk.dat.getbuf(), chunk.dat.length());
+        packet.put(chunk.acoustics.getbuf(), chunk.acoustics.length());
         sendpacket(ci.clientnum, 2, packet.finalize());
         markserverchunkdelivered(ci.clientnum, chunk.x, chunk.y, chunk.revision);
     }
