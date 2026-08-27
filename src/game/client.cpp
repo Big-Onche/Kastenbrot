@@ -958,6 +958,7 @@ namespace game
                     return;
                 }
                 int items[SURVIVAL_USABLE_SLOTS], counts[SURVIVAL_USABLE_SLOTS], durabilities[SURVIVAL_USABLE_SLOTS];
+                int wornitems[WORN_SLOT_MAX], worndurabilities[WORN_SLOT_MAX];
                 loopi(SURVIVAL_USABLE_SLOTS)
                 {
                     items[i] = -1;
@@ -976,8 +977,23 @@ namespace game
                         durabilities[i] = durability;
                     }
                 }
+                const int wornslots = getint(p);
+                if(wornslots != numwornslots() || wornslots < 0 || wornslots > WORN_SLOT_MAX)
+                {
+                    conoutf(CON_ERROR, "server sent an invalid worn equipment state");
+                    disconnect();
+                    return;
+                }
+                loopi(WORN_SLOT_MAX) { wornitems[i] = -1; worndurabilities[i] = 0; }
+                loopi(wornslots)
+                {
+                    const ullong itemid = getpersistentid(p);
+                    wornitems[i] = itemid ? getinventoryitempersistentindex(itemid) : -1;
+                    worndurabilities[i] = getint(p);
+                }
                 if(!p.overread())
-                    receiveinventory(items, counts, durabilities, SURVIVAL_USABLE_SLOTS, selected, cursoritem, cursorcount, cursordurability);
+                    receiveinventory(items, counts, durabilities, SURVIVAL_USABLE_SLOTS, selected, cursoritem, cursorcount, cursordurability,
+                                     wornitems, worndurabilities, wornslots);
                 break;
             }
             case N_CRAFTSTATE:

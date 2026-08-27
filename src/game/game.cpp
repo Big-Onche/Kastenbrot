@@ -955,6 +955,8 @@ namespace game
     };
     static int survivalcounts[SURVIVAL_USABLE_SLOTS] = { 0 };
     static int survivaldurabilities[SURVIVAL_USABLE_SLOTS] = { 0 };
+    static int wornitems[WORN_SLOT_MAX] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    static int worndurabilities[WORN_SLOT_MAX] = { 0 };
     static int craftingitems[CRAFT_GRID_MAX] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     static int craftingcounts[CRAFT_GRID_MAX] = { 0 };
     static int craftingdurabilities[CRAFT_GRID_MAX] = { 0 };
@@ -991,6 +993,40 @@ namespace game
             formatstring(displayname, "%s Quality %s", prefix, name);
         }
         return displayname;
+    }
+
+    static int wornitem(int slot)
+    {
+        if(slot < 0 || slot >= min(numwornslots(), int(WORN_SLOT_MAX))) return -1;
+        if(getwornslotmirrored(slot))
+        {
+            const int selected = clamp(creativehotbarslot, 0, SURVIVAL_HOTBAR_SLOTS - 1);
+            return survivalcounts[selected] > 0 ? survivalitems[selected] : -1;
+        }
+        return wornitems[slot];
+    }
+
+    static int worndurability(int slot)
+    {
+        if(slot < 0 || slot >= min(numwornslots(), int(WORN_SLOT_MAX))) return 0;
+        if(getwornslotmirrored(slot))
+        {
+            const int selected = clamp(creativehotbarslot, 0, SURVIVAL_HOTBAR_SLOTS - 1);
+            return survivalcounts[selected] > 0 ? survivaldurabilities[selected] : 0;
+        }
+        return worndurabilities[slot];
+    }
+
+    static int survivalinventorycapacity()
+    {
+        const int back = getwornslotindex("back");
+        return clamp(getinventoryitemequipmentcapacity(back >= 0 && back < WORN_SLOT_MAX ? wornitems[back] : -1), 0,
+                     int(SURVIVAL_LOCKED_SLOTS));
+    }
+
+    static bool survivalinventoryslotunlocked(int slot)
+    {
+        return slot >= 0 && slot < SURVIVAL_BASE_SLOTS + survivalinventorycapacity();
     }
 
     struct chestvisual
@@ -1154,6 +1190,11 @@ namespace game
             survivalcounts[i] = 0;
             survivaldurabilities[i] = 0;
         }
+        loopi(WORN_SLOT_MAX)
+        {
+            wornitems[i] = -1;
+            worndurabilities[i] = 0;
+        }
         creativehotbarslot = 0;
         loopi(CRAFT_GRID_MAX)
         {
@@ -1169,7 +1210,8 @@ namespace game
         inventorycursordurability = 0;
     }
 
-    void loadsurvivalinventory(const int *items, const int *counts, const int *durabilities, int slots, int cursoritem, int cursorcount, int cursordurability)
+    void loadsurvivalinventory(const int *items, const int *counts, const int *durabilities, int slots, int cursoritem, int cursorcount,
+                               int cursordurability, const int *savedwornitems, const int *savedworndurabilities, int wornslots)
     {
         resetsurvivalinventory();
         loopi(min(slots, int(SURVIVAL_USABLE_SLOTS)))
@@ -1188,9 +1230,18 @@ namespace game
             inventorycursordurability = isinventorytool(cursoritem) && validatetooldurability(cursoritem, cursordurability)
                                       ? cursordurability : maketooldurability(cursoritem, TOOL_QUALITY_AVERAGE);
         }
+        loopi(min(min(wornslots, numwornslots()), int(WORN_SLOT_MAX)))
+        {
+            if(getwornslotmirrored(i) || !savedwornitems || savedwornitems[i] < 0 || savedwornitems[i] >= numinventoryitems() ||
+               !getinventoryitemequipmentcompatible(savedwornitems[i], i) || getinventoryitemmaxstack(savedwornitems[i]) != 1) continue;
+            wornitems[i] = savedwornitems[i];
+            worndurabilities[i] = savedworndurabilities && validatetooldurability(savedwornitems[i], savedworndurabilities[i])
+                                ? savedworndurabilities[i] : 0;
+        }
     }
 
-    void receiveinventory(const int *items, const int *counts, const int *durabilities, int slots, int selected, int cursoritem, int cursorcount, int cursordurability)
+    void receiveinventory(const int *items, const int *counts, const int *durabilities, int slots, int selected, int cursoritem, int cursorcount,
+                          int cursordurability, const int *receivedwornitems, const int *receivedworndurabilities, int wornslots)
     {
         loopi(SURVIVAL_USABLE_SLOTS)
         {
@@ -1202,6 +1253,13 @@ namespace game
         inventorycursorcount = inventorycursoritem >= 0 ? clamp(cursorcount, 1, max(getinventoryitemmaxstack(inventorycursoritem), 1)) : 0;
         inventorycursordurability = inventorycursoritem >= 0 && validatetooldurability(inventorycursoritem, cursordurability) ? cursordurability : 0;
         creativehotbarslot = clamp(selected, 0, CREATIVE_HOTBAR_SLOTS - 1);
+        loopi(WORN_SLOT_MAX)
+        {
+            wornitems[i] = i < wornslots && i < numwornslots() && !getwornslotmirrored(i) && receivedwornitems[i] >= 0
+                         ? receivedwornitems[i] : -1;
+            worndurabilities[i] = wornitems[i] >= 0 && validatetooldurability(wornitems[i], receivedworndurabilities[i])
+                                ? receivedworndurabilities[i] : 0;
+        }
     }
 
     void receivecraftstate(const int *items, const int *counts, const int *durabilities, int slots, int gridsize, int stationitem, int recipe, int outputitem, int outputcount)
@@ -1706,6 +1764,9 @@ namespace game
         if(ok && inventorycursoritem >= 0 && inventorycursorcount > 0)
             ok = f->printf("inventory_cursor " PERSISTENT_ULL_FORMAT " %d %d\n", getinventoryitempersistentid(inventorycursoritem),
                            inventorycursorcount, inventorycursordurability) > 0;
+        loopi(min(numwornslots(), int(WORN_SLOT_MAX))) if(ok && !getwornslotmirrored(i) && wornitems[i] >= 0)
+            ok = f->printf("worn %s " PERSISTENT_ULL_FORMAT " %d\n", getwornslotid(i), getinventoryitempersistentid(wornitems[i]),
+                           worndurabilities[i]) > 0;
         return ok;
     }
 
@@ -2329,13 +2390,13 @@ namespace game
     static bool addsurvivalitem(int item, int quality = TOOL_QUALITY_AVERAGE)
     {
         if(item < 0 || item >= numinventoryitems()) return false;
-        loopi(SURVIVAL_USABLE_SLOTS)
+        loopi(SURVIVAL_USABLE_SLOTS) if(survivalinventoryslotunlocked(i))
         {
             if(survivalitems[i] != item || survivalcounts[i] >= max(getinventoryitemmaxstack(item), 1)) continue;
             ++survivalcounts[i];
             return true;
         }
-        loopi(SURVIVAL_USABLE_SLOTS) if(survivalitems[i] < 0 || survivalcounts[i] <= 0)
+        loopi(SURVIVAL_USABLE_SLOTS) if(survivalinventoryslotunlocked(i) && (survivalitems[i] < 0 || survivalcounts[i] <= 0))
         {
             survivalitems[i] = item;
             survivalcounts[i] = 1;
@@ -2360,7 +2421,7 @@ namespace game
     {
         int room = 0;
         const int stack = max(getinventoryitemmaxstack(item), 1);
-        loopi(SURVIVAL_USABLE_SLOTS)
+        loopi(SURVIVAL_USABLE_SLOTS) if(survivalinventoryslotunlocked(i))
         {
             if(survivalitems[i] == item && survivalcounts[i] > 0) room += max(stack - survivalcounts[i], 0);
             else if(survivalitems[i] < 0 || survivalcounts[i] <= 0) room += stack;
@@ -2374,7 +2435,7 @@ namespace game
         if(isinventorytool(item))
         {
             if(quantity != 1) return false;
-            loopi(SURVIVAL_USABLE_SLOTS) if(survivalitems[i] < 0 || survivalcounts[i] <= 0)
+            loopi(SURVIVAL_USABLE_SLOTS) if(survivalinventoryslotunlocked(i) && (survivalitems[i] < 0 || survivalcounts[i] <= 0))
             {
                 survivalitems[i] = item;
                 survivalcounts[i] = 1;
@@ -3387,6 +3448,8 @@ namespace game
         const uint seed = worlddrophash(uint(++localdeathsequence) ^ uint(max(lastmillis, 1)));
         loopi(SURVIVAL_USABLE_SLOTS)
             addlocaldeathdrop(survivalitems[i], survivalcounts[i], survivaldurabilities[i], origin, seed ^ uint(i + 1) * 0x85EBCA6BU);
+        loopi(min(numwornslots(), int(WORN_SLOT_MAX))) if(!getwornslotmirrored(i))
+            addlocaldeathdrop(wornitems[i], wornitems[i] >= 0 ? 1 : 0, worndurabilities[i], origin, seed ^ uint(i + 97) * 0x9E3779B9U);
         loopi(CRAFT_GRID_MAX)
             addlocaldeathdrop(craftingitems[i], craftingcounts[i], craftingdurabilities[i], origin, seed ^ uint(i + 65) * 0xC2B2AE35U);
         addlocaldeathdrop(inventorycursoritem, inventorycursorcount, inventorycursordurability, origin, seed ^ 0x27D4EB2FU);
@@ -4405,23 +4468,25 @@ namespace game
     });
     ICOMMAND(creativeactive, "", (), intret(creativeenabled() ? 1 : 0));
     ICOMMAND(survivalactive, "", (), intret(survivalenabled() ? 1 : 0));
+    ICOMMAND(getsurvivalinventoryunlockedslots, "", (), intret(SURVIVAL_INVENTORY_SLOTS + survivalinventorycapacity()));
+    ICOMMAND(getsurvivalinventoryslotunlocked, "i", (int *slot), intret(survivalinventoryslotunlocked(*slot) ? 1 : 0));
     ICOMMAND(getsurvivalinventoryitem, "i", (int *slot),
     {
-        intret(*slot >= 0 && *slot < SURVIVAL_USABLE_SLOTS && survivalcounts[*slot] > 0
+        intret(survivalinventoryslotunlocked(*slot) && survivalcounts[*slot] > 0
              ? survivalitems[*slot] : -1);
     });
     ICOMMAND(getsurvivalinventorycount, "i", (int *slot),
     {
-        intret(*slot >= 0 && *slot < SURVIVAL_USABLE_SLOTS ? survivalcounts[*slot] : 0);
+        intret(survivalinventoryslotunlocked(*slot) ? survivalcounts[*slot] : 0);
     });
     ICOMMAND(getsurvivalinventorytooltip, "i", (int *slot),
     {
-        result(*slot >= 0 && *slot < SURVIVAL_USABLE_SLOTS && survivalcounts[*slot] > 0
+        result(survivalinventoryslotunlocked(*slot) && survivalcounts[*slot] > 0
              ? inventoryinstancename(survivalitems[*slot], survivaldurabilities[*slot]) : "");
     });
     ICOMMAND(getsurvivalinventoryqualitylabel, "i", (int *slot),
     {
-        if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || survivalcounts[*slot] <= 0 || !isqualitytool(survivalitems[*slot])) result("");
+        if(!survivalinventoryslotunlocked(*slot) || survivalcounts[*slot] <= 0 || !isqualitytool(survivalitems[*slot])) result("");
         else
         {
             const int quality = gettoolquality(survivalitems[*slot], survivaldurabilities[*slot]);
@@ -4430,12 +4495,12 @@ namespace game
     });
     ICOMMAND(getsurvivalinventorydurability, "i", (int *slot),
     {
-        intret(*slot >= 0 && *slot < SURVIVAL_USABLE_SLOTS ? gettoolremainingdurability(survivalitems[*slot], survivaldurabilities[*slot]) : 0);
+        intret(survivalinventoryslotunlocked(*slot) ? gettoolremainingdurability(survivalitems[*slot], survivaldurabilities[*slot]) : 0);
     });
     ICOMMAND(getinventoryitemmaxdurability, "i", (int *item), intret(getinventorytoolmaxdurability(*item)));
     ICOMMAND(getsurvivalinventorydurabilityratio, "i", (int *slot),
     {
-        if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || survivalcounts[*slot] <= 0 || !isinventorytool(survivalitems[*slot]))
+        if(!survivalinventoryslotunlocked(*slot) || survivalcounts[*slot] <= 0 || !isinventorytool(survivalitems[*slot]))
         {
             floatret(-1.0f);
             return;
@@ -4445,7 +4510,7 @@ namespace game
     });
     ICOMMAND(getsurvivalinventorydurabilitycolor, "i", (int *slot),
     {
-        if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || survivalcounts[*slot] <= 0 || !isinventorytool(survivalitems[*slot]))
+        if(!survivalinventoryslotunlocked(*slot) || survivalcounts[*slot] <= 0 || !isinventorytool(survivalitems[*slot]))
         {
             intret(0xFF54C65A);
             return;
@@ -4461,6 +4526,14 @@ namespace game
     });
     ICOMMAND(getinventorycursoritem, "", (), intret(inventorycursorcount > 0 ? inventorycursoritem : -1));
     ICOMMAND(getinventorycursorcount, "", (), intret(inventorycursorcount));
+    ICOMMAND(getwornslotregistryindex, "s", (char *id), intret(getwornslotindex(id)));
+    ICOMMAND(getwornslotregistryname, "i", (int *slot), result(getwornslotname(*slot)));
+    ICOMMAND(getwornitem, "i", (int *slot), intret(wornitem(*slot)));
+    ICOMMAND(getworntooltip, "i", (int *slot),
+    {
+        const int item = wornitem(*slot);
+        result(item >= 0 ? inventoryinstancename(item, worndurability(*slot)) : getwornslotname(*slot));
+    });
     ICOMMAND(getfurnaceinputslots, "", (),
     {
         furnaceinstance *furnace = currentfurnace();
@@ -4611,7 +4684,7 @@ namespace game
     });
     ICOMMAND(survivalinventoryclick, "ii", (int *slot, int *button),
     {
-        if(*slot < 0 || *slot >= SURVIVAL_USABLE_SLOTS || (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
+        if(!survivalinventoryslotunlocked(*slot) || (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
         inventoryinstanceclick(inventorycursoritem, inventorycursorcount, inventorycursordurability,
                                survivalitems[*slot], survivalcounts[*slot], survivaldurabilities[*slot], *button);
         if(waitforserveredit())
@@ -4619,8 +4692,7 @@ namespace game
     });
     ICOMMAND(survivalinventoryswap, "ii", (int *from, int *to),
     {
-        if(*from >= 0 && *from < SURVIVAL_USABLE_SLOTS &&
-           *to >= 0 && *to < SURVIVAL_USABLE_SLOTS)
+        if(survivalinventoryslotunlocked(*from) && survivalinventoryslotunlocked(*to))
         {
             swap(survivalitems[*from], survivalitems[*to]);
             swap(survivalcounts[*from], survivalcounts[*to]);
@@ -4628,6 +4700,29 @@ namespace game
             if(waitforserveredit())
                 addmsg(N_INVENTORYACTION, "ri4", int(newworldrequestid()), INVENTORY_ACTION_SWAP, *from, *to);
         }
+    });
+    ICOMMAND(wornslotclick, "ii", (int *slot, int *button),
+    {
+        if(*slot < 0 || *slot >= min(numwornslots(), int(WORN_SLOT_MAX)) || getwornslotmirrored(*slot) ||
+           (*button != INVENTORY_CLICK_LEFT && *button != INVENTORY_CLICK_RIGHT)) return;
+        if(waitforserveredit())
+        {
+            addmsg(N_INVENTORYACTION, "ri4", int(newworldrequestid()), INVENTORY_ACTION_WORN_CLICK, *slot, *button);
+            return;
+        }
+
+        if(inventorycursorcount > 0 && (inventorycursorcount != 1 || inventorycursoritem < 0 ||
+           getinventoryitemmaxstack(inventorycursoritem) != 1 || !getinventoryitemequipmentcompatible(inventorycursoritem, *slot))) return;
+        const int back = getwornslotindex("back");
+        const int nextcapacity = *slot == back
+                               ? clamp(getinventoryitemequipmentcapacity(inventorycursorcount > 0 ? inventorycursoritem : -1), 0,
+                                       int(SURVIVAL_LOCKED_SLOTS))
+                               : survivalinventorycapacity();
+        loopi(SURVIVAL_USABLE_SLOTS) if(i >= SURVIVAL_BASE_SLOTS + nextcapacity && survivalcounts[i] > 0) return;
+
+        swap(inventorycursoritem, wornitems[*slot]);
+        swap(inventorycursordurability, worndurabilities[*slot]);
+        inventorycursorcount = inventorycursoritem >= 0 ? 1 : 0;
     });
     ICOMMAND(opencraftinginventory, "", (),
     {
@@ -4677,7 +4772,7 @@ namespace game
     });
     ICOMMAND(craftinginventorytogrid, "ii", (int *inventoryslot, int *gridslot),
     {
-        if(*inventoryslot < 0 || *inventoryslot >= SURVIVAL_USABLE_SLOTS || *gridslot < 0 || *gridslot >= craftinggridsize * craftinggridsize) return;
+        if(!survivalinventoryslotunlocked(*inventoryslot) || *gridslot < 0 || *gridslot >= craftinggridsize * craftinggridsize) return;
         if(waitforserveredit()) requestcraftaction(CRAFT_ACTION_INVENTORY_TO_GRID, *inventoryslot, *gridslot);
         else
         {
@@ -4689,7 +4784,7 @@ namespace game
     });
     ICOMMAND(craftinggridtoinventory, "ii", (int *gridslot, int *inventoryslot),
     {
-        if(*inventoryslot < 0 || *inventoryslot >= SURVIVAL_USABLE_SLOTS || *gridslot < 0 || *gridslot >= craftinggridsize * craftinggridsize) return;
+        if(!survivalinventoryslotunlocked(*inventoryslot) || *gridslot < 0 || *gridslot >= craftinggridsize * craftinggridsize) return;
         if(waitforserveredit()) requestcraftaction(CRAFT_ACTION_GRID_TO_INVENTORY, *gridslot, *inventoryslot);
         else
         {
@@ -4713,7 +4808,7 @@ namespace game
     });
     ICOMMAND(craftingtakeoutput, "i", (int *inventoryslot),
     {
-        if(*inventoryslot < 0 || *inventoryslot >= SURVIVAL_USABLE_SLOTS || craftingrecipe < 0) return;
+        if(!survivalinventoryslotunlocked(*inventoryslot) || craftingrecipe < 0) return;
         if(waitforserveredit()) requestcraftaction(CRAFT_ACTION_TAKE_OUTPUT, craftingrecipe, *inventoryslot);
         else
         {
@@ -4781,7 +4876,8 @@ namespace game
     {
         int count = 0;
         if(*item >= 0 && *item < numinventoryitems())
-            loopi(SURVIVAL_USABLE_SLOTS) if(survivalitems[i] == *item && survivalcounts[i] > 0) count += survivalcounts[i];
+            loopi(SURVIVAL_USABLE_SLOTS) if(survivalinventoryslotunlocked(i) && survivalitems[i] == *item && survivalcounts[i] > 0)
+                count += survivalcounts[i];
         intret(count);
     });
 #endif

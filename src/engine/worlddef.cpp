@@ -27,9 +27,10 @@ worlddefinition::worlddefinition(const char *id)
       maxstack(64), item(-1), slot(DEFAULT_GEOM), sideslot(DEFAULT_GEOM), bottomslot(DEFAULT_GEOM), mapmodel(-1), furnaceinputslots(0),
       furnaceinputlimit(0), chestslots(0), foodtime(0), requiredtier(0), toolwear(1), tooltier(0), maxdurability(0),
       toolcornerpush(TOOL_CORNER_PUSH_NONE),
-      supportdistance(0), gialbedo(0, 0, 0), hasitem(false),
+      supportdistance(0), equipmentcapacity(0), equipmentmask(0), gialbedo(0, 0, 0), hasitem(false),
       hasheld(false), hascube(false),
       scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), haschest(false), hasfood(false), hassupport(false),
+      hasequipment(false),
       itemstackset(false),
       scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
@@ -37,11 +38,12 @@ worlddefinition::worlddefinition(const char *id)
 {
     copystring(this->id, id);
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
-    lightcolor[0] = preferredtool[0] = tooltype[0] = '\0';
+    lightcolor[0] = preferredtool[0] = tooltype[0] = equipmentslots[0] = '\0';
 }
 
 vector<worlddefinition *> worlddefinitions;
 vector<worlddefinition *> worldcubedefinitions, worldscatterdefinitions, inventoryitemdefinitions;
+vector<wornslotdefinition *> wornslotdefinitions;
 hashtable<worldpersistentkey, int> worldcubepersistentindexes(256), worldscatterpersistentindexes(256), inventoryitempersistentindexes(256);
 int worlderrorcube = -1, worlderrorobject = -1, worlderroritem = -1;
 
@@ -49,7 +51,8 @@ static worlddefinition *currentworlddefinition = NULL;
 enum
 {
     WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_HELD, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL,
-    WORLDDEF_FURNACE, WORLDDEF_CHEST, WORLDDEF_FOOD, WORLDDEF_SUPPORT, MATERIAL_DEFINITION, TOOL_FAMILY_DEFINITION, TOOL_OVERRIDE_DEFINITION
+    WORLDDEF_FURNACE, WORLDDEF_CHEST, WORLDDEF_FOOD, WORLDDEF_SUPPORT, WORLDDEF_EQUIPMENT,
+    MATERIAL_DEFINITION, TOOL_FAMILY_DEFINITION, TOOL_OVERRIDE_DEFINITION
 };
 static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
 
@@ -180,6 +183,7 @@ void resetworlddefinitionregistry()
     worldcubedefinitions.shrink(0);
     worldscatterdefinitions.shrink(0);
     inventoryitemdefinitions.shrink(0);
+    wornslotdefinitions.deletecontents();
     worldcubepersistentindexes.clear();
     worldscatterpersistentindexes.clear();
     inventoryitempersistentindexes.clear();
@@ -250,6 +254,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "chest")) return "worlddef_chest";
         if(!strcmp(command, "food")) return "worlddef_food";
         if(!strcmp(command, "support")) return "worlddef_support";
+        if(!strcmp(command, "equipment")) return "worlddef_equipment";
         if(!strcmp(command, "drop")) return "worlddef_drop";
     }
     else if(component == WORLDDEF_ITEM)
@@ -316,6 +321,11 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "distance")) return "worlddef_supportdistance";
         if(!strcmp(command, "decay")) return "worlddef_supportdecay";
         if(!strcmp(command, "persistentonplace")) return "worlddef_supportpersistentonplace";
+    }
+    else if(component == WORLDDEF_EQUIPMENT)
+    {
+        if(!strcmp(command, "slots")) return "worlddef_equipmentslots";
+        if(!strcmp(command, "inventoryslots")) return "worlddef_equipmentcapacity";
     }
     else if(component == MATERIAL_DEFINITION)
     {
@@ -467,6 +477,23 @@ static void registerworlddefinition(const char *id, const char *body)
 ICOMMAND(worlddef, "sS", (char *id, char *body),
 {
     registerworlddefinition(id, body);
+});
+
+ICOMMAND(wornslot, "ssi", (char *id, char *name, int *mirrored),
+{
+    if(!id[0] || !name[0] || wornslotdefinitions.length() >= 16)
+    {
+        conoutf(CON_ERROR, "invalid worn slot registration \"%s\"", id);
+        ++worlddefinitionerrors;
+        return;
+    }
+    loopv(wornslotdefinitions) if(!cubecasecmp(wornslotdefinitions[i]->id, id))
+    {
+        conoutf(CON_ERROR, "duplicate worn slot id \"%s\"", id);
+        ++worlddefinitionerrors;
+        return;
+    }
+    wornslotdefinitions.add(new wornslotdefinition(id, name, *mirrored != 0));
 });
 
 ICOMMAND(material, "sS", (char *id, char *body),
@@ -747,6 +774,13 @@ ICOMMANDS("worlddef_support", "S", (char *body),
     endworldcomponent();
 });
 
+ICOMMANDS("worlddef_equipment", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_EQUIPMENT, currentworlddefinition->hasequipment, "equipment")) return;
+    executeworlddefinitionbody(body, WORLDDEF_EQUIPMENT);
+    endworldcomponent();
+});
+
 ICOMMANDS("worlddef_name", "s", (char *value), copystring(currentworlddefinition->name, value));
 ICOMMANDS("worlddef_stack", "i", (int *value),
 {
@@ -816,6 +850,8 @@ ICOMMANDS("worlddef_foodtime", "i", (int *value), currentworlddefinition->foodti
 ICOMMANDS("worlddef_supportdistance", "i", (int *value), currentworlddefinition->supportdistance = *value);
 ICOMMANDS("worlddef_supportdecay", "i", (int *value), currentworlddefinition->supportdecay = *value != 0);
 ICOMMANDS("worlddef_supportpersistentonplace", "i", (int *value), currentworlddefinition->supportpersistentonplace = *value != 0);
+ICOMMANDS("worlddef_equipmentslots", "s", (char *value), copystring(currentworlddefinition->equipmentslots, value));
+ICOMMANDS("worlddef_equipmentcapacity", "i", (int *value), currentworlddefinition->equipmentcapacity = *value);
 
 ICOMMANDS("worlddef_drop", "siifN", (char *itemid, int *mincount, int *maxcount, float *chance, int *numargs),
 {
@@ -1105,6 +1141,11 @@ static bool buildworldpersistentindexes()
 bool resolveworlddefinitionregistry()
 {
     if(!expandtoolsets()) return false;
+    if(wornslotdefinitions.empty())
+    {
+        conoutf(CON_ERROR, "at least one worn slot must be registered");
+        ++worlddefinitionerrors;
+    }
     loopv(worlddefinitions)
     {
         worlddefinition &definition = *worlddefinitions[i];
@@ -1172,6 +1213,30 @@ bool resolveworlddefinitionregistry()
         {
             conoutf(CON_ERROR, "worlddef \"%s\": support requires cube and a positive distance", definition.id);
             ++worlddefinitionerrors;
+        }
+        if(definition.hasequipment)
+        {
+            vector<char *> slots;
+            explodelist(definition.equipmentslots, slots);
+            definition.equipmentmask = 0;
+            loopv(slots)
+            {
+                int slot = -1;
+                loopvj(wornslotdefinitions) if(!cubecasecmp(wornslotdefinitions[j]->id, slots[i])) { slot = j; break; }
+                if(slot < 0)
+                {
+                    conoutf(CON_ERROR, "worlddef \"%s\": unknown worn slot \"%s\"", definition.id, slots[i]);
+                    ++worlddefinitionerrors;
+                }
+                else definition.equipmentmask |= 1U << slot;
+            }
+            slots.deletecontents();
+            if(!definition.hasitem || !definition.equipmentmask || definition.maxstack != 1 ||
+               definition.equipmentcapacity < 0 || definition.equipmentcapacity > 18)
+            {
+                conoutf(CON_ERROR, "worlddef \"%s\": equipment requires a non-stacking item, registered slots, and 0-18 inventory slots", definition.id);
+                ++worlddefinitionerrors;
+            }
         }
         loopv(definition.drops)
         {

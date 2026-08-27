@@ -306,6 +306,28 @@ int getinventoryitemmaxstack(int index)
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->maxstack : 0;
 }
 
+int numwornslots() { return wornslotdefinitions.length(); }
+
+int getwornslotindex(const char *id)
+{
+    loopv(wornslotdefinitions) if(!cubecasecmp(wornslotdefinitions[i]->id, id)) return i;
+    return -1;
+}
+
+const char *getwornslotid(int index) { return wornslotdefinitions.inrange(index) ? wornslotdefinitions[index]->id : ""; }
+const char *getwornslotname(int index) { return wornslotdefinitions.inrange(index) ? wornslotdefinitions[index]->name : ""; }
+bool getwornslotmirrored(int index) { return wornslotdefinitions.inrange(index) && wornslotdefinitions[index]->mirrored; }
+bool getinventoryitemequipmentcompatible(int item, int wornslot)
+{
+    return inventoryitemdefinitions.inrange(item) && wornslot >= 0 && wornslot < 31 &&
+           (inventoryitemdefinitions[item]->equipmentmask & (1U << wornslot)) != 0;
+}
+int getinventoryitemequipmentcapacity(int item)
+{
+    return inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->hasequipment
+         ? inventoryitemdefinitions[item]->equipmentcapacity : 0;
+}
+
 bool isinventoryfood(int index)
 {
     return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->hasfood;
@@ -995,6 +1017,26 @@ int getinventoryitemindex(const char *id)
 int getinventoryitemmaxstack(int index)
 {
     return inventoryitemdefinitions.inrange(index) ? inventoryitemdefinitions[index]->maxstack : 0;
+}
+
+int numwornslots() { return wornslotdefinitions.length(); }
+int getwornslotindex(const char *id)
+{
+    loopv(wornslotdefinitions) if(!cubecasecmp(wornslotdefinitions[i]->id, id)) return i;
+    return -1;
+}
+const char *getwornslotid(int index) { return wornslotdefinitions.inrange(index) ? wornslotdefinitions[index]->id : ""; }
+const char *getwornslotname(int index) { return wornslotdefinitions.inrange(index) ? wornslotdefinitions[index]->name : ""; }
+bool getwornslotmirrored(int index) { return wornslotdefinitions.inrange(index) && wornslotdefinitions[index]->mirrored; }
+bool getinventoryitemequipmentcompatible(int item, int wornslot)
+{
+    return inventoryitemdefinitions.inrange(item) && wornslot >= 0 && wornslot < 31 &&
+           (inventoryitemdefinitions[item]->equipmentmask & (1U << wornslot)) != 0;
+}
+int getinventoryitemequipmentcapacity(int item)
+{
+    return inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->hasequipment
+         ? inventoryitemdefinitions[item]->equipmentcapacity : 0;
 }
 
 bool isinventoryfood(int index) { return inventoryitemdefinitions.inrange(index) && inventoryitemdefinitions[index]->hasfood; }

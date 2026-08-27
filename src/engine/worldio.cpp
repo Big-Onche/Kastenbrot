@@ -368,15 +368,16 @@ static void applypreparedworldspawn()
     player->resetinterp();
 }
 
-enum { WORLD_SNAPSHOT_METADATA_VERSION = 2 };
+enum { WORLD_SNAPSHOT_METADATA_VERSION = 3 };
 
 struct worldsnapshotmetadata
 {
     int seed, mode, entryx, entryy;
     worldspawnmetadata spawn;
     ullong inventoryids[game::SURVIVAL_USABLE_SLOTS], inventorycursorid;
+    ullong wornids[game::WORN_SLOT_MAX];
     int inventorycounts[game::SURVIVAL_USABLE_SLOTS], inventorydurabilities[game::SURVIVAL_USABLE_SLOTS],
-        inventorycursorcount, inventorycursordurability;
+        inventorycursorcount, inventorycursordurability, worndurabilities[game::WORN_SLOT_MAX];
 
     worldsnapshotmetadata() : seed(0), mode(0), entryx(0), entryy(0), inventorycursorid(0), inventorycursorcount(0), inventorycursordurability(0)
     {
@@ -385,6 +386,7 @@ struct worldsnapshotmetadata
             inventoryids[i] = 0;
             inventorycounts[i] = inventorydurabilities[i] = 0;
         }
+        loopi(game::WORN_SLOT_MAX) { wornids[i] = 0; worndurabilities[i] = 0; }
     }
 };
 
@@ -474,12 +476,25 @@ static bool loadworldmetadata(const char *folder, worldsnapshotmetadata &metadat
             }
             continue;
         }
+        char wornslotid[MAXSTRLEN] = "";
+        if(sscanf(line, "worn %259s %31[0-9] %d", wornslotid, itemidtext, &durability) == 3)
+        {
+            errno = 0;
+            const ullong itemid = strtoull(itemidtext, &itemidend, 10);
+            const int wornslot = getwornslotindex(wornslotid);
+            if(!errno && itemidend && !*itemidend && wornslot >= 0 && wornslot < game::WORN_SLOT_MAX)
+            {
+                metadata.wornids[wornslot] = itemid;
+                metadata.worndurabilities[wornslot] = durability;
+            }
+            continue;
+        }
         if(sscanf(line, "spawn %lf %lf %f %f %f", &metadata.spawn.x, &metadata.spawn.y, &metadata.spawn.z, &metadata.spawn.yaw,
                   &metadata.spawn.pitch) == 5)
             metadata.spawn.valid = true;
     }
     delete file;
-    if(!header || version != WORLD_SNAPSHOT_METADATA_VERSION || !dimensions || width != WORLD_CHUNK_BLOCKS || depth != WORLD_CHUNK_BLOCKS ||
+    if(!header || (version != 2 && version != WORLD_SNAPSHOT_METADATA_VERSION) || !dimensions || width != WORLD_CHUNK_BLOCKS || depth != WORLD_CHUNK_BLOCKS ||
        height != WORLD_HEIGHT_BLOCKS || !seed || !mode || !game::validgamemode(metadata.mode) || !entry)
     {
         conoutf(CON_ERROR, "saved world %s has invalid or incompatible metadata", folder);
@@ -616,8 +631,11 @@ static void loadworldcommand(const char *requested)
     loopi(game::SURVIVAL_USABLE_SLOTS)
         inventoryitems[i] = metadata.inventoryids[i] ? getinventoryitempersistentindex(metadata.inventoryids[i]) : -1;
     const int inventorycursoritem = metadata.inventorycursorid ? getinventoryitempersistentindex(metadata.inventorycursorid) : -1;
+    int wornitems[game::WORN_SLOT_MAX];
+    loopi(game::WORN_SLOT_MAX) wornitems[i] = metadata.wornids[i] ? getinventoryitempersistentindex(metadata.wornids[i]) : -1;
     game::loadsurvivalinventory(inventoryitems, metadata.inventorycounts, metadata.inventorydurabilities, game::SURVIVAL_USABLE_SLOTS,
-                                inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability);
+                                inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability,
+                                wornitems, metadata.worndurabilities, min(numwornslots(), int(game::WORN_SLOT_MAX)));
     game::loadworldseed(metadata.seed);
     game::weather::preparemap(worldfolder, metadata.seed);
 

@@ -79,7 +79,8 @@ enum
 {
     INVENTORY_ACTION_SWAP = 0,
     INVENTORY_ACTION_SELECT,
-    INVENTORY_ACTION_CLICK
+    INVENTORY_ACTION_CLICK,
+    INVENTORY_ACTION_WORN_CLICK
 };
 
 enum
@@ -171,7 +172,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 33
+#define PROTOCOL_VERSION 34
 
 enum
 {
@@ -538,7 +539,8 @@ namespace game
     extern const vector<fallingblock *> &getfallingblocks();
     extern int getdynamicentsmaxdistance();
     extern void receiveinventory(const int *items, const int *counts, const int *durabilities, int slots, int selected,
-                                 int cursoritem, int cursorcount, int cursordurability);
+                                 int cursoritem, int cursorcount, int cursordurability,
+                                 const int *wornitems, const int *worndurabilities, int wornslots);
     extern void receivecraftstate(const int *items, const int *counts, const int *durabilities, int slots, int gridsize, int stationitem,
                                   int recipe, int outputitem, int outputcount);
     extern void receivefurnacestate(const furnaceinstance &furnace, bool open, bool cooking);

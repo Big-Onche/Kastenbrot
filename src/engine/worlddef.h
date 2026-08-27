@@ -22,17 +22,30 @@ struct worlddropdefinition
     }
 };
 
+struct wornslotdefinition
+{
+    string id, name;
+    bool mirrored;
+
+    wornslotdefinition(const char *id = "", const char *name = "", bool mirrored = false) : mirrored(mirrored)
+    {
+        copystring(this->id, id);
+        copystring(this->name, name);
+    }
+};
+
 struct worlddefinition
 {
     string id, name, texture, icon, cubetexture, sidetexture, bottom, bottomtexture, model, modelicon, lightcolor;
-    string preferredtool, tooltype;
+    string preferredtool, tooltype, equipmentslots;
     ullong persistentid;
     float worldsize, heldsize, texsize, lightradius, hardness, toolspeed, tooldamage, foodhealth;
     int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit, chestslots, foodtime;
-    int requiredtier, toolwear, tooltier, maxdurability, toolcornerpush, supportdistance;
+    int requiredtier, toolwear, tooltier, maxdurability, toolcornerpush, supportdistance, equipmentcapacity;
+    uint equipmentmask;
     vector<worlddropdefinition> drops;
     bvec gialbedo;
-    bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasfood, hassupport;
+    bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasfood, hassupport, hasequipment;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
     bool explicitdrops, errorfallback, fall, placeableblockcollision, heldflipx, heldflipy, handbreakable, supportdecay,
          supportpersistentonplace;
@@ -42,6 +55,7 @@ struct worlddefinition
 
 extern vector<worlddefinition *> worlddefinitions;
 extern vector<worlddefinition *> worldcubedefinitions, worldscatterdefinitions, inventoryitemdefinitions;
+extern vector<wornslotdefinition *> wornslotdefinitions;
 extern hashtable<worldpersistentkey, int> worldcubepersistentindexes, worldscatterpersistentindexes, inventoryitempersistentindexes;
 extern int worlderrorcube, worlderrorobject, worlderroritem;
 

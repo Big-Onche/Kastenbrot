@@ -27,7 +27,10 @@ namespace server
     enum
     {
         SURVIVAL_HOTBAR_SLOTS = game::SURVIVAL_HOTBAR_SLOTS,
-        SURVIVAL_USABLE_SLOTS = game::SURVIVAL_USABLE_SLOTS
+        SURVIVAL_BASE_SLOTS = game::SURVIVAL_BASE_SLOTS,
+        SURVIVAL_LOCKED_SLOTS = game::SURVIVAL_LOCKED_SLOTS,
+        SURVIVAL_USABLE_SLOTS = game::SURVIVAL_USABLE_SLOTS,
+        WORN_SLOT_MAX = game::WORN_SLOT_MAX
     };
 
     enum
@@ -38,7 +41,7 @@ namespace server
         PLAYER_IDENTITY_VERSION = 1,
         PLAYER_IDENTITY_TIMEOUT = 15000,
         PLAYER_IDENTITY_MAX_RECORDS = 100000,
-        PLAYER_STATE_VERSION = 4,
+        PLAYER_STATE_VERSION = 5,
         DROP_PICKUP_DELAY = 500
     };
 
@@ -148,6 +151,7 @@ namespace server
              chestopen, dead, foodactive;
         string name, playerid, pendingpublickey, pendingname;
         int inventoryitems[SURVIVAL_USABLE_SLOTS], inventorycounts[SURVIVAL_USABLE_SLOTS], inventorydurabilities[SURVIVAL_USABLE_SLOTS];
+        int wornitems[WORN_SLOT_MAX], worndurabilities[WORN_SLOT_MAX];
         int craftingitems[CRAFT_GRID_MAX], craftingcounts[CRAFT_GRID_MAX], craftingdurabilities[CRAFT_GRID_MAX],
             craftinggridsize, craftingstationitem, inventorycursordurability;
         ivec positioncoords, breaktarget, craftingstationtarget, furnacetarget, chesttarget;
@@ -186,6 +190,11 @@ namespace server
                 inventoryitems[i] = -1;
                 inventorycounts[i] = 0;
                 inventorydurabilities[i] = 0;
+            }
+            loopi(WORN_SLOT_MAX)
+            {
+                wornitems[i] = -1;
+                worndurabilities[i] = 0;
             }
             loopi(CRAFT_GRID_MAX)
             {
@@ -1149,6 +1158,11 @@ namespace server
             ci.inventorycounts[i] = 0;
             ci.inventorydurabilities[i] = 0;
         }
+        loopi(WORN_SLOT_MAX)
+        {
+            ci.wornitems[i] = -1;
+            ci.worndurabilities[i] = 0;
+        }
         ci.selectedslot = 0;
         ci.inventorycursoritem = -1;
         ci.inventorycursorcount = 0;
@@ -1163,6 +1177,25 @@ namespace server
         ci.craftingstationitem = -1;
         ci.craftingstationtarget = ivec(0, 0, 0);
         ci.inventorydirty = false;
+    }
+
+    static int inventorycapacity(const clientinfo &ci, int backitem = INT_MIN)
+    {
+        const int back = getwornslotindex("back");
+        const int item = backitem != INT_MIN ? backitem : back >= 0 && back < WORN_SLOT_MAX ? ci.wornitems[back] : -1;
+        return clamp(getinventoryitemequipmentcapacity(item), 0, int(SURVIVAL_LOCKED_SLOTS));
+    }
+
+    static bool inventoryslotunlocked(const clientinfo &ci, int slot)
+    {
+        return slot >= 0 && slot < SURVIVAL_BASE_SLOTS + inventorycapacity(ci);
+    }
+
+    static bool inventoryfitscapacity(const clientinfo &ci, int capacity)
+    {
+        const int limit = SURVIVAL_BASE_SLOTS + clamp(capacity, 0, int(SURVIVAL_LOCKED_SLOTS));
+        loopi(SURVIVAL_USABLE_SLOTS) if(i >= limit && ci.inventorycounts[i] > 0) return false;
+        return true;
     }
 
     static void playerstatename(char *name, size_t len, const char *playerid, const char *suffix = "")
@@ -1236,6 +1269,9 @@ namespace server
                   writeserveritemstate(*file, ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability);
         loopi(SURVIVAL_USABLE_SLOTS) if(ok)
             ok = writeserveritemstate(*file, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i]);
+        if(ok) ok = file->putlil<int>(numwornslots());
+        loopi(min(numwornslots(), int(WORN_SLOT_MAX))) if(ok)
+            ok = writeserveritemstate(*file, ci.wornitems[i], ci.wornitems[i] >= 0 ? 1 : 0, ci.worndurabilities[i]);
         const ullong station = getinventoryitempersistentid(ci.craftingstationitem);
         if(ok) ok = file->putlil<int>(ci.craftinggridsize) &&
                     file->putlil<uint>(uint(station)) && file->putlil<uint>(uint(station >> 32)) &&
@@ -1279,7 +1315,7 @@ namespace server
         int hasposition = 0, inventoryloaded = 0, yaw = 0, pitch = 0;
         ivec position;
         bool valid = file->read(magic, 4) == 4 && !memcmp(magic, "CCPS", 4) &&
-                     (version = file->getlil<uint>()) == PLAYER_STATE_VERSION &&
+                     ((version = file->getlil<uint>()) == 4 || version == PLAYER_STATE_VERSION) &&
                      readserveridentitystring(*file, world, sizeof(world)) &&
                      (seed = file->getlil<uint>()) == uint(serverworldseed) && !strcmp(world, serverworld);
         if(valid)
@@ -1296,8 +1332,18 @@ namespace server
             inventoryloaded = file->getlil<int>();
             ci.selectedslot = file->getlil<int>();
             valid = readserveritemstate(*file, ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability);
-            loopi(SURVIVAL_USABLE_SLOTS) if(valid)
+            const int storedinventoryslots = version >= 5 ? SURVIVAL_USABLE_SLOTS : SURVIVAL_BASE_SLOTS;
+            loopi(storedinventoryslots) if(valid)
                 valid = readserveritemstate(*file, ci.inventoryitems[i], ci.inventorycounts[i], ci.inventorydurabilities[i]);
+            const int wornslots = version >= 5 ? file->getlil<int>() : 0;
+            valid = valid && (version < 5 || wornslots == numwornslots()) && wornslots >= 0 && wornslots <= WORN_SLOT_MAX;
+            if(valid) loopi(wornslots)
+            {
+                int count = 0;
+                valid = readserveritemstate(*file, ci.wornitems[i], count, ci.worndurabilities[i]) &&
+                        (ci.wornitems[i] < 0 || (count == 1 && !getwornslotmirrored(i) &&
+                         getinventoryitemequipmentcompatible(ci.wornitems[i], i)));
+            }
             ci.craftinggridsize = file->getlil<int>();
             const ullong station = ullong(file->getlil<uint>()) | ullong(file->getlil<uint>()) << 32;
             ci.craftingstationitem = station ? getinventoryitempersistentindex(station, false) : -1;
@@ -1313,6 +1359,7 @@ namespace server
                     (!hasposition || (position.z >= 0 && position.z <= int((1 << 13) * DMF) &&
                                       yaw >= 0 && yaw < 360 && pitch >= -90 && pitch <= 90)) &&
                     ci.health >= 0 && ci.health <= game::PLAYER_MAX_HEALTH && ci.dead == (ci.health <= 0) &&
+                    inventoryfitscapacity(ci, inventorycapacity(ci)) &&
                     ci.falldistance >= 0 && ci.falldistance <= (1 << 13) &&
                     ci.positionphysstate >= PHYS_FLOAT && ci.positionphysstate <= PHYS_BOUNCE && file->tell() == file->size();
         }
@@ -1366,6 +1413,13 @@ namespace server
             putpersistentid(p, getinventoryitempersistentid(ci.inventoryitems[i]));
             putint(p, ci.inventorycounts[i]);
             putint(p, ci.inventorydurabilities[i]);
+        }
+        putint(p, numwornslots());
+        loopi(min(numwornslots(), int(WORN_SLOT_MAX)))
+        {
+            const int item = getwornslotmirrored(i) ? -1 : ci.wornitems[i];
+            putpersistentid(p, getinventoryitempersistentid(item));
+            putint(p, item >= 0 ? ci.worndurabilities[i] : 0);
         }
         sendpacket(ci.clientnum, 1, p.finalize());
     }
@@ -1687,13 +1741,14 @@ namespace server
     {
         if(item < 0) return false;
         const int maxstack = max(getinventoryitemmaxstack(item), 1);
-        loopi(SURVIVAL_USABLE_SLOTS) if(ci.inventoryitems[i] == item && ci.inventorycounts[i] > 0 && ci.inventorycounts[i] < maxstack)
+        loopi(SURVIVAL_USABLE_SLOTS) if(inventoryslotunlocked(ci, i) && ci.inventoryitems[i] == item &&
+           ci.inventorycounts[i] > 0 && ci.inventorycounts[i] < maxstack)
         {
             ++ci.inventorycounts[i];
             markinventorydirty(ci);
             return true;
         }
-        loopi(SURVIVAL_USABLE_SLOTS) if(ci.inventorycounts[i] <= 0)
+        loopi(SURVIVAL_USABLE_SLOTS) if(inventoryslotunlocked(ci, i) && ci.inventorycounts[i] <= 0)
         {
             ci.inventoryitems[i] = item;
             ci.inventorycounts[i] = 1;
@@ -1708,7 +1763,7 @@ namespace server
     {
         int room = 0;
         const int stack = max(getinventoryitemmaxstack(item), 1);
-        loopi(SURVIVAL_USABLE_SLOTS)
+        loopi(SURVIVAL_USABLE_SLOTS) if(inventoryslotunlocked(ci, i))
         {
             if(ci.inventoryitems[i] == item && ci.inventorycounts[i] > 0) room += max(stack - ci.inventorycounts[i], 0);
             else if(ci.inventorycounts[i] <= 0) room += stack;
@@ -1722,7 +1777,7 @@ namespace server
         if(isinventorytool(item))
         {
             if(quantity != 1) return false;
-            loopi(SURVIVAL_USABLE_SLOTS) if(ci.inventoryitems[i] < 0 || ci.inventorycounts[i] <= 0)
+            loopi(SURVIVAL_USABLE_SLOTS) if(inventoryslotunlocked(ci, i) && (ci.inventoryitems[i] < 0 || ci.inventorycounts[i] <= 0))
             {
                 ci.inventoryitems[i] = item;
                 ci.inventorycounts[i] = 1;
@@ -2437,6 +2492,13 @@ namespace server
                                 seed ^ uint(i + 1) * 0xC2B2AE35U);
             ci.inventoryitems[i] = -1;
             ci.inventorycounts[i] = ci.inventorydurabilities[i] = 0;
+        }
+        loopi(min(numwornslots(), int(WORN_SLOT_MAX))) if(!getwornslotmirrored(i))
+        {
+            addserverplayerdrop(ci, ci.wornitems[i], ci.wornitems[i] >= 0 ? 1 : 0, ci.worndurabilities[i], origin,
+                                seed ^ uint(i + 97) * 0x9E3779B9U);
+            ci.wornitems[i] = -1;
+            ci.worndurabilities[i] = 0;
         }
         loopi(CRAFT_GRID_MAX)
         {
@@ -4557,7 +4619,7 @@ namespace server
         switch(action)
         {
             case INVENTORY_ACTION_SWAP:
-                if(first < 0 || first >= SURVIVAL_USABLE_SLOTS || second < 0 || second >= SURVIVAL_USABLE_SLOTS)
+                if(!inventoryslotunlocked(ci, first) || !inventoryslotunlocked(ci, second))
                     return rejectaction(ci, requestid, "invalid inventory slot", true, true);
                 swap(ci.inventoryitems[first], ci.inventoryitems[second]);
                 swap(ci.inventorycounts[first], ci.inventorycounts[second]);
@@ -4571,13 +4633,47 @@ namespace server
                 markinventorydirty(ci);
                 break;
             case INVENTORY_ACTION_CLICK:
-                if(first < 0 || first >= SURVIVAL_USABLE_SLOTS ||
+                if(!inventoryslotunlocked(ci, first) ||
                    (second != INVENTORY_CLICK_LEFT && second != INVENTORY_CLICK_RIGHT))
                     return rejectaction(ci, requestid, "invalid inventory click", true, true);
                 if(inventoryinstanceclick(ci.inventorycursoritem, ci.inventorycursorcount, ci.inventorycursordurability,
                                           ci.inventoryitems[first], ci.inventorycounts[first], ci.inventorydurabilities[first], second))
                     markinventorydirty(ci);
                 break;
+            case INVENTORY_ACTION_WORN_CLICK:
+            {
+                if(first < 0 || first >= numwornslots() || first >= WORN_SLOT_MAX || getwornslotmirrored(first) ||
+                   (second != INVENTORY_CLICK_LEFT && second != INVENTORY_CLICK_RIGHT))
+                    return rejectaction(ci, requestid, "invalid worn equipment slot", true, true);
+                if(ci.inventorycursorcount > 0)
+                {
+                    if(ci.inventorycursorcount != 1 || ci.inventorycursoritem < 0 ||
+                       getinventoryitemmaxstack(ci.inventorycursoritem) != 1 ||
+                       !getinventoryitemequipmentcompatible(ci.inventorycursoritem, first) ||
+                       (isinventorytool(ci.inventorycursoritem)
+                            ? !validatetooldurability(ci.inventorycursoritem, ci.inventorycursordurability)
+                            : ci.inventorycursordurability != 0))
+                        return rejectaction(ci, requestid, "cursor item is not valid for that worn slot");
+                }
+                if(ci.wornitems[first] >= 0 && (!getinventoryitemequipmentcompatible(ci.wornitems[first], first) ||
+                   getinventoryitemmaxstack(ci.wornitems[first]) != 1 ||
+                   (isinventorytool(ci.wornitems[first])
+                        ? !validatetooldurability(ci.wornitems[first], ci.worndurabilities[first])
+                        : ci.worndurabilities[first] != 0)))
+                    return rejectaction(ci, requestid, "invalid equipped item state", true, true);
+
+                const int back = getwornslotindex("back"), nextcapacity = first == back
+                              ? inventorycapacity(ci, ci.inventorycursorcount > 0 ? ci.inventorycursoritem : -1)
+                              : inventorycapacity(ci);
+                if(!inventoryfitscapacity(ci, nextcapacity))
+                    return rejectaction(ci, requestid, "move items out of backpack slots before removing or replacing it");
+
+                swap(ci.inventorycursoritem, ci.wornitems[first]);
+                swap(ci.inventorycursordurability, ci.worndurabilities[first]);
+                ci.inventorycursorcount = ci.inventorycursoritem >= 0 ? 1 : 0;
+                markinventorydirty(ci);
+                break;
+            }
             default:
                 return rejectaction(ci, requestid, "invalid inventory action", true, true);
         }
@@ -4623,7 +4719,7 @@ namespace server
             }
             case CRAFT_ACTION_INVENTORY_TO_GRID:
                 if(!craftingstationvalid(ci)) return rejectcraftaction(ci, requestid, "the crafting station is no longer accessible");
-                if(first < 0 || first >= SURVIVAL_USABLE_SLOTS || second < 0 || second >= ci.craftinggridsize * ci.craftinggridsize)
+                if(!inventoryslotunlocked(ci, first) || second < 0 || second >= ci.craftinggridsize * ci.craftinggridsize)
                     return rejectcraftaction(ci, requestid, "invalid crafting slot", true, true);
                 swap(ci.inventoryitems[first], ci.craftingitems[second]);
                 swap(ci.inventorycounts[first], ci.craftingcounts[second]);
@@ -4632,7 +4728,7 @@ namespace server
                 break;
             case CRAFT_ACTION_GRID_TO_INVENTORY:
                 if(!craftingstationvalid(ci)) return rejectcraftaction(ci, requestid, "the crafting station is no longer accessible");
-                if(first < 0 || first >= ci.craftinggridsize * ci.craftinggridsize || second < 0 || second >= SURVIVAL_USABLE_SLOTS)
+                if(first < 0 || first >= ci.craftinggridsize * ci.craftinggridsize || !inventoryslotunlocked(ci, second))
                     return rejectcraftaction(ci, requestid, "invalid crafting slot", true, true);
                 swap(ci.craftingitems[first], ci.inventoryitems[second]);
                 swap(ci.craftingcounts[first], ci.inventorycounts[second]);
@@ -4659,7 +4755,7 @@ namespace server
                 break;
             case CRAFT_ACTION_TAKE_OUTPUT:
             {
-                if(second < 0 || second >= SURVIVAL_USABLE_SLOTS) return rejectcraftaction(ci, requestid, "invalid output inventory slot", true, true);
+                if(!inventoryslotunlocked(ci, second)) return rejectcraftaction(ci, requestid, "invalid output inventory slot", true, true);
                 const int outputitem = getcraftrecipeoutputitem(first);
                 if(ci.inventorycounts[second] > 0 && ci.inventoryitems[second] != outputitem)
                     return rejectcraftaction(ci, requestid, "the output inventory slot contains another item");
