@@ -107,8 +107,8 @@ static bool localambientfieldready = false, localambientbootstrap = false;
 static GLuint localambientwhitetexture = 0;
 static GLuint localambientoccupancytexture = 0, localambientalbedotexture = 0, localambientgputextures[2] = { 0, 0 },
               localambientgitextures[2] = { 0, 0 }, localambientcombinedtexture = 0, localambientgpuprogram = 0,
-              localambientgpuseedprogram = 0, localambientgpushiftprogram = 0, localambientgialbedoshiftprogram = 0,
-              localambientgiseedprogram = 0, localambientgipropagateprogram = 0, localambientgicombineprogram = 0;
+              localambientgpuseedprogram = 0, localambientgiseedprogram = 0, localambientgipropagateprogram = 0,
+              localambientgicombineprogram = 0;
 static ivec localambientgputexturedimensions(0, 0, 0);
 static int localambientgpufinaltexture = 0, localambientgifinaltexture = 0;
 static bool localambientgpuinitialized = false, localambientgpuavailable = false, localambientgpuready = false;
@@ -397,8 +397,6 @@ static void configurelocalambienttexture(GLuint texture)
 
 static GLint localambientgpudimensionsuniform = -1, localambientgpuattenuationuniform = -1,
              localambientgpudownwardattenuationuniform = -1, localambientgpuseeddimensionsuniform = -1,
-             localambientgpushiftdimensionsuniform = -1, localambientgpushiftoffsetuniform = -1,
-             localambientgialbedoshiftdimensionsuniform = -1, localambientgialbedoshiftoffsetuniform = -1,
              localambientgiseeddimensionsuniform = -1, localambientgipropagatedimensionsuniform = -1,
              localambientgipropagatedecayuniform = -1, localambientgicombinedimensionsuniform = -1,
              localambientgicombineenableduniform = -1;
@@ -454,36 +452,6 @@ static const char *localambientgpuseedsource =
     "        imageStore(seedImage, p, vec4(skyVisible && !solid ? 1.0 : 0.0, 0.0, 0.0, 1.0));\n"
     "        if(solid) skyVisible = false;\n"
     "    }\n"
-    "}\n";
-
-static const char *localambientgpushiftsource =
-    "#version 430 core\n"
-    "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-    "layout(r8, binding = 0) readonly uniform image3D sourceImage;\n"
-    "layout(r8, binding = 1) writeonly uniform image3D destinationImage;\n"
-    "uniform ivec3 fieldSize;\n"
-    "uniform ivec3 shiftOffset;\n"
-    "void main()\n"
-    "{\n"
-    "    ivec3 p = ivec3(gl_GlobalInvocationID.xyz);\n"
-    "    if(any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    ivec3 source = clamp(p + shiftOffset, ivec3(0), fieldSize - ivec3(1));\n"
-    "    imageStore(destinationImage, p, imageLoad(sourceImage, source));\n"
-    "}\n";
-
-static const char *localambientgialbedoshiftsource =
-    "#version 430 core\n"
-    "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-    "layout(rgba8, binding = 0) readonly uniform image3D sourceImage;\n"
-    "layout(rgba8, binding = 1) writeonly uniform image3D destinationImage;\n"
-    "uniform ivec3 fieldSize;\n"
-    "uniform ivec3 shiftOffset;\n"
-    "void main()\n"
-    "{\n"
-    "    ivec3 p = ivec3(gl_GlobalInvocationID.xyz);\n"
-    "    if(any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    ivec3 source = clamp(p + shiftOffset, ivec3(0), fieldSize - ivec3(1));\n"
-    "    imageStore(destinationImage, p, imageLoad(sourceImage, source));\n"
     "}\n";
 
 static const char *localambientgiseedsource =
@@ -640,23 +608,19 @@ static bool initlocalambientgpu()
 
     localambientgpuprogram = createlocalambientcomputeprogram(localambientcomputesource);
     localambientgpuseedprogram = createlocalambientcomputeprogram(localambientgpuseedsource);
-    localambientgpushiftprogram = createlocalambientcomputeprogram(localambientgpushiftsource);
-    localambientgialbedoshiftprogram = createlocalambientcomputeprogram(localambientgialbedoshiftsource);
     localambientgiseedprogram = createlocalambientcomputeprogram(localambientgiseedsource);
     localambientgipropagateprogram = createlocalambientcomputeprogram(localambientgipropagatesource);
     localambientgicombineprogram = createlocalambientcomputeprogram(localambientgicombinesource);
-    if(!localambientgpuprogram || !localambientgpuseedprogram || !localambientgpushiftprogram || !localambientgialbedoshiftprogram ||
-       !localambientgiseedprogram || !localambientgipropagateprogram || !localambientgicombineprogram)
+    if(!localambientgpuprogram || !localambientgpuseedprogram || !localambientgiseedprogram || !localambientgipropagateprogram ||
+       !localambientgicombineprogram)
     {
         if(localambientgpuprogram) glDeleteProgram_(localambientgpuprogram);
         if(localambientgpuseedprogram) glDeleteProgram_(localambientgpuseedprogram);
-        if(localambientgpushiftprogram) glDeleteProgram_(localambientgpushiftprogram);
-        if(localambientgialbedoshiftprogram) glDeleteProgram_(localambientgialbedoshiftprogram);
         if(localambientgiseedprogram) glDeleteProgram_(localambientgiseedprogram);
         if(localambientgipropagateprogram) glDeleteProgram_(localambientgipropagateprogram);
         if(localambientgicombineprogram) glDeleteProgram_(localambientgicombineprogram);
-        localambientgpuprogram = localambientgpuseedprogram = localambientgpushiftprogram = localambientgialbedoshiftprogram =
-            localambientgiseedprogram = localambientgipropagateprogram = localambientgicombineprogram = 0;
+        localambientgpuprogram = localambientgpuseedprogram = localambientgiseedprogram = localambientgipropagateprogram =
+            localambientgicombineprogram = 0;
         if(!localambientgpuwarning)
         {
             conoutf(CON_WARN, "local ambient GPU disabled: compute shader compilation failed (OpenGL 4.3 context required)");
@@ -669,10 +633,6 @@ static bool initlocalambientgpu()
     localambientgpuattenuationuniform = glGetUniformLocation_(localambientgpuprogram, "attenuation");
     localambientgpudownwardattenuationuniform = glGetUniformLocation_(localambientgpuprogram, "downwardAttenuation");
     localambientgpuseeddimensionsuniform = glGetUniformLocation_(localambientgpuseedprogram, "fieldSize");
-    localambientgpushiftdimensionsuniform = glGetUniformLocation_(localambientgpushiftprogram, "fieldSize");
-    localambientgpushiftoffsetuniform = glGetUniformLocation_(localambientgpushiftprogram, "shiftOffset");
-    localambientgialbedoshiftdimensionsuniform = glGetUniformLocation_(localambientgialbedoshiftprogram, "fieldSize");
-    localambientgialbedoshiftoffsetuniform = glGetUniformLocation_(localambientgialbedoshiftprogram, "shiftOffset");
     localambientgiseeddimensionsuniform = glGetUniformLocation_(localambientgiseedprogram, "fieldSize");
     localambientgipropagatedimensionsuniform = glGetUniformLocation_(localambientgipropagateprogram, "fieldSize");
     localambientgipropagatedecayuniform = glGetUniformLocation_(localambientgipropagateprogram, "decay");
@@ -786,44 +746,6 @@ static bool copylocalambientjobfields(const localambientjob &job)
         memcpy(localambientsolidfield.getbuf() + destination, job.solid.getbuf() + source, job.regiondimensions.x);
         memcpy(localambientalbedofield.getbuf() + destination, job.albedo.getbuf() + source, job.regiondimensions.x * sizeof(bvec4));
     }
-    return true;
-}
-
-static bool shiftlocalambientgpuoccupancy(const ivec &dimensions, const ivec &shift)
-{
-    if(!localambientgpuready || !ensurelocalambientgputextures(dimensions)) return false;
-    glUseProgram_(localambientgpushiftprogram);
-    if(localambientgpushiftdimensionsuniform >= 0)
-        glUniform3i_(localambientgpushiftdimensionsuniform, dimensions.x, dimensions.y, dimensions.z);
-    if(localambientgpushiftoffsetuniform >= 0) glUniform3i_(localambientgpushiftoffsetuniform, shift.x, shift.y, shift.z);
-    localambientBindImageTexture(0, localambientoccupancytexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
-    localambientBindImageTexture(1, localambientgputextures[0], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
-    localambientDispatchCompute((dimensions.x + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE,
-                                (dimensions.y + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE,
-                                (dimensions.z + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE);
-    localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    swap(localambientoccupancytexture, localambientgputextures[0]);
-    configurelocalambientgpuvolume(localambientoccupancytexture, false, false);
-    configurelocalambientgpuvolume(localambientgputextures[0], true, true);
-    glBindTexture(GL_TEXTURE_3D, 0);
-    return true;
-}
-
-static bool shiftlocalambientgpualbedo(const ivec &dimensions, const ivec &shift)
-{
-    if(!localambientgpuready || !ensurelocalambientgputextures(dimensions)) return false;
-    glUseProgram_(localambientgialbedoshiftprogram);
-    if(localambientgialbedoshiftdimensionsuniform >= 0)
-        glUniform3i_(localambientgialbedoshiftdimensionsuniform, dimensions.x, dimensions.y, dimensions.z);
-    if(localambientgialbedoshiftoffsetuniform >= 0)
-        glUniform3i_(localambientgialbedoshiftoffsetuniform, shift.x, shift.y, shift.z);
-    localambientBindImageTexture(0, localambientalbedotexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA8);
-    localambientBindImageTexture(1, localambientgitextures[0], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
-    localambientDispatchCompute((dimensions.x + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE,
-                                (dimensions.y + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE,
-                                (dimensions.z + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE);
-    localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    swap(localambientalbedotexture, localambientgitextures[0]);
     return true;
 }
 
@@ -1051,14 +973,15 @@ static bool scrolllocalambientgpufield(const ivec &origin)
     ZoneScopedN("LocalAmbient/GPU scroll");
     if(!shiftlocalambientcpufield(localambientsolidfield, localambientfielddimensions, shift)) return false;
     if(!shiftlocalambientcpualbedo(localambientfielddimensions, shift)) return false;
-    if(!shiftlocalambientgpuoccupancy(localambientfielddimensions, shift)) return false;
-    if(!shiftlocalambientgpualbedo(localambientfielddimensions, shift)) return false;
 
     nextlocalambientserial();
     buildlocalambientscrollregions(shift, localambientfielddimensions);
     const int downwardattenuation = max(int(ceilf(localambientattenuation * (1.0f - 0.75f * localambientverticalbias))), 1);
+    // Re-upload the shifted CPU fields instead of recycling propagation textures as
+    // image-store destinations. The latter can leave the sampled volume registered
+    // to the previous origin on some drivers, displacing occupancy by one scroll step.
     if(!rebuildlocalambientgpu(origin, localambientfielddimensions, localambientfieldresolution, localambientattenuation,
-                               downwardattenuation, NULL, false)) return false;
+                               downwardattenuation)) return false;
 
     int refreshcells = 0;
     loopi(localambientscrollregioncount)
@@ -1197,18 +1120,14 @@ void cleanuplocalambient()
     deletelocalambientgputextures();
     if(localambientgpuprogram) glDeleteProgram_(localambientgpuprogram);
     if(localambientgpuseedprogram) glDeleteProgram_(localambientgpuseedprogram);
-    if(localambientgpushiftprogram) glDeleteProgram_(localambientgpushiftprogram);
-    if(localambientgialbedoshiftprogram) glDeleteProgram_(localambientgialbedoshiftprogram);
     if(localambientgiseedprogram) glDeleteProgram_(localambientgiseedprogram);
     if(localambientgipropagateprogram) glDeleteProgram_(localambientgipropagateprogram);
     if(localambientgicombineprogram) glDeleteProgram_(localambientgicombineprogram);
-    localambientgpuprogram = localambientgpuseedprogram = localambientgpushiftprogram = localambientgialbedoshiftprogram =
-        localambientgiseedprogram = localambientgipropagateprogram = localambientgicombineprogram = 0;
+    localambientgpuprogram = localambientgpuseedprogram = localambientgiseedprogram = localambientgipropagateprogram =
+        localambientgicombineprogram = 0;
     localambientgpudimensionsuniform = localambientgpuattenuationuniform = localambientgpudownwardattenuationuniform =
-        localambientgpuseeddimensionsuniform = localambientgpushiftdimensionsuniform = localambientgpushiftoffsetuniform =
-        localambientgialbedoshiftdimensionsuniform = localambientgialbedoshiftoffsetuniform = localambientgiseeddimensionsuniform =
-        localambientgipropagatedimensionsuniform = localambientgipropagatedecayuniform = localambientgicombinedimensionsuniform =
-        localambientgicombineenableduniform = -1;
+        localambientgpuseeddimensionsuniform = localambientgiseeddimensionsuniform = localambientgipropagatedimensionsuniform =
+        localambientgipropagatedecayuniform = localambientgicombinedimensionsuniform = localambientgicombineenableduniform = -1;
     localambientgpuinitialized = localambientgpuavailable = localambientgpuready = false;
     localambientDispatchCompute = NULL;
     localambientBindImageTexture = NULL;
