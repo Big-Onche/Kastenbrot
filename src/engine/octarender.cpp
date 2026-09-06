@@ -2,141 +2,9 @@
 
 #include "engine.h"
 
-struct vboinfo
-{
-    int uses;
-    uchar *data;
-};
-
-hashtable<GLuint, vboinfo> vbos;
-
-VAR(printvbo, 0, 0, 1);
-VARFN(vbosize, maxvbosize, 0, 1<<14, 1<<16, allchanged());
-
-enum
-{
-    VBO_VBUF = 0,
-    VBO_EBUF,
-    VBO_SKYBUF,
-    VBO_DECALBUF,
-    NUMVBO
-};
-
-static vector<uchar> vbodata[NUMVBO];
-static vector<vtxarray *> vbovas[NUMVBO];
-static int vbosize[NUMVBO];
-static int worldvauploadbytes = 0, worldvauploadvertices = 0;
-
-void resetworldvauploadstats()
-{
-    worldvauploadbytes = worldvauploadvertices = 0;
-}
-
-void getworldvauploadstats(int &bytes, int &vertices)
-{
-    bytes = worldvauploadbytes;
-    vertices = worldvauploadvertices;
-}
-
-void destroyvbo(GLuint vbo)
-{
-    vboinfo *exists = vbos.access(vbo);
-    if(!exists) return;
-    vboinfo &vbi = *exists;
-    if(vbi.uses <= 0) return;
-    vbi.uses--;
-    if(!vbi.uses)
-    {
-        glDeleteBuffers_(1, &vbo);
-        if(vbi.data) delete[] vbi.data;
-        vbos.remove(vbo);
-    }
-}
-
-void genvbo(int type, void *buf, int len, vtxarray **vas, int numva)
-{
-    gle::disable();
-
-    GLuint vbo;
-    glGenBuffers_(1, &vbo);
-    GLenum target = type==VBO_VBUF ? GL_ARRAY_BUFFER : GL_ELEMENT_ARRAY_BUFFER;
-    glBindBuffer_(target, vbo);
-    glBufferData_(target, len, buf, GL_STATIC_DRAW);
-    glBindBuffer_(target, 0);
-    worldvauploadbytes += len;
-    if(type == VBO_VBUF) worldvauploadvertices += len / int(sizeof(vertex));
-
-    vboinfo &vbi = vbos[vbo];
-    vbi.uses = numva;
-    vbi.data = new uchar[len];
-    memcpy(vbi.data, buf, len);
-
-    if(printvbo) conoutf(CON_DEBUG, "vbo %d: type %d, size %d, %d uses", vbo, type, len, numva);
-
-    loopi(numva)
-    {
-        vtxarray *va = vas[i];
-        switch(type)
-        {
-            case VBO_VBUF:
-                va->vbuf = vbo;
-                va->vdata = (vertex *)vbi.data;
-                break;
-            case VBO_EBUF:
-                va->ebuf = vbo;
-                va->edata = (ushort *)vbi.data;
-                break;
-            case VBO_SKYBUF:
-                va->skybuf = vbo;
-                va->skydata = (ushort *)vbi.data;
-                break;
-            case VBO_DECALBUF:
-                va->decalbuf = vbo;
-                va->decaldata = (ushort *)vbi.data;
-                break;
-        }
-    }
-}
-
-void flushvbo(int type = -1)
-{
-    if(type < 0)
-    {
-        loopi(NUMVBO) flushvbo(i);
-        return;
-    }
-
-    vector<uchar> &data = vbodata[type];
-    if(data.empty()) return;
-    vector<vtxarray *> &vas = vbovas[type];
-    genvbo(type, data.getbuf(), data.length(), vas.getbuf(), vas.length());
-    data.setsize(0);
-    vas.setsize(0);
-    vbosize[type] = 0;
-}
-
-uchar *addvbo(vtxarray *va, int type, int numelems, int elemsize)
-{
-    switch(type)
-    {
-        case VBO_VBUF: va->voffset = vbosize[type]; break;
-        case VBO_EBUF: va->eoffset = vbosize[type]; break;
-        case VBO_SKYBUF: va->skyoffset = vbosize[type]; break;
-        case VBO_DECALBUF: va->decaloffset = vbosize[type]; break;
-    }
-
-    vbosize[type] += numelems;
-
-    vector<uchar> &data = vbodata[type];
-    vector<vtxarray *> &vas = vbovas[type];
-
-    vas.add(va);
-
-    int len = numelems*elemsize;
-    uchar *buf = data.reserve(len).buf;
-    data.advance(len);
-    return buf;
-}
+#define OCTARENDER_MODULE_IMPLEMENTATION
+#include "worldvbo.cpp"
+#undef OCTARENDER_MODULE_IMPLEMENTATION
 
 struct verthash
 {
@@ -1201,7 +1069,9 @@ vtxarray *newva(const ivec &o, int size)
     wverts += va->verts;
     wtris  += va->tris + va->blends + va->alphatris + va->decaltris;
     allocva++;
+    va->listindex = valist.length();
     valist.add(va);
+    explicitsky += va->sky;
 
     return va;
 }
@@ -1221,7 +1091,10 @@ void destroyva(vtxarray *va, bool reparent)
     wverts -= va->verts;
     wtris -= va->tris + va->blends + va->alphatris + va->decaltris;
     allocva--;
-    valist.removeobj(va);
+    const int index = va->listindex;
+    valist.removeunordered(index);
+    if(valist.inrange(index)) valist[index]->listindex = index;
+    explicitsky -= va->sky;
     if(!parent) varoot.removeobj(va);
     if(reparent)
     {
@@ -1591,13 +1464,21 @@ VARF(vafacemax, 64, 384, 256*256, allchanged());
 VARF(vafacemin, 0, 96, 256*256, allchanged());
 VARF(vacubesize, 32, 128, 0x1000, allchanged());
 
-int updateva(cube *c, const ivec &co, int size, int csi, int worldsectionsize, int facemax, int maxvasize)
+int updateva(cube *c, const ivec &co, int size, int csi, int worldsectionsize, int facemax, int maxvasize,
+             const ivec *dirtymins = NULL, const ivec *dirtymaxs = NULL, int numregions = 0)
 {
-    progress("recalculating geometry...");
+    if(!worldsectionsize) progress("recalculating geometry...");
     int ccount = 0, cmergemax = vamergemax, chasmerges = vahasmerges;
+    uchar possible = 0xFF;
+    if(numregions && size >= maxvasize)
+    {
+        possible = 0;
+        loopj(numregions) possible |= octaboxoverlap(co, size, dirtymins[j], dirtymaxs[j]);
+    }
     neighbourstack[++neighbourdepth] = c;
     loopi(8)                                    // counting number of semi-solid/solid children cubes
     {
+        if(!(possible & (1 << i))) continue;
         int count = 0, childpos = varoot.length();
         ivec o(i, co, size);
         vamergemax = 0;
@@ -1610,16 +1491,21 @@ int updateva(cube *c, const ivec &co, int size, int csi, int worldsectionsize, i
         }
         else
         {
+            if(worldsectionsize && size > maxvasize && !c[i].children && (!isempty(c[i]) || c[i].material != MAT_AIR))
+                subdividecube(c[i], true, false);
             if(c[i].children)
             {
                 if(c[i].ext && c[i].ext->ents) entstack[++entdepth] = c[i].ext->ents;
-                count += updateva(c[i].children, o, size/2, csi-1, worldsectionsize, facemax, maxvasize);
+                count += updateva(c[i].children, o, size/2, csi-1, worldsectionsize, facemax, maxvasize,
+                                  dirtymins, dirtymaxs, numregions);
                 if(c[i].ext && c[i].ext->ents) --entdepth;
             }
             else count += setcubevisibility(c[i], o, size);
             int tcount = count + (csi <= MAXMERGELEVEL ? vamerges[csi].length() : 0);
-            bool makegroup = worldsectionsize > 0 && size >= worldsectionsize && size <= maxvasize && (tcount > 0 || varoot.length() > childpos);
-            if(tcount > facemax || makegroup || (!worldsectionsize && tcount >= vafacemin && size >= vacubesize) || size == maxvasize)
+            bool makegroup = worldsectionsize > 0 && (size == maxvasize || size == worldsectionsize) &&
+                             (tcount > 0 || varoot.length() > childpos);
+            if(makegroup || (size <= maxvasize &&
+               (tcount > facemax || (!worldsectionsize && tcount >= vafacemin && size >= vacubesize) || size == maxvasize)))
             {
                 loadprogress = clamp(recalcprogress/float(allocnodes), 0.0f, 1.0f);
                 setva(c[i], o, size, csi, makegroup);
@@ -1632,6 +1518,8 @@ int updateva(cube *c, const ivec &co, int size, int csi, int worldsectionsize, i
                         child->parent = c[i].ext->va;
                     }
                     varoot.add(c[i].ext->va);
+                    // Mesh tiles are independently replaceable allocations.
+                    if(worldsectionsize && size == maxvasize) flushvbo();
                     if(vamergemax > size)
                     {
                         cmergemax = max(cmergemax, vamergemax);
@@ -1727,16 +1615,30 @@ void findtjoints()
     edgegroups.clear();
 }
 
-void octarender()                               // creates va s for all leaf cubes that don't already have them
+void octarender()
 {
     ZoneScopedN("Geometry/Update octree render");
     int csi = 0;
     while(1<<csi < worldsize) csi++;
     const int worldsectionsize = getworldsectionsize(),
               facemax = worldsectionsize ? max(vafacemax, 8192) : vafacemax,
-              maxvasize = min(0x1000, worldsize/2);
+              maxvasize = worldsectionsize ? int(WORLD_VA_TILE_SIZE) : min(0x1000, worldsize/2);
 
     recalcprogress = 0;
+    if(worldsectionsize)
+    {
+        // A full edit commit can encounter a partially streamed section group.
+        // Reassemble these containers from their surviving tiles so an existing
+        // group cannot hide missing tiles from the full traversal.
+        for(int i = valist.length() - 1; i >= 0; --i)
+        {
+            vtxarray *va = valist[i];
+            if(va->size != worldsectionsize) continue;
+            cube &section = lookupcube(va->o, worldsectionsize);
+            if(section.ext && section.ext->va == va) section.ext->va = NULL;
+            destroyva(va);
+        }
+    }
     varoot.setsize(0);
     {
         ZoneScopedN("Geometry/Build changed vertex arrays");
@@ -1750,16 +1652,71 @@ void octarender()                               // creates va s for all leaf cub
         flushvbo();
     }
 
-    {
-        ZoneScopedN("Geometry/Recount explicit sky");
-        explicitsky = 0;
-        loopv(valist)
-        {
-            vtxarray *va = valist[i];
-            explicitsky += va->sky;
-        }
-    }
+    visibleva = NULL;
+}
 
+void buildstreamingtile(const ivec &origin)
+{
+    ZoneScopedN("Geometry/Build mesh tile");
+    const ivec maximum = ivec(origin).add(WORLD_VA_TILE_SIZE);
+    const int sectionsize = getworldsectionsize(), firstroot = varoot.length();
+    // Restore the neighbour/entity ancestry, then enter the mesher directly at
+    // this tile's parent. Existing section groups and other tiles are untouched.
+    ASSERT(neighbourdepth == -1 && entdepth == -1);
+    cube *c = worldroot;
+    ivec co(0, 0, 0);
+    int size = worldsize / 2, csi = worldscale - 1;
+    while(size > WORLD_VA_TILE_SIZE)
+    {
+        neighbourstack[++neighbourdepth] = c;
+        const int child = octastep(origin.x, origin.y, origin.z, csi);
+        if(c[child].ext && c[child].ext->ents) entstack[++entdepth] = c[child].ext->ents;
+        co = ivec(child, co, size);
+        ASSERT(c[child].children);
+        c = c[child].children;
+        size >>= 1;
+        --csi;
+    }
+    recalcprogress = 0;
+    updateva(c, co, size, csi, sectionsize,
+             max(vafacemax, 8192), WORLD_VA_TILE_SIZE, &origin, &maximum, 1);
+    neighbourdepth = entdepth = -1;
+    if(varoot.length() > firstroot)
+    {
+        const ivec sectionorigin = ivec(origin).mask(~(sectionsize - 1));
+        cube &section = lookupcube(sectionorigin, sectionsize);
+        vtxarray *group = section.ext ? section.ext->va : NULL;
+        const bool newgroup = !group;
+        if(newgroup)
+        {
+            // A geometry-free section VA keeps coarse occlusion/culling without
+            // forcing the section's remaining tiles through the mesher.
+            vc.clear();
+            if(section.ext && section.ext->ents)
+            {
+                if(!section.ext->ents->mapmodels.empty()) vc.mapmodels.add(section.ext->ents);
+                if(!section.ext->ents->decals.empty()) vc.decals.add(section.ext->ents);
+            }
+            group = newva(sectionorigin, sectionsize);
+            calcgeombb(sectionorigin, sectionsize, group->geommin, group->geommax);
+            calcmatbb(group, sectionorigin, sectionsize, vc.matsurfs);
+            vc.clear();
+            ext(section).va = group;
+        }
+        while(varoot.length() > firstroot)
+        {
+            vtxarray *child = varoot.pop();
+            group->children.add(child);
+            child->parent = group;
+        }
+        if(newgroup) varoot.add(group);
+        invalidatevabb(group);
+    }
+    {
+        ZoneScopedN("Geometry/Upload mesh tile");
+        flushvbo();
+    }
+    loadprogress = 0;
     visibleva = NULL;
 }
 
@@ -1792,6 +1749,7 @@ void precachetextures()
 
 void allchanged(bool load)
 {
+    resetgeometrychanges();
     if(mainmenu && !isconnected()) load = false;
     invalidatelocalambient();
     if(load) initlights();

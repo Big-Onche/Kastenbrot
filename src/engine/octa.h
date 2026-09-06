@@ -121,6 +121,7 @@ enum
 
 struct vtxarray
 {
+    int listindex;
     vtxarray *parent;
     vector<vtxarray *> children;
     vtxarray *next, *rnext;  // linked list of visible VOBs

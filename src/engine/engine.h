@@ -424,6 +424,11 @@ extern void cancelsel();
 extern void rendertexturepanel(int w, int h);
 extern void addundo(undoblock *u);
 extern void commitchanges(bool force = false);
+extern void resetgeometrychanges();
+// Streaming mesh ownership is smaller than CPU/collision section ownership.
+enum { WORLD_VA_TILE_SIZE = 64 };
+extern int processstreaminggeometry(double budget, int uploadlimit);
+extern bool streaminggeometrypending(const ivec &sectionorigin);
 extern void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax);
 enum
 {
@@ -465,6 +470,8 @@ extern void guessnormals(const vec *pos, int numverts, vec *normals);
 extern void reduceslope(ivec &n);
 extern void findtjoints();
 extern void octarender();
+extern void buildstreamingtile(const ivec &origin);
+extern void cleanupstreamingvbos();
 // Full-world invalidation for map loads and global renderer configuration only.
 extern void allchanged(bool load = false);
 extern void clearvas(cube *c);

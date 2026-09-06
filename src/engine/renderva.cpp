@@ -1,6 +1,8 @@
 // renderva.cpp: handles the occlusion and rendering of vertex arrays
 
+#include <algorithm>
 #include "engine.h"
+#include "renderbatch.h"
 
 static inline void drawtris(GLsizei numindices, const GLvoid *indices, ushort minvert, ushort maxvert)
 {
@@ -1460,7 +1462,7 @@ struct geombatch
 };
 
 static vector<geombatch> geombatches;
-static int firstbatch = -1, numbatches = 0;
+static renderbatchorder geomorder;
 
 static void mergetexs(renderstate &cur, vtxarray *va, elementset *texs = NULL, int numtexs = 0, int offset = 0)
 {
@@ -1477,65 +1479,12 @@ static void mergetexs(renderstate &cur, vtxarray *va, elementset *texs = NULL, i
         }
     }
 
-    if(firstbatch < 0)
+    loopi(numtexs)
     {
-        firstbatch = geombatches.length();
-        numbatches = numtexs;
-        loopi(numtexs-1)
-        {
-            geombatches.add(geombatch(texs[i], offset, va)).next = i+1;
-            offset += texs[i].length;
-        }
-        geombatches.add(geombatch(texs[numtexs-1], offset, va));
-        return;
+        geombatches.add(geombatch(texs[i], offset, va));
+        offset += texs[i].length;
     }
-
-    int prevbatch = -1, curbatch = firstbatch, curtex = 0;
-    do
-    {
-        geombatch &b = geombatches.add(geombatch(texs[curtex], offset, va));
-        offset += texs[curtex].length;
-        int dir = -1;
-        while(curbatch >= 0)
-        {
-            dir = b.compare(geombatches[curbatch]);
-            if(dir <= 0) break;
-            prevbatch = curbatch;
-            curbatch = geombatches[curbatch].next;
-        }
-        if(!dir)
-        {
-            int last = curbatch, next;
-            for(;;)
-            {
-                next = geombatches[last].batch;
-                if(next < 0) break;
-                last = next;
-            }
-            if(last==curbatch)
-            {
-                b.batch = curbatch;
-                b.next = geombatches[curbatch].next;
-                if(prevbatch < 0) firstbatch = geombatches.length()-1;
-                else geombatches[prevbatch].next = geombatches.length()-1;
-                curbatch = geombatches.length()-1;
-            }
-            else
-            {
-                b.batch = next;
-                geombatches[last].batch = geombatches.length()-1;
-            }
-        }
-        else
-        {
-            numbatches++;
-            b.next = curbatch;
-            if(prevbatch < 0) firstbatch = geombatches.length()-1;
-            else geombatches[prevbatch].next = geombatches.length()-1;
-            prevbatch = geombatches.length()-1;
-        }
-    }
-    while(++curtex < numtexs);
+    geomorder.sorted = false;
 }
 
 static inline void enablevattribs(renderstate &cur, bool all = true)
@@ -1812,15 +1761,15 @@ static void renderbatch(renderstate &cur, int pass, geombatch &b)
 static void resetbatches()
 {
     geombatches.setsize(0);
-    firstbatch = -1;
-    numbatches = 0;
+    geomorder.clear();
 }
 
 static void renderbatches(renderstate &cur, int pass)
 {
     cur.slot = NULL;
     cur.vslot = NULL;
-    int curbatch = firstbatch;
+    geomorder.sort(geombatches);
+    int curbatch = geomorder.first;
     if(curbatch >= 0)
     {
         if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
@@ -1955,6 +1904,7 @@ void cleanupva()
 {
     cleanupworldlods();
     clearvas(worldroot);
+    cleanupstreamingvbos();
     clearqueries();
     cleanupbb();
     cleanupgrass();
@@ -2167,9 +2117,11 @@ void rendergeom()
                     blends += va->blends;
                     renderva(cur, va, RENDERPASS_GBUFFER);
                 }
+                // Include sorting in construction, not in the draw-time zone.
+                geomorder.sort(geombatches);
 #ifdef TRACY_ENABLE
                 collectedbatches = geombatches.length();
-                uniquebatches = numbatches;
+                uniquebatches = geomorder.count;
 #endif
             }
             if(geombatches.length())
@@ -2610,78 +2562,25 @@ struct decalbatch
 };
 
 static vector<decalbatch> decalbatches;
+static renderbatchorder decalorder;
 
 static void mergedecals(decalrenderer &cur, vtxarray *va)
 {
     elementset *texs = va->decalelems;
     int numtexs = va->decaltexs, offset = 0;
 
-    if(firstbatch < 0)
+    loopi(numtexs)
     {
-        firstbatch = decalbatches.length();
-        numbatches = numtexs;
-        loopi(numtexs-1)
-        {
-            decalbatches.add(decalbatch(texs[i], offset, va)).next = i+1;
-            offset += texs[i].length;
-        }
-        decalbatches.add(decalbatch(texs[numtexs-1], offset, va));
-        return;
+        decalbatches.add(decalbatch(texs[i], offset, va));
+        offset += texs[i].length;
     }
-
-    int prevbatch = -1, curbatch = firstbatch, curtex = 0;
-    do
-    {
-        decalbatch &b = decalbatches.add(decalbatch(texs[curtex], offset, va));
-        offset += texs[curtex].length;
-        int dir = -1;
-        while(curbatch >= 0)
-        {
-            dir = b.compare(decalbatches[curbatch]);
-            if(dir <= 0) break;
-            prevbatch = curbatch;
-            curbatch = decalbatches[curbatch].next;
-        }
-        if(!dir)
-        {
-            int last = curbatch, next;
-            for(;;)
-            {
-                next = decalbatches[last].batch;
-                if(next < 0) break;
-                last = next;
-            }
-            if(last==curbatch)
-            {
-                b.batch = curbatch;
-                b.next = decalbatches[curbatch].next;
-                if(prevbatch < 0) firstbatch = decalbatches.length()-1;
-                else decalbatches[prevbatch].next = decalbatches.length()-1;
-                curbatch = decalbatches.length()-1;
-            }
-            else
-            {
-                b.batch = next;
-                decalbatches[last].batch = decalbatches.length()-1;
-            }
-        }
-        else
-        {
-            numbatches++;
-            b.next = curbatch;
-            if(prevbatch < 0) firstbatch = decalbatches.length()-1;
-            else decalbatches[prevbatch].next = decalbatches.length()-1;
-            prevbatch = decalbatches.length()-1;
-        }
-    }
-    while(++curtex < numtexs);
+    decalorder.sorted = false;
 }
 
 static void resetdecalbatches()
 {
     decalbatches.setsize(0);
-    firstbatch = -1;
-    numbatches = 0;
+    decalorder.clear();
 }
 
 static void changevbuf(decalrenderer &cur, int pass, vtxarray *va)
@@ -2798,7 +2697,8 @@ static void renderdecalbatch(decalrenderer &cur, int pass, decalbatch &b)
 static void renderdecalbatches(decalrenderer &cur, int pass)
 {
     cur.slot = NULL;
-    int curbatch = firstbatch;
+    decalorder.sort(decalbatches);
+    int curbatch = decalorder.first;
     while(curbatch >= 0)
     {
         decalbatch &b = decalbatches[curbatch];

@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "streaminggeometry.h"
 
 extern int outline;
 
@@ -566,6 +567,13 @@ void tryedit()
 //////////// ready changes to vertex arrays ////////////
 
 static bool haschanged = false;
+static streaminggeometryqueue streaminggeometry;
+
+void resetgeometrychanges()
+{
+    haschanged = false;
+    streaminggeometry.clear();
+}
 
 static bool dirtygeometrybounds(const ivec &bbmin, const ivec &bbmax, ivec &dirtymin, ivec &dirtymax)
 {
@@ -606,37 +614,82 @@ void readychanges(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor
     }
 }
 
-static void readystreamingchanges(const ivec *bbmins, const ivec *bbmaxs, int numregions, cube *c, const ivec &cor, int size)
+static void readystreamingtile(cube &c)
 {
-    uchar possible = 0;
-    loopj(numregions) possible |= octaboxoverlap(cor, size, bbmins[j], bbmaxs[j]);
-    loopi(8) if(possible & (1 << i))
+    if(c.ext)
     {
-        ivec o(i, cor, size);
-        if(c[i].ext)
+        if(c.ext->va)
         {
-            if(c[i].ext->va)
-            {
-                int hasmerges = c[i].ext->va->hasmerges;
-                destroyva(c[i].ext->va);
-                c[i].ext->va = NULL;
-                if(hasmerges) invalidatemerges(c[i], o, size, false);
-            }
-            freeoctaentities(c[i]);
-            c[i].ext->tjoints = -1;
+            destroyva(c.ext->va);
+            c.ext->va = NULL;
         }
-        if(c[i].children)
-        {
-            if(size <= 1)
-            {
-                solidfaces(c[i]);
-                discardchildren(c[i], true);
-                if(c[i].ext) brightencube(c[i]);
-            }
-            else readystreamingchanges(bbmins, bbmaxs, numregions, c[i].children, o, size/2);
-        }
-        else if(c[i].ext) brightencube(c[i]);
+        c.ext->tjoints = -1;
+        brightencube(c);
     }
+    c.merged = 0;
+    if(c.children) loopi(8) readystreamingtile(c.children[i]);
+}
+
+bool streaminggeometrypending(const ivec &sectionorigin)
+{
+    return streaminggeometry.pending(sectionorigin);
+}
+
+int processstreaminggeometry(double budget, int uploadlimit)
+{
+    if(!streaminggeometry.length() || budget == 0) return 0;
+    ZoneScopedN("Geometry/Stream mesh tiles");
+    const Uint64 start = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
+    const int sectionsize = getworldsectionsize();
+    if(!sectionsize)
+    {
+        streaminggeometry.clear();
+        return 0;
+    }
+    int completed = 0;
+    entitiesinoctanodes();
+    const bool wasinbetween = inbetweenframes;
+    inbetweenframes = false;
+    while(streaminggeometry.length())
+    {
+        int bytes, vertices;
+        getworldvauploadstats(bytes, vertices);
+        if(budget >= 0 && ((completed && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget) ||
+                          bytes >= uploadlimit)) break;
+        const ivec origin = streaminggeometry.pop(sectionsize);
+        ++completed;
+        // Unmounted, cancelled, or no-render work is discarded without splitting
+        // empty runtime space. No pointer in the queue outlives a section move.
+        if(!worldsectionvaenabled(origin, sectionsize)) continue;
+        ivec actualorigin;
+        int actualsize;
+        cube &existing = lookupcube(origin, -WORLD_VA_TILE_SIZE, actualorigin, actualsize);
+        if(!existing.children && isempty(existing) && existing.material == MAT_AIR && !existing.ext) continue;
+        cube &c = lookupcube(origin, WORLD_VA_TILE_SIZE);
+        {
+            ZoneScopedN("Geometry/Invalidate mesh tile");
+            readystreamingtile(c);
+        }
+        const int firstva = valist.length();
+        {
+            ZoneScopedN("Geometry/Merge mesh tile");
+            calcmerges(origin, WORLD_VA_TILE_SIZE);
+        }
+        buildstreamingtile(origin);
+        setupmaterials(firstva);
+    }
+    if(completed)
+    {
+        // Global housekeeping runs once per slice, never once per section/tile.
+        resetclipplanes();
+        clearshadowcache();
+        updatevabbs();
+    }
+    inbetweenframes = wasinbetween;
+    TracyPlot("Chunks/Pending mesh tiles", int64_t(streaminggeometry.length()));
+    TracyPlot("Chunks/Completed mesh tiles", int64_t(completed));
+    TracyPlot("Chunks/Mesh slice milliseconds", double((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency));
+    return completed;
 }
 
 void commitchanges(bool force)
@@ -645,6 +698,9 @@ void commitchanges(bool force)
     ZoneScopedN("Geometry/Commit changes");
     haschanged = false;
 
+    // Explicit edits retain their synchronous semantics. Ordinary streaming is
+    // serviced only by processstreaminggeometry(), once per streaming frame.
+    processstreaminggeometry(-1, INT_MAX);
     int oldlen = valist.length();
     {
         ZoneScopedN("Geometry/Reset clip planes");
@@ -672,6 +728,7 @@ void commitchanges(bool force)
         ZoneScopedN("Geometry/Update VA bounds");
         updatevabbs();
     }
+    resetgeometrychanges();
 }
 
 void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
@@ -696,29 +753,15 @@ void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
 
 void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bool commit)
 {
-    if(numregions <= 0) return;
-    vector<ivec> dirtymins, dirtymaxs;
-    dirtymins.reserve(numregions);
-    dirtymaxs.reserve(numregions);
+    const int sectionsize = getworldsectionsize();
+    if(numregions <= 0 || !sectionsize) return;
     loopi(numregions)
     {
         markworldchunksdirty(bbmins[i], bbmaxs[i]);
         invalidatelocalambient(bbmins[i], bbmaxs[i]);
-        ivec dirtymin, dirtymax;
-        if(!dirtygeometrybounds(bbmins[i], bbmaxs[i], dirtymin, dirtymax)) continue;
-        dirtymins.add(dirtymin);
-        dirtymaxs.add(dirtymax);
+        streaminggeometry.changed(bbmins[i], bbmaxs[i], sectionsize, worldsize);
     }
-    if(dirtymins.empty()) return;
-    {
-        ZoneScopedN("Geometry/Invalidate streaming regions");
-        ZoneValue(dirtymins.length());
-        readystreamingchanges(dirtymins.getbuf(), dirtymaxs.getbuf(), dirtymins.length(),
-                              worldroot, ivec(0, 0, 0), worldsize/2);
-    }
-    haschanged = true;
-
-    if(commit) commitchanges();
+    if(commit) processstreaminggeometry(2, INT_MAX);
 }
 
 void changed(const block3 &sel, bool commit)

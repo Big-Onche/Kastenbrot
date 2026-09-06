@@ -103,7 +103,6 @@ static bool worldsectionvisibilitydirty = true;
 static int worldsectionvisibilitychunkx = INT_MIN, worldsectionvisibilitychunky = INT_MIN,
            worldsectionvisibilitymaxdist = -1;
 static ivec worldsectionvisibilityfocus(INT_MIN, INT_MIN, INT_MIN);
-static float worldchunkvasectionmillis = 2.0f;
 static int worldvaevictionsframe = 0, worldvanorenderskipsframe = 0;
 static int worldvaresidentcounts[WORLD_VA_GEOMETRY_COUNT], worldvapendingbuildcount = 0, worldvapendinguploadcount = 0;
 
@@ -187,10 +186,11 @@ VARP(chunkthreads, 0, 0, 16);
 VAR(chunkcachedist, 0, 0, 0);
 VAR(chunkpendinglimit, 4, 8, 16);
 VAR(chunklookahead, 0, 2, 8);
-VAR(chunkpublishbudget, 2, 3, 33);
+VAR(chunkpublishbudget, 1, 2, 33);
 VAR(chunkcleanupbudget, 1, 3, 33);
 VAR(chunksectionbatch, 1, 1, WORLD_MAX_SECTION_BATCH);
 VAR(chunkvastagelimit, 1, 3, 16);
+VAR(chunkvauploadkb, 64, 2048, 65536);
 VAR(chunkinteriorradius, 1, 2, 8);
 VAR(drawfullchunk, 0, 0, 1);
 
@@ -332,6 +332,7 @@ ICOMMAND(getdebugtectoniccave, "", (), debugworldvalueresult(currentworlddebugst
 void clearworldchunks()
 {
     ZoneScopedN("Chunks/Clear all chunks");
+    resetgeometrychanges();
     cancelworldedit();
     clearworldscattererentities();
     clearworldscattermeshes();
@@ -370,7 +371,6 @@ void clearworldchunks()
     lastworldchunkmotion = -1;
     worldchunkvelocityx = worldchunkvelocityy = 0;
     worldchunkfocusx = worldchunkfocusy = worldchunkaheadx = worldchunkaheady = worldchunkviewx = worldchunkviewy = 0;
-    worldchunkvasectionmillis = 2.0f;
     worlddebugcachemillis = -1;
     ++worldchunkepoch;
 }
@@ -808,7 +808,7 @@ bool worldsectionvaenabled(const ivec &origin, int size)
 {
     if(size != WORLD_SECTION_SIZE || worldchunks.empty()) return true;
     worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdatekey(origin));
-    if(!owner) return true;
+    if(!owner) return false;
     const int index = findworldchunk(owner->chunkx, owner->chunky);
     if(!worldchunks.inrange(index)) return false;
     const worldchunk &chunk = worldchunks[index];
@@ -1979,6 +1979,7 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
 static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = true)
 {
     ZoneScopedN("Chunks/Rebase runtime world");
+    resetgeometrychanges();
     ZoneTextF("%d_%d", chunkx, chunky);
     invalidateworldsectionvisibility();
     worldchunkvaupdates.setsize(0);
@@ -2062,7 +2063,7 @@ static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeome
     {
         ZoneScopedN("Chunks/Queue safety region geometry");
         ZoneValue(changedsections);
-        processworldchunkvaupdates();
+        // Collision safety never drains the render queue synchronously.
     }
 }
 

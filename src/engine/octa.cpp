@@ -1833,6 +1833,7 @@ static hashtable<cfkey, cfpolys> cpolys;
 void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = worldsize>>1,
                bool stackneighbours = true, bool showprogress = true)
 {
+    const int mergesize = getworldsectionsize() ? min(1 << maxmerge, int(WORLD_VA_TILE_SIZE)) : 1 << maxmerge;
     if(showprogress && (genmergeprogress++&0xFFF)==0) renderprogress(float(genmergeprogress)/allocnodes, "merging faces...");
     if(stackneighbours) neighbourstack[++neighbourdepth] = c;
     loopi(8)
@@ -1844,7 +1845,7 @@ void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = wo
         {
             cfkey k;
             poly p;
-            if(size < 1<<maxmerge && c != worldroot)
+            if(size < mergesize && c != worldroot)
             {
                 if(genpoly(c[i], j, co, size, vis, k.n, k.offset, p))
                 {
@@ -1865,7 +1866,7 @@ void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = wo
             }
             clearmerge(c[i], j);
         }
-        if((size == 1<<maxmerge || c == worldroot) && cpolys.numelems)
+        if((size == mergesize || c == worldroot) && cpolys.numelems)
         {
             enumeratekt(cpolys, cfkey, key, cfpolys, val,
             {
@@ -1954,12 +1955,16 @@ void calcmerges(const ivec &origin, int size)
     invalidatemerges(c);
     if(!c.children) return;
 
-    // Streaming sections are aligned above maxmerge, so their greedy groups
-    // never cross a section boundary. Resolve neighbours through worldroot
-    // while rebuilding this subtree instead of manufacturing an ancestry
-    // stack for every incremental update.
+    // Merge ownership never crosses a mesh tile. Resolve neighbours through
+    // worldroot while rebuilding this subtree.
     genmergeprogress = 0;
     cpolys.clear();
     genmerges(c.children, origin, size >> 1, false, false);
+    // A tile may itself be the merge group; genmerges then starts below the
+    // group boundary and leaves its polygons for this caller to finish.
+    enumeratekt(cpolys, cfkey, key, cfpolys, val,
+    {
+        mergepolys(key.orient, origin, key.n, key.offset, val.polys);
+    });
     cpolys.clear();
 }

@@ -311,15 +311,6 @@ static int worldchunkvaupdatekey(const ivec &origin)
           + origin.x / WORLD_SECTION_SIZE;
 }
 
-static ivec worldchunkvaupdateorigin(int key)
-{
-    const int rowsize = WORLD_RUNTIME_SIZE / WORLD_SECTION_SIZE;
-    int x = key % rowsize;
-    key /= rowsize;
-    int y = key % rowsize, z = key / rowsize;
-    return ivec(x, y, z).mul(WORLD_SECTION_SIZE);
-}
-
 static bool queueworldchunkvaupdate(const ivec &origin)
 {
     int key = worldchunkvaupdatekey(origin);
@@ -338,22 +329,19 @@ static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, con
     int numregions = 0;
     loopi(numsections)
     {
-        if(chunk.renderdata.flags[sections[i]][tile]&SECTION_NO_RENDER) continue;
         ivec center = worldchunkorigin(chunk, sections[i] * WORLD_SECTION_SIZE);
         center.add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, 0));
-        if(!queueworldchunkvaupdate(center)) continue;
+        queueworldchunkvaupdate(center);
 
-        // changedstreaming() adds the face-neighbour halo, so a section edge
-        // also invalidates the immediately adjacent section VA.
+        // Queue independent mesh tiles plus the adjacent border tiles.
         bbmins[numregions] = center;
         bbmaxs[numregions] = ivec(center).add(WORLD_SECTION_SIZE).min(ivec(worldsize, worldsize, WORLD_MAP_SIZE));
         numregions++;
     }
     if(numregions)
     {
-        // Runtime cubes have already moved. Their old parent VAs must be
-        // destroyed before another frame can draw them at stale coordinates.
-        // Building replacement VAs remains grouped in processworldchunkvaupdates().
+        // Unmount already destroys the removed section's VAs. Surviving border
+        // tiles remain drawable until their replacements can be built.
         bool oldsuppress = suppressworldchunkdirty;
         suppressworldchunkdirty = true;
         changedstreaming(bbmins, bbmaxs, numregions, false);
@@ -883,40 +871,27 @@ static int processworldchunkvaupdates()
     ZoneScopedN("Chunks/Process prioritized VA updates");
     ZoneValue(pending);
 
-    Uint64 start = SDL_GetPerformanceCounter();
+    int completed = 0;
+    for(int i = worldchunkvaupdates.length() - 1; i >= 0; --i)
     {
-        ZoneScopedN("Chunks/Greedy mesh changed sections");
-        loopv(worldchunkvaupdates) calcmerges(worldchunkvaupdateorigin(worldchunkvaupdates[i]), WORLD_SECTION_SIZE);
+        const int key = worldchunkvaupdates[i], rowsize = WORLD_RUNTIME_SIZE / WORLD_SECTION_SIZE;
+        const ivec origin((key % rowsize) * WORLD_SECTION_SIZE, ((key / rowsize) % rowsize) * WORLD_SECTION_SIZE,
+                          (key / (rowsize * rowsize)) * WORLD_SECTION_SIZE);
+        if(streaminggeometrypending(origin)) continue;
+        worldsectionowner *owner = worldsectionowners.access(key);
+        const int chunkindex = owner ? findworldchunk(owner->chunkx, owner->chunky) : -1;
+        if(worldchunks.inrange(chunkindex))
+        {
+            worldsectionvaresidency &residency = worldchunks[chunkindex].varesidency[owner->section][owner->tile];
+            loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_UPLOAD)
+                setworldsectionvaresidencystate(residency, j, RESIDENT);
+        }
+        worldchunkvaupdateset.remove(key);
+        worldchunkvaupdates.removeunordered(i);
+        ++completed;
     }
-    {
-        ZoneScopedN("Chunks/Commit invalidated VA updates");
-        ZoneValue(pending);
-        commitchanges();
-    }
-    loopv(worldchunkvaupdates)
-    {
-        worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdates[i]);
-        if(!owner) continue;
-        const int chunkindex = findworldchunk(owner->chunkx, owner->chunky);
-        if(!worldchunks.inrange(chunkindex)) continue;
-        worldsectionvaresidency &residency = worldchunks[chunkindex].varesidency[owner->section][owner->tile];
-        loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_UPLOAD)
-            setworldsectionvaresidencystate(residency, j, RESIDENT);
-    }
-    worldchunkvaupdates.setsize(0);
-    worldchunkvaupdateset.clear();
-    TracyPlot("Chunks/Pending VA sections", int64_t(0));
-    float sample = max(float((SDL_GetPerformanceCounter() - start) * 1000.0 /
-                             SDL_GetPerformanceFrequency()) / pending, 0.05f);
-    worldchunkvasectionmillis = worldchunkvasectionmillis * 0.75f + sample * 0.25f;
-    TracyPlot("Chunks/VA section milliseconds", double(worldchunkvasectionmillis));
-    return pending;
-}
-
-static int worldchunkstagelimit(int budget)
-{
-    int estimated = int(float(budget) / max(worldchunkvasectionmillis, 0.05f));
-    return min(chunkvastagelimit, max(estimated, 1));
+    TracyPlot("Chunks/Pending VA sections", int64_t(worldchunkvaupdates.length()));
+    return completed;
 }
 
 static int processworldchunkchanges(int chunkx, int chunky)
@@ -931,7 +906,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
     const Uint64 frequency = SDL_GetPerformanceFrequency();
     int changedcolumns = 0, unloaded = 0, unloadedsections = 0,
         unloadtarget = WORLD_MAX_COLUMN_CHANGES,
-        cleanupstagelimit = worldchunkstagelimit(chunkcleanupbudget);
+        cleanupstagelimit = chunkvastagelimit;
 
     // Cleanup only unmounts chunks outside maxchunkdist. Section VAs inside
     // that radius remain cached across cave/exterior mode changes.
@@ -958,7 +933,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
 
     phasestart = SDL_GetPerformanceCounter();
     int mounted = 0, mountedsections = 0, mounttarget = WORLD_MAX_COLUMN_CHANGES,
-        publishstagelimit = worldchunkstagelimit(chunkpublishbudget);
+        publishstagelimit = max(chunkvastagelimit - worldchunkvaupdates.length(), 0);
     {
         ZoneScopedN("Chunks/Mount render sections");
         worldsectioncandidate candidates[WORLD_MAX_SECTION_BATCH];
@@ -968,7 +943,9 @@ static int processworldchunkchanges(int chunkx, int chunky)
         loopi(numcandidates)
         {
             double elapsed = (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency;
-            if(mounted && elapsed >= chunkpublishbudget) break;
+            int bytes = 0, vertices = 0;
+            getworldvauploadstats(bytes, vertices);
+            if(mounted && (elapsed >= chunkpublishbudget || bytes >= chunkvauploadkb * 1024)) break;
             worldsectioncandidate &candidate = candidates[i];
             worldchunk &chunk = worldchunks[candidate.chunkindex];
             mountworldchunktile(chunk, candidate.section, candidate.tile);
@@ -991,6 +968,11 @@ static int processworldchunkchanges(int chunkx, int chunky)
         ZoneValue(mountedsections);
     }
 
+    // Safety mounts, cleanup borders, and render mounts share ONE geometry
+    // slice. Admission is bounded separately so deferred work cannot grow
+    // without limit when the renderer is slower than section selection.
+    const double remainingbudget = max(chunkpublishbudget - (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency, 0.0);
+    processstreaminggeometry(remainingbudget, chunkvauploadkb * 1024);
     processworldchunkvaupdates();
     int uploadedbytes = 0, uploadedvertices = 0;
     getworldvauploadstats(uploadedbytes, uploadedvertices);

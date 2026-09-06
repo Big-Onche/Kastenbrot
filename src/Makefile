@@ -374,13 +374,13 @@ engine/octaedit.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/octaedit.o: shared/ents.h shared/command.h shared/glexts.h
 engine/octaedit.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/octaedit.o: engine/world.h engine/octa.h engine/light.h
-engine/octaedit.o: engine/texture.h engine/bih.h engine/model.h
+engine/octaedit.o: engine/texture.h engine/bih.h engine/model.h engine/streaminggeometry.h
 engine/octarender.o: engine/engine.h shared/cube.h shared/tools.h
 engine/octarender.o: shared/geom.h shared/ents.h shared/command.h
 engine/octarender.o: shared/glexts.h shared/glemu.h shared/iengine.h
 engine/octarender.o: shared/igame.h engine/world.h engine/octa.h
 engine/octarender.o: engine/light.h engine/texture.h engine/bih.h
-engine/octarender.o: engine/model.h
+engine/octarender.o: engine/model.h engine/worldvbo.cpp
 engine/physics.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/physics.o: shared/ents.h shared/command.h shared/glexts.h
 engine/physics.o: shared/glemu.h shared/iengine.h shared/igame.h
@@ -433,7 +433,7 @@ engine/renderva.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/renderva.o: shared/ents.h shared/command.h shared/glexts.h
 engine/renderva.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/renderva.o: engine/world.h engine/octa.h engine/light.h
-engine/renderva.o: engine/texture.h engine/bih.h engine/model.h
+engine/renderva.o: engine/texture.h engine/bih.h engine/model.h engine/renderbatch.h
 engine/server.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/server.o: shared/ents.h shared/command.h shared/glexts.h
 engine/server.o: shared/glemu.h shared/iengine.h shared/igame.h
