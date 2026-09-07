@@ -1,3 +1,8 @@
+#ifndef STANDALONE
+#include <deque>
+#include <unordered_map>
+#endif
+
 #include "game.h"
 
 #ifndef STANDALONE
@@ -73,6 +78,21 @@ namespace game
         localsupportcheck(const ivec &cell = ivec(0, 0, 0), int remaining = 0) : cell(cell), remaining(remaining) {}
     };
 
+    struct localsupportcheckhash
+    {
+        size_t operator()(const ivec &cell) const
+        {
+            // Mix ordered coordinates, including aligned and negative world positions.
+            uint hash = 2166136261U;
+            loopi(3) hash = (hash ^ uint(cell[i])) * 16777619U;
+            hash ^= hash >> 16;
+            hash *= 0x7feb352dU;
+            hash ^= hash >> 15;
+            hash *= 0x846ca68bU;
+            return hash ^ (hash >> 16);
+        }
+    };
+
     enum
     {
         LOCAL_SUPPORT_SECTION_SIZE = 16 * 16,
@@ -85,7 +105,10 @@ namespace game
     static hashtable<ivec, int> localsupportqueuedsections(1 << 10);
     static vector<ivec> localsupportpositions, localunsupportedpositions;
     static vector<ivec> localsupportscannedpositions, localsupportsectionchecks;
-    static vector<localsupportcheck> localsupportchecks;
+    // Membership also stores the maximum pending reach, even for cells without support state.
+    static std::deque<ivec> localsupportchecks;
+    static std::unordered_map<ivec, int, localsupportcheckhash> localsupportpending;
+    static int localsupportchecksqueued = 0, localsupportduplicates = 0, localsupportprocessed = 0, localsupportstale = 0;
     static uint nextlocaldropid = 1;
     static uint nextlocalfallblockid = 1;
     static int localsupportlasttick = 0;
@@ -717,6 +740,14 @@ namespace game
 #endif
         gets2c();
         c2sinfo();
+#ifndef STANDALONE
+        TracyPlot("Support/Queue size", int64_t(localsupportchecks.size()));
+        TracyPlot("Support/Checks queued per frame", int64_t(localsupportchecksqueued));
+        TracyPlot("Support/Duplicate requests rejected", int64_t(localsupportduplicates));
+        TracyPlot("Support/Cells processed", int64_t(localsupportprocessed));
+        TracyPlot("Support/Stale entries discarded", int64_t(localsupportstale));
+        localsupportchecksqueued = localsupportduplicates = localsupportprocessed = localsupportstale = 0;
+#endif
     }
 
     void physicstrigger(physent *d, bool local, int floorlevel, int waterlevel, int material) {}
@@ -2912,6 +2943,7 @@ namespace game
 
     static bool localsupportinrange(const ivec &cell)
     {
+        ZoneScopedN("Support/Range check");
         if(!player1) return false;
         vec playerposition = player1->o;
         worldpositiontoabsolute(playerposition);
@@ -2921,13 +2953,17 @@ namespace game
 
     static void queuesupportcheck(const ivec &cell, int remaining)
     {
+        ZoneScopedN("Support/Queue check");
         if(remaining < 0) return;
-        loopv(localsupportchecks) if(localsupportchecks[i].cell == cell)
+        const auto pending = localsupportpending.emplace(cell, remaining);
+        if(!pending.second)
         {
-            localsupportchecks[i].remaining = max(localsupportchecks[i].remaining, remaining);
+            pending.first->second = max(pending.first->second, remaining);
+            ++localsupportduplicates;
             return;
         }
-        localsupportchecks.add(localsupportcheck(cell, remaining));
+        localsupportchecks.push_back(cell);
+        ++localsupportchecksqueued;
     }
 
     static void queuesupportchange(const ivec &cell)
@@ -3075,6 +3111,7 @@ namespace game
 
     static bool updatesupportcell(const localsupportcheck &check)
     {
+        ZoneScopedN("Support/Update cell");
         int worldindex = -1;
         if(!localblockworldindex(check.cell, worldindex)) return false;
         const int maxdistance = getworldcubesupportdistance(worldindex);
@@ -3104,6 +3141,7 @@ namespace game
 
     static void randomticklocalsupportblock(const ivec &cell)
     {
+        ZoneScopedN("Support/Random tick");
         localsupportcell *state = localsupportcells.access(cell);
         if(!state || state->distance > 0 || !localsupportinrange(cell) || localsupportpersistent.access(cell)) return;
         int worldindex = -1;
@@ -3138,6 +3176,7 @@ namespace game
 
     static void discoverlocalsupportblocks()
     {
+        ZoneScopedN("Support/Discover blocks");
         vec playerposition = player1->o;
         worldpositiontoabsolute(playerposition);
         const int distance = simulationmaxdist * GAMEUNITSPERMETER,
@@ -3211,17 +3250,24 @@ namespace game
 
     static void updatesupportblocks()
     {
+        ZoneScopedN("World/Support blocks");
         if(waitforserveredit() || !islocalworld() || !player1) return;
         discoverlocalsupportblocks();
-        const int checks = min(localsupportchecks.length(), 64);
+        const int checks = int(std::min(localsupportchecks.size(), size_t(64)));
         loopi(checks)
         {
-            const localsupportcheck check = localsupportchecks.remove(0);
+            const ivec cell = localsupportchecks.front();
+            const auto pending = localsupportpending.find(cell);
+            const localsupportcheck check(cell, pending->second);
+            localsupportchecks.pop_front();
+            // Remove membership before processing: propagation and retries may queue this cell again.
+            localsupportpending.erase(pending);
             if(!localsupportinrange(check.cell) || !updatesupportcell(check))
             {
                 queuesupportcheck(check.cell, check.remaining);
                 continue;
             }
+            ++localsupportprocessed;
         }
         if(totalmillis - localsupportlasttick < supportdecaymillis || localunsupportedpositions.empty()) return;
         localsupportlasttick = totalmillis;
@@ -3242,7 +3288,10 @@ namespace game
         localsupportqueuedsections.clear();
         localsupportscannedpositions.setsize(0);
         localsupportsectionchecks.setsize(0);
-        localsupportchecks.setsize(0);
+        // Reset is the only invalidation path. Out-of-range/unready checks retain their retry behavior.
+        localsupportstale += int(localsupportchecks.size());
+        localsupportchecks.clear();
+        localsupportpending.clear();
         localsupportlasttick = totalmillis;
         localsupportlastsection = ivec(INT_MIN, INT_MIN, INT_MIN);
         localsupportlastdistance = -1;
