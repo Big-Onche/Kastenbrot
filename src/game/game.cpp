@@ -101,8 +101,8 @@ namespace game
 
     static hashtable<ivec, localsupportcell> localsupportcells(1 << 12);
     static hashtable<ivec, int> localsupportpersistent(1 << 10);
-    static hashtable<ivec, int> localsupportscannedsections(1 << 10);
-    static hashtable<ivec, int> localsupportqueuedsections(1 << 10);
+    static std::unordered_map<ivec, int, localsupportcheckhash> localsupportscannedsections;
+    static std::unordered_map<ivec, int, localsupportcheckhash> localsupportqueuedsections;
     static vector<ivec> localsupportpositions, localunsupportedpositions;
     static vector<ivec> localsupportscannedpositions, localsupportsectionchecks;
     // Membership also stores the maximum pending reach, even for cells without support state.
@@ -2934,6 +2934,7 @@ namespace game
 
     static bool localblockworldindex(const ivec &cell, int &worldindex)
     {
+        ZoneScopedN("Support/Residency lookup");
         int item = -1;
         bool solid = false;
         if(!localfallblockcell(cell, item, solid)) return false;
@@ -2983,80 +2984,225 @@ namespace game
         else localsupportpersistent.remove(key);
     }
 
+    struct localsupportsample
+    {
+        int worldindex, maxdistance;
+        bool ready;
+
+        localsupportsample() : worldindex(-1), maxdistance(0), ready(false) {}
+    };
+
+    typedef std::unordered_map<ivec, localsupportsample, localsupportcheckhash> localsupportsnapshot;
+
+    static const localsupportsample &samplesupportcell(const ivec &cell, localsupportsnapshot &snapshot)
+    {
+        const auto found = snapshot.find(cell);
+        if(found != snapshot.end()) return found->second;
+        localsupportsample sample;
+        sample.ready = localblockworldindex(cell, sample.worldindex);
+        sample.maxdistance = getworldcubesupportdistance(sample.worldindex);
+        return snapshot.emplace(cell, sample).first->second;
+    }
+
     struct localsupportsearchnode
     {
         ivec cell;
-        int reach, distance, worldindex;
+        int reach, maxdistance;
+        bool anchored;
 
-        localsupportsearchnode(const ivec &cell, int reach, int worldindex) : cell(cell), reach(reach), distance(0), worldindex(worldindex) {}
+        localsupportsearchnode(const ivec &cell, int reach, int maxdistance)
+            : cell(cell), reach(reach), maxdistance(maxdistance), anchored(false) {}
     };
 
-    static bool localsupportdistance(const ivec &cell, int maxdistance, int &result)
+    struct localsupportjob
     {
+        // Owned graph: no live cubes, chunk pointers, support state, or definition references.
         vector<localsupportsearchnode> nodes;
-        hashtable<ivec, int> indexes(1 << 8);
-        int targetindex = -1;
-        result = 0;
-        if(!localblockworldindex(cell, targetindex)) return false;
-        if(targetindex < 0 || getworldcubesupportdistance(targetindex) <= 0) return true;
-        nodes.add(localsupportsearchnode(cell, 0, targetindex));
-        indexes.access(cell, 0);
-        for(int cursor = 0; cursor < nodes.length(); ++cursor)
-        {
-            const localsupportsearchnode node = nodes[cursor];
-            if(node.reach >= maxdistance) continue;
-            loopi(6)
-            {
-                const ivec neighbor = ivec(node.cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
-                                                                localsupportdirections[i][2]).mul(CREATIVE_GRID));
-                int worldindex = -1;
-                if(!localblockworldindex(neighbor, worldindex)) return false;
-                if(worldindex < 0 || getworldcubesupportdistance(worldindex) <= 0 || indexes.access(neighbor)) continue;
-                indexes.access(neighbor, nodes.length());
-                nodes.add(localsupportsearchnode(neighbor, node.reach + 1, worldindex));
-            }
-        }
+        int maxdistance, distance;
+        bool inrange, valid, complete;
 
-        vector<int> frontier;
-        loopv(nodes)
+        localsupportjob() : maxdistance(0), distance(0), inrange(false), valid(false), complete(false) {}
+    };
+
+    static bool preparelocalsupport(const ivec &cell, localsupportsnapshot &snapshot, localsupportjob &job)
+    {
+        ZoneScopedN("Support/Prepare distance");
         {
-            localsupportsearchnode &node = nodes[i];
-            loopj(6)
+            ZoneScopedN("Support/Validate cells");
+            const localsupportsample &target = samplesupportcell(cell, snapshot);
+            if(!target.ready) return false;
+            job.maxdistance = target.maxdistance;
+            if(target.worldindex < 0 || job.maxdistance <= 0) return true;
+        }
+        std::unordered_map<ivec, int, localsupportcheckhash> indexes;
+        job.nodes.add(localsupportsearchnode(cell, 0, job.maxdistance));
+        indexes.emplace(cell, 0);
+        {
+            // Read the live world once per distinct cell in this drain, preserving query/early-exit order.
+            ZoneScopedN("Support/Neighbour discovery");
+            for(int cursor = 0; cursor < job.nodes.length(); ++cursor)
             {
-                const ivec neighbor = ivec(node.cell).add(ivec(localsupportdirections[j][0], localsupportdirections[j][1],
-                                                                localsupportdirections[j][2]).mul(CREATIVE_GRID));
-                int worldindex = -1;
-                if(!localblockworldindex(neighbor, worldindex)) return false;
-                if(worldindex >= 0 && getworldcubesupportdistance(worldindex) <= 0)
+                const localsupportsearchnode node = job.nodes[cursor];
+                if(node.reach >= job.maxdistance) continue;
+                loopi(6)
                 {
-                    node.distance = 1;
-                    frontier.add(i);
-                    break;
+                    const ivec neighbor = ivec(node.cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                                  localsupportdirections[i][2]).mul(CREATIVE_GRID));
+                    const localsupportsample &sample = samplesupportcell(neighbor, snapshot);
+                    if(!sample.ready) return false;
+                    if(sample.worldindex < 0 || sample.maxdistance <= 0 || indexes.count(neighbor)) continue;
+                    indexes.emplace(neighbor, job.nodes.length());
+                    job.nodes.add(localsupportsearchnode(neighbor, node.reach + 1, sample.maxdistance));
                 }
             }
         }
-        for(int cursor = 0; cursor < frontier.length(); ++cursor)
         {
-            const int nodeindex = frontier[cursor], distance = nodes[nodeindex].distance + 1;
-            const ivec origin = nodes[nodeindex].cell;
-            loopi(6)
+            ZoneScopedN("Support/Capture anchors");
+            loopv(job.nodes)
             {
-                const ivec neighbor = ivec(origin).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
-                                                             localsupportdirections[i][2]).mul(CREATIVE_GRID));
-                int *index = indexes.access(neighbor);
-                if(!index || distance > getworldcubesupportdistance(nodes[*index].worldindex) ||
-                   (nodes[*index].distance && nodes[*index].distance <= distance))
-                    continue;
-                nodes[*index].distance = distance;
-                frontier.add(*index);
+                localsupportsearchnode &node = job.nodes[i];
+                loopj(6)
+                {
+                    const ivec neighbor = ivec(node.cell).add(ivec(localsupportdirections[j][0], localsupportdirections[j][1],
+                                                                  localsupportdirections[j][2]).mul(CREATIVE_GRID));
+                    const localsupportsample &sample = samplesupportcell(neighbor, snapshot);
+                    if(!sample.ready) return false;
+                    if(sample.worldindex >= 0 && sample.maxdistance <= 0)
+                    {
+                        node.anchored = true;
+                        break;
+                    }
+                }
             }
         }
-        result = nodes[0].distance <= maxdistance ? nodes[0].distance : 0;
         return true;
+    }
+
+    static int solvelocalsupport(const localsupportjob &job)
+    {
+        ZoneScopedN("Support/Solve distance");
+        const vector<localsupportsearchnode> &nodes = job.nodes;
+        if(nodes.empty()) return 0;
+        std::unordered_map<ivec, int, localsupportcheckhash> indexes;
+        vector<int> distances, frontier;
+        {
+            ZoneScopedN("Support/Find anchors");
+            indexes.reserve(nodes.length());
+            loopv(nodes)
+            {
+                indexes.emplace(nodes[i].cell, i);
+                distances.add(nodes[i].anchored ? 1 : 0);
+                if(nodes[i].anchored) frontier.add(i);
+            }
+        }
+        {
+            ZoneScopedN("Support/Neighbour propagation");
+            for(int cursor = 0; cursor < frontier.length(); ++cursor)
+            {
+                const int nodeindex = frontier[cursor], distance = distances[nodeindex] + 1;
+                const ivec origin = nodes[nodeindex].cell;
+                loopi(6)
+                {
+                    const ivec neighbor = ivec(origin).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                               localsupportdirections[i][2]).mul(CREATIVE_GRID));
+                    const auto found = indexes.find(neighbor);
+                    if(found == indexes.end()) continue;
+                    const int index = found->second;
+                    if(distance > nodes[index].maxdistance || (distances[index] && distances[index] <= distance)) continue;
+                    distances[index] = distance;
+                    frontier.add(index);
+                }
+            }
+        }
+        return distances[0] <= job.maxdistance ? distances[0] : 0;
+    }
+
+    static SDL_Thread *localsupportworker = NULL;
+    static SDL_mutex *localsupportmutex = NULL;
+    static SDL_cond *localsupportcondition = NULL;
+    static std::deque<localsupportjob *> localsupportjobs;
+    static bool localsupportstopping = false;
+
+    static int runsupportworker(void *)
+    {
+#ifdef TRACY_ENABLE
+        tracy::SetThreadName("Support worker");
+#endif
+        SDL_LockMutex(localsupportmutex);
+        for(;;)
+        {
+            while(localsupportjobs.empty() && !localsupportstopping) SDL_CondWait(localsupportcondition, localsupportmutex);
+            if(localsupportstopping) break;
+            localsupportjob *job = localsupportjobs.front();
+            localsupportjobs.pop_front();
+            SDL_UnlockMutex(localsupportmutex);
+            const int distance = solvelocalsupport(*job);
+            SDL_LockMutex(localsupportmutex);
+            job->distance = distance;
+            job->complete = true;
+            // The same condition serves the worker and main-thread waiter.
+            SDL_CondBroadcast(localsupportcondition);
+        }
+        SDL_UnlockMutex(localsupportmutex);
+        return 0;
+    }
+
+    void cleanupsupportworker()
+    {
+        if(localsupportworker)
+        {
+            SDL_LockMutex(localsupportmutex);
+            localsupportstopping = true;
+            SDL_CondBroadcast(localsupportcondition);
+            SDL_UnlockMutex(localsupportmutex);
+            SDL_WaitThread(localsupportworker, NULL);
+            localsupportworker = NULL;
+        }
+        if(localsupportcondition) SDL_DestroyCond(localsupportcondition);
+        if(localsupportmutex) SDL_DestroyMutex(localsupportmutex);
+        localsupportcondition = NULL;
+        localsupportmutex = NULL;
+        localsupportstopping = false;
+    }
+
+    static bool startsupportworker()
+    {
+        if(localsupportworker) return true;
+        localsupportmutex = SDL_CreateMutex();
+        localsupportcondition = SDL_CreateCond();
+        if(localsupportmutex && localsupportcondition)
+            localsupportworker = SDL_CreateThread(runsupportworker, "support worker", NULL);
+        if(localsupportworker) return true;
+        cleanupsupportworker();
+        return false;
+    }
+
+    static void submitsupportjob(localsupportjob &job)
+    {
+        if(!job.valid || job.nodes.empty() || !startsupportworker())
+        {
+            if(job.valid) job.distance = solvelocalsupport(job);
+            job.complete = true;
+            return;
+        }
+        SDL_LockMutex(localsupportmutex);
+        localsupportjobs.push_back(&job);
+        SDL_CondBroadcast(localsupportcondition);
+        SDL_UnlockMutex(localsupportmutex);
+    }
+
+    static void waitsupportjob(localsupportjob &job)
+    {
+        ZoneScopedN("Support/Wait preparation");
+        if(!localsupportworker) return;
+        SDL_LockMutex(localsupportmutex);
+        while(!job.complete) SDL_CondWait(localsupportcondition, localsupportmutex);
+        SDL_UnlockMutex(localsupportmutex);
     }
 
     static void removelocalsupportcell(const ivec &cell)
     {
+        ZoneScopedN("Support/Remove cell");
         const ivec key = cell;
         localsupportcell *state = localsupportcells.access(key);
         if(!state) return;
@@ -3109,33 +3255,36 @@ namespace game
         state.unsupportedindex = -1;
     }
 
-    static bool updatesupportcell(const localsupportcheck &check)
+    static bool updatesupportcell(const localsupportcheck &check, const localsupportjob &job)
     {
         ZoneScopedN("Support/Update cell");
-        int worldindex = -1;
-        if(!localblockworldindex(check.cell, worldindex)) return false;
-        const int maxdistance = getworldcubesupportdistance(worldindex);
+        if(!job.valid) return false;
         localsupportcell *state = localsupportcells.access(check.cell);
-        if(maxdistance <= 0)
+        if(job.maxdistance <= 0)
         {
             if(state) removelocalsupportcell(check.cell);
             return true;
         }
-        int distance = 0;
-        if(!localsupportdistance(check.cell, maxdistance, distance)) return false;
+        const int distance = job.distance;
         const int previous = state ? state->distance : -1;
-        if(!state)
         {
-            const int index = localsupportpositions.length();
-            localsupportpositions.add(check.cell);
-            state = &localsupportcells.access(check.cell, localsupportcell(distance, index));
+            ZoneScopedN("Support/Commit state");
+            if(!state)
+            {
+                const int index = localsupportpositions.length();
+                localsupportpositions.add(check.cell);
+                state = &localsupportcells.access(check.cell, localsupportcell(distance, index));
+            }
+            else state->distance = distance;
+            updatelocalunsupportedstate(check.cell, *state);
         }
-        else state->distance = distance;
-        updatelocalunsupportedstate(check.cell, *state);
         if(previous == distance || check.remaining <= 0) return true;
-        loopi(6)
-            queuesupportcheck(ivec(check.cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
-                                                         localsupportdirections[i][2]).mul(CREATIVE_GRID)), check.remaining - 1);
+        {
+            ZoneScopedN("Support/Queue neighbours");
+            loopi(6)
+                queuesupportcheck(ivec(check.cell).add(ivec(localsupportdirections[i][0], localsupportdirections[i][1],
+                                                             localsupportdirections[i][2]).mul(CREATIVE_GRID)), check.remaining - 1);
+        }
         return true;
     }
 
@@ -3147,7 +3296,10 @@ namespace game
         int worldindex = -1;
         if(!localblockworldindex(cell, worldindex) || worldindex < 0 || !getworldcubesupportdecay(worldindex)) return;
         const int item = getworldcubeitem(worldindex);
-        if(item < 0 || !applyworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item)) return;
+        {
+            ZoneScopedN("Support/Decay commit");
+            if(item < 0 || !applyworldaction(WORLD_ACTION_BREAK_CUBE_START, cell, WORLD_ORIENT_TOP, item)) return;
+        }
         selinfo dropselection;
         worldactionselection(dropselection, cell, WORLD_ORIENT_TOP);
         worldselectiontolocal(dropselection);
@@ -3171,7 +3323,7 @@ namespace game
 
     static bool localsupportsectionqueued(const ivec &origin)
     {
-        return localsupportqueuedsections.access(origin) != NULL;
+        return localsupportqueuedsections.count(origin) != 0;
     }
 
     static void discoverlocalsupportblocks()
@@ -3187,64 +3339,73 @@ namespace game
         const float radiussquared = float(distance) * distance;
         if(playersection != localsupportlastsection || distance != localsupportlastdistance)
         {
-            for(int i = localsupportsectionchecks.length() - 1; i >= 0; --i)
-                if(!localsupportsectioninrange(localsupportsectionchecks[i], playerposition, radiussquared))
-                {
-                    localsupportqueuedsections.remove(localsupportsectionchecks[i]);
-                    localsupportsectionchecks.removeunordered(i);
-                }
-            for(int i = localsupportscannedpositions.length() - 1; i >= 0; --i)
             {
-                const ivec origin = localsupportscannedpositions[i];
-                if(localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
-                localsupportscannedsections.remove(origin);
-                localsupportscannedpositions.removeunordered(i);
-            }
-            const int radiussections = (distance + LOCAL_SUPPORT_SECTION_SIZE - 1) / LOCAL_SUPPORT_SECTION_SIZE,
-                      minimumz = max(sectionz - radiussections, 0),
-                      maximumz = min(sectionz + radiussections, int(LOCAL_SUPPORT_SECTION_LAYERS) - 1);
-            const ivec currentorigin(sectionx * LOCAL_SUPPORT_SECTION_SIZE, sectiony * LOCAL_SUPPORT_SECTION_SIZE,
-                                     sectionz * LOCAL_SUPPORT_SECTION_SIZE);
-            if(!localsupportscannedsections.access(currentorigin) && !localsupportsectionqueued(currentorigin))
-            {
-                localsupportsectionchecks.add(currentorigin);
-                if(localsupportsectionchecks.length() > 1)
-                    swap(localsupportsectionchecks[0], localsupportsectionchecks.last());
-                localsupportqueuedsections.access(currentorigin, 1);
-            }
-            for(int z = minimumz; z <= maximumz; ++z)
-                for(int y = sectiony - radiussections; y <= sectiony + radiussections; ++y)
-                    for(int x = sectionx - radiussections; x <= sectionx + radiussections; ++x)
+                ZoneScopedN("Support/Remove stale");
+                for(int i = localsupportsectionchecks.length() - 1; i >= 0; --i)
+                    if(!localsupportsectioninrange(localsupportsectionchecks[i], playerposition, radiussquared))
                     {
-                        const ivec origin(x * LOCAL_SUPPORT_SECTION_SIZE, y * LOCAL_SUPPORT_SECTION_SIZE,
-                                          z * LOCAL_SUPPORT_SECTION_SIZE);
-                        if(!localsupportsectioninrange(origin, playerposition, radiussquared) ||
-                           localsupportscannedsections.access(origin) || localsupportsectionqueued(origin))
-                            continue;
-                        localsupportsectionchecks.add(origin);
-                        localsupportqueuedsections.access(origin, 1);
+                        localsupportqueuedsections.erase(localsupportsectionchecks[i]);
+                        localsupportsectionchecks.removeunordered(i);
                     }
+                for(int i = localsupportscannedpositions.length() - 1; i >= 0; --i)
+                {
+                    const ivec origin = localsupportscannedpositions[i];
+                    if(localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
+                    localsupportscannedsections.erase(origin);
+                    localsupportscannedpositions.removeunordered(i);
+                }
+            }
+            {
+                ZoneScopedN("Support/Discover sections");
+                const int radiussections = (distance + LOCAL_SUPPORT_SECTION_SIZE - 1) / LOCAL_SUPPORT_SECTION_SIZE,
+                          minimumz = max(sectionz - radiussections, 0),
+                          maximumz = min(sectionz + radiussections, int(LOCAL_SUPPORT_SECTION_LAYERS) - 1);
+                const ivec currentorigin(sectionx * LOCAL_SUPPORT_SECTION_SIZE, sectiony * LOCAL_SUPPORT_SECTION_SIZE,
+                                         sectionz * LOCAL_SUPPORT_SECTION_SIZE);
+                if(!localsupportscannedsections.count(currentorigin) && !localsupportsectionqueued(currentorigin))
+                {
+                    localsupportsectionchecks.add(currentorigin);
+                    if(localsupportsectionchecks.length() > 1)
+                        swap(localsupportsectionchecks[0], localsupportsectionchecks.last());
+                    localsupportqueuedsections.emplace(currentorigin, 1);
+                }
+                for(int z = minimumz; z <= maximumz; ++z)
+                    for(int y = sectiony - radiussections; y <= sectiony + radiussections; ++y)
+                        for(int x = sectionx - radiussections; x <= sectionx + radiussections; ++x)
+                        {
+                            const ivec origin(x * LOCAL_SUPPORT_SECTION_SIZE, y * LOCAL_SUPPORT_SECTION_SIZE,
+                                              z * LOCAL_SUPPORT_SECTION_SIZE);
+                            if(!localsupportsectioninrange(origin, playerposition, radiussquared) ||
+                               localsupportscannedsections.count(origin) || localsupportsectionqueued(origin))
+                                continue;
+                            localsupportsectionchecks.add(origin);
+                            localsupportqueuedsections.emplace(origin, 1);
+                        }
+            }
             localsupportlastsection = playersection;
             localsupportlastdistance = distance;
         }
 
-        const int scans = min(localsupportsectionchecks.length(), 8);
-        loopi(scans)
         {
-            const ivec origin = localsupportsectionchecks.remove(0);
-            localsupportqueuedsections.remove(origin);
-            if(!localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
-            vector<ivec> cells;
-            if(!collectworldsupportcells(origin, LOCAL_SUPPORT_SECTION_SIZE, cells))
+            ZoneScopedN("Support/Scan sections");
+            const int scans = min(localsupportsectionchecks.length(), 8);
+            loopi(scans)
             {
-                localsupportsectionchecks.add(origin);
-                localsupportqueuedsections.access(origin, 1);
-                continue;
+                const ivec origin = localsupportsectionchecks.remove(0);
+                localsupportqueuedsections.erase(origin);
+                if(!localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
+                vector<ivec> cells;
+                if(!collectworldsupportcells(origin, LOCAL_SUPPORT_SECTION_SIZE, cells))
+                {
+                    localsupportsectionchecks.add(origin);
+                    localsupportqueuedsections.emplace(origin, 1);
+                    continue;
+                }
+                localsupportscannedsections.emplace(origin, 1);
+                localsupportscannedpositions.add(origin);
+                const int distance = localmaxsupportdistance();
+                loopv(cells) queuesupportcheck(cells[i], distance);
             }
-            localsupportscannedsections.access(origin, 1);
-            localsupportscannedpositions.add(origin);
-            const int distance = localmaxsupportdistance();
-            loopv(cells) queuesupportcheck(cells[i], distance);
         }
     }
 
@@ -3253,33 +3414,65 @@ namespace game
         ZoneScopedN("World/Support blocks");
         if(waitforserveredit() || !islocalworld() || !player1) return;
         discoverlocalsupportblocks();
-        const int checks = int(std::min(localsupportchecks.size(), size_t(64)));
-        loopi(checks)
         {
-            const ivec cell = localsupportchecks.front();
-            const auto pending = localsupportpending.find(cell);
-            const localsupportcheck check(cell, pending->second);
-            localsupportchecks.pop_front();
-            // Remove membership before processing: propagation and retries may queue this cell again.
-            localsupportpending.erase(pending);
-            if(!localsupportinrange(check.cell) || !updatesupportcell(check))
+            ZoneScopedN("Support/Drain queue");
+            const int checks = int(std::min(localsupportchecks.size(), size_t(64)));
+            localsupportsnapshot snapshot;
+            // A bounded batch overlaps owned-graph solving with capture of the next graph.
+            // Commit stays in this frame, in FIFO order. Support commits do not modify world geometry;
+            // edits, streaming publication, and decay run outside this entire snapshot lifetime.
+            for(int cursor = 0; cursor < checks; cursor += 8)
             {
-                queuesupportcheck(check.cell, check.remaining);
-                continue;
+                localsupportjob jobs[8];
+                const int count = min(checks - cursor, 8);
+                {
+                    ZoneScopedN("Support/Capture batch");
+                    loopi(count)
+                    {
+                        const ivec cell = localsupportchecks[i];
+                        jobs[i].inrange = localsupportinrange(cell);
+                        if(jobs[i].inrange) jobs[i].valid = preparelocalsupport(cell, snapshot, jobs[i]);
+                        submitsupportjob(jobs[i]);
+                    }
+                }
+                loopi(count)
+                {
+                    waitsupportjob(jobs[i]);
+                    localsupportcheck check;
+                    {
+                        ZoneScopedN("Support/Dequeue cell");
+                        const ivec cell = localsupportchecks.front();
+                        const auto pending = localsupportpending.find(cell);
+                        check = localsupportcheck(cell, pending->second);
+                        localsupportchecks.pop_front();
+                        // Pending reach may have grown during earlier commits in this batch.
+                        localsupportpending.erase(pending);
+                    }
+                    if(!jobs[i].inrange || !updatesupportcell(check, jobs[i]))
+                    {
+                        queuesupportcheck(check.cell, check.remaining);
+                        continue;
+                    }
+                    ++localsupportprocessed;
+                }
             }
-            ++localsupportprocessed;
+            TracyPlot("Support/Unique world samples", int64_t(snapshot.size()));
         }
-        if(totalmillis - localsupportlasttick < supportdecaymillis || localunsupportedpositions.empty()) return;
-        localsupportlasttick = totalmillis;
-        loopi(3)
         {
-            if(localunsupportedpositions.empty()) break;
-            randomticklocalsupportblock(localunsupportedpositions[rnd(localunsupportedpositions.length())]);
+            ZoneScopedN("Support/Decay tick");
+            if(totalmillis - localsupportlasttick < supportdecaymillis || localunsupportedpositions.empty()) return;
+            localsupportlasttick = totalmillis;
+            loopi(3)
+            {
+                if(localunsupportedpositions.empty()) break;
+                randomticklocalsupportblock(localunsupportedpositions[rnd(localunsupportedpositions.length())]);
+            }
         }
     }
 
     static void resetlocalsupportblocks()
     {
+        cleanupsupportworker();
         localsupportcells.clear();
         localsupportpersistent.clear();
         localsupportpositions.setsize(0);

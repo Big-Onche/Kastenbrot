@@ -20,6 +20,7 @@ extern void cleargamma();
 
 void cleanup()
 {
+    game::cleanupsupportworker();
     recorder::stop();
     cleanupserver();
     SDL_ShowCursor(SDL_TRUE);
