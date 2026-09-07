@@ -1470,12 +1470,6 @@ void rendercloudfog()
     glDepthMask(GL_TRUE);
 }
 
-void rendercloudshadows(int split)
-{
-    // cloud shadows no longer consume the main CSM; they use their own low-resolution projected mask in renderclouds()
-    (void)split;
-}
-
 void cleanupclouds()
 {
     clearcloudtiles();

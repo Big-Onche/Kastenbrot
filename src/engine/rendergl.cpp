@@ -27,6 +27,7 @@ PFNGLDELETEFRAMEBUFFERSPROC         glDeleteFramebuffers_         = NULL;
 PFNGLGENFRAMEBUFFERSPROC            glGenFramebuffers_            = NULL;
 PFNGLFRAMEBUFFERTEXTURE2DPROC       glFramebufferTexture2D_       = NULL;
 PFNGLFRAMEBUFFERTEXTURE3DPROC       glFramebufferTexture3D_       = NULL;
+PFNGLFRAMEBUFFERTEXTURELAYERPROC    glFramebufferTextureLayer_    = NULL;
 PFNGLFRAMEBUFFERRENDERBUFFERPROC    glFramebufferRenderbuffer_    = NULL;
 PFNGLGENERATEMIPMAPPROC             glGenerateMipmap_             = NULL;
 
@@ -720,6 +721,7 @@ void gl_checkextensions()
         glGenFramebuffers_                = (PFNGLGENFRAMEBUFFERSPROC)               getprocaddress("glGenFramebuffers");
         glFramebufferTexture2D_           = (PFNGLFRAMEBUFFERTEXTURE2DPROC)          getprocaddress("glFramebufferTexture2D");
         glFramebufferTexture3D_           = (PFNGLFRAMEBUFFERTEXTURE3DPROC)          getprocaddress("glFramebufferTexture3D");
+        glFramebufferTextureLayer_        = (PFNGLFRAMEBUFFERTEXTURELAYERPROC)       getprocaddress("glFramebufferTextureLayer");
         glFramebufferRenderbuffer_        = (PFNGLFRAMEBUFFERRENDERBUFFERPROC)       getprocaddress("glFramebufferRenderbuffer");
         glGenerateMipmap_                 = (PFNGLGENERATEMIPMAPPROC)                getprocaddress("glGenerateMipmap");
         glBlitFramebuffer_                = (PFNGLBLITFRAMEBUFFERPROC)               getprocaddress("glBlitFramebuffer");
@@ -741,6 +743,7 @@ void gl_checkextensions()
         glGenFramebuffers_            = (PFNGLGENFRAMEBUFFERSPROC)           getprocaddress("glGenFramebuffersEXT");
         glFramebufferTexture2D_       = (PFNGLFRAMEBUFFERTEXTURE2DPROC)      getprocaddress("glFramebufferTexture2DEXT");
         glFramebufferTexture3D_       = (PFNGLFRAMEBUFFERTEXTURE3DPROC)      getprocaddress("glFramebufferTexture3DEXT");
+        glFramebufferTextureLayer_    = (PFNGLFRAMEBUFFERTEXTURELAYERPROC)   getprocaddress("glFramebufferTextureLayerEXT");
         glFramebufferRenderbuffer_    = (PFNGLFRAMEBUFFERRENDERBUFFERPROC)   getprocaddress("glFramebufferRenderbufferEXT");
         glGenerateMipmap_             = (PFNGLGENERATEMIPMAPPROC)            getprocaddress("glGenerateMipmapEXT");
         hasFBO = true;

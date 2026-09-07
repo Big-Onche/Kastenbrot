@@ -124,6 +124,7 @@ static inline bool pvsoccluded(const ivec &bborigin, int size)
 // rendergl
 extern bool hasVAO, hasTR, hasTSW, hasPBO, hasFBO, hasAFBO, hasDS, hasTF, hasCBF, hasS3TC, hasFXT1, hasLATC, hasRGTC, hasAF, hasFBB, hasFBMS, hasTMS, hasMSS, hasFBMSBS, hasUBO, hasMBR, hasDB2, hasDBB, hasTG, hasTQ, hasPF, hasTRG, hasTI, hasHFV, hasHFP, hasDBT, hasDC, hasDBGO, hasEGPU4, hasGPU4, hasGPU5, hasBFE, hasEAL, hasCR, hasOQ2, hasES2, hasES3, hasCB, hasCI, hasTS;
 extern int glversion, glslversion, glcompat;
+extern bool hasext(const char *ext);
 extern int maxdrawbufs, maxdualdrawbufs;
 
 enum { DRAWTEX_NONE = 0, DRAWTEX_ENVMAP, DRAWTEX_MINIMAP, DRAWTEX_MODELPREVIEW };
@@ -873,7 +874,6 @@ extern void cleanupgrass();
 extern void updateclouds();
 extern void renderclouds();
 extern void rendercloudfog();
-extern void rendercloudshadows(int split);
 extern void cleanupclouds();
 
 // blendmap
