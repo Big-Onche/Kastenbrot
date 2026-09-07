@@ -1615,6 +1615,8 @@ void findtjoints()
     edgegroups.clear();
 }
 
+VAR(vatilesize, 16, 128, 512);
+
 void octarender()
 {
     ZoneScopedN("Geometry/Update octree render");
@@ -1622,7 +1624,7 @@ void octarender()
     while(1<<csi < worldsize) csi++;
     const int worldsectionsize = getworldsectionsize(),
               facemax = worldsectionsize ? max(vafacemax, 8192) : vafacemax,
-              maxvasize = worldsectionsize ? int(WORLD_VA_TILE_SIZE) : min(0x1000, worldsize/2);
+              maxvasize = worldsectionsize ? int(vatilesize) : min(0x1000, worldsize/2);
 
     recalcprogress = 0;
     if(worldsectionsize)
@@ -1658,7 +1660,7 @@ void octarender()
 void buildstreamingtile(const ivec &origin)
 {
     ZoneScopedN("Geometry/Build mesh tile");
-    const ivec maximum = ivec(origin).add(WORLD_VA_TILE_SIZE);
+    const ivec maximum = ivec(origin).add(vatilesize);
     const int sectionsize = getworldsectionsize(), firstroot = varoot.length();
     // Restore the neighbour/entity ancestry, then enter the mesher directly at
     // this tile's parent. Existing section groups and other tiles are untouched.
@@ -1666,7 +1668,7 @@ void buildstreamingtile(const ivec &origin)
     cube *c = worldroot;
     ivec co(0, 0, 0);
     int size = worldsize / 2, csi = worldscale - 1;
-    while(size > WORLD_VA_TILE_SIZE)
+    while(size > vatilesize)
     {
         neighbourstack[++neighbourdepth] = c;
         const int child = octastep(origin.x, origin.y, origin.z, csi);
@@ -1678,8 +1680,7 @@ void buildstreamingtile(const ivec &origin)
         --csi;
     }
     recalcprogress = 0;
-    updateva(c, co, size, csi, sectionsize,
-             max(vafacemax, 8192), WORLD_VA_TILE_SIZE, &origin, &maximum, 1);
+    updateva(c, co, size, csi, sectionsize, max(vafacemax, 8192), vatilesize, &origin, &maximum, 1);
     neighbourdepth = entdepth = -1;
     if(varoot.length() > firstroot)
     {

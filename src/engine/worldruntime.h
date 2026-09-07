@@ -197,7 +197,7 @@ struct worldchunkjob
     bool remip, leavesalpha, sectionstatesready, checksnapshot, snapshotplayeredited;
     int snapshotresult;
     SDL_atomic_t cancelled;
-    cube *root;
+    cube *root, *saveroot;
     vector<worldscatterinstance> scatter;
     vector<uchar> gameplay, acoustics;
     string folder, snapshoterror;

@@ -381,7 +381,44 @@ namespace acoustics
     static vector<AcousticRegion> acousticRegions;
     static vector<AcousticPortal> acousticPortals;
     static vector<int> acousticRegionPortalEdges;
-    static hashtable<ivec, int> acousticCellLookup(1<<12);
+    struct AcousticCellKey : ivec
+    {
+        AcousticCellKey(const ivec &coord = ivec(0, 0, 0)) : ivec(coord)
+        {
+        }
+    };
+
+    static inline uint hthash(const AcousticCellKey &key)
+    {
+        uint hash = uint(key.x) * 0x9E3779B1U ^ uint(key.y) * 0x85EBCA77U ^ uint(key.z) * 0xC2B2AE3DU;
+        hash ^= hash >> 16;
+        hash *= 0x7FEB352DU;
+        return hash ^ (hash >> 15);
+    }
+
+    // hashbase hashes the argument type, so convert every lookup as well as
+    // every insertion. Otherwise mixed ivec/key calls use different buckets.
+    static struct AcousticCellLookup : hashtable<AcousticCellKey, int>
+    {
+        AcousticCellLookup() : hashtable<AcousticCellKey, int>(1<<12)
+        {
+        }
+
+        int *access(const ivec &coord)
+        {
+            return hashtable<AcousticCellKey, int>::access(AcousticCellKey(coord));
+        }
+
+        int &operator[](const ivec &coord)
+        {
+            return hashtable<AcousticCellKey, int>::operator[](AcousticCellKey(coord));
+        }
+
+        bool remove(const ivec &coord)
+        {
+            return hashtable<AcousticCellKey, int>::remove(AcousticCellKey(coord));
+        }
+    } acousticCellLookup;
     struct ChunkAcousticGrid
     {
         int x, y;
@@ -392,6 +429,7 @@ namespace acoustics
             : x(x), y(y), runtimeorigin(runtimeorigin) {}
     };
     static vector<ChunkAcousticGrid *> chunkAcousticGrids;
+    static bool chunkAcousticGridActive = false;
     static vector<vec> acousticDebugPath;
     static vec acousticDebugVirtualSource(0, 0, 0);
     static int acousticAStarFrame = -1, acousticAStarNodesThisFrame = 0, acousticDebugPathMillis = 0,
@@ -1389,6 +1427,7 @@ namespace acoustics
 
     void clearAcousticGrid()
     {
+        chunkAcousticGridActive = false;
         acousticDebugPath.setsize(0);
         acousticCells.setsize(0);
         acousticRegions.setsize(0);
@@ -1402,6 +1441,7 @@ namespace acoustics
 
     static void rebuildChunkAcousticGrid()
     {
+        chunkAcousticGridActive = true;
         acousticDebugPath.setsize(0);
         acousticCells.setsize(0);
         acousticRegions.setsize(0);
@@ -1471,16 +1511,39 @@ namespace acoustics
 
     void unloadChunkAcoustics(int chunkx, int chunky)
     {
+        ZoneScopedN("Chunks/Remove acoustic cells");
         loopv(chunkAcousticGrids) if(chunkAcousticGrids[i]->x == chunkx && chunkAcousticGrids[i]->y == chunky)
         {
+            if(!chunkAcousticGridActive)
+            {
+                delete chunkAcousticGrids.remove(i);
+                rebuildChunkAcousticGrid();
+                return;
+            }
+            const ChunkAcousticGrid &grid = *chunkAcousticGrids[i];
+            loopvj(grid.cells)
+            {
+                const vec origin = vec(grid.cells[j].origin).add(vec(grid.runtimeorigin));
+                const ivec coord(int(floorf(origin.x / WORLD_SECTION_SIZE)), int(floorf(origin.y / WORLD_SECTION_SIZE)),
+                                 int(floorf(origin.z / WORLD_SECTION_SIZE)));
+                const int *found = acousticCellLookup.access(coord);
+                if(!found) continue;
+                const int index = *found;
+                acousticCellLookup.remove(coord);
+                acousticCells.removeunordered(index);
+                if(acousticCells.inrange(index)) acousticCellLookup[acousticCells[index].coord] = index;
+            }
             delete chunkAcousticGrids.remove(i);
-            rebuildChunkAcousticGrid();
+            acousticDebugPath.setsize(0);
+            acousticProbe.baked = !acousticCells.empty();
+            acousticProbe.cell = acousticProbe.region = -1;
             return;
         }
     }
 
     bool installChunkAcoustics(int chunkx, int chunky, const ivec &runtimeorigin, const vector<uchar> &data)
     {
+        ZoneScopedN("Chunks/Install acoustic cells");
         if(data.length() < 24 || memcmp(data.getbuf(), "KCAG", 4)) return false;
         const uchar *position = data.getbuf() + 4, *end = data.getbuf() + data.length();
         uint version, storedx, storedy, cellsize, count;
@@ -1491,12 +1554,8 @@ namespace acoustics
            !chunkAcousticGetUint(position, end, count) || count > uint(WORLD_SECTION_LAYERS*WORLD_SECTION_TILES) ||
            end - position != int(count*4)) return false;
 
-        loopv(chunkAcousticGrids) if(chunkAcousticGrids[i]->x == chunkx && chunkAcousticGrids[i]->y == chunky)
-        {
-            delete chunkAcousticGrids.remove(i);
-            break;
-        }
         ChunkAcousticGrid *grid = new ChunkAcousticGrid(chunkx, chunky, runtimeorigin);
+        uint occupied[WORLD_SECTION_LAYERS] = { 0 };
         loopi(int(count))
         {
             int x = position[0], y = position[1], z = position[2], flags = position[3];
@@ -1507,6 +1566,13 @@ namespace acoustics
                 delete grid;
                 return false;
             }
+            const uint tilebit = 1U << (y * WORLD_SECTION_COLUMNS + x);
+            if(occupied[z] & tilebit)
+            {
+                delete grid;
+                return false;
+            }
+            occupied[z] |= tilebit;
             AcousticCell &cell = grid->cells.add();
             cell.origin = vec((x + 0.5f)*WORLD_SECTION_SIZE, (y + 0.5f)*WORLD_SECTION_SIZE, (z + 0.5f)*WORLD_SECTION_SIZE);
             const bool exterior = (flags&SECTION_EXTERIOR) != 0, interior = (flags&SECTION_INTERIOR) != 0,
@@ -1529,8 +1595,28 @@ namespace acoustics
             else cell.presetScores[AP_HALL] = 1.0f;
             updateCellPresetChoice(cell);
         }
+        // Validate the replacement before removing the old cells. Streaming has
+        // no baked region graph; only this chunk's coordinate lookup changes.
+        unloadChunkAcoustics(chunkx, chunky);
+        if(chunkAcousticGrids.empty()) clearAcousticGrid();
         chunkAcousticGrids.add(grid);
-        rebuildChunkAcousticGrid();
+        if(!chunkAcousticGridActive)
+        {
+            rebuildChunkAcousticGrid();
+            return true;
+        }
+        loopv(grid->cells)
+        {
+            AcousticCell cell = grid->cells[i];
+            cell.origin.add(vec(runtimeorigin));
+            cell.coord = ivec(int(floorf(cell.origin.x / WORLD_SECTION_SIZE)), int(floorf(cell.origin.y / WORLD_SECTION_SIZE)),
+                              int(floorf(cell.origin.z / WORLD_SECTION_SIZE)));
+            acousticCellLookup[cell.coord] = acousticCells.length();
+            acousticCells.add(cell);
+        }
+        acousticDebugPath.setsize(0);
+        acousticProbe.baked = !acousticCells.empty();
+        acousticProbe.cell = acousticProbe.region = -1;
         return true;
     }
 

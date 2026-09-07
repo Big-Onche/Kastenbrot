@@ -1833,7 +1833,7 @@ static hashtable<cfkey, cfpolys> cpolys;
 void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = worldsize>>1,
                bool stackneighbours = true, bool showprogress = true)
 {
-    const int mergesize = getworldsectionsize() ? min(1 << maxmerge, int(WORLD_VA_TILE_SIZE)) : 1 << maxmerge;
+    const int mergesize = getworldsectionsize() ? min(1 << maxmerge, int(vatilesize)) : 1 << maxmerge;
     if(showprogress && (genmergeprogress++&0xFFF)==0) renderprogress(float(genmergeprogress)/allocnodes, "merging faces...");
     if(stackneighbours) neighbourstack[++neighbourdepth] = c;
     loopi(8)

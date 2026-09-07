@@ -426,7 +426,7 @@ extern void addundo(undoblock *u);
 extern void commitchanges(bool force = false);
 extern void resetgeometrychanges();
 // Streaming mesh ownership is smaller than CPU/collision section ownership.
-enum { WORLD_VA_TILE_SIZE = 64 };
+extern int vatilesize;
 extern int processstreaminggeometry(double budget, int uploadlimit);
 extern bool streaminggeometrypending(const ivec &sectionorigin);
 extern void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax);

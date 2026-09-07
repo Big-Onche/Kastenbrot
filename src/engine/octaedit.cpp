@@ -663,9 +663,9 @@ int processstreaminggeometry(double budget, int uploadlimit)
         if(!worldsectionvaenabled(origin, sectionsize)) continue;
         ivec actualorigin;
         int actualsize;
-        cube &existing = lookupcube(origin, -WORLD_VA_TILE_SIZE, actualorigin, actualsize);
+        cube &existing = lookupcube(origin, -vatilesize, actualorigin, actualsize);
         if(!existing.children && isempty(existing) && existing.material == MAT_AIR && !existing.ext) continue;
-        cube &c = lookupcube(origin, WORLD_VA_TILE_SIZE);
+        cube &c = lookupcube(origin, vatilesize);
         {
             ZoneScopedN("Geometry/Invalidate mesh tile");
             readystreamingtile(c);
@@ -673,7 +673,7 @@ int processstreaminggeometry(double budget, int uploadlimit)
         const int firstva = valist.length();
         {
             ZoneScopedN("Geometry/Merge mesh tile");
-            calcmerges(origin, WORLD_VA_TILE_SIZE);
+            calcmerges(origin, vatilesize);
         }
         buildstreamingtile(origin);
         setupmaterials(firstva);

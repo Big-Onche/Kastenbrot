@@ -14,11 +14,11 @@ static void setworldchunksectioncontent(worldchunk &chunk, int tile, int section
 static void setworldchunksectionopaque(worldchunk &chunk, int tile, int section, bool opaque);
 static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, const int *sections, int numsections);
 static int processworldchunkvaupdates();
-static bool queueworldchunksave(worldchunk &chunk);
-static int processworldchunksaveresults();
+static bool queueworldchunksave(worldchunk &chunk, cube **preparedroot = NULL);
+static int processworldchunksaveresults(double budget = -1);
 static bool flushworldchunksaves();
 static int queueworldchunk(int x, int y);
-static int processworldchunkresults();
+static int processworldchunkresults(double budget = -1);
 static int acquireworldchunkblocking(int x, int y, int &generated);
 
 static bool worldchunkmounted(const worldchunk &chunk);
@@ -29,7 +29,7 @@ VARP(chunkremip, 0, 1, 1); // optional CPU-for-memory octree collapse on generat
 worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request, const char *folder)
     : x(x), y(y), families(0), optimized(0), epoch(epoch), request(request), snapshotrevision(0), remip(chunkremip != 0),
       leavesalpha(::leavesalpha != 0), sectionstatesready(false), checksnapshot(folder && folder[0]), snapshotplayeredited(false),
-      snapshotresult(WORLD_SNAPSHOT_MISSING), root(NULL), generation(NULL)
+      snapshotresult(WORLD_SNAPSHOT_MISSING), root(NULL), saveroot(NULL), generation(NULL)
 {
     memclear(contenttiles);
     memclear(opaquetiles);
@@ -43,6 +43,7 @@ worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request, const char 
 
 worldchunkjob::~worldchunkjob()
 {
+    if(saveroot) freeworldsnapshotfamily(saveroot);
     game::destroyworldgeneration(generation);
 }
 
@@ -105,6 +106,71 @@ static int worldsectionvisibilitychunkx = INT_MIN, worldsectionvisibilitychunky 
 static ivec worldsectionvisibilityfocus(INT_MIN, INT_MIN, INT_MIN);
 static int worldvaevictionsframe = 0, worldvanorenderskipsframe = 0;
 static int worldvaresidentcounts[WORLD_VA_GEOMETRY_COUNT], worldvapendingbuildcount = 0, worldvapendinguploadcount = 0;
+
+// Only detached octrees enter this queue. Reclaim one family at a time on the
+// main thread: cached extensions may still own renderer-side resources.
+struct worldchunkretiredtree
+{
+    cube *root;
+    bool accounted;
+
+    worldchunkretiredtree(cube *root, bool accounted) : root(root), accounted(accounted)
+    {
+    }
+};
+static vector<worldchunkretiredtree> worldchunkretiredtrees;
+static vector<cube *> worldchunkretiredfamilies;
+static bool worldchunkretiredaccounted = false;
+static Uint64 worldchunkcleanupremaining = 0;
+static int worldchunkprunecursor = 0;
+
+static void retireworldchunktree(cube *&root, bool accounted)
+{
+    if(!root) return;
+    worldchunkretiredtrees.add(worldchunkretiredtree(root, accounted));
+    root = NULL;
+}
+
+static void retireworldchunkjob(worldchunkjob *job)
+{
+    retireworldchunktree(job->root, false);
+    retireworldchunktree(job->saveroot, false);
+    delete job;
+}
+
+static void reclaimworldchunktrees(bool flush = false)
+{
+    ZoneScopedN("Chunks/Reclaim detached octrees");
+    const Uint64 start = SDL_GetPerformanceCounter();
+    int freed = 0;
+    while(flush || SDL_GetPerformanceCounter() - start < worldchunkcleanupremaining)
+    {
+        if(worldchunkretiredfamilies.empty())
+        {
+            if(worldchunkretiredtrees.empty()) break;
+            const worldchunkretiredtree tree = worldchunkretiredtrees.remove(0);
+            worldchunkretiredaccounted = tree.accounted;
+            worldchunkretiredfamilies.add(tree.root);
+        }
+        cube *family = worldchunkretiredfamilies.pop();
+        loopi(8) if(family[i].children)
+        {
+            worldchunkretiredfamilies.add(family[i].children);
+            family[i].children = NULL;
+        }
+        if(worldchunkretiredaccounted) freeocta(family);
+        else
+        {
+            loopi(8) ASSERT(!family[i].ext);
+            delete[] family;
+        }
+        ++freed;
+    }
+    const Uint64 elapsed = SDL_GetPerformanceCounter() - start;
+    worldchunkcleanupremaining -= min(worldchunkcleanupremaining, elapsed);
+    ZoneValue(freed);
+    TracyPlot("Chunks/Retired octrees", int64_t(worldchunkretiredtrees.length() + !worldchunkretiredfamilies.empty()));
+}
 
 static ivec worldchunkindexkey(int x, int y)
 {
@@ -187,6 +253,8 @@ VAR(chunkcachedist, 0, 0, 0);
 VAR(chunkpendinglimit, 4, 8, 16);
 VAR(chunklookahead, 0, 2, 8);
 VAR(chunkpublishbudget, 1, 2, 33);
+VAR(chunkresultbudget, 1, 1, 33);
+VAR(chunkvisibilitybudget, 1, 1, 33);
 VAR(chunkcleanupbudget, 1, 3, 33);
 VAR(chunksectionbatch, 1, 1, WORLD_MAX_SECTION_BATCH);
 VAR(chunkvastagelimit, 1, 3, 16);
@@ -338,6 +406,8 @@ void clearworldchunks()
     clearworldscattermeshes();
     clearworldlods();
     shutdownworldchunkloader();
+    reclaimworldchunktrees(true);
+    worldchunkprunecursor = 0;
     acoustics::clearChunkAcoustics();
     worldchunkvaupdates.setsize(0);
     worldchunkvaupdateset.clear();
@@ -469,7 +539,7 @@ static void mergeworldsnapshotmountedsections(const worldchunk &chunk, cube *sna
     }
 }
 
-static bool queueworldchunksave(worldchunk &chunk)
+static bool queueworldchunksave(worldchunk &chunk, cube **preparedroot)
 {
     if(chunk.saving) return true;
     if(!chunk.root || chunk.loading || chunk.corrupted || !worldfolder[0]) return false;
@@ -477,15 +547,24 @@ static bool queueworldchunksave(worldchunk &chunk)
 
     worldchunksavejob *job = new worldchunksavejob(chunk.x, chunk.y, worldchunkepoch, chunk.revision, worldfolder);
     worldsnapshotsamplingtree sampling;
-    if(!sampling.build(chunk) || !game::capturelocalchunkdata(chunk.x, chunk.y, job->gameplay))
+    if(((!preparedroot || !*preparedroot) && !sampling.build(chunk)) ||
+       !game::capturelocalchunkdata(chunk.x, chunk.y, job->gameplay))
     {
         if(!job->error[0]) copystring(job->error, "could not capture sparse gameplay state");
         conoutf(CON_ERROR, "could not capture chunk %d_%d for asynchronous saving: %s", chunk.x, chunk.y, job->error);
         delete job;
         return false;
     }
-    job->root = sampling.root;
-    sampling.root = NULL;
+    if(preparedroot && *preparedroot)
+    {
+        job->root = *preparedroot;
+        *preparedroot = NULL;
+    }
+    else
+    {
+        job->root = sampling.root;
+        sampling.root = NULL;
+    }
     job->renderdata = chunk.renderdata;
     job->playeredited = chunk.playeredited;
     if(!chunk.scatter.empty()) job->scatter.put(chunk.scatter.getbuf(), chunk.scatter.length());
@@ -1314,6 +1393,12 @@ static int worldchunkloader(void *)
                 job->sectionstatesready = prepareworldchunksectionstates(*job);
                 if(job->acoustics.empty()) acoustics::bakeChunkAcoustics(job->renderdata, job->x, job->y, job->acoustics, &job->cancelled);
             }
+            if(job->root && job->snapshotresult != WORLD_SNAPSHOT_LOADED && job->folder[0] && !SDL_AtomicGet(&job->cancelled))
+            {
+                ZoneScopedN("Chunks/Worker prepare initial save");
+                job->saveroot = allocworldsnapshotfamily();
+                loopi(8) copyworldsnapshotcube(job->root[i], job->saveroot[i]);
+            }
         }
         if(SDL_AtomicGet(&job->cancelled) && job->root)
         {
@@ -1325,7 +1410,9 @@ static int worldchunkloader(void *)
         SDL_LockMutex(worldchunkmutex);
         worldchunkactivejobs.removeobj(job);
         TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
-        while(worldchunkresults.length() >= WORLD_MAX_PREPARED_CHUNKS && !stopworldchunkthread)
+        // A save flush must release result backpressure so workers can reach
+        // queued saves even when the main thread is no longer publishing.
+        while(worldchunkresults.length() >= WORLD_MAX_PREPARED_CHUNKS && !stopworldchunkthread && !flushingworldchunksaves)
             SDL_CondWait(worldchunkcond, worldchunkmutex);
         if(stopworldchunkthread)
         {
@@ -1704,7 +1791,6 @@ static int reprioritizeworldchunkqueue(int chunkx, int chunky, int aheadx, int a
     }
 
     int cancelled = 0;
-    vector<worldchunkjob *> stale;
     SDL_LockMutex(worldchunkmutex);
     worldchunkfocusx = chunkx;
     worldchunkfocusy = chunky;
@@ -1733,22 +1819,13 @@ static int reprioritizeworldchunkqueue(int chunkx, int chunky, int aheadx, int a
     {
         worldchunkjob *job = worldchunkresults[i];
         if(worldchunkjobwanted(job->x, job->y, chunkx, chunky, aheadx, aheady)) continue;
-        SDL_AtomicSet(&job->cancelled, 1);
-        stale.add(worldchunkresults.remove(i));
-        cancelled++;
-    }
-    if(!stale.empty()) SDL_CondBroadcast(worldchunkcond);
-    SDL_UnlockMutex(worldchunkmutex);
-
-    loopv(stale)
-    {
+        if(!SDL_AtomicGet(&job->cancelled))
         {
-            ZoneScopedN("Chunks/Free stale result");
-            ZoneTextF("%d_%d", stale[i]->x, stale[i]->y);
-            game::freeworldchunk(stale[i]->root);
+            SDL_AtomicSet(&job->cancelled, 1);
+            cancelled++;
         }
-        delete stale[i];
     }
+    SDL_UnlockMutex(worldchunkmutex);
 
     // A job already owned by a worker cannot be cancelled safely. Removing
     // its placeholder makes its eventual result self-discard instead of
@@ -1764,14 +1841,17 @@ static int reprioritizeworldchunkqueue(int chunkx, int chunky, int aheadx, int a
     return cancelled;
 }
 
-static int processworldchunkresults()
+static int processworldchunkresults(double budget)
 {
     if(worldchunkworkers.empty()) return 0;
     ZoneScopedN("Chunks/Process worker results");
 
     int handled = 0, published = 0, generated = 0, optimized = 0;
+    const Uint64 start = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
     while(handled < asyncchunkloads)
     {
+        if(budget >= 0 && worldchunkretiredtrees.length() >= WORLD_MAX_PREPARED_CHUNKS) break;
+        if(budget >= 0 && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget) break;
         worldchunkjob *job = NULL;
         {
             ZoneScopedN("Chunks/Dequeue worker result");
@@ -1797,6 +1877,7 @@ static int processworldchunkresults()
             SDL_UnlockMutex(worldchunkmutex);
         }
         if(!job) break;
+        ++handled; // Discards and retries consume admission/time just like successful results.
 
         int index = findworldchunk(job->x, job->y);
         bool current = index >= 0 && worldchunks[index].loading &&
@@ -1808,18 +1889,17 @@ static int processworldchunkresults()
             ZoneTextF("%d_%d", job->x, job->y);
             if(current)
                 worldchunks.removeunordered(index);
-            game::freeworldchunk(job->root);
-            delete job;
+            retireworldchunkjob(job);
             continue;
         }
         if(job->snapshotresult == WORLD_SNAPSHOT_LOADED &&
            !game::restorelocalchunkdata(job->x, job->y, job->gameplay.getbuf(), job->gameplay.length()))
         {
             conoutf(CON_ERROR, "authoritative chunk %d_%d contains invalid sparse gameplay data; regenerating it", job->x, job->y);
-            game::freeworldchunk(job->root);
-            job->root = NULL;
+            retireworldchunktree(job->root, false);
             job->scatter.setsize(0);
             job->gameplay.setsize(0);
+            job->acoustics.setsize(0);
             job->snapshotresult = WORLD_SNAPSHOT_INVALID;
             job->sectionstatesready = false;
             SDL_LockMutex(worldchunkmutex);
@@ -1828,19 +1908,22 @@ static int processworldchunkresults()
             SDL_UnlockMutex(worldchunkmutex);
             continue;
         }
-        handled++;
-
         {
             ZoneScopedN("Chunks/Publish worker result");
             ZoneTextF("%d_%d generated families %d", job->x, job->y, job->families);
             ZoneValue(job->families);
             worldchunk &chunk = worldchunks[index];
             chunk.root = job->root;
+            job->root = NULL;
             chunk.scatter.move(job->scatter);
             chunk.acoustics.move(job->acoustics);
             chunk.renderdata = job->renderdata;
             bool leavesalphamatches = job->leavesalpha == (leavesalpha != 0);
-            if(!leavesalphamatches) setworldleavesalpha(chunk.root, leavesalpha != 0);
+            if(!leavesalphamatches)
+            {
+                setworldleavesalpha(chunk.root, leavesalpha != 0);
+                setworldleavesalpha(job->saveroot, leavesalpha != 0);
+            }
             if(job->sectionstatesready)
             {
                 const uint alltiles = (1U << WORLD_SECTION_TILES) - 1;
@@ -1870,12 +1953,13 @@ static int processworldchunkresults()
             if(job->snapshotresult == WORLD_SNAPSHOT_INVALID)
                 conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerated it", chunk.x, chunk.y,
                         job->snapshoterror[0] ? job->snapshoterror : "invalid snapshot");
-            if(job->snapshotresult != WORLD_SNAPSHOT_LOADED && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
+            if(job->snapshotresult != WORLD_SNAPSHOT_LOADED && worldfolder[0] && game::islocalworld() &&
+               !queueworldchunksave(chunk, &job->saveroot))
                 conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", chunk.x, chunk.y);
             published++;
             if(!game::islocalworld()) game::requestworldchunk(chunk.x, chunk.y);
         }
-        delete job;
+        retireworldchunkjob(job);
     }
 
     if(published)
@@ -1883,12 +1967,15 @@ static int processworldchunkresults()
     return published;
 }
 
-static int processworldchunksaveresults()
+static int processworldchunksaveresults(double budget)
 {
     if(!worldchunkmutex) return 0;
+    ZoneScopedN("Chunks/Process save results");
+    const Uint64 start = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
     int handled = 0;
     for(;;)
     {
+        if(budget >= 0 && (handled >= asyncchunkloads || (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget)) break;
         SDL_LockMutex(worldchunkmutex);
         worldchunksavejob *job = worldchunksaveresults.empty() ? NULL : worldchunksaveresults.remove(0);
         TracyPlot("Chunks/Ready saves", int64_t(worldchunksaveresults.length()));
@@ -1904,8 +1991,11 @@ static int processworldchunksaveresults()
             {
                 chunk.saving = false;
                 if(job->success) chunk.savedrevision = job->revision;
-                if(job->success)
+                if(job->success && (chunk.acoustics.length() != job->acoustics.length() ||
+                   (job->acoustics.length() && memcmp(chunk.acoustics.getbuf(), job->acoustics.getbuf(), job->acoustics.length()))))
                 {
+                    // vector::move appends to a nonempty destination.
+                    chunk.acoustics.setsize(0);
                     chunk.acoustics.move(job->acoustics);
                     acoustics::installChunkAcoustics(chunk.x, chunk.y, worldchunkorigin(chunk), chunk.acoustics);
                 }
@@ -1958,13 +2048,16 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
     ZoneScopedN("Chunks/Streaming update");
     ZoneTextF("focus %d_%d ahead %d_%d", chunkx, chunky, aheadx, aheady);
     lastworldchunkpublish = totalmillis;
-    processworldchunksaveresults();
+    worldchunkcleanupremaining = Uint64(chunkcleanupbudget) * SDL_GetPerformanceFrequency() / 1000;
+    const Uint64 resultstart = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
+    processworldchunksaveresults(chunkresultbudget * 0.5);
     reprioritizeworldchunkqueue(chunkx, chunky, aheadx, aheady);
-    processworldchunkresults();
+    processworldchunkresults(max(chunkresultbudget - (SDL_GetPerformanceCounter() - resultstart) * 1000.0 / frequency, 0.0));
     queueworldchunkview(chunkx, chunky, aheadx, aheady);
     mountworldchunksafetyregion(chunkx, chunky);
     processworldchunkchanges(chunkx, chunky);
     pruneworldchunkresidency(chunkx, chunky, INT_MAX);
+    reclaimworldchunktrees();
     activeworldchunk = findworldchunk(chunkx, chunky);
 }
 
@@ -2054,13 +2147,19 @@ static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeome
 
 static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
 {
+    if(!worldchunkcleanupremaining) return 0;
     ZoneScopedN("Chunks/Prune cache");
     ZoneTextF("focus %d_%d limit %d", chunkx, chunky, limit);
     Uint64 start = SDL_GetPerformanceCounter();
-    const Uint64 frequency = SDL_GetPerformanceFrequency();
     int released = 0, cachedist = maxchunkdist + chunkcachedist;
-    for(int i = worldchunks.length() - 1; i >= 0; --i)
+    int scanned = 0, count = worldchunks.length();
+    // Do not detach another cache tree until reclamation catches up. Keep the
+    // scan cursor across frames so retained/saving chunks cannot starve others.
+    while(scanned++ < count && !worldchunks.empty() && worldchunkretiredtrees.empty() && worldchunkretiredfamilies.empty())
     {
+        if(SDL_GetPerformanceCounter() - start >= worldchunkcleanupremaining) break;
+        if(worldchunkprunecursor >= worldchunks.length()) worldchunkprunecursor = 0;
+        const int i = worldchunkprunecursor++;
         worldchunk &chunk = worldchunks[i];
         if(chunk.loading || worldchunkmounted(chunk) || !chunk.root ||
            worldchunkdistance(chunk.x, chunk.y, chunkx, chunky) <= cachedist || game::haslocalchunkdynamicstate(chunk.x, chunk.y))
@@ -2076,14 +2175,19 @@ static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
             if(chunk.saving) continue;
             if(game::islocalworld()) game::unloadlocalchunknpcs(chunk.x, chunk.y);
             acoustics::unloadChunkAcoustics(chunk.x, chunk.y);
-            freeocta(chunk.root);
+            retireworldchunktree(chunk.root, true);
         }
+        worldchunkindices.remove(worldchunkindexkey(chunk.x, chunk.y));
         worldchunks.removeunordered(i);
+        indexworldchunk(i);
+        worldchunkprunecursor = i;
         released++;
-        double elapsed = (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency;
-        if(released >= limit || elapsed >= chunkcleanupbudget) break;
+        if(released >= limit) break;
     }
-    if(released) invalidateworldsectionvisibility();
+    const Uint64 elapsed = SDL_GetPerformanceCounter() - start;
+    worldchunkcleanupremaining -= min(worldchunkcleanupremaining, elapsed);
+    // Only unmounted chunks outside the view are removed; they cannot change
+    // reachability within the view and must not restart its visibility flood.
     return released;
 }
 
@@ -2132,7 +2236,6 @@ static void rebuildworldchunks(int chunkx, int chunky, int aheadx, int aheady, b
     // In optimized builds their startup used to overlap VA/material creation.
     if(load) queued = queueworldchunkview(chunkx, chunky, aheadx, aheady);
 
-    int released = pruneworldchunkresidency(chunkx, chunky, 1);
     activeworldchunk = findworldchunk(chunkx, chunky);
     if(worldchunks.inrange(activeworldchunk))
     {
@@ -2144,8 +2247,8 @@ static void rebuildworldchunks(int chunkx, int chunky, int aheadx, int aheady, b
     int mounted = 0;
     loopv(worldchunks) if(worldchunkmounted(worldchunks[i])) mounted++;
     rebuildingworldchunks = false;
-    conoutf(CON_DEBUG, "chunk view %d_%d: +%d -%d, %d queued, %d cancelled, %d cached released, %d/%d mounted",
-            chunkx, chunky, entering.length(), leaving.length(), queued, cancelled, released,
+    conoutf(CON_DEBUG, "chunk view %d_%d: +%d -%d, %d queued, %d cancelled, %d/%d mounted",
+            chunkx, chunky, entering.length(), leaving.length(), queued, cancelled,
             mounted, (2 * maxchunkdist + 1) * (2 * maxchunkdist + 1));
 }
 
