@@ -512,7 +512,8 @@ enum
     L_VOLUMETRIC = 1<<2,
     L_NOSPEC = 1<<3,
     L_SMALPHA = 1<<4,
-    L_ALLFACES = 1<<5
+    L_ALLFACES = 1<<5,
+    L_SOFTSHADOWS = 1<<6
 };
 
 // dynlight

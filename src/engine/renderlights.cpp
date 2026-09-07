@@ -1924,6 +1924,12 @@ VARN(lightbatches, lightbatchesused, 1, 0, 0);
 VARN(lightbatchrects, lightbatchrectsused, 1, 0, 0);
 VARN(lightbatchstacks, lightbatchstacksused, 1, 0, 0);
 
+VAR(smsoftshadows, 0, 1, 1);
+FVAR(smsoftshadowsoftness, 0, 0.1f, 0.25f);
+FVAR(smsoftshadowradius, 0, 32, 64);
+VAR(smsoftshadowsamples, 1, 16, 32);
+VAR(smsoftshadowdist, 0, 512, 16384);
+
 VARFR(alphashadow, 0, 2, 2, { cleardeferredlightshaders(); cleanupshadowatlas(); });
 FVARFR(alphashadowscale, 0, 1, 2, clearshadowcache());
 
@@ -3055,9 +3061,10 @@ static inline void setlightglobals(bool transparent = false)
 }
 
 static LocalShaderParam lightpos("lightpos"), lightcolor("lightcolor"), lightallfaces("lightallfaces"), spotparams("spotparams"),
-                        shadowparams("shadowparams"), shadowoffset("shadowoffset");
+                        shadowparams("shadowparams"), shadowoffset("shadowoffset"), shadowsoft("shadowsoft");
 static vec4 lightposv[8], shadowlightposv[8], lightcolorv[8], spotparamsv[8], shadowparamsv[8];
 static vec2 shadowoffsetv[8];
+static vec4 shadowsoftv[8];
 static float lightallfacesv[8];
 
 // Keep the PCF footprint inside each atlas allocation, including spotlight edges.
@@ -3082,6 +3089,14 @@ static vec4 localshadowparams(const lightinfo &l, const shadowmapinfo &sm)
                 0.5f + 0.5f*(farclip+nearclip)/(farclip-nearclip));
 }
 
+static float localshadowsoftness(const lightinfo &l)
+{
+    if(!(l.flags&L_SOFTSHADOWS) || !smsoftshadows || drawtex == DRAWTEX_MINIMAP || smsoftshadowradius < 0.5f) return 0;
+    const float fade = smsoftshadowdist > 0
+        ? clamp((smsoftshadowdist - max(l.dist-l.radius, 0.0f))/max(smsoftshadowdist*0.25f, 1.0f), 0.0f, 1.0f) : 1;
+    return smsoftshadowsoftness*fade;
+}
+
 static inline void setlightparams(int i, const lightinfo &l)
 {
     lightposv[i] = vec4(l.o, 1).div(l.radius);
@@ -3097,6 +3112,7 @@ static inline void setlightparams(int i, const lightinfo &l)
         shadowparamsv[i] = localshadowparams(l, sm);
         shadowparamsv[i].x = -shadowparamsv[i].x;
         shadowoffsetv[i] = vec2(sm.x + 0.5f*sm.size, sm.y + 0.5f*sm.size);
+        shadowsoftv[i] = vec4(localshadowsoftness(l), smsoftshadowradius, smsoftshadowsamples, sm.size);
     }
 }
 
@@ -3112,6 +3128,7 @@ static inline void setlightshader(Shader *s, int n, bool baselight, bool shadowm
     {
         shadowparams.setv(shadowparamsv, n);
         shadowoffset.setv(shadowoffsetv, n);
+        shadowsoft.setv(shadowsoftv, n);
     }
 }
 
@@ -4614,6 +4631,8 @@ void rendershadowmaps(int offset = 0)
             shadowmapping = SM_CUBEMAP;
             border = localshadowborder();
             sidemask = drawtex == DRAWTEX_MINIMAP ? 0x2F : (smsidecull ? cullfrustumsides(l.o, l.radius, sm.size, border) : 0x3F);
+            // Wide directional taps can select a neighboring face outside the camera frustum.
+            if(localshadowsoftness(l) > 0) sidemask = 0x3F;
         }
 
         sm.sidemask = sidemask;
