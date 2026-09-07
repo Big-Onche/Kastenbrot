@@ -1890,12 +1890,9 @@ const matrix4 cubeshadowviewmatrix[6] =
     matrix4(vec(1, 0, 0), vec(0, 1, 0), vec(0, 0,  1))  // -Z
 };
 
-FVAR(smpolyfactor, -1e3f, 1, 1e3f);
-FVAR(smpolyoffset, -1e3f, 0, 1e3f);
-FVAR(smbias, -1e6f, 0.01f, 1e6f);
-FVAR(smpolyfactor2, -1e3f, 1.5f, 1e3f);
-FVAR(smpolyoffset2, -1e3f, 0, 1e3f);
-FVAR(smbias2, -1e6f, 0.02f, 1e6f);
+FVAR(smconstantbias, 0, 2, 4);
+FVAR(smnormalbias, 0, 2, 4);
+FVARF(smslopebias, 0, 2, 4, clearshadowcache());
 FVAR(smprec, 1e-3f, 1, 1e3f);
 FVAR(smcubeprec, 1e-3f, 1, 1e3f);
 FVAR(smspotprec, 1e-3f, 1, 1e3f);
@@ -1904,8 +1901,8 @@ VARFP(smsize, 10, 12, 14, cleanupshadowatlas());
 VARFP(smdepthprec, 0, 2, 2, cleanupshadowatlas());
 VAR(smsidecull, 0, 1, 1);
 VAR(smviscull, 0, 1, 1);
-VAR(smborder, 0, 3, 16);
-VAR(smborder2, 0, 4, 16);
+VARF(smborder, 0, 3, 16, clearshadowcache());
+VARF(smborder2, 0, 4, 16, clearshadowcache());
 VAR(smminradius, 0, 16, 10000);
 VAR(smminsize, 1, 96, 1024);
 VAR(smmaxsize, 1, 384, 1024);
@@ -2542,7 +2539,6 @@ bool useradiancehints()
 }
 
 FVAR(avatarshadowdist, 0, 12, 100);
-FVAR(avatarshadowbias, 0, 8, 100);
 VARF(avatarshadowstencil, 0, 1, 2, initwarning("g-buffer setup", INIT_LOAD, CHANGE_SHADERS));
 
 int avatarmask = 0;
@@ -3012,6 +3008,7 @@ static void bindlighttexs(int msaapass = 0, bool transparent = false)
 
 static inline void setlightglobals(bool transparent = false)
 {
+    GLOBALPARAMF(smreceiverbias, smconstantbias, smnormalbias);
     GLOBALPARAMF(shadowatlasscale, 1.0f/shadowatlaspacker.w, 1.0f/shadowatlaspacker.h);
     if(ao)
     {
@@ -3063,6 +3060,28 @@ static vec4 lightposv[8], shadowlightposv[8], lightcolorv[8], spotparamsv[8], sh
 static vec2 shadowoffsetv[8];
 static float lightallfacesv[8];
 
+// Keep the PCF footprint inside each atlas allocation, including spotlight edges.
+static int localshadowborder()
+{
+    return smfilter > 2 ? max(smborder2, 6) : max(smborder, smfilter ? 4 : 0);
+}
+
+static int localshadowsize(float lod, int columns)
+{
+    const int size = clamp(int(ceil((lod*shadowatlaspacker.w)/SHADOWATLAS_SIZE)), localshadowborder()+2, shadowatlaspacker.w/columns);
+    return (size + smalign)&~smalign;
+}
+
+// Surface and volume lookups convert texel bias through this same unbiased projection.
+static vec4 localshadowparams(const lightinfo &l, const shadowmapinfo &sm)
+{
+    const float nearclip = SQRT3/l.radius, farclip = SQRT3;
+    const int border = localshadowborder();
+    return vec4(0.5f*(sm.size-border)*(l.spot ? cotan360(l.spot) : 1),
+                -nearclip*farclip/(farclip-nearclip), l.spot ? 1/(1+fabs(l.dir.z)) : float(sm.size),
+                0.5f + 0.5f*(farclip+nearclip)/(farclip-nearclip));
+}
+
 static inline void setlightparams(int i, const lightinfo &l)
 {
     lightposv[i] = vec4(l.o, 1).div(l.radius);
@@ -3075,25 +3094,8 @@ static inline void setlightparams(int i, const lightinfo &l)
     if(l.shadowmap >= 0)
     {
         shadowmapinfo &sm = shadowmaps[l.shadowmap];
-        float smnearclip = SQRT3 / l.radius, smfarclip = SQRT3,
-              bias = (smfilter > 2 || shadowatlaspacker.w > SHADOWATLAS_SIZE ? smbias2 : smbias) * (smcullside ? 1 : -1) * smnearclip * (1024.0f / sm.size);
-        int border = smfilter > 2 ? smborder2 : smborder;
-        if(l.spot > 0)
-        {
-            shadowparamsv[i] = vec4(
-                -0.5f * sm.size * cotan360(l.spot),
-                (-smnearclip * smfarclip / (smfarclip - smnearclip) - 0.5f*bias),
-                1 / (1 + fabs(l.dir.z)),
-                0.5f + 0.5f * (smfarclip + smnearclip) / (smfarclip - smnearclip));
-        }
-        else
-        {
-            shadowparamsv[i] = vec4(
-                -0.5f * (sm.size - border),
-                -smnearclip * smfarclip / (smfarclip - smnearclip) - 0.5f*bias,
-                sm.size,
-                0.5f + 0.5f * (smfarclip + smnearclip) / (smfarclip - smnearclip));
-        }
+        shadowparamsv[i] = localshadowparams(l, sm);
+        shadowparamsv[i].x = -shadowparamsv[i].x;
         shadowoffsetv[i] = vec2(sm.x + 0.5f*sm.size, sm.y + 0.5f*sm.size);
     }
 }
@@ -3442,6 +3444,7 @@ void rendervolumetric()
     GLOBALPARAMF(volminstep, volminstep);
     GLOBALPARAMF(volprefilter, volprefilter);
     GLOBALPARAMF(voldistclamp, farplane*voldistclamp);
+    GLOBALPARAMF(smreceiverbias, smconstantbias, smnormalbias);
 
     glBlendFunc(GL_ONE, GL_ONE);
     glEnable(GL_BLEND);
@@ -3482,25 +3485,7 @@ void rendervolumetric()
         if(l.shadowmap >= 0)
         {
             shadowmapinfo &sm = shadowmaps[l.shadowmap];
-            float smnearclip = SQRT3 / l.radius, smfarclip = SQRT3,
-                  bias = (smfilter > 2 ? smbias2 : smbias) * (smcullside ? 1 : -1) * smnearclip * (1024.0f / sm.size);
-            int border = smfilter > 2 ? smborder2 : smborder;
-            if(l.spot > 0)
-            {
-                LOCALPARAMF(shadowparams,
-                    0.5f * sm.size * cotan360(l.spot),
-                    (-smnearclip * smfarclip / (smfarclip - smnearclip) - 0.5f*bias),
-                    1 / (1 + fabs(l.dir.z)),
-                    0.5f + 0.5f * (smfarclip + smnearclip) / (smfarclip - smnearclip));
-            }
-            else
-            {
-                LOCALPARAMF(shadowparams,
-                    0.5f * (sm.size - border),
-                    -smnearclip * smfarclip / (smfarclip - smnearclip) - 0.5f*bias,
-                    sm.size,
-                    0.5f + 0.5f * (smfarclip + smnearclip) / (smfarclip - smnearclip));
-            }
+            LOCALPARAM(shadowparams, localshadowparams(l, sm));
             LOCALPARAMF(shadowoffset, sm.x + 0.5f*sm.size, sm.y + 0.5f*sm.size);
         }
 
@@ -3745,7 +3730,7 @@ void collectlights()
         if(l.spot) { w = 1; h = 1; prec *= tan360(l.spot); lod = smspotprec; }
         else { w = 3; h = 2; lod = smcubeprec; }
         lod *= clamp(l.radius * prec / sqrtf(max(1.0f, l.dist/l.radius)), float(smminsize), float(smmaxsize));
-        int size = (clamp(int(ceil((lod * shadowatlaspacker.w) / SHADOWATLAS_SIZE)), 1, shadowatlaspacker.w / w) + smalign)&~smalign;
+        int size = localshadowsize(lod, w);
         w *= size;
         h *= size;
 
@@ -3934,7 +3919,7 @@ void packlights()
             if(l.spot) { w = 1; h = 1; prec *= tan360(l.spot); lod = smspotprec; }
             else { w = 3; h = 2; lod = smcubeprec; }
             lod *= clamp(l.radius * prec / sqrtf(max(1.0f, l.dist/l.radius)), float(smminsize), float(smmaxsize));
-            int size = (clamp(int(ceil((lod * shadowatlaspacker.w) / SHADOWATLAS_SIZE)), 1, shadowatlaspacker.w / w) + smalign)&~smalign;
+            int size = localshadowsize(lod, w);
             w *= size;
             h *= size;
             ushort x = USHRT_MAX, y = USHRT_MAX;
@@ -4565,7 +4550,7 @@ int calcshadowinfo(const extentity &e, vec &origin, float &radius, vec &spotloc,
     {
         type = SM_SPOT;
         w = 1;
-        border = 0;
+        border = localshadowborder();
         lod = smspotprec;
         spotloc = e.attached->o;
         spotangle = clamp(int(e.attached->attr1), 1, 89);
@@ -4575,13 +4560,13 @@ int calcshadowinfo(const extentity &e, vec &origin, float &radius, vec &spotloc,
         type = SM_CUBEMAP;
         w = 3;
         lod = smcubeprec;
-        border = smfilter > 2 ? smborder2 : smborder;
+        border = localshadowborder();
         spotloc = e.o;
         spotangle = 0;
     }
 
     lod *= smminsize;
-    int size = (clamp(int(ceil((lod * shadowatlaspacker.w) / SHADOWATLAS_SIZE)), 1, shadowatlaspacker.w / w) + smalign)&~smalign;
+    int size = localshadowsize(lod, w);
     bias = border / float(size - border);
 
     return type;
@@ -4601,11 +4586,9 @@ void rendershadowmaps(int offset = 0)
         glDepthMask(GL_TRUE);
     }
 
-    float polyfactor = smpolyfactor, polyoffset = smpolyoffset;
-    if(smfilter > 2) { polyfactor = smpolyfactor2; polyoffset = smpolyoffset2; }
-    if(polyfactor || polyoffset)
+    if(smslopebias)
     {
-        glPolygonOffset(polyfactor, polyoffset);
+        glPolygonOffset(smslopebias, 0);
         glEnable(GL_POLYGON_OFFSET_FILL);
     }
 
@@ -4623,13 +4606,13 @@ void rendershadowmaps(int offset = 0)
         if(l.spot)
         {
             shadowmapping = SM_SPOT;
-            border = 0;
+            border = localshadowborder();
             sidemask = 1;
         }
         else
         {
             shadowmapping = SM_CUBEMAP;
-            border = smfilter > 2 ? smborder2 : smborder;
+            border = localshadowborder();
             sidemask = drawtex == DRAWTEX_MINIMAP ? 0x2F : (smsidecull ? cullfrustumsides(l.o, l.radius, sm.size, border) : 0x3F);
         }
 
@@ -4761,7 +4744,7 @@ void rendershadowmaps(int offset = 0)
     glCullFace(GL_BACK);
     glDisable(GL_SCISSOR_TEST);
 
-    if(polyfactor || polyoffset) glDisable(GL_POLYGON_OFFSET_FILL);
+    if(smslopebias) glDisable(GL_POLYGON_OFFSET_FILL);
 
     shadowmapping = 0;
 

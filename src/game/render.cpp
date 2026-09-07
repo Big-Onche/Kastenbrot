@@ -1008,8 +1008,7 @@ namespace game
 
     void renderavatar()
     {
-        if(!hudgun || editmode || (!m_creative && !m_survival) ||
-           !player1 || player1->state != CS_ALIVE)
+        if(!hudgun || editmode || (!m_creative && !m_survival) || !player1 || player1->state != CS_ALIVE)
             return;
 
         const int selected = heldcreativeitem(player1);
