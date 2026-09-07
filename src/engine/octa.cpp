@@ -1910,7 +1910,7 @@ int calcmergedsize(int orient, const ivec &co, int size, const vertinfo *verts, 
     return bits-3;
 }
 
-static void invalidatemerges(cube &c)
+static void invalidatemerges(cube &c, bool invalidategeometry = true)
 {
     if(c.merged)
     {
@@ -1919,7 +1919,7 @@ static void invalidatemerges(cube &c)
     }
     if(c.ext)
     {
-        if(c.ext->va)
+        if(invalidategeometry && c.ext->va)
         {
             if(!(c.ext->va->hasmerges&(MERGE_PART | MERGE_ORIGIN))) return;
             destroyva(c.ext->va);
@@ -1927,7 +1927,7 @@ static void invalidatemerges(cube &c)
         }
         if(c.ext->tjoints >= 0) c.ext->tjoints = -1;
     }
-    if(c.children) loopi(8) invalidatemerges(c.children[i]);
+    if(c.children) loopi(8) invalidatemerges(c.children[i], invalidategeometry);
 }
 
 static int invalidatedmerges = 0;
@@ -1965,6 +1965,32 @@ void calcmerges(const ivec &origin, int size)
     enumeratekt(cpolys, cfkey, key, cfpolys, val,
     {
         mergepolys(key.orient, origin, key.n, key.offset, val.polys);
+    });
+    cpolys.clear();
+}
+
+int streamingmergesize(int size)
+{
+    return min(max(1 << maxmerge, 16), size);
+}
+
+void preparestreamingmerges(const ivec &origin, int size, int cursor)
+{
+    ASSERT(neighbourdepth < 0);
+    if(!cursor) invalidatemerges(lookupcube(origin, size), false);
+    const int step = streamingmergesize(size), rows = size / step;
+    const ivec region = ivec(origin).add(ivec(cursor % rows, (cursor / rows) % rows, cursor / (rows * rows)).mul(step));
+    ivec actualorigin;
+    int actualsize;
+    cube &c = lookupcube(region, -step, actualorigin, actualsize);
+    // Do not subdivide uniform coarse cubes merely to schedule merge work.
+    if(!c.children || actualsize != step) return;
+    genmergeprogress = 0;
+    cpolys.clear();
+    genmerges(c.children, region, step >> 1, false, false);
+    enumeratekt(cpolys, cfkey, key, cfpolys, val,
+    {
+        mergepolys(key.orient, region, key.n, key.offset, val.polys);
     });
     cpolys.clear();
 }

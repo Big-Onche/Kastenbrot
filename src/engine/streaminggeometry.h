@@ -21,9 +21,9 @@ struct streaminggeometryqueue
     vector<ivec> tiles;
     hashset<streaminggeometrykey> queued;
     hashtable<streaminggeometrykey, int> sections;
-    int cursor;
+    int cursor, mergecursor, mergesize;
 
-    streaminggeometryqueue() : cursor(0)
+    streaminggeometryqueue() : cursor(0), mergecursor(0), mergesize(0)
     {
     }
 
@@ -32,7 +32,7 @@ struct streaminggeometryqueue
         tiles.setsize(0);
         queued.clear();
         sections.clear();
-        cursor = 0;
+        cursor = mergecursor = mergesize = 0;
     }
 
     int length() const
@@ -43,7 +43,13 @@ struct streaminggeometryqueue
     void add(const ivec &origin, int sectionsize)
     {
         const streaminggeometrykey key(origin);
-        if(queued.access(key)) return;
+        if(queued.access(key))
+        {
+            // A border mount or edit can invalidate preparation of the front
+            // tile. Keep its queue position, but redo its merge regions.
+            if(tiles[cursor] == origin) mergecursor = 0;
+            return;
+        }
         queued.add(key);
         tiles.add(origin);
         const streaminggeometrykey section = ivec(origin).mask(~(sectionsize - 1));
@@ -57,6 +63,7 @@ struct streaminggeometryqueue
 
     ivec pop(int sectionsize)
     {
+        mergecursor = mergesize = 0;
         const streaminggeometrykey origin = tiles[cursor++], section = ivec(origin).mask(~(sectionsize - 1));
         queued.remove(origin);
         int *count = sections.access(section);

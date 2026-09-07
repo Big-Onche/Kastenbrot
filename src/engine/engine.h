@@ -253,6 +253,8 @@ extern int calcmergedsize(int orient, const ivec &co, int size, const vertinfo *
 extern void invalidatemerges(cube &c, const ivec &co, int size, bool msg);
 extern void calcmerges();
 extern void calcmerges(const ivec &origin, int size);
+extern int streamingmergesize(int size);
+extern void preparestreamingmerges(const ivec &origin, int size, int cursor);
 extern void resetworldvauploadstats();
 extern void getworldvauploadstats(int &bytes, int &vertices, bool includepending = false);
 extern void flushvbo(int type = -1);

@@ -31,6 +31,7 @@ static vector<ivec> fluidupdates;
 static int fluidupdatecursor = 0;
 static bool changingwatermaterial = false;
 VARP(fluidupdatespertick, 1, 1024, 16384);
+FVARP(fluidupdatebudget, 0.1f, 1.0f, 10.0f);
 VARP(simulationmaxdist, 1, 128, 1024);
 FVARP(waterflowspeed, 0.1f, 4.0f, 20.0f);
 static bool authoritativewatersettings = false;
@@ -617,11 +618,17 @@ static bool waterinsimulationrange(const ivec &position)
 
 void updatewatersimulation()
 {
+    ZoneScopedN("World/Water simulation");
+    if(fluidupdates.empty()) return;
+    const Uint64 start = SDL_GetPerformanceCounter(),
+                 allowance = Uint64(fluidupdatebudget * SDL_GetPerformanceFrequency() / 1000.0);
     const int updatebudget = authoritativewatersettings ? authoritativewaterupdates : fluidupdatespertick;
     int processed = 0, inspected = 0;
     const int inspectionlimit = min(fluidupdates.length(), max(updatebudget * 4, 256));
     while(fluidupdates.length() && processed < updatebudget && inspected < inspectionlimit)
     {
+        if(inspected && SDL_GetPerformanceCounter() - start >= allowance) break;
+        ++inspected;
         if(fluidupdatecursor >= fluidupdates.length()) fluidupdatecursor = 0;
         const ivec position = fluidupdates[fluidupdatecursor];
         fluidcell *cell = fluidcells.access(position);
@@ -633,16 +640,15 @@ void updatewatersimulation()
         if(cell->update > totalmillis || !waterinsimulationrange(position))
         {
             ++fluidupdatecursor;
-            ++inspected;
             continue;
         }
         cell->queued = false;
         fluidupdates.removeunordered(fluidupdatecursor);
         updatewatercell(position);
         ++processed;
-        ++inspected;
     }
-
+    TracyPlot("Water/Pending updates", int64_t(fluidupdates.length()));
+    TracyPlot("Water/Cells processed", int64_t(processed));
 }
 
 #define NUMCAUSTICS 32

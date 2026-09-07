@@ -116,6 +116,7 @@ namespace game
     static int localsupportlastdistance = -1;
     static int personaldrops = 0, droptimeout = 300, maxdrop = 1024, dynamicentsmaxdistance = 64, requireconfirmeditems = 1;
     VARP(supportdecaymillis, 10, 3000, 60000);
+    FVARP(supportupdatebudget, 0.1f, 1.0f, 10.0f);
     static void updateworlddrops();
     static void updatefallingblocks();
     static void queuefallblockcheck(const ivec &cell);
@@ -713,33 +714,58 @@ namespace game
             else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
             requestworldchunk(0, 0);
         }
-        environment::update();
+        {
+            ZoneScopedN("World/Environment");
+            environment::update();
+        }
 #endif
         updateworldchunks();
-        processnetworkedits();
-        physicsframe();
+        {
+            ZoneScopedN("World/Network edits");
+            processnetworkedits();
+        }
+        {
+            ZoneScopedN("World/Physics frame");
+            physicsframe();
+        }
 #ifndef STANDALONE
         updatenpcs();
 #endif
-        otherplayers();
+        {
+            ZoneScopedN("World/Other players");
+            otherplayers();
+        }
         if(player1 && (player1->state == CS_ALIVE || player1->state == CS_EDITING))
         {
+            ZoneScopedN("World/Player movement");
             crouchplayer(player1, 10, true);
             moveplayer(player1, 10, true);
             updateworldchunks();
         }
 #ifndef STANDALONE
         updatewatersimulation();
-        updatesurvivalbreaking();
-        updatefooduse();
+        {
+            ZoneScopedN("World/Player actions");
+            updatesurvivalbreaking();
+            updatefooduse();
+        }
         updateworlddrops();
         updatefallingblocks();
         updatesupportblocks();
-        updatefurnaces();
-        updatechests();
+        {
+            ZoneScopedN("World/Furnaces and chests");
+            updatefurnaces();
+            updatechests();
+        }
 #endif
-        gets2c();
-        c2sinfo();
+        {
+            ZoneScopedN("World/Receive network");
+            gets2c();
+        }
+        {
+            ZoneScopedN("World/Send network");
+            c2sinfo();
+        }
 #ifndef STANDALONE
         TracyPlot("Support/Queue size", int64_t(localsupportchecks.size()));
         TracyPlot("Support/Checks queued per frame", int64_t(localsupportchecksqueued));
@@ -2692,6 +2718,7 @@ namespace game
 
     static void updateworlddrops()
     {
+        ZoneScopedN("World/Drops");
         activatependinglocaldrops();
         if(!player1) return;
         const vec feet = absoluteplayerfeet(player1);
@@ -3123,6 +3150,18 @@ namespace game
     static std::deque<localsupportjob *> localsupportjobs;
     static bool localsupportstopping = false;
 
+    struct localsupportbatch
+    {
+        localsupportsnapshot snapshot;
+        localsupportjob jobs[64];
+        int count;
+
+        localsupportbatch() : count(0)
+        {
+        }
+    };
+    static localsupportbatch *localsupportbatchpending = NULL;
+
     static int runsupportworker(void *)
     {
 #ifdef TRACY_ENABLE
@@ -3140,8 +3179,6 @@ namespace game
             SDL_LockMutex(localsupportmutex);
             job->distance = distance;
             job->complete = true;
-            // The same condition serves the worker and main-thread waiter.
-            SDL_CondBroadcast(localsupportcondition);
         }
         SDL_UnlockMutex(localsupportmutex);
         return 0;
@@ -3158,6 +3195,10 @@ namespace game
             SDL_WaitThread(localsupportworker, NULL);
             localsupportworker = NULL;
         }
+        // Join before releasing graphs, including the one removed from the worker queue.
+        localsupportjobs.clear();
+        delete localsupportbatchpending;
+        localsupportbatchpending = NULL;
         if(localsupportcondition) SDL_DestroyCond(localsupportcondition);
         if(localsupportmutex) SDL_DestroyMutex(localsupportmutex);
         localsupportcondition = NULL;
@@ -3173,7 +3214,11 @@ namespace game
         if(localsupportmutex && localsupportcondition)
             localsupportworker = SDL_CreateThread(runsupportworker, "support worker", NULL);
         if(localsupportworker) return true;
-        cleanupsupportworker();
+        // The caller already owns a batch. Failure must not destroy its graphs.
+        if(localsupportcondition) SDL_DestroyCond(localsupportcondition);
+        if(localsupportmutex) SDL_DestroyMutex(localsupportmutex);
+        localsupportcondition = NULL;
+        localsupportmutex = NULL;
         return false;
     }
 
@@ -3191,13 +3236,33 @@ namespace game
         SDL_UnlockMutex(localsupportmutex);
     }
 
-    static void waitsupportjob(localsupportjob &job)
+    static bool supportbatchcomplete(const localsupportbatch &batch)
     {
-        ZoneScopedN("Support/Wait preparation");
-        if(!localsupportworker) return;
-        SDL_LockMutex(localsupportmutex);
-        while(!job.complete) SDL_CondWait(localsupportcondition, localsupportmutex);
-        SDL_UnlockMutex(localsupportmutex);
+        // Never wait for computation on the main thread. The worker publishes
+        // distance and complete together under this short-lived mutex.
+        if(localsupportworker) SDL_LockMutex(localsupportmutex);
+        bool complete = true;
+        loopi(batch.count) if(!batch.jobs[i].complete) complete = false;
+        if(localsupportworker) SDL_UnlockMutex(localsupportmutex);
+        return complete;
+    }
+
+    static bool supportbatchcurrent(const localsupportbatch &batch)
+    {
+        ZoneScopedN("Support/Validate worker snapshot");
+        // Verify every observed cell, including empty cells, anchors and unavailable
+        // neighbours. A newly placed support path must invalidate the result too.
+        // Validation and commits run together on the main thread, with no world edits
+        // between them. Workers only read the owned graphs, never this live octree.
+        for(const auto &entry : batch.snapshot)
+        {
+            int worldindex = -1;
+            const bool ready = localblockworldindex(entry.first, worldindex);
+            const localsupportsample &sample = entry.second;
+            if(ready != sample.ready || worldindex != sample.worldindex ||
+               getworldcubesupportdistance(worldindex) != sample.maxdistance) return false;
+        }
+        return true;
     }
 
     static void removelocalsupportcell(const ivec &cell)
@@ -3326,7 +3391,7 @@ namespace game
         return localsupportqueuedsections.count(origin) != 0;
     }
 
-    static void discoverlocalsupportblocks()
+    static void discoverlocalsupportblocks(Uint64 deadline)
     {
         ZoneScopedN("Support/Discover blocks");
         vec playerposition = player1->o;
@@ -3391,6 +3456,7 @@ namespace game
             const int scans = min(localsupportsectionchecks.length(), 8);
             loopi(scans)
             {
+                if(SDL_GetPerformanceCounter() >= deadline) break;
                 const ivec origin = localsupportsectionchecks.remove(0);
                 localsupportqueuedsections.erase(origin);
                 if(!localsupportsectioninrange(origin, playerposition, radiussquared)) continue;
@@ -3413,31 +3479,49 @@ namespace game
     {
         ZoneScopedN("World/Support blocks");
         if(waitforserveredit() || !islocalworld() || !player1) return;
-        discoverlocalsupportblocks();
+        const Uint64 start = SDL_GetPerformanceCounter(),
+                     allowance = Uint64(supportupdatebudget * SDL_GetPerformanceFrequency() / 1000.0), deadline = start + allowance;
+        discoverlocalsupportblocks(start + allowance / 4);
         {
             ZoneScopedN("Support/Drain queue");
             const int checks = int(std::min(localsupportchecks.size(), size_t(64)));
-            localsupportsnapshot snapshot;
-            // A bounded batch overlaps owned-graph solving with capture of the next graph.
-            // Commit stays in this frame, in FIFO order. Support commits do not modify world geometry;
-            // edits, streaming publication, and decay run outside this entire snapshot lifetime.
-            for(int cursor = 0; cursor < checks; cursor += 8)
+            int handled = 0;
+            while(handled < checks)
             {
-                localsupportjob jobs[8];
-                const int count = min(checks - cursor, 8);
+                if(handled && SDL_GetPerformanceCounter() >= deadline) break;
+                if(!localsupportbatchpending)
                 {
                     ZoneScopedN("Support/Capture batch");
+                    localsupportbatchpending = new localsupportbatch;
+                    localsupportbatch &batch = *localsupportbatchpending;
+                    const int count = min(checks - handled, 64);
                     loopi(count)
                     {
+                        // Admit at least one check so discovery cannot starve the queue.
+                        if(i && SDL_GetPerformanceCounter() >= deadline) break;
                         const ivec cell = localsupportchecks[i];
-                        jobs[i].inrange = localsupportinrange(cell);
-                        if(jobs[i].inrange) jobs[i].valid = preparelocalsupport(cell, snapshot, jobs[i]);
-                        submitsupportjob(jobs[i]);
+                        localsupportjob &job = batch.jobs[i];
+                        job.inrange = localsupportinrange(cell);
+                        if(job.inrange) job.valid = preparelocalsupport(cell, batch.snapshot, job);
+                        submitsupportjob(job);
+                        ++batch.count;
                     }
+                    TracyPlot("Support/Unique world samples", int64_t(batch.snapshot.size()));
+                    // Leave the queued cells and their maximum pending reach intact
+                    // until this batch completes, even across edits and frame boundaries.
+                    break;
                 }
-                loopi(count)
+                localsupportbatch &batch = *localsupportbatchpending;
+                if(!supportbatchcomplete(batch)) break;
+                if(!supportbatchcurrent(batch))
                 {
-                    waitsupportjob(jobs[i]);
+                    localsupportstale += batch.count;
+                    delete localsupportbatchpending;
+                    localsupportbatchpending = NULL;
+                    break;
+                }
+                loopi(batch.count)
+                {
                     localsupportcheck check;
                     {
                         ZoneScopedN("Support/Dequeue cell");
@@ -3448,15 +3532,18 @@ namespace game
                         // Pending reach may have grown during earlier commits in this batch.
                         localsupportpending.erase(pending);
                     }
-                    if(!jobs[i].inrange || !updatesupportcell(check, jobs[i]))
+                    if(!batch.jobs[i].inrange || !localsupportinrange(check.cell) || !updatesupportcell(check, batch.jobs[i]))
                     {
                         queuesupportcheck(check.cell, check.remaining);
                         continue;
                     }
                     ++localsupportprocessed;
                 }
+                handled += batch.count;
+                delete localsupportbatchpending;
+                localsupportbatchpending = NULL;
             }
-            TracyPlot("Support/Unique world samples", int64_t(snapshot.size()));
+            TracyPlot("Support/Pending worker checks", int64_t(localsupportbatchpending ? localsupportbatchpending->count : 0));
         }
         {
             ZoneScopedN("Support/Decay tick");
@@ -3558,6 +3645,7 @@ namespace game
 
     static void updatefallingblocks()
     {
+        ZoneScopedN("World/Falling blocks");
         for(int i = fallingblocks.length() - 1; i >= 0; --i)
         {
             fallingblock &block = *fallingblocks[i];

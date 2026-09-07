@@ -1628,7 +1628,7 @@ VARF(vatilesize, 16, 256, WORLD_SECTION_SIZE,
         conoutf("vatilesize rounded down to %d (octree tiles require a power of two)", size);
         vatilesize = size;
     }
-    static int previous = 128;
+    static int previous = 256;
     if(previous == vatilesize) return;
     previous = vatilesize;
     if(getworldsectionsize())

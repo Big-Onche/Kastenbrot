@@ -20,6 +20,47 @@ static inline void drawvaskytris(vtxarray *va)
     drawtris(va->sky, (ushort *)0 + va->skyoffset, va->minvert, va->maxvert);
 }
 
+// Depth and shadow passes have one shader state. Batch their visible ranges by
+// shared buffer page; CPU mesh-tile boundaries need not become GPU draw calls.
+static void drawdepthvas(vector<vtxarray *> &vas, bool sky = false, bool draw = true)
+{
+    if(vas.empty()) return;
+    static vector<int> order;
+    order.setsize(0);
+    loopv(vas) order.add(i);
+    std::sort(order.getbuf(), order.getbuf() + order.length(), [&vas](int left, int right)
+    {
+        const vtxarray *a = vas[left], *b = vas[right];
+        return a->vbuf < b->vbuf || (a->vbuf == b->vbuf && a->voffset < b->voffset);
+    });
+    static vector<GLsizei> counts;
+    static vector<const GLvoid *> offsets;
+    for(int start = 0; start < vas.length();)
+    {
+        vtxarray *first = vas[order[start]];
+        counts.setsize(0);
+        offsets.setsize(0);
+        int end = start;
+        do
+        {
+            vtxarray *va = vas[order[end++]];
+            counts.add(sky ? va->sky : 3 * va->tris);
+            offsets.add((ushort *)0 + (sky ? va->skyoffset : va->eoffset));
+        } while(end < vas.length() && vas[order[end]]->vbuf == first->vbuf);
+        gle::bindvbo(first->vbuf);
+        gle::bindebo(sky ? first->skybuf : first->ebuf);
+        const vertex *ptr = NULL;
+        gle::vertexpointer(sizeof(vertex), ptr->pos.v);
+        if(draw)
+        {
+            glMultiDrawElements_(GL_TRIANGLES, counts.getbuf(), GL_UNSIGNED_SHORT, offsets.getbuf(), counts.length());
+            ++glde;
+        }
+        start = end;
+    }
+    vas.setsize(0);
+}
+
 ///////// view frustrum culling ///////////////////////
 
 plane vfcP[5];  // perpindictular vectors to view frustrum bounding planes
@@ -31,6 +72,7 @@ vtxarray *visibleva = NULL;
 
 VARP(livecull, 0, 1, 1);
 VARP(oqgeommax, 64, 512, 2048);
+VARP(oqgeomtiles, 0, 0, 1);
 extern int oqgeom;
 
 static int visiblevas = 0, liveculledvas = 0, geomqueries = 0;
@@ -190,7 +232,7 @@ static inline bool applyvaquery(vtxarray &va, int result)
 
 static inline bool livecullva(vtxarray &va)
 {
-    if(va.oqcontent)
+    if(va.oqcontent || (!oqgeomtiles && va.parent && va.size < getworldsectionsize()))
     {
         va.query = NULL;
         clearvaocclusion(va);
@@ -1214,6 +1256,7 @@ void findspotshadowvas(vector<vtxarray *> &vas, bool transparent)
 
 void findshadowvas(bool transparent)
 {
+    ZoneScopedN("Render/Find shadow geometry");
     shadowtransparent = 0;
     shadowvas.setsize(0);
     switch(shadowmapping)
@@ -1228,45 +1271,28 @@ void findshadowvas(bool transparent)
 
 void rendershadowmapworld()
 {
+    ZoneScopedN("Render/Draw shadow geometry");
     SETSHADER(smworld);
 
     gle::enablevertex();
 
-    vtxarray *prev = NULL;
+    static vector<vtxarray *> depthvas;
+    depthvas.setsize(0);
     for(vtxarray *va = shadowva; va; va = va->rnext) if(va->tris && va->shadowmask&(1<<shadowside))
     {
-        if(!prev || va->vbuf != prev->vbuf)
-        {
-            gle::bindvbo(va->vbuf);
-            gle::bindebo(va->ebuf);
-            const vertex *ptr = 0;
-            gle::vertexpointer(sizeof(vertex), ptr->pos.v);
-        }
-
-        if(!smnodraw) drawvatris(va, 3*va->tris, 0);
+        depthvas.add(va);
         xtravertsva += va->verts;
-
-        prev = va;
     }
+    drawdepthvas(depthvas, false, !smnodraw);
 
     if(skyshadow)
     {
-        prev = NULL;
         for(vtxarray *va = shadowva; va; va = va->rnext) if(va->sky && va->shadowmask&(1<<shadowside))
         {
-            if(!prev || va->vbuf != prev->vbuf)
-            {
-                gle::bindvbo(va->vbuf);
-                gle::bindebo(va->skybuf);
-                const vertex *ptr = 0;
-                gle::vertexpointer(sizeof(vertex), ptr->pos.v);
-            }
-
-            if(!smnodraw) drawvaskytris(va);
+            depthvas.add(va);
             xtravertsva += va->sky/3;
-
-            prev = va;
         }
+        drawdepthvas(depthvas, true, !smnodraw);
     }
 
     gle::clearvbo();
@@ -1728,17 +1754,31 @@ static inline void updateshader(T &cur)
 
 static void renderbatch(renderstate &cur, int pass, geombatch &b)
 {
+    static vector<GLsizei> counts;
+    static vector<const GLvoid *> offsets;
+    counts.setsize(0);
+    offsets.setsize(0);
+    ushort minvert = USHRT_MAX, maxvert = 0;
     gbatches++;
     for(geombatch *curbatch = &b;; curbatch = &geombatches[curbatch->batch])
     {
         ushort len = curbatch->es.length;
         if(len)
         {
-            drawtris(len, (ushort *)0 + curbatch->va->eoffset + curbatch->offset, curbatch->es.minvert, curbatch->es.maxvert);
+            counts.add(len);
+            offsets.add((ushort *)0 + curbatch->va->eoffset + curbatch->offset);
+            minvert = min(minvert, curbatch->es.minvert);
+            maxvert = max(maxvert, curbatch->es.maxvert);
             vtris += len/3;
         }
         if(curbatch->batch < 0) break;
     }
+    if(counts.length() > 1)
+    {
+        glMultiDrawElements_(GL_TRIANGLES, counts.getbuf(), GL_UNSIGNED_SHORT, offsets.getbuf(), counts.length());
+        ++glde;
+    }
+    else if(counts.length()) drawtris(counts[0], offsets[0], minvert, maxvert);
 }
 
 static void resetbatches()
@@ -1918,10 +1958,11 @@ void rendergeom()
     int blends = 0;
     if(doOQ)
     {
-        static vector<vtxarray *> proxyqueries, groupqueries, leafqueries;
+        static vector<vtxarray *> proxyqueries, groupqueries, leafqueries, depthvas;
         proxyqueries.setsize(0);
         groupqueries.setsize(0);
         leafqueries.setsize(0);
+        depthvas.setsize(0);
 
         {
             ZoneScopedN("Render/G-buffer/World/Query preparation");
@@ -1964,12 +2005,12 @@ void rendergeom()
 
             for(vtxarray *va = visibleva; va; va = va->next) if(va->texs)
             {
-                if(va->oqcontent)
+                if(va->oqcontent || (!oqgeomtiles && va->parent && va->size < getworldsectionsize()))
                 {
                     va->query = NULL;
                     va->occluded = pvsoccluded(va->geommin, va->geommax) ? OCCLUDE_GEOM : OCCLUDE_NOTHING;
                     va->occludedframe = 0;
-                    if(va->occluded < OCCLUDE_GEOM) renderva(cur, va, RENDERPASS_Z);
+                    if(va->occluded < OCCLUDE_GEOM) depthvas.add(va);
                     continue;
                 }
                 if(!camera1->o.insidebb(va->o, va->size, 2))
@@ -2018,6 +2059,20 @@ void rendergeom()
 
                 renderva(cur, va, RENDERPASS_Z, true);
                 if(va->query) leafqueries.add(va);
+            }
+            if(!depthvas.empty())
+            {
+                if(cur.vquery) disablevquery(cur);
+                if(!cur.vattribs) enablevattribs(cur, false);
+                if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
+                if(cur.colormask) { cur.colormask = false; glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
+                nocolorshader->set();
+                loopv(depthvas) xtravertsva += depthvas[i]->verts;
+                drawdepthvas(depthvas);
+                // The helper binds pages directly; invalidate the cached binding.
+                cur.vbuf = 0;
+                gle::clearvbo();
+                gle::clearebo();
             }
         }
 

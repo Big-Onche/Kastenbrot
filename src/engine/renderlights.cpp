@@ -4875,19 +4875,37 @@ void rendershadowatlas()
 
 void workinoq()
 {
-    collectlights();
+    {
+        ZoneScopedN("Render/Collect lights");
+        collectlights();
+    }
 
     if(drawtex) return;
 
-    game::rendergame();
+    {
+        ZoneScopedN("Render/Game while queries pending");
+        game::rendergame();
+    }
 
     if(shouldworkinoq())
     {
         inoq = true;
 
-        if(csminoq && !debugshadowatlas) rendercsmshadowmaps();
-        if(sminoq && !debugshadowatlas) rendershadowmaps();
-        if(rhinoq) renderradiancehints();
+        if(csminoq && !debugshadowatlas)
+        {
+            ZoneScopedN("Render/Sun shadows");
+            rendercsmshadowmaps();
+        }
+        if(sminoq && !debugshadowatlas)
+        {
+            ZoneScopedN("Render/Local shadows");
+            rendershadowmaps();
+        }
+        if(rhinoq)
+        {
+            ZoneScopedN("Render/Radiance hints");
+            renderradiancehints();
+        }
 
         inoq = false;
     }

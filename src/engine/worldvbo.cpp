@@ -28,6 +28,13 @@ static vector<vtxarray *> vbovas[NUMVBO];
 static int vbosize[NUMVBO];
 static int worldvauploadbytes = 0, worldvauploadvertices = 0;
 
+// Keep one append-only page open across frame boundaries. Every stream rotates
+// together, preserving the renderer's vbuf -> index-buffer pairing invariant.
+static GLuint worldvbopage[NUMVBO] = { 0 };
+static int worldvbopageused[NUMVBO] = { 0 }, worldvbopageverts = 0;
+VAR(chunkvbopages, 0, 1, 1);
+static void releaseworldvbopage();
+
 // Poll retired allocations without waiting for their last draw. Unsignaled fences
 // never become writable merely because a fixed number of frames has elapsed.
 struct retiredworldvbo
@@ -71,6 +78,7 @@ static void discardretiredworldvbo(int index)
 
 void cleanupstreamingvbos()
 {
+    releaseworldvbopage();
     while(!retiredworldvbos.empty()) discardretiredworldvbo(retiredworldvbos.length() - 1);
     worldsyncinitialized = false;
     worldfencesync = NULL;
@@ -139,6 +147,126 @@ void destroyvbo(GLuint vbo)
         if(vbi.data) delete[] vbi.data;
         vbos.remove(vbo);
     }
+}
+
+static void releaseworldvbopage()
+{
+    loopi(NUMVBO)
+    {
+        if(worldvbopage[i]) destroyvbo(worldvbopage[i]);
+        worldvbopage[i] = 0;
+        worldvbopageused[i] = 0;
+    }
+    worldvbopageverts = 0;
+}
+
+static bool flushworldvbopage()
+{
+    if(!chunkvbopages || !getworldsectionsize())
+    {
+        releaseworldvbopage();
+        return false;
+    }
+    if(vbodata[VBO_VBUF].empty()) return false;
+    loopi(NUMVBO) if(vbosize[i] > (i == VBO_VBUF ? int(USHRT_MAX) + 1 : int(USHRT_MAX)))
+    {
+        // Oversized standalone VAs retain the original dedicated-buffer path.
+        releaseworldvbopage();
+        return false;
+    }
+    ZoneScopedN("Geometry/Pack streaming buffers");
+    // A single VA can exceed the preferred VBO size. Always fit that VA while
+    // retaining the engine's 16-bit vertex and index-offset limits.
+    const int vertexlimit = min(max(maxvbosize, vbosize[VBO_VBUF]), int(USHRT_MAX) + 1);
+    bool fits = worldvbopageverts >= vertexlimit;
+    loopi(NUMVBO) if(worldvbopageused[i] + vbosize[i] > (i == VBO_VBUF ? worldvbopageverts : int(USHRT_MAX))) fits = false;
+    if(!fits) releaseworldvbopage();
+    gle::disable();
+    if(!worldvbopage[VBO_VBUF])
+    {
+        worldvbopageverts = vertexlimit;
+        loopi(NUMVBO)
+        {
+            const int capacity = i == VBO_VBUF ? vertexlimit * int(sizeof(vertex)) : USHRT_MAX * int(sizeof(ushort));
+            GLuint buffer = initworldvbosync() ? acquireworldvbo(i, capacity) : 0;
+            const bool reused = buffer != 0;
+            if(!reused) glGenBuffers_(1, &buffer);
+            const GLenum target = i == VBO_VBUF ? GL_ARRAY_BUFFER : GL_ELEMENT_ARRAY_BUFFER;
+            glBindBuffer_(target, buffer);
+            if(!reused) glBufferData_(target, capacity, NULL, GL_DYNAMIC_DRAW);
+            glBindBuffer_(target, 0);
+            worldvbopage[i] = buffer;
+            vboinfo &vbi = vbos[buffer];
+            vbi.uses = 1; // The open page owns one reference, in addition to its VAs.
+            vbi.capacity = capacity;
+            vbi.type = i;
+            vbi.streaming = true;
+            vbi.data = NULL;
+        }
+    }
+    const int vertexbase = worldvbopageused[VBO_VBUF];
+    if(vertexbase)
+    {
+        loopi(NUMVBO) if(i != VBO_VBUF)
+        {
+            ushort *indices = (ushort *)vbodata[i].getbuf();
+            loopj(vbosize[i]) indices[j] += vertexbase;
+        }
+        loopv(vbovas[VBO_VBUF])
+        {
+            vtxarray &va = *vbovas[VBO_VBUF][i];
+            va.minvert += vertexbase;
+            va.maxvert += vertexbase;
+            const int texs = va.texs + va.blends + va.alphaback + va.alphafront + va.refract;
+            loopj(texs) if(va.texelems[j].length)
+            {
+                va.texelems[j].minvert += vertexbase;
+                va.texelems[j].maxvert += vertexbase;
+            }
+            loopj(va.decaltexs) if(va.decalelems[j].length)
+            {
+                va.decalelems[j].minvert += vertexbase;
+                va.decalelems[j].maxvert += vertexbase;
+            }
+        }
+    }
+    loopi(NUMVBO)
+    {
+        vector<uchar> &data = vbodata[i];
+        vector<vtxarray *> &vas = vbovas[i];
+        if(data.empty()) continue;
+        vboinfo &vbi = vbos[worldvbopage[i]];
+        if(!vbi.data) vbi.data = new uchar[vbi.capacity];
+        const int offset = worldvbopageused[i], byteoffset = offset * (i == VBO_VBUF ? int(sizeof(vertex)) : int(sizeof(ushort)));
+        const GLenum target = i == VBO_VBUF ? GL_ARRAY_BUFFER : GL_ELEMENT_ARRAY_BUFFER;
+        ASSERT(byteoffset + data.length() <= vbi.capacity);
+        memcpy(vbi.data + byteoffset, data.getbuf(), data.length());
+        glBindBuffer_(target, worldvbopage[i]);
+        // Only the unused tail is written. Previously published ranges and CPU
+        // pointers remain stable until the last owning VA releases the page.
+        glBufferSubData_(target, byteoffset, data.length(), data.getbuf());
+        glBindBuffer_(target, 0);
+        worldvauploadbytes += data.length();
+        if(i == VBO_VBUF) worldvauploadvertices += vbosize[i];
+        vbi.uses += vas.length();
+        loopvj(vas)
+        {
+            vtxarray &va = *vas[j];
+            switch(i)
+            {
+                case VBO_VBUF: va.vbuf = worldvbopage[i]; va.vdata = (vertex *)vbi.data; va.voffset += offset; break;
+                case VBO_EBUF: va.ebuf = worldvbopage[i]; va.edata = (ushort *)vbi.data; va.eoffset += offset; break;
+                case VBO_SKYBUF: va.skybuf = worldvbopage[i]; va.skydata = (ushort *)vbi.data; va.skyoffset += offset; break;
+                case VBO_DECALBUF: va.decalbuf = worldvbopage[i]; va.decaldata = (ushort *)vbi.data; va.decaloffset += offset; break;
+            }
+        }
+        worldvbopageused[i] += vbosize[i];
+        data.setsize(0);
+        vas.setsize(0);
+        vbosize[i] = 0;
+    }
+    TracyPlot("Chunks/Open buffer page vertices", int64_t(worldvbopageused[VBO_VBUF]));
+    return true;
 }
 
 void genvbo(int type, uchar *buf, int len, vtxarray **vas, int numva)
@@ -210,6 +338,7 @@ void flushvbo(int type)
 {
     if(type < 0)
     {
+        if(flushworldvbopage()) return;
         loopi(NUMVBO) flushvbo(i);
         return;
     }

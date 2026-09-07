@@ -1791,6 +1791,7 @@ namespace game
 
     static void tryspawnlocalaggressivenpc()
     {
+        ZoneScopedN("NPC/Aggressive spawn");
         if(!m_survival || editmode || !player1 || player1->state != CS_ALIVE || lastmillis - lastnpcspawnattempt < npcspawnmillis) return;
         lastnpcspawnattempt = lastmillis;
         const int simulationdistanceblocks = getnpcsimulationmaxdist(), cap = simulationdistanceblocks / 2;
@@ -1903,6 +1904,7 @@ namespace game
 
     static void tryspawnlocalpassivenpcs()
     {
+        ZoneScopedN("NPC/Passive spawn scan");
         if(!m_survival || editmode || !player1 || player1->state != CS_ALIVE ||
            lastmillis - lastpassivenpcscan < 250) return;
         lastpassivenpcscan = lastmillis;
@@ -1963,6 +1965,7 @@ namespace game
 
     void updatenpcs()
     {
+        ZoneScopedN("World/NPCs");
         if(waitforserveredit())
         {
             bool removedlocal = false;

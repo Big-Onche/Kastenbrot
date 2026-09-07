@@ -624,9 +624,9 @@ static void readystreamingtile(cube &c)
             c.ext->va = NULL;
         }
         c.ext->tjoints = -1;
-        brightencube(c);
     }
-    c.merged = 0;
+    // Merge preparation has already produced the new surfaces. Keep them while
+    // replacing the old render arrays, which stayed visible throughout preparation.
     if(c.children) loopi(8) readystreamingtile(c.children[i]);
 }
 
@@ -654,29 +654,47 @@ int processstreaminggeometry(double budget, int uploadlimit)
     {
         int bytes, vertices;
         getworldvauploadstats(bytes, vertices, true);
-        if(budget >= 0 && ((completed && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget) ||
-                          bytes >= uploadlimit)) break;
-        const ivec origin = streaminggeometry.pop(sectionsize);
-        ++completed;
+        if(budget >= 0 && ((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget || bytes >= uploadlimit)) break;
+        const ivec origin = streaminggeometry.tiles[streaminggeometry.cursor];
         // Unmounted, cancelled, or no-render work is discarded without splitting
         // empty runtime space. No pointer in the queue outlives a section move.
-        if(!worldsectionvaenabled(origin, sectionsize)) continue;
+        if(!worldsectionvaenabled(origin, sectionsize))
+        {
+            streaminggeometry.pop(sectionsize);
+            continue;
+        }
         ivec actualorigin;
         int actualsize;
         cube &existing = lookupcube(origin, -vatilesize, actualorigin, actualsize);
-        if(!existing.children && isempty(existing) && existing.material == MAT_AIR && !existing.ext) continue;
+        if(!existing.children && isempty(existing) && existing.material == MAT_AIR && !existing.ext)
+        {
+            streaminggeometry.pop(sectionsize);
+            continue;
+        }
+        const int mergesize = streamingmergesize(vatilesize), mergerows = vatilesize / mergesize,
+                  mergeregions = mergerows * mergerows * mergerows;
+        if(streaminggeometry.mergesize != mergesize)
+        {
+            streaminggeometry.mergesize = mergesize;
+            streaminggeometry.mergecursor = 0;
+        }
+        if(streaminggeometry.mergecursor < mergeregions)
+        {
+            ZoneScopedN("Geometry/Prepare merge region");
+            preparestreamingmerges(origin, vatilesize, streaminggeometry.mergecursor++);
+            // Check the same budget before another region or the final VA build.
+            continue;
+        }
+        streaminggeometry.pop(sectionsize);
         cube &c = lookupcube(origin, vatilesize);
         {
             ZoneScopedN("Geometry/Invalidate mesh tile");
             readystreamingtile(c);
         }
         const int firstva = valist.length();
-        {
-            ZoneScopedN("Geometry/Merge mesh tile");
-            calcmerges(origin, vatilesize);
-        }
         buildstreamingtile(origin);
         setupmaterials(firstva);
+        ++completed;
     }
     if(completed)
     {
@@ -738,6 +756,8 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
     ivec dirtymin, dirtymax;
     if(!dirtygeometrybounds(bbmin, bbmax, dirtymin, dirtymax)) return;
+    // Explicit edits also invalidate any merge snapshot carried from a prior frame.
+    streaminggeometry.mergecursor = 0;
     invalidatelocalambient(bbmin, bbmax);
     {
         ZoneScopedN("Geometry/Invalidate changed region");
