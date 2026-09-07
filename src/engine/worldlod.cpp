@@ -1441,7 +1441,9 @@ static void updateworldlods(int chunkx, int chunky, bool force)
                 worldlodcache[cacheindex].lastused = totalmillis;
                 worldlodcache[cacheindex].active = true;
                 const int chunkindex = findworldchunk(selection.x, selection.y);
-                if(worldchunks.inrange(chunkindex) && !worldlodselectionrequiresvoxel(selection) && worldchunkmounted(worldchunks[chunkindex]))
+                // Surface LODs cannot replace requested cave geometry.
+                if(worldchunks.inrange(chunkindex) && !worldlodselectionrequiresvoxel(selection) &&
+                   !worldchunkneedsinterior(worldchunks[chunkindex]) && worldchunkmounted(worldchunks[chunkindex]))
                     unmountworldchunk(worldchunks[chunkindex]);
             }
             else missing++;

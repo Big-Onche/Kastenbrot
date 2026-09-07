@@ -140,7 +140,7 @@ struct worldchunk
     vector<uchar> acoustics;
     uint mountedtiles[WORLD_SECTION_LAYERS];
     uint contentknown[WORLD_SECTION_LAYERS], contenttiles[WORLD_SECTION_LAYERS], opaqueknown[WORLD_SECTION_LAYERS], opaquetiles[WORLD_SECTION_LAYERS],
-         portalsknown[WORLD_SECTION_LAYERS], visibletiles[WORLD_SECTION_LAYERS];
+         portalsknown[WORLD_SECTION_LAYERS], visibletiles[WORLD_SECTION_LAYERS], traversedtiles[WORLD_SECTION_LAYERS];
     uchar portals[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT],
           reachablefaces[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
@@ -165,6 +165,7 @@ struct worldchunk
         memclear(portalcellmasks);
         memclear(reachablefaces);
         memclear(visibletiles);
+        memclear(traversedtiles);
         memclear(varesidency);
         loopi(WORLD_SECTION_LAYERS) varesidencydirtytiles[i] = (1U << WORLD_SECTION_TILES) - 1;
     }

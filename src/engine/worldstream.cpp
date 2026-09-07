@@ -105,6 +105,7 @@ static bool worldsectionvisibilitydirty = true;
 static int worldsectionvisibilitychunkx = INT_MIN, worldsectionvisibilitychunky = INT_MIN,
            worldsectionvisibilitymaxdist = -1;
 static ivec worldsectionvisibilityfocus(INT_MIN, INT_MIN, INT_MIN);
+static ivec worldsectionvisibilitycell(INT_MIN, INT_MIN, INT_MIN);
 static int worldvaevictionsframe = 0, worldvanorenderskipsframe = 0;
 static int worldvaresidentcounts[WORLD_VA_GEOMETRY_COUNT], worldvapendingbuildcount = 0, worldvapendinguploadcount = 0;
 
@@ -423,6 +424,7 @@ void clearworldchunks()
     worldsectionvisibilitychunkx = worldsectionvisibilitychunky = INT_MIN;
     worldsectionvisibilitymaxdist = -1;
     worldsectionvisibilityfocus = ivec(INT_MIN, INT_MIN, INT_MIN);
+    worldsectionvisibilitycell = ivec(INT_MIN, INT_MIN, INT_MIN);
     loopv(worldchunks) if(worldchunks[i].root && worldchunks[i].root != worldroot)
     {
         ZoneScopedN("Chunks/Free chunk during clear");
@@ -954,6 +956,25 @@ void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax)
     if(visibilitychanged) invalidateworldsectionvisibility();
 }
 
+static void readyworldsectioncollision(cube &c)
+{
+    if(c.children) loopi(8) readyworldsectioncollision(c.children[i]);
+    // Detached/generated leaves have no renderer face classification yet.
+    // Enable collision conservatively until meshing computes exact visibility.
+    // This needs no neighbour queries or geometry uploads on the mount path.
+    else if(!isempty(c)) c.visible = 0x80 | 0x3F;
+}
+
+static bool worldchunkneedsinterior(const worldchunk &chunk)
+{
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+    {
+        const int state = chunk.varesidency[section][tile].state[WORLD_VA_INTERIOR];
+        if(state == PENDING_BUILD || state == PENDING_UPLOAD || state == RESIDENT) return true;
+    }
+    return false;
+}
+
 static bool mountworldchunktile(worldchunk &chunk, int section, int tile)
 {
     const uint tilebit = 1U << tile;
@@ -981,6 +1002,8 @@ static bool mountworldchunktile(worldchunk &chunk, int section, int tile)
     moveworldcube(lookupworldchunkcube(chunk, pos, WORLD_SECTION_SIZE),
                   lookupcube(runtimepos, WORLD_SECTION_SIZE));
     restoreworldwatersources(lookupcube(runtimepos, WORLD_SECTION_SIZE), runtimepos, WORLD_SECTION_SIZE);
+    readyworldsectioncollision(lookupcube(runtimepos, WORLD_SECTION_SIZE));
+    resetclipplanes();
     worldsectionowners[key] = worldsectionowner(chunk.x, chunk.y, section, tile);
     chunk.mountedtiles[section] |= tilebit;
     return true;

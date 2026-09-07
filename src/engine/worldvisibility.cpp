@@ -414,7 +414,17 @@ static bool worldsectionfacesoverlap(int chunkindex, int tile, int section, int 
 static void markworldsectionvisible(worldchunk &chunk, int tile, int section)
 {
     const uint tilebit = 1U << tile;
-    if(!worldchunksectionhascontent(chunk, tile, section) || chunk.visibletiles[section] & tilebit) return;
+    if(!worldchunksectionhascontent(chunk, tile, section)) return;
+    chunk.traversedtiles[section] |= tilebit;
+    // A reachable air face can expose a formerly buried solid section, including
+    // across chunk boundaries where generation/edit classification is local.
+    uchar &flags = chunk.renderdata.flags[section][tile];
+    if(flags&SECTION_NO_RENDER)
+    {
+        flags = (flags & ~SECTION_NO_RENDER) | SECTION_INTERIOR;
+        dirtyworldchunkvaresidency(chunk, tile, section);
+    }
+    if(chunk.visibletiles[section] & tilebit) return;
     chunk.visibletiles[section] |= tilebit;
     dirtyworldchunkvaresidency(chunk, tile, section);
 }
@@ -455,14 +465,18 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     }
 
     const vec *focus = camera1 ? &camera1->o : player ? &player->o : NULL;
-    ivec focussection(INT_MIN, INT_MIN, INT_MIN);
+    ivec focussection(INT_MIN, INT_MIN, INT_MIN), focuscell(INT_MIN, INT_MIN, INT_MIN);
     if(focus)
+    {
         focussection = ivec(int(floorf(focus->x / WORLD_SECTION_SIZE)), int(floorf(focus->y / WORLD_SECTION_SIZE)),
                             clamp(int(floorf(focus->z / WORLD_SECTION_SIZE)), 0, int(WORLD_SECTION_LAYERS) - 1));
+        focuscell = ivec(int(floorf(focus->x / WORLD_BLOCK_SIZE)), int(floorf(focus->y / WORLD_BLOCK_SIZE)),
+                         int(floorf(focus->z / WORLD_BLOCK_SIZE)));
+    }
     bool focuschanged = focussection != worldsectionvisibilityfocus,
          rebuild = worldsectionvisibilitydirty || chunkx != worldsectionvisibilitychunkx || chunky != worldsectionvisibilitychunky ||
                    maxchunkdist != worldsectionvisibilitymaxdist || focuschanged;
-    const bool seed = rebuild || !worldsectionvisibilityadditions.empty();
+    const bool seed = rebuild || !worldsectionvisibilityadditions.empty() || focuscell != worldsectionvisibilitycell;
     if(!seed && worldsectionvisibilitycursor >= worldsectionvisibilityqueue.length()) return;
 
     ZoneScopedN("Chunks/Update dirty section visibility");
@@ -475,13 +489,11 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
         rebuildworldchunkindices();
         loopv(worldchunks)
         {
-            loopj(WORLD_SECTION_LAYERS) if(worldchunks[i].visibletiles[j])
-            {
-                worldchunks[i].varesidencydirtytiles[j] |= worldchunks[i].visibletiles[j];
-                worldchunks[i].varesidencydirty = true;
-            }
             memclear(worldchunks[i].reachablefaces);
-            memclear(worldchunks[i].visibletiles);
+            // Publish additions immediately, but retain the previous visible set
+            // until the budgeted traversal completes. Edits must not cancel
+            // distant pending builds just because their nodes are still queued.
+            memclear(worldchunks[i].traversedtiles);
         }
 
         // Without a camera (during bootstrap), use outside air as a conservative
@@ -551,6 +563,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     worldsectionvisibilitychunky = chunky;
     worldsectionvisibilitymaxdist = maxchunkdist;
     worldsectionvisibilityfocus = focussection;
+    worldsectionvisibilitycell = focuscell;
 
     // Store absolute chunk coordinates, never vector indices: cache pruning and
     // job cancellation can swap chunk slots while this traversal is suspended.
@@ -575,7 +588,22 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
                                                         neighborsection) ? 1<<(i^1) : 0);
         }
     }
-    if(worldsectionvisibilitycursor == queue.length()) resetworldsectionvisibilityqueue();
+    if(worldsectionvisibilitycursor == queue.length())
+    {
+        loopv(worldchunks)
+        {
+            worldchunk &chunk = worldchunks[i];
+            loopj(WORLD_SECTION_LAYERS)
+            {
+                const uint changed = chunk.visibletiles[j] ^ chunk.traversedtiles[j];
+                if(!changed) continue;
+                chunk.visibletiles[j] = chunk.traversedtiles[j];
+                chunk.varesidencydirtytiles[j] |= changed;
+                chunk.varesidencydirty = true;
+            }
+        }
+        resetworldsectionvisibilityqueue();
+    }
     else if(worldsectionvisibilitycursor >= 4096 && worldsectionvisibilitycursor >= queue.length() / 2)
     {
         queue.remove(0, worldsectionvisibilitycursor);
@@ -610,7 +638,15 @@ static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int ti
     int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
     ivec bbmin = ivec(worldchunkorigin(chunk)).add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE)),
          bbmax = ivec(bbmin).add(WORLD_SECTION_SIZE);
-    return focus->dist_to_bb(bbmin, bbmax) <= residentrange;
+    // Residency is invalidated at section crossings. Measure from the entire
+    // focus section so movement within it cannot expose an unrequested border.
+    const ivec focusmin(int(floorf(focus->x / WORLD_SECTION_SIZE)) * WORLD_SECTION_SIZE,
+                         int(floorf(focus->y / WORLD_SECTION_SIZE)) * WORLD_SECTION_SIZE,
+                         int(floorf(focus->z / WORLD_SECTION_SIZE)) * WORLD_SECTION_SIZE);
+    const vec nearest(clamp(float(bbmin.x), float(focusmin.x), float(focusmin.x + WORLD_SECTION_SIZE)),
+                       clamp(float(bbmin.y), float(focusmin.y), float(focusmin.y + WORLD_SECTION_SIZE)),
+                       clamp(float(bbmin.z), float(focusmin.z), float(focusmin.z + WORLD_SECTION_SIZE)));
+    return nearest.dist_to_bb(bbmin, bbmax) <= residentrange;
 }
 
 static int worldchunksectiongeometrymask(const worldchunk &chunk, int tile, int section)
@@ -677,17 +713,18 @@ static int worldplayersectionrenderflags(bool &nearentrance)
 static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section, int available, bool requiresvoxel, bool cavemode,
                                        bool entrancemode, const ivec &playersection, const vec *viewfocus, float residentrange)
 {
-    if(!requiresvoxel || !available) return 0;
+    if(!available) return 0;
+    // Heightfield LODs replace the exterior only; they contain no cave walls.
+    if(!requiresvoxel) available &= 1 << WORLD_VA_INTERIOR;
     if(drawfullchunk) return available;
     const bool nearplayer = (cavemode || entrancemode) &&
                             worldchunksectionnearplayer(chunk, tile, section, chunkinteriorradius, playersection);
-    if(cavemode) return nearplayer ? available & (1 << WORLD_VA_INTERIOR) : 0;
-
     int wanted = 0;
     const uint tilebit = 1U << tile;
     if((chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section, viewfocus, residentrange))
-        wanted |= available & (1 << WORLD_VA_EXTERIOR);
-    if(entrancemode && nearplayer) wanted |= available & (1 << WORLD_VA_INTERIOR);
+        wanted |= available;
+    // The local radius is a prefetch margin, never a cutoff for reachable caves.
+    if(nearplayer) wanted |= available & (1 << WORLD_VA_INTERIOR);
     return wanted;
 }
 
