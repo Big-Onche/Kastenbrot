@@ -2062,19 +2062,36 @@ static shadowmapinfo *addshadowmap(ushort x, ushort y, int size, int &idx, int l
 
 #define CSM_MAXSPLITS 8
 
-VARF(csmmaxsize, 256, 2048, 4096, cleanupcsm());
-VARF(csmsplits, 1, 8, CSM_MAXSPLITS, { cleardeferredlightshaders(); cleanupcsm(); });
+VARFP(csmmaxsize, 256, 2048, 4096, cleanupcsm());
+VARFP(csmsplits, 1, 4, CSM_MAXSPLITS, { cleardeferredlightshaders(); cleanupcsm(); });
 FVAR(csmsplitweight, 0, 0.75f, 1);
 VARF(csmshadowmap, 0, 1, 1, { cleardeferredlightshaders(); cleanupcsm(); });
 VAR(csmnearplane, 1, 1, 16);
-VAR(csmfarplane, 64, 3072, 16384);
+VARP(csmfarplane, 64, 2048, 16384);
 FVAR(csmtransition, 0, 0.1f, 0.3f);
 FVAR(csmcastermargin, 0, 1024, 16384);
 FVAR(csmconstantbias, 0, 2, 4);
 FVAR(csmslopebias, 0, 1, 4);
 FVAR(csmnormalbias, 0, 0.4f, 4);
 VAR(csmcull, 0, 1, 1);
+VAR(csmpcf, 0, 1, 2);
 VAR(debugcsm, 0, 0, 3);
+
+VAR(csmpcss, 0, 1, 1);
+VAR(csmpcssquality, 0, 1, 2);
+VAR(csmpcssblockers, 1, 12, 32);
+VAR(csmpcsssamples, 1, 16, 64);
+FVAR(csmpcssdist, 0, 512, 16384);
+FVAR(csmpcssfade, 0.01f, 0.25f, 1);
+FVAR(csmpcssminradius, 0, 0, 128);
+FVAR(csmpcssmaxradius, 0, 64, 128);
+FVAR(csmpcsssoftness, 0, 0.8f, 16);
+FVAR(csmpcsscascadescale, 0, 0.5f, 1);
+
+static int csmpcsskernelcap()
+{
+    return csmpcssquality == 0 ? 6 : (csmpcssquality == 1 ? 12 : 20);
+}
 
 struct cascadedshadowmap
 {
@@ -2090,10 +2107,10 @@ struct cascadedshadowmap
     matrix4 model;
     splitinfo splits[CSM_MAXSPLITS];
     vec lightview;
-    GLuint depthtex, colortex, fbo;
+    GLuint depthtex, colortex, fbo, depthsampler;
     int size, layers, rendered;
 
-    cascadedshadowmap() : depthtex(0), colortex(0), fbo(0), size(0), layers(0), rendered(0)
+    cascadedshadowmap() : depthtex(0), colortex(0), fbo(0), depthsampler(0), size(0), layers(0), rendered(0)
     {
     }
 
@@ -2109,6 +2126,8 @@ void cascadedshadowmap::cleanup()
     if(depthtex) glDeleteTextures(1, &depthtex);
     if(colortex) glDeleteTextures(1, &colortex);
     if(fbo) glDeleteFramebuffers_(1, &fbo);
+    if(depthsampler) glDeleteSamplers_(1, &depthsampler);
+    depthsampler = 0;
     depthtex = colortex = fbo = 0;
     size = layers = rendered = 0;
 }
@@ -2134,20 +2153,19 @@ void cascadedshadowmap::setup()
         glBindTexture(GL_TEXTURE_2D_ARRAY, depthtex);
         GLenum depthformat = smdepthprec > 1 ? GL_DEPTH_COMPONENT32 : (smdepthprec ? GL_DEPTH_COMPONENT24 : GL_DEPTH_COMPONENT16);
         glTexImage3D_(GL_TEXTURE_2D_ARRAY, 0, depthformat, size, size, layers, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, smfilter ? GL_LINEAR : GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, smfilter ? GL_LINEAR : GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 
-        // Colored transmission uses matching layers and the same PCF footprint as depth.
+        // RGB stores transmission; 16-bit alpha stores the nearest transmitting caster's depth for PCSS.
         if(smalpha && alphashadow)
         {
             glGenTextures(1, &colortex);
             glBindTexture(GL_TEXTURE_2D_ARRAY, colortex);
-            GLenum colorformat = smalphaprec > 1 ? GL_RGB10 : (smalphaprec ? GL_RGB5 : GL_R3_G3_B2);
-            glTexImage3D_(GL_TEXTURE_2D_ARRAY, 0, colorformat, size, size, layers, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+            glTexImage3D_(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA16, size, size, layers, 0, GL_RGBA, GL_UNSIGNED_SHORT, NULL);
             glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -2162,6 +2180,16 @@ void cascadedshadowmap::setup()
         glReadBuffer(GL_NONE);
         if(glCheckFramebufferStatus_(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             fatal("Failed allocating cascaded sun shadow texture array");
+    }
+
+    if(csmpcss && !depthsampler && glGenSamplers_ && glDeleteSamplers_ && glBindSampler_ && glSamplerParameteri_)
+    {
+        glGenSamplers_(1, &depthsampler);
+        glSamplerParameteri_(depthsampler, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glSamplerParameteri_(depthsampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glSamplerParameteri_(depthsampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glSamplerParameteri_(depthsampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glSamplerParameteri_(depthsampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
 
     model = viewmatrix;
@@ -2204,9 +2232,9 @@ void cascadedshadowmap::setup()
         model.transformnormal(relativecenter, lightcenter);
 
         // The sphere of the eight corners is rotation invariant. Quantization and a fixed
-        // PCF/snap guard keep its world texel size constant during translation and rotation.
+        // Filter/snap guard keep its world texel size constant during translation and rotation.
         const float extent = ceilf(radius*16)/16;
-        const int border = 3 + int(ceilf(csmnormalbias));
+        const int border = (csmpcss && depthsampler ? csmpcsskernelcap()+1 : 3) + int(ceilf(csmnormalbias));
         split.texelsize = 2*extent/(size - 2*border);
         const float halfsize = size*split.texelsize/2;
         lightcenter.x = float(floor((originx + lightcenter.x)/split.texelsize + 0.5)*split.texelsize - originx);
@@ -2259,6 +2287,11 @@ void cascadedshadowmap::bindparams()
     GLOBALPARAM(csmmatrix, matrix3(model));
     GLOBALPARAM(csmviewdir, camdir);
     GLOBALPARAMF(csmbiasparams, csmconstantbias, csmnormalbias, 1.0f/size, debugcsm == 3 ? 0 : debugcsm);
+    GLOBALPARAMF(csmpcfparams, csmpcf);
+    GLOBALPARAMF(csmpcssparams, csmpcss && depthsampler && drawtex != DRAWTEX_MINIMAP ? tanf(csmpcsssoftness*RAD) : 0,
+                 min(csmpcssminradius, csmpcssmaxradius), csmpcssmaxradius, csmpcsskernelcap());
+    GLOBALPARAMF(csmpcssdistance, csmpcssdist, 1.0f/max(csmpcssdist*csmpcssfade, 1e-4f), csmpcsscascadescale);
+    GLOBALPARAMF(csmpcsscounts, min(csmpcssblockers, 8<<csmpcssquality), min(csmpcsssamples, csmpcssquality == 2 ? 64 : 12<<csmpcssquality));
     static GlobalShaderParam csmtransform("csmtransform"), csmdepth("csmdepth"), csmdistances("csmdistances");
     vec4 *transform = csmtransform.reserve<vec4>(csmsplits), *depth = csmdepth.reserve<vec4>(csmsplits);
     vec2 *distances = csmdistances.reserve<vec2>(csmsplits);
@@ -2991,6 +3024,15 @@ static void bindlighttexs(int msaapass = 0, bool transparent = false)
     if(usesmcomparemode()) setsmcomparemode(); else setsmnoncomparemode();
     glActiveTexture_(GL_TEXTURE12);
     glBindTexture(GL_TEXTURE_2D_ARRAY, csm.depthtex);
+    if(glBindSampler_)
+    {
+        glActiveTexture_(GL_TEXTURE13);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, csm.depthtex);
+        glBindSampler_(13, csm.depthsampler);
+        glActiveTexture_(GL_TEXTURE14);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, csm.colortex);
+        glBindSampler_(14, csm.depthsampler);
+    }
     if(ao)
     {
         glActiveTexture_(GL_TEXTURE5);
@@ -3406,6 +3448,11 @@ void renderlights(float bsx1 = -1, float bsy1 = -1, float bsx2 = 1, float bsy2 =
     else if(avatar && !stencilmask) glDisable(GL_STENCIL_TEST);
 
     glDisable(GL_BLEND);
+    if(glBindSampler_)
+    {
+        glBindSampler_(13, 0);
+        glBindSampler_(14, 0);
+    }
 
     if(!depthtestlights) glEnable(GL_DEPTH_TEST);
     else
@@ -4436,6 +4483,7 @@ void renderradiancehints()
 
 void setupshadowtransparent()
 {
+    GLOBALPARAMF(smtransdepth, shadowmapping == SM_CASCADE ? 1 : 0);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glClearColor(1, 1, 1, 1);
 
@@ -4443,10 +4491,12 @@ void setupshadowtransparent()
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+    if(shadowmapping == SM_CASCADE) glBlendEquationSeparate_(GL_FUNC_ADD, GL_MIN);
 }
 
 void cleanupshadowtransparent()
 {
+    if(shadowmapping == SM_CASCADE) glBlendEquationSeparate_(GL_FUNC_ADD, GL_FUNC_ADD);
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
 

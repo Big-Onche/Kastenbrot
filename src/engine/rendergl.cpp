@@ -28,6 +28,10 @@ PFNGLGENFRAMEBUFFERSPROC            glGenFramebuffers_            = NULL;
 PFNGLFRAMEBUFFERTEXTURE2DPROC       glFramebufferTexture2D_       = NULL;
 PFNGLFRAMEBUFFERTEXTURE3DPROC       glFramebufferTexture3D_       = NULL;
 PFNGLFRAMEBUFFERTEXTURELAYERPROC    glFramebufferTextureLayer_    = NULL;
+PFNGLGENSAMPLERSPROC               glGenSamplers_                = NULL;
+PFNGLDELETESAMPLERSPROC            glDeleteSamplers_             = NULL;
+PFNGLBINDSAMPLERPROC               glBindSampler_                = NULL;
+PFNGLSAMPLERPARAMETERIPROC         glSamplerParameteri_          = NULL;
 PFNGLFRAMEBUFFERRENDERBUFFERPROC    glFramebufferRenderbuffer_    = NULL;
 PFNGLGENERATEMIPMAPPROC             glGenerateMipmap_             = NULL;
 
@@ -790,6 +794,14 @@ void gl_checkextensions()
         useubo = 1;
         hasUBO = true;
         if(glversion < 310 && dbgexts) conoutf(CON_INIT, "Using GL_ARB_uniform_buffer_object extension.");
+    }
+
+    if(glversion >= 330 || hasext("GL_ARB_sampler_objects"))
+    {
+        glGenSamplers_ = (PFNGLGENSAMPLERSPROC)getprocaddress("glGenSamplers");
+        glDeleteSamplers_ = (PFNGLDELETESAMPLERSPROC)getprocaddress("glDeleteSamplers");
+        glBindSampler_ = (PFNGLBINDSAMPLERPROC)getprocaddress("glBindSampler");
+        glSamplerParameteri_ = (PFNGLSAMPLERPARAMETERIPROC)getprocaddress("glSamplerParameteri");
     }
 
     if(glversion >= 310 || hasext("GL_ARB_texture_rectangle"))
