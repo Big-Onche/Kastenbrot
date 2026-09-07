@@ -905,38 +905,29 @@ static bool uploadlocalambientgpu(localambientjob &job)
     return rebuildlocalambientgpu(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation, &job);
 }
 
-static bool shiftlocalambientcpufield(vector<uchar> &field, const ivec &dimensions, const ivec &shift)
+template<class T>
+static bool shiftlocalambientcpufield(vector<T> &field, vector<T> &scratch, const ivec &dimensions, const ivec &shift)
 {
     const int cells = dimensions.x * dimensions.y * dimensions.z;
     if(field.length() != cells) return false;
-    localambientscrollscratch.setsize(0);
-    uchar *shifted = localambientscrollscratch.pad(cells);
-    loop(z, dimensions.z) loop(y, dimensions.y) loop(x, dimensions.x)
+    scratch.setsize(0);
+    T *shifted = scratch.pad(cells);
+    const int first = max(-shift.x, 0), last = min(dimensions.x - shift.x, dimensions.x), count = last - first;
+    // Copy the overlapping part of each row in bulk, extending the boundary cells
+    // into newly exposed columns exactly as the previous per-cell clamp did.
+    loop(z, dimensions.z) loop(y, dimensions.y)
     {
-        int sourcex = x + shift.x, sourcey = y + shift.y, sourcez = z + shift.z;
-        sourcex = clamp(sourcex, 0, dimensions.x - 1);
-        sourcey = clamp(sourcey, 0, dimensions.y - 1);
-        sourcez = clamp(sourcez, 0, dimensions.z - 1);
-        shifted[localambientindex(dimensions, x, y, z)] = field[localambientindex(dimensions, sourcex, sourcey, sourcez)];
+        const int sourcey = clamp(y + shift.y, 0, dimensions.y - 1), sourcez = clamp(z + shift.z, 0, dimensions.z - 1);
+        const T *source = field.getbuf() + localambientindex(dimensions, 0, sourcey, sourcez);
+        T *destination = shifted + localambientindex(dimensions, 0, y, z);
+        memcpy(destination + first, source + first + shift.x, count * sizeof(T));
+        loop(x, first) destination[x] = source[0];
+        for(int x = last; x < dimensions.x; x++) destination[x] = source[dimensions.x - 1];
     }
-    memcpy(field.getbuf(), shifted, cells);
-    return true;
-}
-
-static bool shiftlocalambientcpualbedo(const ivec &dimensions, const ivec &shift)
-{
-    const int cells = dimensions.x * dimensions.y * dimensions.z;
-    if(localambientalbedofield.length() != cells) return false;
-    localambientalbedoscrollscratch.setsize(0);
-    bvec4 *shifted = localambientalbedoscrollscratch.pad(cells);
-    loop(z, dimensions.z) loop(y, dimensions.y) loop(x, dimensions.x)
-    {
-        const int sourcex = clamp(x + shift.x, 0, dimensions.x - 1), sourcey = clamp(y + shift.y, 0, dimensions.y - 1),
-                  sourcez = clamp(z + shift.z, 0, dimensions.z - 1);
-        shifted[localambientindex(dimensions, x, y, z)] =
-            localambientalbedofield[localambientindex(dimensions, sourcex, sourcey, sourcez)];
-    }
-    memcpy(localambientalbedofield.getbuf(), shifted, cells * sizeof(bvec4));
+    // vector::move swaps storage when the destination is empty, retaining both
+    // allocations for the next scroll without copying the entire volume back.
+    field.setsize(0);
+    field.move(scratch);
     return true;
 }
 
@@ -971,8 +962,11 @@ static bool scrolllocalambientgpufield(const ivec &origin)
        abs(shift.z) >= localambientfielddimensions.z) return false;
 
     ZoneScopedN("LocalAmbient/GPU scroll");
-    if(!shiftlocalambientcpufield(localambientsolidfield, localambientfielddimensions, shift)) return false;
-    if(!shiftlocalambientcpualbedo(localambientfielddimensions, shift)) return false;
+    {
+        ZoneScopedN("LocalAmbient/CPU scroll");
+        if(!shiftlocalambientcpufield(localambientsolidfield, localambientscrollscratch, localambientfielddimensions, shift)) return false;
+        if(!shiftlocalambientcpufield(localambientalbedofield, localambientalbedoscrollscratch, localambientfielddimensions, shift)) return false;
+    }
 
     nextlocalambientserial();
     buildlocalambientscrollregions(shift, localambientfielddimensions);
