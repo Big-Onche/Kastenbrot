@@ -653,7 +653,7 @@ int processstreaminggeometry(double budget, int uploadlimit)
     while(streaminggeometry.length())
     {
         int bytes, vertices;
-        getworldvauploadstats(bytes, vertices);
+        getworldvauploadstats(bytes, vertices, true);
         if(budget >= 0 && ((completed && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget) ||
                           bytes >= uploadlimit)) break;
         const ivec origin = streaminggeometry.pop(sectionsize);
@@ -680,6 +680,9 @@ int processstreaminggeometry(double budget, int uploadlimit)
     }
     if(completed)
     {
+        // Batch small tiles without retaining staging VA pointers across frames.
+        // Admission above counts both uploaded and staged bytes against the cap.
+        flushvbo();
         // Global housekeeping runs once per slice, never once per section/tile.
         resetclipplanes();
         clearshadowcache();

@@ -102,10 +102,15 @@ void resetworldvauploadstats()
     worldvauploadbytes = worldvauploadvertices = 0;
 }
 
-void getworldvauploadstats(int &bytes, int &vertices)
+void getworldvauploadstats(int &bytes, int &vertices, bool includepending)
 {
     bytes = worldvauploadbytes;
     vertices = worldvauploadvertices;
+    if(includepending)
+    {
+        loopi(NUMVBO) bytes += vbodata[i].length();
+        vertices += vbosize[VBO_VBUF];
+    }
 }
 
 void destroyvbo(GLuint vbo)
@@ -201,7 +206,7 @@ void genvbo(int type, uchar *buf, int len, vtxarray **vas, int numva)
     }
 }
 
-void flushvbo(int type = -1)
+void flushvbo(int type)
 {
     if(type < 0)
     {

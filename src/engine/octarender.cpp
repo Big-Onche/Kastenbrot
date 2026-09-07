@@ -1,6 +1,7 @@
 // octarender.cpp: fill vertex arrays with different cube surfaces.
 
 #include "engine.h"
+#include "worldruntime.h"
 
 #define OCTARENDER_MODULE_IMPLEMENTATION
 #include "worldvbo.cpp"
@@ -1518,8 +1519,9 @@ int updateva(cube *c, const ivec &co, int size, int csi, int worldsectionsize, i
                         child->parent = c[i].ext->va;
                     }
                     varoot.add(c[i].ext->va);
-                    // Mesh tiles are independently replaceable allocations.
-                    if(worldsectionsize && size == maxvasize) flushvbo();
+                    // Share buffers within a section during full rebuilds. Tile
+                    // replacement releases only its references to shared buffers.
+                    if(worldsectionsize && size == worldsectionsize) flushvbo();
                     if(vamergemax > size)
                     {
                         cmergemax = max(cmergemax, vamergemax);
@@ -1615,7 +1617,28 @@ void findtjoints()
     edgegroups.clear();
 }
 
-VAR(vatilesize, 16, 128, 512);
+VARF(vatilesize, 16, 256, WORLD_SECTION_SIZE,
+{
+    // Tile origins, merge boundaries and octree lookup all require powers of
+    // two. A tile must also fit inside its independently resident section.
+    int size = 16;
+    while(size <= vatilesize / 2) size *= 2;
+    if(size != vatilesize)
+    {
+        conoutf("vatilesize rounded down to %d (octree tiles require a power of two)", size);
+        vatilesize = size;
+    }
+    static int previous = 128;
+    if(previous == vatilesize) return;
+    previous = vatilesize;
+    if(getworldsectionsize())
+    {
+        // Recompute merge ownership as well as VAs. allchanged() discards work
+        // queued with the old alignment and rebuilds all enabled sections.
+        calcmerges();
+        allchanged();
+    }
+});
 
 void octarender()
 {
@@ -1682,7 +1705,9 @@ void buildstreamingtile(const ivec &origin)
     recalcprogress = 0;
     updateva(c, co, size, csi, sectionsize, max(vafacemax, 8192), vatilesize, &origin, &maximum, 1);
     neighbourdepth = entdepth = -1;
-    if(varoot.length() > firstroot)
+    // At section size updateva() already created the section's root VA. Trying
+    // to wrap it using section.ext->va would make it its own parent and child.
+    if(vatilesize < sectionsize && varoot.length() > firstroot)
     {
         const ivec sectionorigin = ivec(origin).mask(~(sectionsize - 1));
         cube &section = lookupcube(sectionorigin, sectionsize);
@@ -1713,7 +1738,7 @@ void buildstreamingtile(const ivec &origin)
         if(newgroup) varoot.add(group);
         invalidatevabb(group);
     }
-    flushvbo();
+    // The streaming slice flushes all completed tiles together before rendering.
     loadprogress = 0;
     visibleva = NULL;
 }
