@@ -429,6 +429,22 @@ static void markworldsectionvisible(worldchunk &chunk, int tile, int section)
     dirtyworldchunkvaresidency(chunk, tile, section);
 }
 
+static uchar worldsectionoutwardfaces(const worldchunk &chunk, int tile, int section)
+{
+    if(worldsectionvisibilityfocus.x == INT_MIN) return 0x3F;
+    const ivec origin = ivec(worldchunkorigin(chunk)).div(WORLD_SECTION_SIZE).add(
+        ivec(tile % WORLD_SECTION_COLUMNS, tile / WORLD_SECTION_COLUMNS, section));
+    uchar faces = 0x3F;
+    // A straight sightline never crosses an axis back toward the camera's
+    // section. Connectivity through a U-turn is not potential visibility.
+    loopi(3)
+    {
+        if(origin[i] < worldsectionvisibilityfocus[i]) faces &= ~(1 << (2*i + 1));
+        else if(origin[i] > worldsectionvisibilityfocus[i]) faces &= ~(1 << (2*i));
+    }
+    return faces;
+}
+
 static void revealworldsection(vector<worldsectionnode> &queue, int chunkindex, int tile, int section, uchar entrances)
 {
     worldchunk &chunk = worldchunks[chunkindex];
@@ -436,6 +452,7 @@ static void revealworldsection(vector<worldsectionnode> &queue, int chunkindex, 
     const uchar *portals = worldchunksectionportals(chunk, tile, section);
     uchar exits = 0;
     loopi(WORLD_SECTION_FACE_COUNT) if(entrances & (1<<i)) exits |= portals[i];
+    exits &= worldsectionoutwardfaces(chunk, tile, section);
     exits &= ~chunk.reachablefaces[section][tile];
     if(!exits) return;
     chunk.reachablefaces[section][tile] |= exits;
@@ -486,6 +503,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     if(rebuild)
     {
         resetworldsectionvisibilityqueue();
+        worldsectionvisibilityfocus = focussection;
         rebuildworldchunkindices();
         loopv(worldchunks)
         {
@@ -630,6 +648,49 @@ static int worldchunksectionviewclass(const worldchunk &chunk, int tile, int sec
     return isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) < VFC_FOGGED ? 1 : 0;
 }
 
+static bool worldsectionviewchanged()
+{
+    extern plane vfcP[5];
+    extern float vfcDfog;
+    static plane previous[5];
+    static float previousfog = 0;
+    static bool previousvalid = false;
+    const bool valid = camera1 && viewfrustumvalid();
+    const bool changed = valid != previousvalid || (valid && (memcmp(previous, vfcP, sizeof(previous)) || previousfog != vfcDfog));
+    if(valid)
+    {
+        memcpy(previous, vfcP, sizeof(previous));
+        previousfog = vfcDfog;
+    }
+    previousvalid = valid;
+    return changed;
+}
+
+static bool worldchunksectioninteriorvisible(const worldchunk &chunk, int tile, int section, const ivec &playersection)
+{
+    // Keep only the immediate mining/movement neighbourhood unconditionally.
+    // Distant interiors need both a portal path and a view/prefetch intersection.
+    if(worldchunksectionnearplayer(chunk, tile, section, min(chunkinteriorradius, int(WORLD_SECTION_PREFETCH_MARGIN)), playersection))
+        return true;
+    return (chunk.visibletiles[section] & (1U << tile)) && worldchunksectionviewclass(chunk, tile, section) > 0;
+}
+
+bool worldsectionvavisible(const ivec &origin, int size)
+{
+    if(size != WORLD_SECTION_SIZE || worldchunks.empty() || drawfullchunk) return true;
+    const worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdatekey(origin));
+    if(!owner) return false;
+    const int index = findworldchunk(owner->chunkx, owner->chunky);
+    if(!worldchunks.inrange(index)) return false;
+    const worldchunk &chunk = worldchunks[index];
+    if(chunk.renderdata.flags[owner->section][owner->tile] & (SECTION_EXTERIOR | SECTION_WATER)) return true;
+    const vec *focus = player ? &player->o : camera1 ? &camera1->o : NULL;
+    if(!focus) return true;
+    const ivec playersection(int(floorf(focus->x / WORLD_SECTION_SIZE)), int(floorf(focus->y / WORLD_SECTION_SIZE)),
+                             int(floorf(focus->z / WORLD_SECTION_SIZE)));
+    return worldchunksectioninteriorvisible(chunk, owner->tile, owner->section, playersection);
+}
+
 extern int csmfarplane;
 
 static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int tile, int section, const vec *focus, float residentrange)
@@ -710,21 +771,20 @@ static int worldplayersectionrenderflags(bool &nearentrance)
     return flags;
 }
 
-static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section, int available, bool requiresvoxel, bool cavemode,
-                                       bool entrancemode, const ivec &playersection, const vec *viewfocus, float residentrange)
+static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section, int available, bool requiresvoxel,
+                                       const ivec &playersection, const vec *viewfocus, float residentrange)
 {
     if(!available) return 0;
     // Heightfield LODs replace the exterior only; they contain no cave walls.
     if(!requiresvoxel) available &= 1 << WORLD_VA_INTERIOR;
     if(drawfullchunk) return available;
-    const bool nearplayer = (cavemode || entrancemode) &&
-                            worldchunksectionnearplayer(chunk, tile, section, chunkinteriorradius, playersection);
     int wanted = 0;
     const uint tilebit = 1U << tile;
-    if((chunk.visibletiles[section] & tilebit) && worldchunksectionwithinresidentrange(chunk, tile, section, viewfocus, residentrange))
-        wanted |= available;
-    // The local radius is a prefetch margin, never a cutoff for reachable caves.
-    if(nearplayer) wanted |= available & (1 << WORLD_VA_INTERIOR);
+    if(worldchunksectionwithinresidentrange(chunk, tile, section, viewfocus, residentrange))
+    {
+        if(chunk.visibletiles[section] & tilebit) wanted |= available & (1 << WORLD_VA_EXTERIOR);
+        if(worldchunksectioninteriorvisible(chunk, tile, section, playersection)) wanted |= available & (1 << WORLD_VA_INTERIOR);
+    }
     return wanted;
 }
 
@@ -748,6 +808,7 @@ static void updateworldsectionresidencywanted()
     const int playerflags = worldplayersectionrenderflags(entrancemode);
     const bool cavemode = (playerflags&SECTION_INTERIOR) && !(playerflags&(SECTION_EXTERIOR | SECTION_WATER));
     const int residentrange = int(ceilf(max(calcfogcull(), float(csmfarplane))));
+    const bool viewchanged = worldsectionviewchanged();
     const bool globaldirty = !initialized || viewsection != lastviewsection || playersection != lastplayersection || cavemode != lastcavemode ||
                              entrancemode != lastentrancemode || maxchunkdist != lastmaxchunkdist ||
                              chunkinteriorradius != lastinteriorradius || residentrange != lastresidentrange || drawfullchunk != lastdrawfullchunk;
@@ -772,6 +833,13 @@ static void updateworldsectionresidencywanted()
             dirtyallworldchunkvaresidency(chunk);
         }
         if(globaldirty) dirtyallworldchunkvaresidency(chunk);
+        else if(viewchanged) loopj(WORLD_SECTION_LAYERS) if(chunk.visibletiles[j])
+        {
+            // Re-evaluate reachable candidates on turns, FOV/fog changes and
+            // movement within a section. Do not restart the portal traversal.
+            chunk.varesidencydirtytiles[j] |= chunk.visibletiles[j];
+            chunk.varesidencydirty = true;
+        }
         if(chunk.varesidencydirty) anydirty = true;
     }
     TracyPlot("Chunks/Residency update required", int64_t(anydirty ? 1 : 0));
@@ -807,8 +875,8 @@ static void updateworldsectionresidencywanted()
                     continue;
                 }
                 const int available = worldchunksectiongeometrymask(chunk, tile, section),
-                          wanted = worldchunksectionwantedmask(chunk, tile, section, available, chunk.varesidencylod != 0, cavemode,
-                                                              entrancemode, playersection, viewfocus, float(residentrange));
+                          wanted = worldchunksectionwantedmask(chunk, tile, section, available, chunk.varesidencylod != 0,
+                                                              playersection, viewfocus, float(residentrange));
                 loopk(WORLD_VA_GEOMETRY_COUNT)
                 {
                     const bool requested = (wanted & (1 << k)) != 0;

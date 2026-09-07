@@ -223,6 +223,7 @@ extern float worldplayercavefactor();
 extern bool sampleworldsolid(const ivec &position, int &leafbottom);
 extern void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid, bvec4 *albedo);
 extern bool worldsectionvaenabled(const ivec &origin, int size);
+extern bool worldsectionvavisible(const ivec &origin, int size);
 extern bool isworldleafcube(const cube &c);
 extern int getmippedtexture(const cube &p, int orient);
 extern void forcemip(cube &c, bool fixtex = true);

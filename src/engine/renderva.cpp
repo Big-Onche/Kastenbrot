@@ -285,6 +285,11 @@ static inline void findvisiblevas(vector<vtxarray *> &vas)
     {
         vtxarray &v = *vas[i];
         int prevvfc = v.curvfc;
+        if(!worldsectionvavisible(v.o, v.size))
+        {
+            v.curvfc = VFC_NOT_VISIBLE;
+            continue;
+        }
         v.curvfc = fullvis ? VFC_FULL_VISIBLE :
                    !v.bbdirty && v.bbmin.x >= 0 ? isvisiblebb(v.bbmin, ivec(v.bbmax).sub(v.bbmin)) : isvisiblecube(v.o, v.size);
         if(v.curvfc != VFC_NOT_VISIBLE)
