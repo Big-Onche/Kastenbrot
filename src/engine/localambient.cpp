@@ -112,6 +112,8 @@ static GLuint localambientoccupancytexture = 0, localambientalbedotexture = 0, l
 static ivec localambientgputexturedimensions(0, 0, 0);
 static int localambientgpufinaltexture = 0, localambientgifinaltexture = 0;
 static bool localambientgpuinitialized = false, localambientgpuavailable = false, localambientgpuready = false;
+static bool localambientgpupending = false;
+static int localambientpendingattenuation = 0, localambientpendingdownwardattenuation = 0;
 static bool localambientgpuwarning = false;
 static localambientdispatchcomputeproc localambientDispatchCompute = NULL;
 static localambientbindimagetextureproc localambientBindImageTexture = NULL;
@@ -225,6 +227,7 @@ void resetlocalambient()
     localambientscrollscratch.setsize(0);
     localambientalbedoscrollscratch.setsize(0);
     localambientgpuready = false;
+    localambientgpupending = false;
     localambientfieldready = false;
     localambientbootstrap = false;
     localambientdesiredvalid = false;
@@ -681,6 +684,7 @@ static void deletelocalambientgputextures()
     localambientgputexturedimensions = ivec(0, 0, 0);
     localambientgpufinaltexture = localambientgifinaltexture = 0;
     localambientgpuready = false;
+    localambientgpupending = false;
 }
 
 static bool ensurelocalambientgputextures(const ivec &dimensions)
@@ -749,8 +753,8 @@ static bool copylocalambientjobfields(const localambientjob &job)
     return true;
 }
 
-static bool rebuildlocalambientgpu(const ivec &origin, const ivec &dimensions, int resolution, int attenuation, int downwardattenuation,
-                                   const localambientjob *uploadjob = NULL, bool uploadoccupancy = true)
+static bool queuelocalambientgpu(const ivec &origin, const ivec &dimensions, int resolution, int attenuation, int downwardattenuation,
+                                 const localambientjob *uploadjob = NULL, bool uploadoccupancy = true)
 {
     if(!initlocalambientgpu()) return false;
     const int cells = dimensions.x * dimensions.y * dimensions.z;
@@ -761,7 +765,6 @@ static bool rebuildlocalambientgpu(const ivec &origin, const ivec &dimensions, i
                                sameivec(dimensions, localambientgputexturedimensions);
     if(!ensurelocalambientgputextures(dimensions)) return false;
 
-    const Uint64 start = SDL_GetPerformanceCounter();
     if(uploadoccupancy)
     {
         ZoneScopedN("LocalAmbient/Occupancy upload");
@@ -783,6 +786,27 @@ static bool rebuildlocalambientgpu(const ivec &origin, const ivec &dimensions, i
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glBindTexture(GL_TEXTURE_3D, 0);
     }
+
+    // A scroll and its completed capture can both upload during one update. Accumulate
+    // those changes before dispatching: only the final occupancy is ever rendered.
+    localambientfieldorigin = origin;
+    localambientfielddimensions = dimensions;
+    localambientfieldresolution = resolution;
+    localambientfieldready = true;
+    localambientpendingattenuation = attenuation;
+    localambientpendingdownwardattenuation = downwardattenuation;
+    localambientgpupending = true;
+    return true;
+}
+
+static void propagatelocalambientgpu()
+{
+    if(!localambientgpupending) return;
+    localambientgpupending = false;
+    const ivec dimensions = localambientfielddimensions;
+    const int attenuation = localambientpendingattenuation, downwardattenuation = localambientpendingdownwardattenuation,
+              cells = dimensions.x * dimensions.y * dimensions.z;
+    const Uint64 start = SDL_GetPerformanceCounter();
 
     {
         ZoneScopedN("LocalAmbient/GPU seed");
@@ -879,30 +903,26 @@ static bool rebuildlocalambientgpu(const ivec &origin, const ivec &dimensions, i
     glUseProgram_(0);
 
     localambientgpuready = true;
-    localambientfieldorigin = origin;
-    localambientfielddimensions = dimensions;
-    localambientfieldresolution = resolution;
-    localambientfieldready = true;
     localambientbootstrap = false;
 
     const double milliseconds = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
     const double gimilliseconds = (SDL_GetPerformanceCounter() - gistart) * 1000.0 / SDL_GetPerformanceFrequency();
     (void)milliseconds;
     (void)gimilliseconds;
+    (void)cells;
     TracyPlot("LocalAmbient/GPU passes", int64_t(passes));
     TracyPlot("LocalAmbient/GPU cells per rebuild", int64_t(cells));
     TracyPlot("LocalAmbient/GPU dispatch milliseconds", milliseconds);
     TracyPlot("LocalAmbient/GI passes", int64_t(localambientgi ? localambientgipasses : 0));
     TracyPlot("LocalAmbient/GI cells", int64_t(localambientgi ? cells : 0));
-    TracyPlot("LocalAmbient/GI GPU milliseconds", gimilliseconds);
+    TracyPlot("LocalAmbient/GI dispatch milliseconds", gimilliseconds);
     localambientgirebuild = false;
-    return true;
 }
 
 static bool uploadlocalambientgpu(localambientjob &job)
 {
     if(!copylocalambientjobfields(job)) return false;
-    return rebuildlocalambientgpu(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation, &job);
+    return queuelocalambientgpu(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation, &job);
 }
 
 template<class T>
@@ -974,8 +994,8 @@ static bool scrolllocalambientgpufield(const ivec &origin)
     // Re-upload the shifted CPU fields instead of recycling propagation textures as
     // image-store destinations. The latter can leave the sampled volume registered
     // to the previous origin on some drivers, displacing occupancy by one scroll step.
-    if(!rebuildlocalambientgpu(origin, localambientfielddimensions, localambientfieldresolution, localambientattenuation,
-                               downwardattenuation)) return false;
+    if(!queuelocalambientgpu(origin, localambientfielddimensions, localambientfieldresolution, localambientattenuation,
+                             downwardattenuation)) return false;
 
     int refreshcells = 0;
     loopi(localambientscrollregioncount)
@@ -1027,9 +1047,9 @@ void updatelocalambient()
 
     if(localambientgirebuild && localambientfieldready && !localambientupdatebusy() && !localambientdirty)
     {
-        if(rebuildlocalambientgpu(localambientfieldorigin, localambientfielddimensions, localambientfieldresolution,
-                                  localambientattenuation,
-                                  max(int(ceilf(localambientattenuation * (1.0f - 0.75f * localambientverticalbias))), 1), NULL, false))
+        if(queuelocalambientgpu(localambientfieldorigin, localambientfielddimensions, localambientfieldresolution,
+                                localambientattenuation,
+                                max(int(ceilf(localambientattenuation * (1.0f - 0.75f * localambientverticalbias))), 1), NULL, false))
             localambientgirebuild = false;
         else marklocalambientfull();
     }
@@ -1058,6 +1078,9 @@ void updatelocalambient()
         }
         delete job;
     }
+
+    // Finish before any draw can sample the volume or use its updated origin.
+    propagatelocalambientgpu();
 }
 
 void bindlocalambient()

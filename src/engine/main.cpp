@@ -782,8 +782,19 @@ void restorevsync()
 {
     if(initing || !glcontext) return;
     extern int vsync, vsynctear;
-    if(!SDL_GL_SetSwapInterval(vsync ? (vsynctear ? -1 : 1) : 0))
-        curvsync = vsync;
+    int interval = vsync ? (vsynctear ? -1 : 1) : 0;
+    int result = SDL_GL_SetSwapInterval(interval);
+    // Adaptive vsync is optional. A failed request must not silently leave vsync disabled.
+    if(result < 0 && interval < 0)
+    {
+        interval = 1;
+        result = SDL_GL_SetSwapInterval(interval);
+    }
+    if(result < 0) conoutf(CON_ERROR, "Could not set swap interval %d: %s", interval, SDL_GetError());
+    int actual = SDL_GL_GetSwapInterval();
+    curvsync = actual != 0;
+    logoutf("video: requested swap interval %d, active %d", interval, actual);
+    TracyPlot("Video/Swap interval", int64_t(actual));
 }
 
 VARFP(vsync, 0, 0, 1, restorevsync());
@@ -1149,8 +1160,15 @@ void checkinput()
 void swapbuffers(bool overlay)
 {
     //recorder::capture(overlay);
-    gle::disable();
-    SDL_GL_SwapWindow(screen);
+    {
+        ZoneScopedN("Present/Vertex state cleanup");
+        gle::disable();
+    }
+    {
+        // This includes driver/GPU/display waits; it is not CPU rendering time.
+        ZoneScopedN("Present/SDL swap (includes wait)");
+        SDL_GL_SwapWindow(screen);
+    }
 }
 
 VARP(menufps, 0, 60, 1000);
@@ -1174,7 +1192,8 @@ void limitfps(int &millis, int curmillis)
         if(delay > 0)
         {
             SDL_Delay(delay);
-            millis += delay;
+            // SDL_Delay may oversleep. Do not carry an invented timestamp into the next frame's limiter.
+            millis = getclockmillis();
         }
     }
 }
