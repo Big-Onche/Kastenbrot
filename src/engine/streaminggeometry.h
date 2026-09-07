@@ -61,6 +61,14 @@ struct streaminggeometryqueue
         return sections.access(streaminggeometrykey(origin)) != NULL;
     }
 
+    void invalidate(const ivec &minimum, const ivec &maximum)
+    {
+        if(!length()) return;
+        const ivec &origin = tiles[cursor];
+        loopi(3) if(origin[i] >= maximum[i] + 1 || origin[i] + vatilesize <= minimum[i] - 1) return;
+        mergecursor = 0;
+    }
+
     ivec pop(int sectionsize)
     {
         mergecursor = mergesize = 0;

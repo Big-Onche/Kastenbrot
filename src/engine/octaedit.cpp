@@ -567,12 +567,13 @@ void tryedit()
 //////////// ready changes to vertex arrays ////////////
 
 static bool haschanged = false;
-static streaminggeometryqueue streaminggeometry;
+static streaminggeometryqueue streaminggeometry, editinggeometry;
 
 void resetgeometrychanges()
 {
     haschanged = false;
     streaminggeometry.clear();
+    editinggeometry.clear();
 }
 
 static bool dirtygeometrybounds(const ivec &bbmin, const ivec &bbmax, ivec &dirtymin, ivec &dirtymax)
@@ -632,35 +633,37 @@ static void readystreamingtile(cube &c)
 
 bool streaminggeometrypending(const ivec &sectionorigin)
 {
-    return streaminggeometry.pending(sectionorigin);
+    return editinggeometry.pending(sectionorigin) || streaminggeometry.pending(sectionorigin);
 }
 
-int processstreaminggeometry(double budget, int uploadlimit)
+int processstreaminggeometry(double budget, int uploadlimit, bool editsonly)
 {
-    if(!streaminggeometry.length() || budget == 0) return 0;
+    if((!editinggeometry.length() && (editsonly || !streaminggeometry.length())) || budget == 0) return 0;
     ZoneScopedN("Geometry/Stream mesh tiles");
     const Uint64 start = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
     const int sectionsize = getworldsectionsize();
     if(!sectionsize)
     {
         streaminggeometry.clear();
+        editinggeometry.clear();
         return 0;
     }
     int completed = 0;
     entitiesinoctanodes();
     const bool wasinbetween = inbetweenframes;
     inbetweenframes = false;
-    while(streaminggeometry.length())
+    while(editinggeometry.length() || (!editsonly && streaminggeometry.length()))
     {
+        streaminggeometryqueue &queue = editinggeometry.length() ? editinggeometry : streaminggeometry;
         int bytes, vertices;
         getworldvauploadstats(bytes, vertices, true);
         if(budget >= 0 && ((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget || bytes >= uploadlimit)) break;
-        const ivec origin = streaminggeometry.tiles[streaminggeometry.cursor];
+        const ivec origin = queue.tiles[queue.cursor];
         // Unmounted, cancelled, or no-render work is discarded without splitting
         // empty runtime space. No pointer in the queue outlives a section move.
         if(!worldsectionvaenabled(origin, sectionsize))
         {
-            streaminggeometry.pop(sectionsize);
+            queue.pop(sectionsize);
             continue;
         }
         ivec actualorigin;
@@ -668,24 +671,24 @@ int processstreaminggeometry(double budget, int uploadlimit)
         cube &existing = lookupcube(origin, -vatilesize, actualorigin, actualsize);
         if(!existing.children && isempty(existing) && existing.material == MAT_AIR && !existing.ext)
         {
-            streaminggeometry.pop(sectionsize);
+            queue.pop(sectionsize);
             continue;
         }
         const int mergesize = streamingmergesize(vatilesize), mergerows = vatilesize / mergesize,
                   mergeregions = mergerows * mergerows * mergerows;
-        if(streaminggeometry.mergesize != mergesize)
+        if(queue.mergesize != mergesize)
         {
-            streaminggeometry.mergesize = mergesize;
-            streaminggeometry.mergecursor = 0;
+            queue.mergesize = mergesize;
+            queue.mergecursor = 0;
         }
-        if(streaminggeometry.mergecursor < mergeregions)
+        if(queue.mergecursor < mergeregions)
         {
             ZoneScopedN("Geometry/Prepare merge region");
-            preparestreamingmerges(origin, vatilesize, streaminggeometry.mergecursor++);
+            preparestreamingmerges(origin, vatilesize, queue.mergecursor++);
             // Check the same budget before another region or the final VA build.
             continue;
         }
-        streaminggeometry.pop(sectionsize);
+        queue.pop(sectionsize);
         cube &c = lookupcube(origin, vatilesize);
         {
             ZoneScopedN("Geometry/Invalidate mesh tile");
@@ -708,6 +711,7 @@ int processstreaminggeometry(double budget, int uploadlimit)
     }
     inbetweenframes = wasinbetween;
     TracyPlot("Chunks/Pending mesh tiles", int64_t(streaminggeometry.length()));
+    TracyPlot("Chunks/Pending edited mesh tiles", int64_t(editinggeometry.length()));
     TracyPlot("Chunks/Completed mesh tiles", int64_t(completed));
     TracyPlot("Chunks/Mesh slice milliseconds", double((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency));
     return completed;
@@ -719,8 +723,8 @@ void commitchanges(bool force)
     ZoneScopedN("Geometry/Commit changes");
     haschanged = false;
 
-    // Explicit edits retain their synchronous semantics. Ordinary streaming is
-    // serviced only by processstreaminggeometry(), once per streaming frame.
+    // Only fixed-map edits and explicitly forced renderer refreshes reach this
+    // full traversal. Streamed-world edits use the prioritized tile queue.
     processstreaminggeometry(-1, INT_MAX);
     int oldlen = valist.length();
     {
@@ -752,10 +756,47 @@ void commitchanges(bool force)
     resetgeometrychanges();
 }
 
+static void readyeditcollision(const ivec &bbmin, const ivec &bbmax, cube *c, const ivec &cor, int size)
+{
+    loopoctabox(cor, size, bbmin, bbmax)
+    {
+        const ivec origin(i, cor, size);
+        if(c[i].children) readyeditcollision(bbmin, bbmax, c[i].children, origin, size / 2);
+        else
+        {
+            int visible = 0, collide = 0;
+            loopj(6)
+            {
+                const int faces = classifyface(c[i], j, origin, size);
+                if(faces & 1) visible |= 1 << j;
+                if(faces & 2) collide |= 1 << j;
+            }
+            c[i].visible = collide | (visible ? 0x80 : 0);
+            c[i].merged = 0;
+            if(c[i].ext) brightencube(c[i]);
+        }
+    }
+}
+
 void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
     ivec dirtymin, dirtymax;
     if(!dirtygeometrybounds(bbmin, bbmax, dirtymin, dirtymax)) return;
+    const int sectionsize = getworldsectionsize();
+    if(sectionsize)
+    {
+        ZoneScopedN("Geometry/Queue edited mesh tiles");
+        editinggeometry.changed(bbmin, bbmax, sectionsize, worldsize);
+        // An interrupted background preparation must not publish surfaces from
+        // before the edit after the priority replacement has been displayed.
+        streaminggeometry.invalidate(bbmin, bbmax);
+        invalidatelocalambient(bbmin, bbmax);
+        readyeditcollision(dirtymin, dirtymax, worldroot, ivec(0, 0, 0), worldsize / 2);
+        resetclipplanes();
+        // Keep the old VA and its section container until the bounded renderer
+        // replaces this tile. commit=true must never drain unrelated streaming.
+        return;
+    }
     // Explicit edits also invalidate any merge snapshot carried from a prior frame.
     streaminggeometry.mergecursor = 0;
     invalidatelocalambient(bbmin, bbmax);
@@ -781,6 +822,7 @@ void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bo
     loopi(numregions)
     {
         markworldchunksdirty(bbmins[i], bbmaxs[i]);
+        editinggeometry.invalidate(bbmins[i], bbmaxs[i]);
         invalidatelocalambient(bbmins[i], bbmaxs[i]);
         streaminggeometry.changed(bbmins[i], bbmaxs[i], sectionsize, worldsize);
     }

@@ -76,6 +76,7 @@ static bool saveworldchunksnapshots()
 static int activeworldchunk = -1;
 static int worldfirstchunkx = 0, worldfirstchunky = 0;
 static int lastplayerchunkx = INT_MIN, lastplayerchunky = INT_MIN, lastchunkdist = -1;
+static bool worldgeometryinitialized = false;
 static bool rebuildingworldchunks = false;
 static bool suppressworldchunkdirty = false;
 static vector<SDL_Thread *> worldchunkworkers;
@@ -399,6 +400,7 @@ ICOMMAND(getdebugtectoniccave, "", (), debugworldvalueresult(currentworlddebugst
 
 void clearworldchunks()
 {
+    worldgeometryinitialized = false;
     ZoneScopedN("Chunks/Clear all chunks");
     resetgeometrychanges();
     cancelworldedit();
@@ -2230,6 +2232,7 @@ static void rebuildworldchunks(int chunkx, int chunky, int aheadx, int aheady, b
             ZoneScopedN("Chunks/Rebuild all geometry");
             calcmerges();
             allchanged(worldfolder[0] != '\0');
+            worldgeometryinitialized = true;
         }
     }
     // Keep CPU-heavy generation workers out of the synchronous bootstrap.
@@ -2302,7 +2305,17 @@ void updateworldchunks(bool force)
 {
     if(worldchunks.empty() || rebuildingworldchunks || !worldroot) return;
     ZoneScopedN("Chunks/Update world chunks");
-    if(stopworldchunkgeneration) return;
+    if(stopworldchunkgeneration)
+    {
+        // Pausing terrain generation must not freeze edits to resident terrain.
+        if(lastworldchunkpublish != totalmillis)
+        {
+            lastworldchunkpublish = totalmillis;
+            resetworldvauploadstats();
+            processstreaminggeometry(chunkpublishbudget, chunkvauploadkb * 1024, true);
+        }
+        return;
+    }
 
     int localchunkx = 0, localchunky = 0;
     if(player)
@@ -2332,7 +2345,11 @@ void updateworldchunks(bool force)
         rebaseworldchunks(chunkx, chunky);
         mountworldchunksafetyregion(chunkx, chunky);
     }
-    rebuildworldchunks(chunkx, chunky, worldchunkaheadx, worldchunkaheady, force && !rebase, true);
+    // A forced view refresh is not a request to reload all geometry. Bootstrap
+    // only once per world; position restores and later refreshes use streaming.
+    const bool bootstrap = force && !rebase && !worldgeometryinitialized;
+    if(force && !bootstrap && !rebase) mountworldchunksafetyregion(chunkx, chunky);
+    rebuildworldchunks(chunkx, chunky, worldchunkaheadx, worldchunkaheady, bootstrap, true);
     updateworldscatterers();
 }
 

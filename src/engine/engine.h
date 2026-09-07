@@ -430,7 +430,7 @@ extern void commitchanges(bool force = false);
 extern void resetgeometrychanges();
 // Streaming mesh ownership is smaller than CPU/collision section ownership.
 extern int vatilesize;
-extern int processstreaminggeometry(double budget, int uploadlimit);
+extern int processstreaminggeometry(double budget, int uploadlimit, bool editsonly = false);
 extern bool streaminggeometrypending(const ivec &sectionorigin);
 extern void markworldchunksdirty(const ivec &bbmin, const ivec &bbmax);
 enum
