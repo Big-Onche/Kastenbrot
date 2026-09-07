@@ -407,8 +407,8 @@ static GLint localambientgpudimensionsuniform = -1, localambientgpuattenuationun
 static const char *localambientcomputesource =
     "#version 430 core\n"
     "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-    "layout(r8, binding = 0) readonly uniform image3D occupancyImage;\n"
-    "layout(r8, binding = 1) readonly uniform image3D sourceImage;\n"
+    "layout(binding = 0) uniform sampler3D occupancyImage;\n"
+    "layout(binding = 1) uniform sampler3D sourceImage;\n"
     "layout(r8, binding = 2) writeonly uniform image3D destinationImage;\n"
     "uniform ivec3 fieldSize;\n"
     "uniform float attenuation;\n"
@@ -416,18 +416,18 @@ static const char *localambientcomputesource =
     "float lightat(ivec3 p)\n"
     "{\n"
     "    if(any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, fieldSize))) return 0.0;\n"
-    "    return imageLoad(sourceImage, p).r;\n"
+    "    return texelFetch(sourceImage, p, 0).r;\n"
     "}\n"
     "void main()\n"
     "{\n"
     "    ivec3 p = ivec3(gl_GlobalInvocationID.xyz);\n"
     "    if(any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    if(imageLoad(occupancyImage, p).r > 0.0)\n"
+    "    if(texelFetch(occupancyImage, p, 0).r > 0.0)\n"
     "    {\n"
     "        imageStore(destinationImage, p, vec4(0.0, 0.0, 0.0, 1.0));\n"
     "        return;\n"
     "    }\n"
-    "    float value = imageLoad(sourceImage, p).r;\n"
+    "    float value = texelFetch(sourceImage, p, 0).r;\n"
     "    value = max(value, lightat(p + ivec3(-1, 0, 0)) - attenuation);\n"
     "    value = max(value, lightat(p + ivec3( 1, 0, 0)) - attenuation);\n"
     "    value = max(value, lightat(p + ivec3(0, -1, 0)) - attenuation);\n"
@@ -440,7 +440,7 @@ static const char *localambientcomputesource =
 static const char *localambientgpuseedsource =
     "#version 430 core\n"
     "layout(local_size_x = 4, local_size_y = 4, local_size_z = 1) in;\n"
-    "layout(r8, binding = 0) readonly uniform image3D occupancyImage;\n"
+    "layout(binding = 0) uniform sampler3D occupancyImage;\n"
     "layout(r8, binding = 1) writeonly uniform image3D seedImage;\n"
     "uniform ivec3 fieldSize;\n"
     "void main()\n"
@@ -451,7 +451,7 @@ static const char *localambientgpuseedsource =
     "    for(int z = fieldSize.z - 1; z >= 0; --z)\n"
     "    {\n"
     "        ivec3 p = ivec3(column, z);\n"
-    "        bool solid = imageLoad(occupancyImage, p).r > 0.0;\n"
+    "        bool solid = texelFetch(occupancyImage, p, 0).r > 0.0;\n"
     "        imageStore(seedImage, p, vec4(skyVisible && !solid ? 1.0 : 0.0, 0.0, 0.0, 1.0));\n"
     "        if(solid) skyVisible = false;\n"
     "    }\n"
@@ -460,21 +460,21 @@ static const char *localambientgpuseedsource =
 static const char *localambientgiseedsource =
     "#version 430 core\n"
     "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-    "layout(r8, binding = 0) readonly uniform image3D occupancyImage;\n"
-    "layout(rgba8, binding = 1) readonly uniform image3D albedoImage;\n"
-    "layout(r8, binding = 2) readonly uniform image3D skyImage;\n"
+    "layout(binding = 0) uniform sampler3D occupancyImage;\n"
+    "layout(binding = 1) uniform sampler3D albedoImage;\n"
+    "layout(binding = 2) uniform sampler3D skyImage;\n"
     "layout(rgba8, binding = 3) writeonly uniform image3D giImage;\n"
     "uniform ivec3 fieldSize;\n"
     "void addSurface(inout vec3 source, ivec3 p)\n"
     "{\n"
     "    if(any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    if(imageLoad(occupancyImage, p).r > 0.0) source = max(source, imageLoad(albedoImage, p).rgb);\n"
+    "    if(texelFetch(occupancyImage, p, 0).r > 0.0) source = max(source, texelFetch(albedoImage, p, 0).rgb);\n"
     "}\n"
     "void main()\n"
     "{\n"
     "    ivec3 p = ivec3(gl_GlobalInvocationID.xyz);\n"
     "    if(any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    if(imageLoad(occupancyImage, p).r > 0.0)\n"
+    "    if(texelFetch(occupancyImage, p, 0).r > 0.0)\n"
     "    {\n"
     "        imageStore(giImage, p, vec4(0.0));\n"
     "        return;\n"
@@ -486,33 +486,33 @@ static const char *localambientgiseedsource =
     "    addSurface(source, p + ivec3(0,  1, 0));\n"
     "    addSurface(source, p + ivec3(0, 0, -1));\n"
     "    addSurface(source, p + ivec3(0, 0,  1));\n"
-    "    source *= imageLoad(skyImage, p).r;\n"
+    "    source *= texelFetch(skyImage, p, 0).r;\n"
     "    imageStore(giImage, p, vec4(clamp(source, 0.0, 1.0), 1.0));\n"
     "}\n";
 
 static const char *localambientgipropagatesource =
     "#version 430 core\n"
     "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-    "layout(r8, binding = 0) readonly uniform image3D occupancyImage;\n"
-    "layout(rgba8, binding = 1) readonly uniform image3D sourceImage;\n"
+    "layout(binding = 0) uniform sampler3D occupancyImage;\n"
+    "layout(binding = 1) uniform sampler3D sourceImage;\n"
     "layout(rgba8, binding = 2) writeonly uniform image3D destinationImage;\n"
     "uniform ivec3 fieldSize;\n"
     "uniform float decay;\n"
     "vec3 giat(ivec3 p)\n"
     "{\n"
     "    if(any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, fieldSize))) return vec3(0.0);\n"
-    "    return imageLoad(sourceImage, p).rgb;\n"
+    "    return texelFetch(sourceImage, p, 0).rgb;\n"
     "}\n"
     "void main()\n"
     "{\n"
     "    ivec3 p = ivec3(gl_GlobalInvocationID.xyz);\n"
     "    if(any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    if(imageLoad(occupancyImage, p).r > 0.0)\n"
+    "    if(texelFetch(occupancyImage, p, 0).r > 0.0)\n"
     "    {\n"
     "        imageStore(destinationImage, p, vec4(0.0));\n"
     "        return;\n"
     "    }\n"
-    "    vec3 value = imageLoad(sourceImage, p).rgb;\n"
+    "    vec3 value = texelFetch(sourceImage, p, 0).rgb;\n"
     "    value = max(value, giat(p + ivec3(-1, 0, 0)) * decay);\n"
     "    value = max(value, giat(p + ivec3( 1, 0, 0)) * decay);\n"
     "    value = max(value, giat(p + ivec3(0, -1, 0)) * decay);\n"
@@ -525,8 +525,8 @@ static const char *localambientgipropagatesource =
 static const char *localambientgicombinesource =
     "#version 430 core\n"
     "layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;\n"
-    "layout(r8, binding = 0) readonly uniform image3D skyImage;\n"
-    "layout(rgba8, binding = 1) readonly uniform image3D giImage;\n"
+    "layout(binding = 0) uniform sampler3D skyImage;\n"
+    "layout(binding = 1) uniform sampler3D giImage;\n"
     "layout(rgba8, binding = 2) writeonly uniform image3D combinedImage;\n"
     "uniform ivec3 fieldSize;\n"
     "uniform int giEnabled;\n"
@@ -534,8 +534,8 @@ static const char *localambientgicombinesource =
     "{\n"
     "    ivec3 p = ivec3(gl_GlobalInvocationID.xyz);\n"
     "    if(any(greaterThanEqual(p, fieldSize))) return;\n"
-    "    vec3 gi = giEnabled != 0 ? imageLoad(giImage, p).rgb : vec3(0.0);\n"
-    "    imageStore(combinedImage, p, vec4(imageLoad(skyImage, p).r, gi));\n"
+    "    vec3 gi = giEnabled != 0 ? texelFetch(giImage, p, 0).rgb : vec3(0.0);\n"
+    "    imageStore(combinedImage, p, vec4(texelFetch(skyImage, p, 0).r, gi));\n"
     "}\n";
 
 static void localambientgpushaderlog(GLuint object, bool program)
@@ -799,6 +799,14 @@ static bool queuelocalambientgpu(const ivec &origin, const ivec &dimensions, int
     return true;
 }
 
+// Read-only compute inputs use the texture cache. Image loads on the 128 cubed
+// field can turn a rebuild into a multi-frame GPU stall, observed later at swap.
+static void bindlocalambientcomputetexture(int unit, GLuint texture)
+{
+    glActiveTexture_(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_3D, texture);
+}
+
 static void propagatelocalambientgpu()
 {
     if(!localambientgpupending) return;
@@ -813,11 +821,12 @@ static void propagatelocalambientgpu()
         glUseProgram_(localambientgpuseedprogram);
         if(localambientgpuseeddimensionsuniform >= 0)
             glUniform3i_(localambientgpuseeddimensionsuniform, dimensions.x, dimensions.y, dimensions.z);
-        localambientBindImageTexture(0, localambientoccupancytexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
+        bindlocalambientcomputetexture(0, localambientoccupancytexture);
         localambientBindImageTexture(1, localambientgputextures[0], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
         localambientDispatchCompute((dimensions.x + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE,
                                     (dimensions.y + LOCALAMBIENT_GPU_GROUP_SIZE - 1) / LOCALAMBIENT_GPU_GROUP_SIZE, 1);
-        localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+        localambientBindImageTexture(1, 0, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
     }
 
     const int minloss = max(min(attenuation, downwardattenuation), 1),
@@ -837,14 +846,15 @@ static void propagatelocalambientgpu()
         int source = 0, destination = 1;
         loopi(passes)
         {
-            localambientBindImageTexture(0, localambientoccupancytexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
-            localambientBindImageTexture(1, localambientgputextures[source], 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
+            bindlocalambientcomputetexture(0, localambientoccupancytexture);
+            bindlocalambientcomputetexture(1, localambientgputextures[source]);
             localambientBindImageTexture(2, localambientgputextures[destination], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
             localambientDispatchCompute(groupsx, groupsy, groupsz);
-            localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
             swap(source, destination);
         }
         localambientgpufinaltexture = source;
+        localambientBindImageTexture(2, 0, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
     }
 
     const Uint64 gistart = SDL_GetPerformanceCounter();
@@ -855,12 +865,12 @@ static void propagatelocalambientgpu()
             glUseProgram_(localambientgiseedprogram);
             if(localambientgiseeddimensionsuniform >= 0)
                 glUniform3i_(localambientgiseeddimensionsuniform, dimensions.x, dimensions.y, dimensions.z);
-            localambientBindImageTexture(0, localambientoccupancytexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
-            localambientBindImageTexture(1, localambientalbedotexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA8);
-            localambientBindImageTexture(2, localambientgputextures[localambientgpufinaltexture], 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
+            bindlocalambientcomputetexture(0, localambientoccupancytexture);
+            bindlocalambientcomputetexture(1, localambientalbedotexture);
+            bindlocalambientcomputetexture(2, localambientgputextures[localambientgpufinaltexture]);
             localambientBindImageTexture(3, localambientgitextures[0], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
             localambientDispatchCompute(groupsx, groupsy, groupsz);
-            localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
             localambientBindImageTexture(3, 0, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
         }
 
@@ -873,11 +883,11 @@ static void propagatelocalambientgpu()
             int source = 0, destination = 1;
             loopi(localambientgipasses)
             {
-                localambientBindImageTexture(0, localambientoccupancytexture, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
-                localambientBindImageTexture(1, localambientgitextures[source], 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA8);
+                bindlocalambientcomputetexture(0, localambientoccupancytexture);
+                bindlocalambientcomputetexture(1, localambientgitextures[source]);
                 localambientBindImageTexture(2, localambientgitextures[destination], 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
                 localambientDispatchCompute(groupsx, groupsy, groupsz);
-                localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+                localambientMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
                 swap(source, destination);
             }
             localambientgifinaltexture = source;
@@ -890,8 +900,8 @@ static void propagatelocalambientgpu()
         if(localambientgicombinedimensionsuniform >= 0)
             glUniform3i_(localambientgicombinedimensionsuniform, dimensions.x, dimensions.y, dimensions.z);
         if(localambientgicombineenableduniform >= 0) glUniform1i_(localambientgicombineenableduniform, localambientgi ? 1 : 0);
-        localambientBindImageTexture(0, localambientgputextures[localambientgpufinaltexture], 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
-        localambientBindImageTexture(1, localambientgitextures[localambientgifinaltexture], 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA8);
+        bindlocalambientcomputetexture(0, localambientgputextures[localambientgpufinaltexture]);
+        bindlocalambientcomputetexture(1, localambientgitextures[localambientgifinaltexture]);
         localambientBindImageTexture(2, localambientcombinedtexture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
         localambientDispatchCompute(groupsx, groupsy, groupsz);
     }
@@ -900,6 +910,8 @@ static void propagatelocalambientgpu()
     localambientBindImageTexture(1, 0, 0, GL_TRUE, 0, GL_READ_ONLY, GL_R8);
     localambientBindImageTexture(2, 0, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8);
     localambientBindImageTexture(3, 0, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    loopi(3) bindlocalambientcomputetexture(i, 0);
+    glActiveTexture_(GL_TEXTURE0);
     glUseProgram_(0);
 
     localambientgpuready = true;
