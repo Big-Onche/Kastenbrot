@@ -455,7 +455,6 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     vector<worldsectionnode> queue;
     if(rebuild)
     {
-        ZoneScopedN("Chunks/Rebuild section visibility");
         rebuildworldchunkindices();
         loopv(worldchunks)
         {
@@ -867,9 +866,6 @@ static int processworldchunkvaupdates()
 {
     int pending = worldchunkvaupdates.length();
     if(pending <= 0) return 0;
-
-    ZoneScopedN("Chunks/Process prioritized VA updates");
-    ZoneValue(pending);
 
     int completed = 0;
     for(int i = worldchunkvaupdates.length() - 1; i >= 0; --i)

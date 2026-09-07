@@ -4568,8 +4568,6 @@ matrix4 shadowmatrix;
 
 void rendershadowmaps(int offset = 0)
 {
-    ZoneScopedN("Render/Shadows/Local lights");
-
     if(!(sminoq && !debugshadowatlas && !inoq && shouldworkinoq())) offset = 0;
 
     for(; offset < shadowmaps.length(); offset++) if(shadowmaps[offset].light >= 0) break;
@@ -5240,16 +5238,10 @@ void rendergbuffer(bool depthclear)
         rendergeom();
         GLERROR;
     }
-    {
-        ZoneScopedN("Render/G-buffer/Decals");
-        renderdecals();
-        GLERROR;
-    }
-    {
-        ZoneScopedN("Render/G-buffer/Map models");
-        rendermapmodels();
-        GLERROR;
-    }
+    renderdecals();
+    GLERROR;
+    rendermapmodels();
+    GLERROR;
 
     if(drawtex == DRAWTEX_MINIMAP)
     {
@@ -5260,23 +5252,14 @@ void rendergbuffer(bool depthclear)
     }
     else if(!drawtex)
     {
-        {
-            ZoneScopedN("Render/G-buffer/Model batches");
-            rendermodelbatches();
-            game::renderitemspritebatches();
-            GLERROR;
-        }
-        {
-            ZoneScopedN("Render/G-buffer/Block chips");
-            renderdeferredblockchips();
-            GLERROR;
-        }
-        {
-            ZoneScopedN("Render/G-buffer/Stains");
-            renderstains(STAINBUF_OPAQUE, true);
-            renderstains(STAINBUF_MAPMODEL, true);
-            GLERROR;
-        }
+        rendermodelbatches();
+        game::renderitemspritebatches();
+        GLERROR;
+        renderdeferredblockchips();
+        GLERROR;
+        renderstains(STAINBUF_OPAQUE, true);
+        renderstains(STAINBUF_MAPMODEL, true);
+        GLERROR;
         //renderavatar();
         //GLERROR;
     }

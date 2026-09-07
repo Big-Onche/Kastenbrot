@@ -1246,28 +1246,25 @@ static int worldchunkloader(void *)
         }
         worldchunkjob *job = NULL;
         worldchunksavejob *savejob = NULL;
+        if(!worldchunkjobs.empty() && (!flushingworldchunksaves || worldchunksavejobs.empty()))
         {
-            ZoneScopedN("Chunks/Worker select job");
-            if(!worldchunkjobs.empty() && (!flushingworldchunksaves || worldchunksavejobs.empty()))
+            int best = 0, bestscore = worldchunkjobscore(*worldchunkjobs[0]);
+            loopv(worldchunkjobs) if(i)
             {
-                int best = 0, bestscore = worldchunkjobscore(*worldchunkjobs[0]);
-                loopv(worldchunkjobs) if(i)
-                {
-                    int score = worldchunkjobscore(*worldchunkjobs[i]);
-                    if(score < bestscore) { best = i; bestscore = score; }
-                }
-                job = worldchunkjobs.remove(best);
-                worldchunkactivejobs.add(job);
-                TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
-                TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
+                int score = worldchunkjobscore(*worldchunkjobs[i]);
+                if(score < bestscore) { best = i; bestscore = score; }
             }
-            else if(!worldchunksavejobs.empty())
-            {
-                savejob = worldchunksavejobs.remove(0);
-                worldchunksaveactivejobs.add(savejob);
-                TracyPlot("Chunks/Queued saves", int64_t(worldchunksavejobs.length()));
-                TracyPlot("Chunks/Active saves", int64_t(worldchunksaveactivejobs.length()));
-            }
+            job = worldchunkjobs.remove(best);
+            worldchunkactivejobs.add(job);
+            TracyPlot("Chunks/Queued jobs", int64_t(worldchunkjobs.length()));
+            TracyPlot("Chunks/Active workers", int64_t(worldchunkactivejobs.length()));
+        }
+        else if(!worldchunksavejobs.empty())
+        {
+            savejob = worldchunksavejobs.remove(0);
+            worldchunksaveactivejobs.add(savejob);
+            TracyPlot("Chunks/Queued saves", int64_t(worldchunksavejobs.length()));
+            TracyPlot("Chunks/Active saves", int64_t(worldchunksaveactivejobs.length()));
         }
         SDL_UnlockMutex(worldchunkmutex);
 
@@ -1340,11 +1337,8 @@ static int worldchunkloader(void *)
             delete job;
             return 0;
         }
-        {
-            ZoneScopedN("Chunks/Worker enqueue result");
-            worldchunkresults.add(job);
-            TracyPlot("Chunks/Ready results", int64_t(worldchunkresults.length()));
-        }
+        worldchunkresults.add(job);
+        TracyPlot("Chunks/Ready results", int64_t(worldchunkresults.length()));
         SDL_UnlockMutex(worldchunkmutex);
     }
 }
@@ -1696,8 +1690,6 @@ static int queueworldchunkview(int chunkx, int chunky, int aheadx, int aheady)
 
 static int reprioritizeworldchunkqueue(int chunkx, int chunky, int aheadx, int aheady)
 {
-    ZoneScopedN("Chunks/Reprioritize queue");
-    ZoneTextF("focus %d_%d ahead %d_%d", chunkx, chunky, aheadx, aheady);
     int viewx, viewy;
     worldchunkviewfocus(chunkx, chunky, viewx, viewy);
     if(!worldchunkmutex)
@@ -2035,7 +2027,6 @@ static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeome
     if(!worldchunksafetysectionbounds(minx, maxx, miny, maxy, minz, maxz)) return;
     ZoneScopedN("Chunks/Mount safety region");
     ZoneTextF("%d_%d", chunkx, chunky);
-    int changedsections = 0;
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
@@ -2055,15 +2046,9 @@ static void mountworldchunksafetyregion(int chunkx, int chunky, bool updategeome
                 sections[numsections++] = section;
             }
             if(!numsections) continue;
+            // Collision safety never drains the render queue synchronously.
             if(updategeometry) queueworldchunksectionupdates(chunk, j, sections, numsections);
-            changedsections += numsections;
         }
-    }
-    if(changedsections && updategeometry)
-    {
-        ZoneScopedN("Chunks/Queue safety region geometry");
-        ZoneValue(changedsections);
-        // Collision safety never drains the render queue synchronously.
     }
 }
 
@@ -2625,7 +2610,6 @@ static cube *prepareworldchunk(worldchunkjob &job)
     ZoneScopedN("Chunks/Prepare");
     ZoneTextF("%d_%d", job.x, job.y);
     if(SDL_AtomicGet(&job.cancelled)) return NULL;
-    {ZoneScopedN("Chunks/Generate unsaved");}
     cube *root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized, &job.renderdata);
     if(!root) return NULL;
     game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);

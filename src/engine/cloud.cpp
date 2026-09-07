@@ -477,7 +477,6 @@ namespace
 
     static void buildcloudtile(cloudtile &tile)
     {
-        {ZoneScopedN("Clouds/GenerateTile");}
         const int halo = cloudsmoothpasses + 1;
         const int masksize = CLOUD_TILE_CELLS + 2 * halo;
         const int origincellx = tile.tx * CLOUD_TILE_CELLS;

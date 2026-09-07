@@ -631,7 +631,6 @@ static bool sortvisiblemms(const visiblemmentry &x, const visiblemmentry &y)
 
 void findvisiblemms(const vector<extentity *> &ents, bool doquery)
 {
-    ZoneScopedN("Render/G-buffer/Map models/Discovery and sort");
 
     static vector<visiblemmentry> visiblenodes;
     static vector<octaentities *> hiddennodes;
@@ -694,72 +693,56 @@ static inline void rendermapmodel(extentity &e)
 
 void rendermapmodels()
 {
-    ZoneScopedN("Render/G-buffer/Map models/Total");
-
     static int skipoq = 0;
     bool doquery = !drawtex && oqfrags && oqmm;
     const vector<extentity *> &ents = entities::getents();
     findvisiblemms(ents, doquery);
 
     int visibleNodes = 0, visibleEntities = 0, immediateQueryNodes = 0, hiddenNodes = 0, hiddenQueryNodes = 0;
+    for(octaentities *oe = visiblemms; oe; oe = oe->next) if(oe->distance>=0)
     {
-        ZoneScopedN("Render/G-buffer/Map models/Submission");
-
-        for(octaentities *oe = visiblemms; oe; oe = oe->next) if(oe->distance>=0)
+        visibleNodes++;
+        bool rendered = false;
+        loopv(oe->mapmodels)
         {
-            visibleNodes++;
-            bool rendered = false;
-            loopv(oe->mapmodels)
+            extentity &e = *ents[oe->mapmodels[i]];
+            if(!(e.flags&EF_RENDER)) continue;
+            visibleEntities++;
+            if(!rendered)
             {
-                extentity &e = *ents[oe->mapmodels[i]];
-                if(!(e.flags&EF_RENDER)) continue;
-                visibleEntities++;
-                if(!rendered)
+                rendered = true;
+                oe->query = doquery && oe->distance>0 && !(++skipoq%oqmm) ? newquery(oe) : NULL;
+                if(oe->query)
                 {
-                    rendered = true;
-                    oe->query = doquery && oe->distance>0 && !(++skipoq%oqmm) ? newquery(oe) : NULL;
-                    if(oe->query)
-                    {
-                        immediateQueryNodes++;
-                        startmodelquery(oe->query);
-                    }
+                    immediateQueryNodes++;
+                    startmodelquery(oe->query);
                 }
-                rendermapmodel(e);
-                e.flags &= ~EF_RENDER;
             }
-            if(rendered && oe->query) endmodelquery();
+            rendermapmodel(e);
+            e.flags &= ~EF_RENDER;
         }
+        if(rendered && oe->query) endmodelquery();
     }
-    {
-        ZoneScopedN("Render/G-buffer/Map models/Batched draw");
-        rendermapmodelbatches();
-    }
-    {
-        ZoneScopedN("Render/G-buffer/Map models/Batch cleanup");
-        clearbatchedmapmodels();
-    }
+    rendermapmodelbatches();
+    clearbatchedmapmodels();
 
     bool queried = false;
+    for(octaentities *oe = visiblemms; oe; oe = oe->next) if(oe->distance<0)
     {
-        ZoneScopedN("Render/G-buffer/Map models/Hidden query refresh");
-
-        for(octaentities *oe = visiblemms; oe; oe = oe->next) if(oe->distance<0)
+        hiddenNodes++;
+        oe->query = doquery && !camera1->o.insidebb(oe->bbmin, oe->bbmax, 1) ? newquery(oe) : NULL;
+        if(!oe->query) continue;
+        hiddenQueryNodes++;
+        if(!queried)
         {
-            hiddenNodes++;
-            oe->query = doquery && !camera1->o.insidebb(oe->bbmin, oe->bbmax, 1) ? newquery(oe) : NULL;
-            if(!oe->query) continue;
-            hiddenQueryNodes++;
-            if(!queried)
-            {
-                startbb();
-                queried = true;
-            }
-            startquery(oe->query);
-            drawbb(oe->bbmin, ivec(oe->bbmax).sub(oe->bbmin));
-            endquery(oe->query);
+            startbb();
+            queried = true;
         }
-        if(queried) endbb();
+        startquery(oe->query);
+        drawbb(oe->bbmin, ivec(oe->bbmax).sub(oe->bbmin));
+        endquery(oe->query);
     }
+    if(queried) endbb();
 
     TracyPlot("Render/Map model visible nodes", int64_t(visibleNodes));
     TracyPlot("Render/Map model visible entities", int64_t(visibleEntities));

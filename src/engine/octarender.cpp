@@ -1712,10 +1712,7 @@ void buildstreamingtile(const ivec &origin)
         if(newgroup) varoot.add(group);
         invalidatevabb(group);
     }
-    {
-        ZoneScopedN("Geometry/Upload mesh tile");
-        flushvbo();
-    }
+    flushvbo();
     loadprogress = 0;
     visibleva = NULL;
 }

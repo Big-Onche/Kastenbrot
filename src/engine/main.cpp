@@ -1504,7 +1504,10 @@ int main(int argc, char **argv)
         ZoneScopedN("Frame");
         static int frames = 0;
         int millis = getclockmillis();
-        limitfps(millis, totalmillis);
+        {
+            ZoneScopedN("Frame/FPS limit");
+            limitfps(millis, totalmillis);
+        }
         elapsedtime = millis - totalmillis;
         static int timeerr = 0;
         int scaledtime = game::scaletime(elapsedtime) + timeerr;
@@ -1514,34 +1517,77 @@ int main(int argc, char **argv)
         if(game::ispaused()) curtime = 0;
         lastmillis += curtime;
         totalmillis = millis;
-        updatetime();
+        {
+            ZoneScopedN("Frame/Time update");
+            updatetime();
+        }
 
-        checkinput();
-        UI::update();
-        menuprocess();
-        tryedit();
+        {
+            ZoneScopedN("Frame/Input");
+            checkinput();
+        }
+        {
+            ZoneScopedN("Frame/UI");
+            UI::update();
+        }
+        {
+            ZoneScopedN("Frame/Menu");
+            menuprocess();
+        }
+        {
+            ZoneScopedN("Frame/Editor");
+            tryedit();
+        }
 
-        if(lastmillis) game::updateworld();
+        if(lastmillis)
+        {
+            ZoneScopedN("Frame/World update");
+            game::updateworld();
+        }
 
-        checksleep(lastmillis);
+        {
+            ZoneScopedN("Frame/Scheduled commands");
+            checksleep(lastmillis);
+        }
 
-        serverslice(false, 0);
+        {
+            ZoneScopedN("Frame/Server");
+            serverslice(false, 0);
+        }
 
         if(frames) updatefpshistory(elapsedtime);
         frames++;
 
         // miscellaneous general game effects
-        recomputecamera();
-        updateparticles();
-        updatesounds();
+        {
+            ZoneScopedN("Frame/Camera");
+            recomputecamera();
+        }
+        {
+            ZoneScopedN("Frame/Particles");
+            updateparticles();
+        }
+        {
+            ZoneScopedN("Frame/Sound");
+            updatesounds();
+        }
 
         if(minimized) continue;
 
-        gl_setupframe(!mainmenu);
+        {
+            ZoneScopedN("Frame/Render setup");
+            gl_setupframe(!mainmenu);
+        }
 
         inbetweenframes = false;
-        gl_drawframe();
-        swapbuffers();
+        {
+            ZoneScopedN("Frame/Render");
+            gl_drawframe();
+        }
+        {
+            ZoneScopedN("Frame/Swap buffers");
+            swapbuffers();
+        }
         renderedframe = inbetweenframes = true;
     }
 

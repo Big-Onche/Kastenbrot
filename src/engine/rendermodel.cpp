@@ -866,8 +866,6 @@ void rendershadowmodelbatches(bool dynmodel)
 
 void rendermapmodelbatches()
 {
-    ZoneScopedN("Render/G-buffer/Map models/Batched model rendering");
-
     int renderedBatches = 0, renderedInstances = 0;
     enableaamask();
     loopv(batches)
