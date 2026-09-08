@@ -38,6 +38,8 @@ struct worlddefinition
 {
     string footstepsound;
     int footstepvariants;
+    string miningsound;
+    int miningvariants;
     string id, name, texture, icon, cubetexture, sidetexture, bottom, bottomtexture, model, modelicon, lightcolor;
     string preferredtool, tooltype, equipmentslots;
     ullong persistentid;

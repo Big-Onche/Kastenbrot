@@ -4424,6 +4424,7 @@ namespace game
                survivalbreaktoolslot = -1, survivalbreaktoolitem = -1, survivalbreaktooldurability = 0, survivalbreakduration = 1,
                survivalbreakminingtype = WORLD_ITEM_NONE, survivalbreakminingindex = -1;
     static uint survivalbreakrequestid = 0;
+    static int survivalminingsoundmillis = -200;
     static int survivalblockitem(const creativetarget &target);
 
     static bool usesurvivalcornertool(int button)
@@ -4535,6 +4536,23 @@ namespace game
         particle_blockchips(getworldcubetextureslotat(position, target.cube.orient), target.hitpoint, normal, num);
     }
 
+    static void playminingsound(const creativetarget &target)
+    {
+        // At most 300 hits/minute, even if the target changes or a frame stalls.
+        if(lastmillis >= survivalminingsoundmillis && lastmillis - survivalminingsoundmillis < 200) return;
+        const int index = survivalbreakminingindex;
+        const worlddefinition *definition = survivalbreakminingtype == WORLD_ITEM_CUBE
+            ? (worldcubedefinitions.inrange(index) ? worldcubedefinitions[index] : NULL)
+            : (worldscatterdefinitions.inrange(index) ? worldscatterdefinitions[index] : NULL);
+        if(!definition || !definition->miningsound[0] || definition->miningvariants <= 0) return;
+        survivalminingsoundmillis = lastmillis;
+        defformatstring(sample, "%s%d", definition->miningsound, 1 + rnd(definition->miningvariants));
+        const bool firstperson = !isthirdperson();
+        vec source(target.hitpoint);
+        if(target.type == CREATIVE_TARGET_CUBE) source[target.cube.orient >> 1] += target.cube.orient & 1 ? 1.0f : -1.0f;
+        playsoundname(sample, firstperson ? NULL : &source, 100, firstperson ? SND_HUD : SND_RADIUS, 0, 0, -1, 192);
+    }
+
     static void updatesurvivalbreaking()
     {
         if(!survivalenabled() || !player1->renderattacking || survivalattackhitnpc)
@@ -4600,6 +4618,7 @@ namespace game
                                     survivalblockitem(target), -1);
                 }
             }
+            playminingsound(target);
             if(target.type == CREATIVE_TARGET_CUBE)
             {
                 setbreakstain(player1 ? player1->clientnum : -1, survivalbreakrequestid, target.cube.o, target.cube.grid, 0);
@@ -4623,6 +4642,7 @@ namespace game
         }
         const int breakmillis = max(survivalbreakduration, 1);
         const int elapsed = max(lastmillis - survivalbreakstart, 0);
+        if(elapsed < breakmillis) playminingsound(target);
         if(target.type == CREATIVE_TARGET_CUBE)
         {
             const int stage = clamp(elapsed, 0, breakmillis - 1) * SURVIVAL_BREAK_STAGES / breakmillis;

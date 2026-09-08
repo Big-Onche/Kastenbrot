@@ -21,7 +21,7 @@ static ullong worldpersistentid(const char *id)
 }
 
 worlddefinition::worlddefinition(const char *id)
-    : footstepvariants(0), persistentid(worldpersistentid(id)), worldsize(1.0f), heldsize(100.0f), texsize(1), lightradius(0),
+    : footstepvariants(0), miningvariants(0), persistentid(worldpersistentid(id)), worldsize(1.0f), heldsize(100.0f), texsize(1), lightradius(0),
       hardness(1.0f), toolspeed(1.0f),
       tooldamage(2.0f),
       foodhealth(0),
@@ -39,6 +39,7 @@ worlddefinition::worlddefinition(const char *id)
 {
     copystring(this->id, id);
     footstepsound[0] = '\0';
+    miningsound[0] = '\0';
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
     lightcolor[0] = preferredtool[0] = tooltype[0] = equipmentslots[0] = '\0';
 }
@@ -290,6 +291,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
     }
     else if(component == WORLDDEF_MINING)
     {
+        if(!strcmp(command, "sound")) return "worlddef_miningsound";
         if(!strcmp(command, "hardness")) return "worlddef_hardness";
         if(!strcmp(command, "tool")) return "worlddef_miningtool";
         if(!strcmp(command, "tier")) return "worlddef_miningtier";
@@ -808,6 +810,11 @@ ICOMMANDS("worlddef_side", "s", (char *value), copystring(currentworlddefinition
 ICOMMANDS("worlddef_bottom", "s", (char *value), copystring(currentworlddefinition->bottom, value));
 ICOMMANDS("worlddef_texsize", "f", (float *value), currentworlddefinition->texsize = *value);
 ICOMMANDS("worlddef_falling", "i", (int *value), currentworlddefinition->fall = *value != 0);
+ICOMMANDS("worlddef_miningsound", "si", (char *sound, int *variants),
+{
+    copystring(currentworlddefinition->miningsound, sound);
+    currentworlddefinition->miningvariants = sound[0] ? clamp(*variants, 1, 64) : 0;
+});
 ICOMMANDS("worlddef_footstep", "si", (char *sound, int *variants),
 {
     copystring(currentworlddefinition->footstepsound, sound);
