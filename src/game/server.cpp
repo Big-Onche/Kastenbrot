@@ -2775,13 +2775,14 @@ namespace server
                 npcdefinition *definition = game::getnpcdefinition(j);
                 if(!definition || (definition->attitude != NPC_AGGRESSIVE && definition->naturalbiome < 0)) continue;
                 for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
-                for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1; band < (definition->attitude == NPC_AGGRESSIVE ? 16 : 0); ++band)
+                for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1;
+                    band < (definition->attitude == NPC_AGGRESSIVE ? definition->cavebands : 0); ++band)
                 {
-                    if(band >= 0 && ((band + 1) * 32 * GAMEUNITSPERMETER + definition->height < owner->o.z - simulationdistance ||
-                                     band * 32 * GAMEUNITSPERMETER > owner->o.z + simulationdistance)) continue;
                     passivenpcspawn spawns[16];
                     const int count = game::generatepassivenpcgroup(*definition, serverworldseed, cellx, celly, spawns, 16, band);
                     if(!count) continue;
+                    if(band >= 0 && (spawns[0].bandtop * GAMEUNITSPERMETER + definition->height < owner->o.z - simulationdistance ||
+                                     spawns[0].bandbottom * GAMEUNITSPERMETER > owner->o.z + simulationdistance)) continue;
                     const vec anchor((spawns[0].blockx + 0.5f) * GAMEUNITSPERMETER,
                                      (spawns[0].blocky + 0.5f) * GAMEUNITSPERMETER, owner->o.z);
                     if(anchor.squaredist(owner->o) > simulationdistancesquared) continue;

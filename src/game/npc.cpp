@@ -123,6 +123,18 @@ namespace game
         definition->spawnchance = *chance;
     });
 
+    ICOMMAND(npccavebands, "si", (char *id, int *count),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        if(!definition || definition->attitude != NPC_AGGRESSIVE || *count < 0 || *count > NPC_WORLD_HEIGHT_BLOCKS)
+        {
+            conoutf(CON_ERROR, "invalid cave band count for NPC %s: expected an aggressive NPC and 0-%d bands",
+                    id[0] ? id : "<empty>", NPC_WORLD_HEIGHT_BLOCKS);
+            return;
+        }
+        definition->cavebands = *count;
+    });
+
     ICOMMAND(npchitflee, "sffi", (char *id, float *speed, float *herdradius, int *duration),
     {
         npcdefinition *definition = findnpcdefinition(id);
@@ -189,7 +201,8 @@ namespace game
                                 int maxspawns, int band)
     {
         const bool cave = definition.attitude == NPC_AGGRESSIVE;
-        if(!spawns || maxspawns <= 0 || (cave ? band < 0 : definition.naturalbiome < 0 || definition.spawnchance <= 0)) return 0;
+        if(!spawns || maxspawns <= 0 ||
+           (cave ? band < 0 || band >= definition.cavebands : definition.naturalbiome < 0 || definition.spawnchance <= 0)) return 0;
         const uint definitionhash = passivenpcdefinitionhash(definition),
                    cellseed = worlddrophash(uint(worldseed) ^ uint(cellx) * 0x9E3779B9U ^ uint(celly) * 0x85EBCA6BU ^
                                             definitionhash ^ (cave ? worlddrophash(uint(band) ^ 0xB5297A4DU) : 0)),
@@ -212,6 +225,8 @@ namespace game
                         radius = i ? 3.0f + float(memberseed % uint(PASSIVE_NPC_GROUP_RADIUS_BLOCKS - 2)) : 0;
             spawns[i].key = passivenpcspawnkey(definition, worldseed, cellx, celly, cave ? 16 + band * 4 + i : i);
             spawns[i].band = cave ? band : -1;
+            spawns[i].bandbottom = cave ? band * NPC_WORLD_HEIGHT_BLOCKS / definition.cavebands : 0;
+            spawns[i].bandtop = cave ? (band + 1) * NPC_WORLD_HEIGHT_BLOCKS / definition.cavebands : 0;
             spawns[i].grouproll = spawnroll;
             spawns[i].blockx = anchorx + int(roundf(cosf(angle) * radius));
             spawns[i].blocky = anchory + int(roundf(sinf(angle) * radius));
@@ -1898,13 +1913,14 @@ namespace game
             npcdefinition *definition = getnpcdefinition(i);
             if(!definition || (definition->attitude != NPC_AGGRESSIVE && definition->naturalbiome < 0)) continue;
             for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
-            for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1; band < (definition->attitude == NPC_AGGRESSIVE ? 16 : 0); ++band)
+            for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1;
+                band < (definition->attitude == NPC_AGGRESSIVE ? definition->cavebands : 0); ++band)
             {
-                if(band >= 0 && ((band + 1) * 32 * GAMEUNITSPERMETER + definition->height < player1->o.z - simulationdistance ||
-                                 band * 32 * GAMEUNITSPERMETER > player1->o.z + simulationdistance)) continue;
                 passivenpcspawn spawns[16];
                 const int count = generatepassivenpcgroup(*definition, getworldseed(), cellx, celly, spawns, 16, band);
                 if(!count) continue;
+                if(band >= 0 && (spawns[0].bandtop * GAMEUNITSPERMETER + definition->height < player1->o.z - simulationdistance ||
+                                 spawns[0].bandbottom * GAMEUNITSPERMETER > player1->o.z + simulationdistance)) continue;
                 vec anchor((spawns[0].blockx + 0.5f) * GAMEUNITSPERMETER, (spawns[0].blocky + 0.5f) * GAMEUNITSPERMETER, player1->o.z);
                 worldpositiontolocal(anchor);
                 if(anchor.squaredist(player1->o) > simulationdistancesquared) continue;

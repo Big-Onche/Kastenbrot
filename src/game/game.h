@@ -228,14 +228,14 @@ struct npcdropdefinition
 struct npcdefinition
 {
     string id, name, model;
-    int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, fleeonhitmillis;
+    int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, cavebands, fleeonhitmillis;
     float damage, speed, wanderradius, aggrodist, fleedist, radius, height, rootheight, spawnchance, fleespeed, herdradius;
     vector<npcdropdefinition> drops;
 
     npcdefinition(const char *id = "")
         : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), modeltype(NPC_MODEL_HUMANOID), naturalbiome(-1),
-          groupmin(1), groupmax(1), fleeonhitmillis(0), damage(1), speed(40), wanderradius(8), aggrodist(16), fleedist(12), radius(4.1f),
-          height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0)
+          groupmin(1), groupmax(1), cavebands(0), fleeonhitmillis(0), damage(1), speed(40), wanderradius(8), aggrodist(16), fleedist(12),
+          radius(4.1f), height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0)
     {
         copystring(this->id, id);
         copystring(name, id);
@@ -246,17 +246,18 @@ struct npcdefinition
 enum
 {
     PASSIVE_NPC_CELL_BLOCKS = 32,
-    PASSIVE_NPC_GROUP_RADIUS_BLOCKS = 6
+    PASSIVE_NPC_GROUP_RADIUS_BLOCKS = 6,
+    NPC_WORLD_HEIGHT_BLOCKS = 512
 };
 
 struct passivenpcspawn
 {
     ullong key;
-    int blockx, blocky, band;
+    int blockx, blocky, band, bandbottom, bandtop;
     uint grouproll;
     float yaw;
 
-    passivenpcspawn() : key(0), blockx(0), blocky(0), band(-1), grouproll(0), yaw(0) {}
+    passivenpcspawn() : key(0), blockx(0), blocky(0), band(-1), bandbottom(0), bandtop(0), grouproll(0), yaw(0) {}
 };
 
 enum
@@ -317,7 +318,7 @@ static bool findcavenpcfloor(const passivenpcspawn &spawn, int surface, int seal
         {1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, 1}, {-1, -1}, {1, -1},
         {2, 1}, {1, 2}, {-1, 2}, {-2, 1}, {-2, -1}, {-1, -2}, {1, -2}, {2, -1}
     };
-    const int top = min((spawn.band + 1) * 32 - 1, surface - 4), bottom = max(spawn.band * 32, 1);
+    const int top = min(spawn.bandtop - 1, surface - 4), bottom = max(spawn.bandbottom, 1);
     const float roll = float(spawn.grouproll & 0xFFFFFFU) / 16777216.0f;
     const float maximumchance = 0.15f + 0.70f * min(max(sealevel - bottom, 0) / 128.0f, 1.0f);
     if(top < bottom || roll >= maximumchance) return false;
