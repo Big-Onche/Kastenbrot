@@ -8,24 +8,25 @@ static void localambientfieldchanged();
 static void localambientgichanged();
 
 VARFP(localambient, 0, 0, 1, localambienttogglechanged());
-VARFP(localambientresolution, 4, 16, 128, localambientfieldchanged());
-VARFP(localambientmaxdist, 64, 512, 4096, localambientfieldchanged());
-VARFP(localambientattenuation, 1, 16, 255, localambientfieldchanged());
-FVARFP(localambientverticalbias, 0, 0.25f, 1, localambientfieldchanged());
-FVARP(localambientstrength, 0, 1, 1);
-FVARP(localambientmin, 0, 0.04f, 1);
-VARP(localambientgpupasses, 0, 0, 64);
+VARF(localambientresolution, 4, 16, 128, localambientfieldchanged());
+VARF(localambientmaxdist, 64, 1024, 4096, localambientfieldchanged());
+VARF(localambientattenuation, 1, 4, 255, localambientfieldchanged());
+FVARF(localambientverticalbias, 0, 0.25f, 1, localambientfieldchanged());
+FVAR(localambientstrength, 0, 1, 1);
+FVAR(localambientmin, 0, 0.04f, 1);
+VAR(localambientgpupasses, 0, 0, 64);
+
 VARFP(localambientgi, 0, 1, 1, localambientgichanged());
-FVARP(localambientgiintensity, 0, 0.75, 2);
-VARFP(localambientgipasses, 0, 6, 32, localambientgichanged());
-FVARFP(localambientgidecay, 0, 0.80f, 1, localambientgichanged());
-FVARP(localambientgisaturation, 0, 1.5f, 3);
-FVARP(localambientgimax, 0, 0.50f, 4);
-VARP(localambientcapturecells, 4096, 131072, 524288);
-VARP(localambientscroll, 0, 1, 1);
-VARP(localambientscrollstep, 1, 4, 32);
-FVARP(localambientdeadzone, 0.1f, 0.5f, 0.9f);
-VARP(localambientdebug, 0, 0, 2);
+FVAR(localambientgiintensity, 0, 0.75, 2);
+VARF(localambientgipasses, 0, 6, 32, localambientgichanged());
+FVARF(localambientgidecay, 0, 0.80f, 1, localambientgichanged());
+FVAR(localambientgisaturation, 0, 1.5f, 3);
+FVAR(localambientgimax, 0, 0.50f, 4);
+VAR(localambientcapturecells, 4096, 131072, 524288);
+VAR(localambientscroll, 0, 1, 1);
+VAR(localambientscrollstep, 1, 4, 32);
+FVAR(localambientdeadzone, 0.1f, 0.5f, 0.9f);
+VAR(localambientdebug, 0, 0, 2);
 
 enum
 {
