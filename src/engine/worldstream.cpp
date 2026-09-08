@@ -2258,6 +2258,10 @@ static void rebuildworldchunks(int chunkx, int chunky, int aheadx, int aheady, b
             ZoneScopedN("Chunks/Rebuild all geometry");
             calcmerges();
             allchanged(worldfolder[0] != '\0');
+            // Bootstrap may contain no liquid surfaces. Warm the generated world's
+            // water/lava resources here so the first exposed tile does not load
+            // textures or compile shaders inside the streaming time budget.
+            preloadmaterials((1 << MAT_WATER) | (1 << MAT_LAVA));
             worldgeometryinitialized = true;
         }
     }

@@ -482,6 +482,7 @@ void preloadglassshaders(bool force = false)
 
 void setupmaterials(int start, int len)
 {
+    ZoneScopedN("Geometry/Setup materials");
     int hasmat = 0;
     if(!len) len = valist.length();
     for(int i = start; i < len; i++)
@@ -534,6 +535,13 @@ void setupmaterials(int start, int len)
                 skip = &m;
         }
     }
+    preloadmaterials(hasmat);
+}
+
+void preloadmaterials(int hasmat)
+{
+    ZoneScopedN("Geometry/Preload material resources");
+    ZoneValue(hasmat);
     if(hasmat&(0xF<<MAT_WATER))
     {
         loadcaustics(true);

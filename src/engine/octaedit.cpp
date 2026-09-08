@@ -649,7 +649,10 @@ int processstreaminggeometry(double budget, int uploadlimit, bool editsonly)
         return 0;
     }
     int completed = 0;
-    entitiesinoctanodes();
+    {
+        ZoneScopedN("Geometry/Reinsert entities");
+        entitiesinoctanodes();
+    }
     const bool wasinbetween = inbetweenframes;
     inbetweenframes = false;
     while(editinggeometry.length() || (!editsonly && streaminggeometry.length()))
@@ -703,11 +706,23 @@ int processstreaminggeometry(double budget, int uploadlimit, bool editsonly)
     {
         // Batch small tiles without retaining staging VA pointers across frames.
         // Admission above counts both uploaded and staged bytes against the cap.
-        flushvbo();
+        {
+            ZoneScopedN("Geometry/Flush vertex buffers");
+            flushvbo();
+        }
         // Global housekeeping runs once per slice, never once per section/tile.
-        resetclipplanes();
-        clearshadowcache();
-        updatevabbs();
+        {
+            ZoneScopedN("Geometry/Reset clip planes");
+            resetclipplanes();
+        }
+        {
+            ZoneScopedN("Geometry/Clear shadow cache");
+            clearshadowcache();
+        }
+        {
+            ZoneScopedN("Geometry/Update VA bounds");
+            updatevabbs();
+        }
     }
     inbetweenframes = wasinbetween;
     TracyPlot("Chunks/Pending mesh tiles", int64_t(streaminggeometry.length()));
