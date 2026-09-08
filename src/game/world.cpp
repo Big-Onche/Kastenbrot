@@ -616,14 +616,20 @@ namespace game
         return clamp(int(floor(settings.sealevel + elevation + 0.5f)), -255, 255);
     }
 
+    void worldgenerator::climate(int x, int y, float &temperaturevalue, float &moisturevalue) const
+    {
+        const float noisex = x + 10000.5f, noisey = y - 10000.5f;
+        const float variation = biomevariation.GetNoise(noisex, noisey);
+        temperaturevalue = temperature.GetNoise(noisex, noisey) + variation * settings.biomevariationstrength;
+        moisturevalue = clamp(moisture.GetNoise(noisex, noisey) - variation * settings.biomevariationstrength, -1.0f, 1.0f);
+    }
+
     int worldgenerator::biome(int x, int y, int height) const
     {
         if(height < settings.sealevel) return WORLD_BIOME_OCEAN;
-
+        float temperaturevalue, moisturevalue;
+        climate(x, y, temperaturevalue, moisturevalue);
         const float noisex = x + 10000.5f, noisey = y - 10000.5f;
-        const float variation = biomevariation.GetNoise(noisex, noisey);
-        const float temperaturevalue = temperature.GetNoise(noisex, noisey) + variation * settings.biomevariationstrength;
-        const float moisturevalue = clamp(moisture.GetNoise(noisex, noisey) - variation * settings.biomevariationstrength, -1.0f, 1.0f);
 
         if(settings.biomeblend <= 0)
         {

@@ -152,6 +152,8 @@
 			<Add alias="All" targets="debug64;client64;" />
 		</VirtualTargets>
 		<Unit filename="../engine/aa.cpp" />
+		<Unit filename="../engine/acoustics.cpp" />
+		<Unit filename="../engine/acoustics.h" />
 		<Unit filename="../engine/animmodel.h" />
 		<Unit filename="../engine/bih.cpp" />
 		<Unit filename="../engine/bih.h" />
@@ -204,8 +206,6 @@
 		<Unit filename="../engine/shader.cpp" />
 		<Unit filename="../engine/skelmodel.h" />
 		<Unit filename="../engine/smd.h" />
-		<Unit filename="../engine/acoustics.cpp" />
-		<Unit filename="../engine/acoustics.h" />
 		<Unit filename="../engine/sound.cpp" />
 		<Unit filename="../engine/stain.cpp" />
 		<Unit filename="../engine/textedit.h" />
@@ -236,6 +236,8 @@
 			<Option compile="0" />
 			<Option link="0" />
 		</Unit>
+		<Unit filename="../game/ambient.cpp" />
+		<Unit filename="../game/ambient.h" />
 		<Unit filename="../game/client.cpp" />
 		<Unit filename="../game/entities.cpp" />
 		<Unit filename="../game/environment.cpp" />

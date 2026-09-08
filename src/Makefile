@@ -119,6 +119,7 @@ CLIENT_OBJS= \
 	engine/worlddef.o \
 	engine/worldio.o \
 	game/client.o \
+	game/ambient.o \
 	game/entities.o \
 	game/environment.o \
 	game/game.o \
@@ -502,7 +503,8 @@ game/entities.o: shared/glemu.h shared/iengine.h shared/igame.h
 game/environment.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
 game/environment.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/environment.o: shared/iengine.h shared/igame.h
-game/game.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
+game/ambient.o: game/game.h game/ambient.h game/weather.h game/world.h shared/cube.h shared/iengine.h include/FastNoiseLite.h
+game/game.o: game/game.h game/weather.h game/ambient.h shared/cube.h shared/tools.h shared/geom.h
 game/game.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/game.o: shared/iengine.h shared/igame.h
 game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h shared/geom.h

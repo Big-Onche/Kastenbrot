@@ -408,6 +408,17 @@ namespace game
             return smoothstep(start, end, value);
         }
 
+        static float samplesnowblend(float height)
+        {
+            const float range = max(weatherprecipitationsnowblendheight, 1.0f);
+            return smoothstep(worldsnowheight - range, worldsnowheight + range, height);
+        }
+
+        float samplecurrentrain(float x, float y, float height)
+        {
+            return weatherprecipitation ? samplecurrentprecipitation(x, y) * (1.0f - samplesnowblend(height)) : 0.0f;
+        }
+
         void addparticles()
         {
             if(!weatherprecipitation || mainmenu || !camera1 || !player1 || curtime <= 0)
@@ -428,8 +439,7 @@ namespace game
                 return;
             }
 
-            const float snowrange = max(weatherprecipitationsnowblendheight, 1.0f);
-            const float snowblend = smoothstep(worldsnowheight - snowrange, worldsnowheight + snowrange, playerheight);
+            const float snowblend = samplesnowblend(playerheight);
             const float frameamount = MAIN_RATE * intensity * min(curtime, 100) / 1000.0f;
             rainbudget += frameamount * RAIN_RATE_MULT * (1.0f - snowblend);
             snowbudget += frameamount * SNOW_RATE_MULT * snowblend;

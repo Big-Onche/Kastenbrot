@@ -18,6 +18,7 @@ namespace game
         int getcoverageversion();
         float samplecoverage(float x, float y);
         float samplecurrentovercast(float x, float y);
+        float samplecurrentrain(float x, float y, float height);
         void addparticles();
     }
 }

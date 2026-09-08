@@ -111,6 +111,7 @@ namespace game
         float fracturecorridor(int x, int y) const;
         int height(int x, int y, worldtectonicsample *tectonics = NULL) const;
         int biome(int x, int y, int height) const;
+        void climate(int x, int y, float &temperaturevalue, float &moisturevalue) const;
         bool cliff(int x, int y, int height) const;
         bool rock(int x, int y, int height) const;
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;

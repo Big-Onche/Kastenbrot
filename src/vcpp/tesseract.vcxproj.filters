@@ -37,6 +37,9 @@
     <ClCompile Include="..\game\environment.cpp">
       <Filter>game</Filter>
     </ClCompile>
+    <ClCompile Include="..\game\ambient.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
     <ClCompile Include="..\game\game.cpp">
       <Filter>game</Filter>
     </ClCompile>

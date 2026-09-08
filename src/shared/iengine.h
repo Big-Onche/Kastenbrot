@@ -653,7 +653,8 @@ enum
     SND_NO_ALT  = 1<<1,
     SND_USE_ALT = 1<<2,
     SND_HUD     = 1<<3,
-    SND_RADIUS  = 1<<4 // Apply radius falloff even when air attenuation is enabled.
+    SND_RADIUS  = 1<<4, // Apply radius falloff even when air attenuation is enabled.
+    SND_AMBIENT = 1<<5 // Procedural source with its own coverage radius.
 };
 
 namespace sound
@@ -680,6 +681,17 @@ extern void preloadsound(int n);
 extern void preloadmapsound(int n);
 extern bool stopsound(int n, int chanid, int fade = 0);
 extern void stopsounds();
+// Opaque managed-loop handles remain safe when channels are stolen or the backend resets.
+extern uint startambientloop(const char *name, const vec *position, uint seed, int radius);
+extern bool updateambientloop(uint handle, float gain, const vec *position);
+extern void stopambientloop(uint handle);
+struct ambientplacement
+{
+    ivec key;
+    vec position;
+    bool cave;
+};
+extern int scanambientsection(int cursor, ambientplacement &placement);
 extern void clearsoundentities();
 extern void initsound();
 

@@ -62,6 +62,7 @@
 		D1FCB16F18832B7500AFC227 /* client.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB12A18832B7500AFC227 /* client.cpp */; };
 		D1FCB17018832B7500AFC227 /* entities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB12C18832B7500AFC227 /* entities.cpp */; };
 		E17A000118832B7500AFC227 /* environment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E17A000218832B7500AFC227 /* environment.cpp */; };
+		A8B1000118832B7500AFC227 /* ambient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A8B1000218832B7500AFC227 /* ambient.cpp */; };
 		E17A000318832B7500AFC227 /* mining.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E17A000418832B7500AFC227 /* mining.cpp */; };
 		E17A000718832B7500AFC227 /* npc.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E17A000618832B7500AFC227 /* npc.cpp */; };
 		D1FCB17118832B7500AFC227 /* game.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB12E18832B7500AFC227 /* game.cpp */; };
@@ -186,6 +187,7 @@
 		D1FCB12C18832B7500AFC227 /* entities.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = entities.cpp; sourceTree = "<group>"; };
 		D1FCB12D18832B7500AFC227 /* extinfo.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = extinfo.h; sourceTree = "<group>"; };
 		E17A000218832B7500AFC227 /* environment.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = environment.cpp; sourceTree = "<group>"; };
+		A8B1000218832B7500AFC227 /* ambient.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ambient.cpp; sourceTree = "<group>"; };
 		E17A000418832B7500AFC227 /* mining.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = mining.cpp; sourceTree = "<group>"; };
 		E17A000518832B7500AFC227 /* mining.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = mining.h; sourceTree = "<group>"; };
 		E17A000618832B7500AFC227 /* npc.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = npc.cpp; sourceTree = "<group>"; };
@@ -437,6 +439,7 @@
 				D1FCB12C18832B7500AFC227 /* entities.cpp */,
 				D1FCB12D18832B7500AFC227 /* extinfo.h */,
 				E17A000218832B7500AFC227 /* environment.cpp */,
+				A8B1000218832B7500AFC227 /* ambient.cpp */,
 				D1FCB12E18832B7500AFC227 /* game.cpp */,
 				D1FCB12F18832B7500AFC227 /* game.h */,
 				E17A000418832B7500AFC227 /* mining.cpp */,
@@ -597,6 +600,7 @@
 				D1FCB16F18832B7500AFC227 /* client.cpp in Sources */,
 				D1FCB17018832B7500AFC227 /* entities.cpp in Sources */,
 				E17A000118832B7500AFC227 /* environment.cpp in Sources */,
+				A8B1000118832B7500AFC227 /* ambient.cpp in Sources */,
 				D1FCB17118832B7500AFC227 /* game.cpp in Sources */,
 				E17A000318832B7500AFC227 /* mining.cpp in Sources */,
 				E17A000718832B7500AFC227 /* npc.cpp in Sources */,

@@ -7,6 +7,7 @@
 
 #ifndef STANDALONE
 #include "weather.h"
+#include "ambient.h"
 #include "worlddef.h"
 extern int mainmenu;
 extern int initing;
@@ -805,6 +806,7 @@ namespace game
         }
 #ifndef STANDALONE
         loopv(players) updatefootsteps(players[i]);
+        ambience::update();
         updatewatersimulation();
         {
             ZoneScopedN("World/Player actions");
@@ -1015,6 +1017,7 @@ namespace game
         if(pendingnetworkworld) environment::synctime(pendingnetworktime, pendingnetworkfrozen);
         else environment::reset();
         sound::contextMusicWorldLoaded();
+        ambience::reset();
         if(!initing)
         {
             if(!localworldactive && !remote && !isconnected()) localconnect();
@@ -5322,6 +5325,7 @@ namespace game
     void gameplayhud(int w, int h)
     {
 #ifndef STANDALONE
+        ambience::drawhud();
         if(!player1 || player1->state != CS_ALIVE) return;
 
         const char *hotbar = m_survival ? "survival_hotbar" : m_creative ? "creative_hotbar" : NULL;
@@ -5410,6 +5414,7 @@ namespace game
     {
 #ifndef STANDALONE
         weather::addparticles();
+        ambience::addparticles();
 #endif
         addworldtorchparticles();
         loopv(players)

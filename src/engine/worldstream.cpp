@@ -2858,5 +2858,72 @@ static cube *prepareworldchunk(worldchunkjob &job)
     return root;
 }
 
+static void ambientsectionair(const cube &c, const ivec &origin, int size, const vec &center,
+                              vec &position, float &best, bool &solid, bool &air)
+{
+    if(c.children)
+    {
+        loopi(8) ambientsectionair(c.children[i], ivec(i, origin, size / 2), size / 2, center, position, best, solid, air);
+        return;
+    }
+    if(!isempty(c)) { solid = true; return; }
+    air = true;
+    vec candidate(origin);
+    candidate.add(size * 0.5f);
+    float score = candidate.dist(center) - size * 0.25f;
+    if(score < best) { best = score; position = candidate; }
+}
+
+int scanambientsection(int cursor, ambientplacement &placement)
+{
+    placement.key = ivec(0, 0, -1);
+    const int perchunk = WORLD_SECTION_LAYERS * WORLD_SECTION_TILES;
+    if(cursor < 0 || cursor >= worldchunks.length() * perchunk) return 0;
+    const worldchunk &chunk = worldchunks[cursor / perchunk];
+    const int tile = cursor % WORLD_SECTION_TILES, section = (cursor % perchunk) / WORLD_SECTION_TILES;
+    ++cursor;
+    vec listener(camera1->o);
+    worldpositiontoabsolute(listener);
+    if(chunk.loading || chunk.corrupted || !chunk.root ||
+       max(abs(chunk.x - int(floorf(listener.x / WORLD_CHUNK_SIZE))),
+           abs(chunk.y - int(floorf(listener.y / WORLD_CHUNK_SIZE)))) > maxchunkdist) return cursor;
+    ivec local((tile % WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE,
+               (tile / WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE);
+    const cube &c = chunk.mountedtiles[section] & (1U << tile) ?
+                    lookupcube(ivec(worldchunkorigin(chunk)).add(local), WORLD_SECTION_SIZE) :
+                    lookupworldchunkcube(chunk, local, WORLD_SECTION_SIZE);
+    bool solid = false, air = false;
+    float best = 1e16f;
+    vec position, center = vec(local).add(WORLD_SECTION_SIZE * 0.5f);
+    ambientsectionair(c, local, WORLD_SECTION_SIZE, center, position, best, solid, air);
+    if(!air) return cursor;
+    if(!solid)
+    {
+        // Flat terrain can end exactly on a section boundary. Its adjoining air section
+        // still needs a ground source, unlike an air section with no floor.
+        vec floorpoint(worldchunkorigin(chunk));
+        floorpoint.add(vec(local)).add(vec(WORLD_SECTION_SIZE / 2, WORLD_SECTION_SIZE / 2, -1));
+        int bottom;
+        if(local.z <= 0 || !sampleworldsolid(ivec(floorpoint), bottom)) return cursor;
+    }
+    position.x += chunk.x * float(WORLD_CHUNK_SIZE);
+    position.y += chunk.y * float(WORLD_CHUNK_SIZE);
+    vec runtime(position);
+    worldpositiontolocal(runtime);
+    int roof = -1;
+    if(!sampleworldcolumnroof(ivec(runtime), roof)) return cursor;
+    placement.cave = roof >= 0;
+    int floor = int(runtime.z), bottom = 0;
+    while(floor > 0 && !sampleworldsolid(ivec(int(runtime.x), int(runtime.y), floor - 1), bottom))
+        floor = max(bottom, ((floor - 1) / WORLD_SECTION_SIZE) * WORLD_SECTION_SIZE);
+    floor = max(floor, 0);
+    runtime.z = placement.cave ? (floor + roof) * 0.5f : floor + 5 * WORLD_BLOCK_SIZE;
+    if(sampleworldsolid(ivec(runtime), bottom)) return cursor;
+    worldpositiontoabsolute(runtime);
+    placement.position = runtime;
+    placement.key = ivec(chunk.x * WORLD_SECTION_COLUMNS + tile % WORLD_SECTION_COLUMNS,
+                         chunk.y * WORLD_SECTION_COLUMNS + tile / WORLD_SECTION_COLUMNS, section);
+    return cursor;
+}
 
 #endif
