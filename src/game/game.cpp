@@ -7,6 +7,7 @@
 
 #ifndef STANDALONE
 #include "weather.h"
+#include "worlddef.h"
 extern int mainmenu;
 extern int initing;
 extern int simulationmaxdist;
@@ -673,6 +674,65 @@ namespace game
         }
     }
 
+    static void updatefootsteps(gameent *d)
+    {
+#ifndef STANDALONE
+        const float speed = horizontalmeterspersecond(d);
+        if(d->state != CS_ALIVE || d->inwater)
+        {
+            d->footstepdistance = 0;
+            d->footstepairborne = false;
+            return;
+        }
+        const bool grounded = d->physstate >= PHYS_SLOPE && d->physstate <= PHYS_STEP_DOWN,
+                   landed = d->footstepairborne && grounded;
+        d->footstepairborne = d->physstate == PHYS_FALL || d->physstate == PHYS_SLIDE;
+        if(landed) d->footstepdistance = 0;
+        if(!landed && speed < 0.1f)
+        {
+            d->footstepdistance = 0;
+            return;
+        }
+        // Allow half a cube of clearance below the feet, including support at the footprint edges.
+        const float heighttolerance = 8.0f, probeheight = 2.0f, proberange = probeheight + heighttolerance + 0.1f;
+        const vec feet = d->feetpos();
+        const float offsets[5][2] = { {0, 0}, {0.7f, 0}, {-0.7f, 0}, {0, 0.7f}, {0, -0.7f} };
+        loopi(5)
+        {
+            vec origin(feet), hit;
+            origin.x += offsets[i][0] * d->radius;
+            origin.y += offsets[i][1] * d->radius;
+            origin.z += probeheight;
+            const float distance = raycubepos(origin, vec(0, 0, -1), hit, proberange, RAY_CLIPMAT | RAY_POLY);
+            if(distance >= proberange || feet.z - hit.z > heighttolerance) continue;
+            vec inside(hit);
+            inside.z -= 0.1f;
+            if(!insideworld(inside)) continue;
+            const int index = getworldcubeindexat(ivec(inside), WORLD_ORIENT_TOP);
+            if(!worldcubedefinitions.inrange(index)) continue;
+            const worlddefinition &block = *worldcubedefinitions[index];
+            if(!block.footstepsound[0] || block.footstepvariants <= 0)
+            {
+                d->footstepdistance = 0;
+                return;
+            }
+            // Landing is an immediate step, including vertical jumps with no horizontal movement.
+            if(!landed)
+            {
+                // One step per 3.2 metres: half the previous cadence, still proportional to velocity.
+                d->footstepdistance += speed * min(curtime, 200) / 1000.0f;
+                if(d->footstepdistance < 3.2f) return;
+                d->footstepdistance = fmodf(d->footstepdistance, 3.2f);
+            }
+            defformatstring(sample, "%s%d", block.footstepsound, 1 + rnd(block.footstepvariants));
+            hit.z += 1.0f; // Keep the acoustic source above the solid surface.
+            playsoundname(sample, &hit, 100, SND_RADIUS, 0, 0, -1, 192);
+            return;
+        }
+        d->footstepdistance = 0;
+#endif
+    }
+
     void updateworld()
     {
 #ifndef STANDALONE
@@ -743,6 +803,7 @@ namespace game
             updateworldchunks();
         }
 #ifndef STANDALONE
+        loopv(players) updatefootsteps(players[i]);
         updatewatersimulation();
         {
             ZoneScopedN("World/Player actions");

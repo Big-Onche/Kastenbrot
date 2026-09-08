@@ -36,6 +36,8 @@ struct wornslotdefinition
 
 struct worlddefinition
 {
+    string footstepsound;
+    int footstepvariants;
     string id, name, texture, icon, cubetexture, sidetexture, bottom, bottomtexture, model, modelicon, lightcolor;
     string preferredtool, tooltype, equipmentslots;
     ullong persistentid;

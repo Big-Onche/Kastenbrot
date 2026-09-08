@@ -474,6 +474,8 @@ struct chunkdropstate
 
 struct gameent : dynent
 {
+    float footstepdistance;
+    bool footstepairborne;
     int clientnum, privilege, ping, lastupdate, plag;
     editinfo *edit;
     float deltayaw, deltapitch, deltaroll, newyaw, newpitch, newroll;
@@ -486,7 +488,7 @@ struct gameent : dynent
     bool renderattacking, rendereating, renderplacetoggle, renderactioninitialized;
     string name;
 
-    gameent() : clientnum(-1), privilege(0), ping(0), lastupdate(0), plag(0), edit(NULL),
+    gameent() : footstepdistance(0), footstepairborne(false), clientnum(-1), privilege(0), ping(0), lastupdate(0), plag(0), edit(NULL),
                 deltayaw(0), deltapitch(0), deltaroll(0), newyaw(0), newpitch(0), newroll(0),
                 renderbodyyaw(0), rendercrouch(0), renderstridephase(0), renderattackreleasepitch(0),
                 smoothmillis(-1), renderbodyyawmillis(-1), rendercrouchmillis(-1),

@@ -1327,13 +1327,13 @@ namespace sound
         string filename;
         loopi(sizeof(exts)/sizeof(exts[0]))
         {
-            formatstring(filename, "packages/sound/%s%s%s", dir, name, exts[i]);
+            formatstring(filename, "media/sound/%s%s%s", dir, name, exts[i]);
             if(msg && !i) renderprogress(0, filename);
             path(filename);
             if(loadSoundFile(filename, buffer)) return true;
         }
 
-        conoutf(CON_ERROR, "failed to load sample: packages/sound/%s%s", dir, name);
+        conoutf(CON_ERROR, "failed to load sample: media/sound/%s%s", dir, name);
         return false;
     }
 
@@ -1889,6 +1889,7 @@ namespace sound
             }
             bool mapSoundInRadius = !(chan.flags&SND_MAP) || rad <= 0 || dist <= rad;
             if((chan.flags&SND_MAP) && rad > 0) volf *= mapSoundRadiusGain(dist, float(rad), inner);
+            else if((chan.flags&SND_RADIUS) && rad > 0) volf *= 1.0f - clamp(attenDist/rad, 0.0f, 1.0f);
             else if(!soundairattenuation && rad > 0) volf -= clamp(attenDist/rad, 0.0f, 1.0f);
             acoustics::AcousticSourceInfo acousticInfo;
             if(acoustics::soundacoustics && acousticPropagatedSound(chan) && mapSoundInRadius)

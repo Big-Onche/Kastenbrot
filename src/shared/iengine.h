@@ -652,7 +652,8 @@ enum
     SND_MAP     = 1<<0,
     SND_NO_ALT  = 1<<1,
     SND_USE_ALT = 1<<2,
-    SND_HUD     = 1<<3
+    SND_HUD     = 1<<3,
+    SND_RADIUS  = 1<<4 // Apply radius falloff even when air attenuation is enabled.
 };
 
 namespace sound

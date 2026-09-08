@@ -6,7 +6,7 @@
 
 namespace acoustics
 {
-    VARP(soundacoustics, 0, 0, 1);
+    VARP(soundacoustics, 0, 1, 1);
     VAR(soundacousticsmooth, 0, 250, 2000);
 
     FVAR(soundacousticrange, 4.0f, 512.0f, 1024.0f);
