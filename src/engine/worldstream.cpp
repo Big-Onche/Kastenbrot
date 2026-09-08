@@ -403,6 +403,7 @@ void clearworldchunks()
 {
     worldgeometryinitialized = false;
     ZoneScopedN("Chunks/Clear all chunks");
+    resetlocalambient();
     resetgeometrychanges();
     cancelworldedit();
     clearworldscattererentities();
@@ -2089,6 +2090,8 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
 static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = true)
 {
     ZoneScopedN("Chunks/Rebase runtime world");
+    // Cached cells and captures belong to the old runtime coordinate system.
+    resetlocalambient();
     resetgeometrychanges();
     ZoneTextF("%d_%d", chunkx, chunky);
     invalidateworldsectionvisibility();

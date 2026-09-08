@@ -200,8 +200,9 @@ void invalidatelocalambient(const ivec &minimum, const ivec &maximum)
 {
     if(!localambient) return;
     if(minimum.x >= maximum.x || minimum.y >= maximum.y || minimum.z >= maximum.z) return;
-    nextlocalambientserial();
-    discardlocalambientcapture();
+    // Finish the current capture and queue changes for the next one. Its dirty
+    // bounds were consumed when it started, so cancelling it loses that work
+    // (and continuous chunk publication can prevent any capture from finishing).
     localambientdirty = true;
     if(localambientdirtyregions < INT_MAX) localambientdirtyregions++;
     if(localambientdirtyfull) return;
@@ -913,6 +914,7 @@ static void propagatelocalambientgpu()
     loopi(3) bindlocalambientcomputetexture(i, 0);
     glActiveTexture_(GL_TEXTURE0);
     glUseProgram_(0);
+    Shader::lastshader = NULL;
 
     localambientgpuready = true;
     localambientbootstrap = false;
@@ -934,6 +936,13 @@ static void propagatelocalambientgpu()
 static bool uploadlocalambientgpu(localambientjob &job)
 {
     if(!copylocalambientjobfields(job)) return false;
+    if(job.scroll)
+    {
+        // The CPU field has moved, but the rendered volume still uses its old
+        // origin. Publish the entire shifted field only after every slab is real.
+        if(localambientscrollregionindex + 1 < localambientscrollregioncount) return true;
+        return queuelocalambientgpu(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation);
+    }
     return queuelocalambientgpu(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation, &job);
 }
 
@@ -1002,12 +1011,8 @@ static bool scrolllocalambientgpufield(const ivec &origin)
 
     nextlocalambientserial();
     buildlocalambientscrollregions(shift, localambientfielddimensions);
-    const int downwardattenuation = max(int(ceilf(localambientattenuation * (1.0f - 0.75f * localambientverticalbias))), 1);
-    // Re-upload the shifted CPU fields instead of recycling propagation textures as
-    // image-store destinations. The latter can leave the sampled volume registered
-    // to the previous origin on some drivers, displacing occupancy by one scroll step.
-    if(!queuelocalambientgpu(origin, localambientfielddimensions, localambientfieldresolution, localambientattenuation,
-                             downwardattenuation)) return false;
+    // Keep rendering the previous complete volume while the exposed slabs are
+    // captured over subsequent frames. uploadlocalambientgpu publishes them together.
 
     int refreshcells = 0;
     loopi(localambientscrollregioncount)
