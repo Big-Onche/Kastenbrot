@@ -713,6 +713,8 @@ void Shader::bindprograms()
 
 bool Shader::compile()
 {
+    ZoneScopedN("Assets/Compile shader");
+    ZoneText(name, strlen(name));
     if(!vsstr) vsobj = !reusevs || reusevs->invalid() ? 0 : reusevs->vsobj;
     else compileglslshader(*this, GL_VERTEX_SHADER,   vsobj, vsstr, name, dbgshader || !variantshader);
     if(!psstr) psobj = !reuseps || reuseps->invalid() ? 0 : reuseps->psobj;

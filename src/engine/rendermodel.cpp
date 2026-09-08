@@ -505,12 +505,14 @@ hashset<char *> failedmodels;
 
 void preloadmodel(const char *name)
 {
-    if(!name || !name[0] || models.access(name) || preloadmodels.htfind(name) >= 0) return;
+    // A cached model can still have cold GPU buffers, shaders, or collision data.
+    if(!name || !name[0] || preloadmodels.htfind(name) >= 0) return;
     preloadmodels.add(newstring(name));
 }
 
 void flushpreloadedmodels(bool msg)
 {
+    ZoneScopedN("Assets/Preload models");
     loopv(preloadmodels)
     {
         loadprogress = float(i+1)/preloadmodels.length();
@@ -518,8 +520,10 @@ void flushpreloadedmodels(bool msg)
         if(!m) { if(msg) conoutf(CON_WARN, "could not load model: %s", preloadmodels[i]); }
         else
         {
+            m->preloadBIH();
             m->preloadmeshes();
             m->preloadshaders();
+            if(m->collidemodel) preloadmodel(m->collidemodel);
         }
     }
     preloadmodels.deletearrays();
@@ -582,6 +586,8 @@ model *loadmodel(const char *name, int i, bool msg)
     else
     {
         if(!name[0] || loadingmodel || failedmodels.find(name, NULL)) return NULL;
+        ZoneScopedN("Assets/Load model");
+        ZoneText(name, strlen(name));
         if(msg)
         {
             defformatstring(filename, "media/model/%s", name);

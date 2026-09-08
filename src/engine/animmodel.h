@@ -167,7 +167,7 @@ struct animmodel : model
             if(envmapped()) LOCALPARAMF(envmapscale, envmapmin-envmapmax, envmapmax);
         }
 
-        Shader *loadshader(bool usealphatest)
+        Shader *loadshader(bool usealphatest, bool reflect = shadowmapping == SM_REFLECT)
         {
             #define DOMODELSHADER(name, body) \
                 do { \
@@ -178,7 +178,7 @@ struct animmodel : model
             #define LOADMODELSHADER(name) DOMODELSHADER(name, return name##shader)
             #define SETMODELSHADER(m, name) DOMODELSHADER(name, (m).setshader(name##shader))
 
-            if(shadowmapping == SM_REFLECT)
+            if(reflect)
             {
                 if(usealphatest == alphatested() && rsmshader) return rsmshader;
 
@@ -228,9 +228,17 @@ struct animmodel : model
 
         void preloadshader()
         {
-            loadshader(alphatested());
-            useshaderbyname(alphatested() && owner->model->alphashadow ? "alphashadowmodel" : "shadowmodel");
-            if(useradiancehints()) useshaderbyname(alphatested() ? "rsmalphamodel" : "rsmmodel");
+            // Skin overrides (held cubes, for example) can change whether the
+            // diffuse texture has alpha. Preload both variants when permitted.
+            loadshader(false, false);
+            if(alphatest > 0) loadshader(true, false);
+            useshaderbyname("shadowmodel");
+            if(alphatest > 0 && owner->model->alphashadow) useshaderbyname("alphashadowmodel");
+            if(useradiancehints())
+            {
+                loadshader(false, true);
+                if(alphatest > 0) loadshader(true, true);
+            }
         }
 
         void setshader(mesh &m, const animstate *as, bool usealphatest)

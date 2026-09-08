@@ -773,6 +773,34 @@ static void prebakelocalambientgialbedo()
     invalidatelocalambient();
 }
 
+void preloadworldassets()
+{
+    if(worldcubedefinitions.empty()) return;
+    ZoneScopedN("Assets/Preload world assets");
+    renderprogress(0, "preloading world assets...");
+
+    // Geometry slots were loaded for GI above. Held/dropped cubes and UI images
+    // use the separate unfiltered texture cache, so warm those exact paths too.
+    loopv(worldcubedefinitions) loopj(3) textureload(getworldcubetexture(i, j), 0, true, true, true);
+    loopv(inventoryitemdefinitions)
+    {
+        const char *icon = getinventoryitemicon(i);
+        if(icon[0]) textureload(icon, 3, true, true, true);
+    }
+    loopv(worldscatterdefinitions)
+    {
+        preloadmodel(worldscatterdefinitions[i]->model);
+        const worldscatterrenderdefinition &render = worldscatterrenderdefinitions[i];
+        if(render.texture[0]) textureload(render.texture, 3, true, true, true);
+    }
+    useshaderbyname("scatterworld");
+    useshaderbyname("smscatter");
+    game::preload();
+    flushpreloadedmodels();
+    preloadhud();
+    preloadmaterials((0xF << MAT_WATER) | (0xF << MAT_LAVA) | (0xF << MAT_GLASS));
+}
+
 static bool loadworlddefinitions(bool assets = true)
 {
     worldreset();
@@ -926,7 +954,7 @@ static bool loadworlddefinitions(bool assets = true)
     worldtulipscatter = getworldscatteridindex("tulip");
     worlddandelionscatter = getworldscatteridindex("dandelion");
     setworldleavesalpha(worldroot, leavesalpha != 0);
-    game::preloaditemsprites();
+    preloadworldassets();
     conoutf(CON_DEBUG, "loaded %d inventory item, %d world cube, and %d world object definitions",
             inventoryitemdefinitions.length(), worldcubedefinitions.length(), worldscatterdefinitions.length());
     return true;

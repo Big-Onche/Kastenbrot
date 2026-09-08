@@ -923,6 +923,7 @@ void resetgl()
     reloadtextures();
     game::preloaditemsprites();
     allchanged(true);
+    preloadworldassets();
 }
 
 COMMAND(resetgl, "");

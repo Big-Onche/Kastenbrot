@@ -568,6 +568,8 @@ extern float getwatermaterialdrop(const materialsurface &m);
 extern float getwatercornerdrop(int x, int y, int z);
 extern void setupmaterials(int start = 0, int len = 0);
 extern void preloadmaterials(int hasmat);
+extern void preloadhud();
+extern void preloadworldassets();
 extern int findmaterials();
 extern void rendermaterialmask();
 extern void renderliquidmaterials();

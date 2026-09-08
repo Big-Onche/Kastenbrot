@@ -2807,6 +2807,14 @@ void loadcrosshair_(const char *name, int *i)
     loadcrosshair(name, *i);
 }
 
+void preloadhud()
+{
+    ZoneScopedN("Assets/Preload HUD");
+    textureload("media/interface/hud/damage.png", 3);
+    textureload("media/interface/cursor.png", 3, true);
+    loopi(MAXCROSSHAIRS) if(!crosshairs[i] || crosshairs[i] == notexture) loadcrosshair(NULL, i);
+}
+
 COMMANDN(loadcrosshair, loadcrosshair_, "si");
 
 ICOMMAND(getcrosshair, "i", (int *i),

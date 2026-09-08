@@ -1819,6 +1819,8 @@ Texture *textureload(const char *name, int clamp, bool mipit, bool msg, bool unf
     else copystring(tkey, tname);
     Texture *t = textures.access(path(tkey));
     if(t) return t;
+    ZoneScopedN("Assets/Load texture");
+    ZoneText(tkey, strlen(tkey));
     int compress = 0;
     ImageData s;
     if(texturedata(s, tname, msg, &compress, &clamp)) return newtexture(NULL, tkey, s, clamp, mipit, false, false, compress, unfiltered);
@@ -2761,6 +2763,7 @@ void Slot::load(int index, Slot::Tex &t)
 
 void Slot::load()
 {
+    ZoneScopedN("Assets/Load texture slot");
     linkslotshader(*this);
     loopv(sts)
     {

@@ -205,11 +205,22 @@ namespace game
 
     void preloaditemsprites()
     {
+        ZoneScopedN("Assets/Preload item sprites");
         loopi(numinventoryitems())
         {
             const char *source = getinventoryitemtexture(i);
-            if(source[0]) loaditemspritemesh(source);
+            if(source[0])
+            {
+                loaditemspritemesh(source);
+                // Eating particles use the filtered texture cache.
+                defformatstring(filename, "media/texture/%s", source);
+                textureload(filename, 3, true, true);
+            }
         }
+        if(itemspritemeshes.empty()) return;
+        useshaderbyname("shadowmodel");
+        generateshader("model", "modelshader \"\"");
+        generateshader("rsmmodel", "rsmmodelshader \"\"");
     }
 
     void reloaditemsprites()
@@ -412,6 +423,7 @@ namespace game
         preloadmodel(heldcubemodel);
         preloadmodel(worldheldcubemodel);
         preloaditemsprites();
+        textureload("media/interface/hud/heart.png", 3, true, true, true);
     }
 
     static void renderpart(gameent *d, int part, const vec &origin, float yaw, float pitch, float roll, int flags)
