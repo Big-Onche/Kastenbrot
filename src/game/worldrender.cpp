@@ -602,9 +602,7 @@ void addworldtorchlights()
     if(staticlightmaxdistance <= 0 || !camera1 || worldchunks.empty()) return;
 
     const float maxdistance = staticlightmaxdistance * WORLD_BLOCK_SIZE,
-                maxdistancesquared = maxdistance * maxdistance,
-                fullshadowdistance = maxdistance / 3.0f,
-                dynshadowdistance = fullshadowdistance * 2.0f;
+                maxdistancesquared = maxdistance * maxdistance;
     const float scattermaxoffset = game::getworldscattermaxoffset();
 
     loopv(worldchunks)
@@ -622,11 +620,11 @@ void addworldtorchlights()
             const float distancesquared = flame.squaredist(camera1->o);
             if(distancesquared > maxdistancesquared) continue;
             const float distance = sqrtf(distancesquared);
-            const int flags = distance <= fullshadowdistance ? 0 : distance <= dynshadowdistance ? L_NODYNSHADOW : L_NOSHADOW;
+            const int flags = distance <= maxdistance * 0.5f ? L_SOFTSHADOWS : L_NOSHADOW;
             const worlddefinition &type = *worldscatterdefinitions[scatter.type];
             const float radius = type.lightradius * WORLD_BLOCK_SIZE;
             const vec color = worldplacelightcolor(type);
-            adddynlight(flame, radius, vec(color).mul(0.55f), 0, 0, flags | DL_NODIST | L_VOLUMETRIC);
+            adddynlight(flame, radius, vec(color).mul(0.55f), 0, 0, DL_NODIST | L_VOLUMETRIC | flags);
             adddynlight(flame, radius, vec(color).mul(0.20f), 0, 0, L_ALLFACES | DL_NODIST);
         }
     }
