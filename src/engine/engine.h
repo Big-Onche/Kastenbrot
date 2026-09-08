@@ -323,6 +323,7 @@ extern int dynamicshadowvabounds(int mask, vec &bbmin, vec &bbmax);
 extern void rendershadowmapworld();
 extern void renderworldscattermeshes();
 extern void renderworldscattershadows();
+extern void renderworldsolidshadows();
 extern void batchshadowmapmodels(bool skipmesh = false);
 extern void rendershadowatlas();
 extern void renderrsmgeom(bool dyntex = false);

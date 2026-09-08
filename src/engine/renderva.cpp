@@ -1303,7 +1303,11 @@ void rendershadowmapworld()
     gle::clearvbo();
     gle::clearebo();
     gle::disablevertex();
-    if(!smnodraw) renderworldscattershadows();
+    if(!smnodraw)
+    {
+        renderworldsolidshadows();
+        renderworldscattershadows();
+    }
 }
 
 static octaentities *shadowmms = NULL;

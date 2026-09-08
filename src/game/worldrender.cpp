@@ -97,6 +97,7 @@ struct worldscattermesh
 };
 
 static vector<worldscattermesh *> worldscattermeshes;
+static GLuint worldsolidshadowvbo = 0;
 static int worldscatterdrawn = 0, worldgrassdrawn = 0, worldflowerdrawn = 0;
 
 FVARP(scattermeshalphatest, 0.0f, 0.5f, 1.0f);
@@ -112,6 +113,8 @@ static void cleanupworldscattermesh(worldscattermesh &mesh)
 
 static void clearworldscattermeshes()
 {
+    if(worldsolidshadowvbo) glDeleteBuffers_(1, &worldsolidshadowvbo);
+    worldsolidshadowvbo = 0;
     loopv(worldscattermeshes)
     {
         cleanupworldscattermesh(*worldscattermeshes[i]);
@@ -484,6 +487,87 @@ void renderworldscattermeshes()
 void renderworldscattershadows()
 {
     drawworldscattermeshes(true);
+}
+
+VARP(worldsolidshadows, 0, 1, 1);
+
+static bool worldsolidshadowsection(const worldchunk &chunk, int tile, int section)
+{
+    const uint bit = 1U << tile;
+    // Classification belongs to streaming, not to the shadow draw (which can run inside an occlusion query).
+    return (chunk.opaqueknown[section] & chunk.opaquetiles[section] & bit) != 0;
+}
+
+static void drawworldsolidshadowvertices(vector<vec> &vertices)
+{
+    if(vertices.empty()) return;
+    if(!worldsolidshadowvbo) glGenBuffers_(1, &worldsolidshadowvbo);
+    gle::bindvbo(worldsolidshadowvbo);
+    glBufferData_(GL_ARRAY_BUFFER, vertices.length() * sizeof(vec), vertices.getbuf(), GL_STREAM_DRAW);
+    gle::vertexpointer(sizeof(vec), NULL);
+    glDrawArrays(GL_TRIANGLES, 0, vertices.length());
+    ++glde;
+    xtravertsva += vertices.length();
+    vertices.setsize(0);
+}
+
+void renderworldsolidshadows()
+{
+    if(!worldsolidshadows || shadowmapping != SM_CASCADE || worldchunks.empty()) return;
+    // Fully opaque sections remain casters even when streaming drops their VAs.
+    // Merge vertical runs using the existing opacity cache, independently of VA residency.
+    Shader *shader = lookupshaderbyname("smsolidworld");
+    if(!shader) return;
+    shader->set();
+    // Use an owned VBO: do not leave the shared immediate-mode buffer or its attribute cache active for the next shadow pass.
+    static vector<vec> vertices;
+    vertices.setsize(0);
+    glDisable(GL_CULL_FACE);
+    gle::enablevertex();
+    loopv(worldchunks)
+    {
+        const worldchunk &chunk = worldchunks[i];
+        if(!chunk.root || chunk.loading || chunk.corrupted) continue;
+        const ivec origin = worldchunkorigin(chunk);
+        if(!(calcbbcsmsplits(origin, ivec(origin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE))) & (1 << shadowside)))
+            continue;
+        loop(tile, WORLD_SECTION_TILES)
+        {
+            for(int section = 0; section < WORLD_SECTION_LAYERS; ++section)
+            {
+                if(!worldsolidshadowsection(chunk, tile, section)) continue;
+                const int bottom = section;
+                while(section + 1 < WORLD_SECTION_LAYERS && worldsolidshadowsection(chunk, tile, section + 1))
+                    ++section;
+                const ivec bbmin = ivec(origin).add(ivec((tile % WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE,
+                                                       (tile / WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE, bottom * WORLD_SECTION_SIZE)),
+                           bbmax = ivec(bbmin).add(ivec(WORLD_SECTION_SIZE, WORLD_SECTION_SIZE, (section - bottom + 1) * WORLD_SECTION_SIZE));
+                if(!(calcbbcsmsplits(bbmin, bbmax) & (1 << shadowside))) continue;
+                // Only the three sun-facing faces can be nearest to the light.
+                loop(axis, 3)
+                {
+                    if(fabs(sunlightdir[axis]) < 1e-6f) continue;
+                    const int r = (axis + 1) % 3, c = (axis + 2) % 3;
+                    vec corners[4];
+                    loopj(4)
+                    {
+                        corners[j] = vec(bbmin);
+                        corners[j][axis] = sunlightdir[axis] > 0 ? bbmax[axis] : bbmin[axis];
+                        corners[j][r] = j & 1 ? bbmax[r] : bbmin[r];
+                        corners[j][c] = j & 2 ? bbmax[c] : bbmin[c];
+                    }
+                    static const int indices[6] = { 0, 1, 2, 2, 1, 3 };
+                    loopj(6) vertices.add(corners[indices[j]]);
+                    // Flush only whole faces, keeping uploads bounded even at the maximum chunk distance.
+                    if(vertices.length() >= 6 * 1024) drawworldsolidshadowvertices(vertices);
+                }
+            }
+        }
+    }
+    drawworldsolidshadowvertices(vertices);
+    gle::clearvbo();
+    gle::disablevertex();
+    glEnable(GL_CULL_FACE);
 }
 
 static float worldscatterchunkdistance(const worldchunk &chunk, const vec &focus, float expansion)
