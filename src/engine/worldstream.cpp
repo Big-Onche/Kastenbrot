@@ -1095,6 +1095,44 @@ static int findworldchunk(int x, int y)
     return -1;
 }
 
+bool sampleworldcolumnroof(const ivec &position, int &roof)
+{
+    roof = -1;
+    if(!insideworld(position) || position.z >= WORLD_MAP_SIZE) return false;
+    const int localchunkx = position.x / WORLD_CHUNK_SIZE, localchunky = position.y / WORLD_CHUNK_SIZE,
+              index = findworldchunk(worldfirstchunkx + localchunkx, worldfirstchunky + localchunky);
+    if(!worldchunks.inrange(index)) return false;
+    const worldchunk &chunk = worldchunks[index];
+    if(chunk.loading || chunk.corrupted || !chunk.root) return false;
+    ivec local(position.x - localchunkx * WORLD_CHUNK_SIZE, position.y - localchunky * WORLD_CHUNK_SIZE, position.z);
+    while(local.z < WORLD_MAP_SIZE)
+    {
+        const int section = local.z / WORLD_SECTION_SIZE,
+                  tile = (local.y / WORLD_SECTION_SIZE) * WORLD_SECTION_COLUMNS + local.x / WORLD_SECTION_SIZE;
+        int size;
+        ivec origin;
+        const cube *c;
+        if(chunk.mountedtiles[section] & (1U << tile))
+            c = &lookupcube(ivec(position.x, position.y, local.z), -1, origin, size);
+        else
+        {
+            int scale = WORLD_CHUNK_SCALE - 1;
+            c = &chunk.root[octastep(local.x, local.y, local.z, scale)];
+            while(c->children)
+            {
+                --scale;
+                c = &c->children[octastep(local.x, local.y, local.z, scale)];
+            }
+            size = 1 << scale;
+            origin = ivec(local).mask(~0U << scale);
+        }
+        if(!isempty(*c)) { roof = local.z; return true; }
+        // A leaf may span sections whose geometry lives in different octrees.
+        local.z = min(origin.z + size, (section + 1) * WORLD_SECTION_SIZE);
+    }
+    return true;
+}
+
 bool sampleworldsolid(const ivec &position, int &leafbottom)
 {
     if(worldchunks.empty())

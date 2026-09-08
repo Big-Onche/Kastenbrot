@@ -396,7 +396,7 @@ namespace server
     static vec servermapspawn;
     static int servermapspawnyaw = 0, servermapspawnpitch = 0;
     static uint nextnpcid = 1;
-    static int lastnpcsnapshot = 0, lastnpcspawnattempt = 0, lastpassivenpcscan = 0;
+    static int lastnpcsnapshot = 0, lastpassivenpcscan = 0;
     static vector<serverdrop *> serverdrops;
     static vector<serverfallingblock *> serverfallingblocks;
     static vector<ivec> serverfallblockchecks;
@@ -2225,6 +2225,13 @@ namespace server
         return float(top);
     }
 
+    static float servernpcgroundheight(float x, float y, float feet)
+    {
+        ivec cell = serverblockat(vec(x, y, feet + SERVER_WORLD_BLOCK_SIZE));
+        while(cell.z >= 0 && !serverblocksolid(cell)) cell.z -= SERVER_WORLD_BLOCK_SIZE;
+        return float(cell.z + SERVER_WORLD_BLOCK_SIZE);
+    }
+
     static bool servernaturalwaterat(const vec &position)
     {
         const int surface = serverbasesurface(int(floorf(position.x)), int(floorf(position.y))),
@@ -2349,15 +2356,6 @@ namespace server
             if(radius > 0) level = max(level, radius - vec(ci->o).addz(SERVER_PLAYER_EYE_HEIGHT).dist(position) / SERVER_WORLD_BLOCK_SIZE);
         }
         return clamp(int(floorf(level + 0.5f)), 0, 16);
-    }
-
-    static int serveraggressivespawnlightlevel(const vec &position)
-    {
-        const vec feet = vec(position).subz(28.0f);
-        const vec cell(floorf(feet.x / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f,
-                       floorf(feet.y / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f,
-                       floorf(feet.z / SERVER_WORLD_BLOCK_SIZE) * SERVER_WORLD_BLOCK_SIZE + SERVER_WORLD_BLOCK_SIZE * 0.5f);
-        return max(serverlightlevel(position), serverlightlevel(cell));
     }
 
     static void sendplayerstate(int cn, const clientinfo &subject, const vec &impulse = vec(0, 0, 0))
@@ -2654,11 +2652,10 @@ namespace server
     {
         while(servernpcs.length()) removeservernpc(servernpcs.length() - 1);
         nextnpcid = 1;
-        lastnpcspawnattempt = 0;
         lastpassivenpcscan = 0;
     }
 
-    static bool servernpcclearance(const vec &position, const npcdefinition &definition, uint ignore = 0)
+    static bool servernpcclearance(const vec &position, const npcdefinition &definition, uint ignore = 0, bool entities = true)
     {
         const float offsets[3] = { -definition.radius, 0.0f, definition.radius };
         const float feet = position.z - definition.height, heights[3] = { feet + 1.0f, feet + definition.height * 0.5f, position.z - 1.0f };
@@ -2666,6 +2663,7 @@ namespace server
         {
             loopk(3) if(serverblocksolid(serverblockat(vec(position.x + offsets[i], position.y + offsets[j], heights[k])))) return false;
         }
+        if(!entities) return true;
         loopv(servernpcs)
             if(servernpcs[i]->id != ignore && !servernpcs[i]->deathmillis)
             {
@@ -2715,78 +2713,38 @@ namespace server
         return mob;
     }
 
-    static int livingserveraggressivenpcs()
-    {
-        int count = 0;
-        loopv(servernpcs) if(!servernpcs[i]->deathmillis && servernpcs[i]->definition->attitude == NPC_AGGRESSIVE) ++count;
-        return count;
-    }
-
-    static npcdefinition *serveraggressivenpcdefinition(uint seed)
-    {
-        int count = 0;
-        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->attitude == NPC_AGGRESSIVE) ++count;
-        if(!count) return NULL;
-        int selected = int(seed % uint(count));
-        loopi(game::numnpcdefinitions()) if(game::getnpcdefinition(i)->attitude == NPC_AGGRESSIVE && selected-- == 0)
-            return game::getnpcdefinition(i);
-        return NULL;
-    }
-
-    static void tryspawnserveraggressivenpc()
-    {
-        if(servercreative() || totalmillis - lastnpcspawnattempt < servernpcspawnmillis) return;
-        lastnpcspawnattempt = totalmillis;
-        const int cap = serversimulationmaxdist / 2;
-        if(cap <= 0 || livingserveraggressivenpcs() >= cap || clients.empty()) return;
-
-        const uint seed = worlddrophash(uint(max(totalmillis, 1)) ^ nextnpcid * 0x9E3779B9U);
-        clientinfo *owner = NULL;
-        const int start = int(seed % uint(clients.length()));
-        loopi(clients.length())
-        {
-            clientinfo *candidate = clients[(start + i) % clients.length()];
-            if(candidate && candidate->connected && candidate->worldready && candidate->hasposition && !candidate->dead)
-            {
-                owner = candidate;
-                break;
-            }
-        }
-        if(!owner) return;
-        npcdefinition *definition = serveraggressivenpcdefinition(worlddrophash(seed ^ 0x85EBCA6BU));
-        if(!definition) return;
-
-        const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
-                    minimumdistance = min(16.0f * GAMEUNITSPERMETER, simulationdistance * 0.5f),
-                    distance = minimumdistance + (simulationdistance - minimumdistance) * float((seed >> 8) & 0xFFFFU) / 65535.0f,
-                    angle = float(seed % 36000U) * RAD / 100.0f;
-        vec position = vec(owner->o).add(vec(cosf(angle) * distance, sinf(angle) * distance, 0));
-        if(position.x < 1 || position.y < 1 || position.x >= SERVER_WORLD_MAP_SIZE - 1 || position.y >= SERVER_WORLD_MAP_SIZE - 1) return;
-        position.z = servergroundheight(position.x, position.y) + definition->height;
-        if(position.z < definition->height || position.z >= SERVER_WORLD_MAP_SIZE ||
-           position.squaredist(owner->o) > simulationdistance * simulationdistance || !servernpcclearance(position, *definition)) return;
-        if(servernaturalwaterat(vec(position).subz(definition->height))) return;
-        const int light = serveraggressivespawnlightlevel(position);
-        if(light > 3) return;
-
-        servernpc *mob = new servernpc(nextnpcid++, definition);
-        mob->o = mob->spawn = mob->destination = position;
-        mob->yaw = float(worlddrophash(seed ^ 0x27D4EB2FU) % 36000U) / 100.0f;
-        mob->pauseuntil = totalmillis + 600;
-        servernpcs.add(mob);
-    }
-
     static servernpc *findserverpassivenpc(ullong key)
     {
         loopv(servernpcs) if(servernpcs[i]->spawnkey == key) return servernpcs[i];
         return NULL;
     }
 
+    static npcspawnstats cavespawns;
+
     static bool servernaturalspawnposition(const npcdefinition &definition, const passivenpcspawn &spawn, vec &position)
     {
         position = vec((spawn.blockx + 0.5f) * GAMEUNITSPERMETER, (spawn.blocky + 0.5f) * GAMEUNITSPERMETER, 0);
         if(position.x < 1 || position.y < 1 || position.x >= SERVER_WORLD_MAP_SIZE - 1 || position.y >= SERVER_WORLD_MAP_SIZE - 1) return false;
         if(!serverworldgenerator) serverworldgenerator = new game::worldgenerator(serverworldseed);
+        if(spawn.band >= 0)
+        {
+            ++cavespawns.candidates;
+            return findcavenpcfloor(spawn, 256 + serverworldgenerator->height(spawn.blockx, spawn.blocky),
+                                   256 + serverworldgenerator->settings.sealevel, [&](int x, int y, int z)
+            {
+                const vec feet((x + 0.5f) * GAMEUNITSPERMETER, (y + 0.5f) * GAMEUNITSPERMETER, z * GAMEUNITSPERMETER + 0.1f);
+                if(feet.x < 1 || feet.y < 1 || feet.x >= SERVER_WORLD_MAP_SIZE - 1 || feet.y >= SERVER_WORLD_MAP_SIZE - 1) return false;
+                serverchunk *chunk = serverchunkforcell(serverblockat(feet), true);
+                if(!chunk || chunk->loading || chunk->corrupted) { ++cavespawns.unloaded; return false; }
+                if(serverblocksolid(serverblockat(feet)) || !serverblocksolid(serverblockat(vec(feet).subz(1)))) return false;
+                ++cavespawns.floors;
+                const vec candidate = vec(feet).addz(definition.height);
+                if(servernaturalwaterat(feet) || !servernpcclearance(candidate, definition, 0, false)) { ++cavespawns.blocked; return false; }
+                if(serverlineofsight(candidate, vec(candidate.x, candidate.y, SERVER_WORLD_MAP_SIZE - 1.0f))) return false;
+                position = candidate;
+                return true;
+            });
+        }
         const int height = serverworldgenerator->height(spawn.blockx, spawn.blocky);
         if(serverworldgenerator->biome(spawn.blockx, spawn.blocky, height) != definition.naturalbiome) return false;
         position.z = servergroundheight(position.x, position.y) + definition.height;
@@ -2795,10 +2753,11 @@ namespace server
         return serverlineofsight(position, vec(position.x, position.y, SERVER_WORLD_MAP_SIZE - 1.0f));
     }
 
-    static void tryspawnserverpassivenpcs()
+    static void tryspawnservernaturalnpcs()
     {
-        if(servercreative() || totalmillis - lastpassivenpcscan < 250 || clients.empty()) return;
+        if(servercreative() || totalmillis - lastpassivenpcscan < servernpcspawnmillis || clients.empty()) return;
         lastpassivenpcscan = totalmillis;
+        cavespawns = npcspawnstats();
         const int margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1;
         const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
                     simulationdistancesquared = simulationdistance * simulationdistance;
@@ -2814,11 +2773,14 @@ namespace server
             loopj(game::numnpcdefinitions())
             {
                 npcdefinition *definition = game::getnpcdefinition(j);
-                if(!definition || definition->naturalbiome < 0) continue;
+                if(!definition || (definition->attitude != NPC_AGGRESSIVE && definition->naturalbiome < 0)) continue;
                 for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
+                for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1; band < (definition->attitude == NPC_AGGRESSIVE ? 16 : 0); ++band)
                 {
+                    if(band >= 0 && ((band + 1) * 32 * GAMEUNITSPERMETER + definition->height < owner->o.z - simulationdistance ||
+                                     band * 32 * GAMEUNITSPERMETER > owner->o.z + simulationdistance)) continue;
                     passivenpcspawn spawns[16];
-                    const int count = game::generatepassivenpcgroup(*definition, serverworldseed, cellx, celly, spawns, 16);
+                    const int count = game::generatepassivenpcgroup(*definition, serverworldseed, cellx, celly, spawns, 16, band);
                     if(!count) continue;
                     const vec anchor((spawns[0].blockx + 0.5f) * GAMEUNITSPERMETER,
                                      (spawns[0].blocky + 0.5f) * GAMEUNITSPERMETER, owner->o.z);
@@ -2830,14 +2792,29 @@ namespace server
                     {
                         const ivec spawnorigin(spawns[k].blockx * SERVER_WORLD_BLOCK_SIZE, spawns[k].blocky * SERVER_WORLD_BLOCK_SIZE, 0);
                         serverchunk *chunk = serverchunkforcell(spawnorigin, true);
-                        if(!chunk || chunk->loading || chunk->corrupted) { valid = false; break; }
-                        needed[k] = !serverpassivenpcdead(spawns[k].key) && !findserverpassivenpc(spawns[k].key);
-                        if(needed[k] && !servernaturalspawnposition(*definition, spawns[k], positions[k])) { valid = false; break; }
+                        if(!chunk || chunk->loading || chunk->corrupted)
+                        {
+                            if(band >= 0) ++cavespawns.unloaded;
+                            valid = false;
+                            break;
+                        }
+                        const bool killed = serverpassivenpcdead(spawns[k].key), present = findserverpassivenpc(spawns[k].key) != NULL;
+                        needed[k] = !(band >= 0 ? cavespawns.skip(killed, present) : killed || present);
+                        if(needed[k] && (!servernaturalspawnposition(*definition, spawns[k], positions[k]) ||
+                           (band >= 0 && positions[k].squaredist(owner->o) > simulationdistancesquared)))
+                        {
+                            needed[k] = false;
+                            if(band >= 0) { ++cavespawns.nofit; continue; }
+                            valid = false;
+                            break;
+                        }
                     }
                     if(!valid) continue;
                     loopk(count) if(needed[k])
                     {
+                        if(band >= 0 && !servernpcclearance(positions[k], *definition)) { ++cavespawns.blocked; continue; }
                         servernpc *mob = new servernpc(nextnpcid++, definition);
+                        if(band >= 0) ++cavespawns.spawned;
                         mob->spawnkey = spawns[k].key;
                         mob->o = mob->spawn = mob->destination = positions[k];
                         mob->yaw = spawns[k].yaw;
@@ -3116,7 +3093,7 @@ namespace server
 
     static void updateservernpcfall(servernpc &mob, int elapsed)
     {
-        const float feet = mob.o.z - mob.definition->height, ground = servergroundheight(mob.o.x, mob.o.y);
+        const float feet = mob.o.z - mob.definition->height, ground = servernpcgroundheight(mob.o.x, mob.o.y, feet - SERVER_WORLD_BLOCK_SIZE);
         if(servernaturalwaterat(vec(mob.o).subz(mob.definition->height))) mob.falldistance = 0;
         if(!mob.airborne && feet <= ground + 0.1f)
         {
@@ -3219,7 +3196,7 @@ namespace server
         mob.velocity.x = direction.x * speed;
         mob.velocity.y = direction.y * speed;
         vec next = vec(mob.o).madd(vec(mob.velocity.x, mob.velocity.y, 0), elapsed / 1000.0f);
-        const float ground = servergroundheight(next.x, next.y), oldground = mob.o.z - mob.definition->height;
+        const float ground = servernpcgroundheight(next.x, next.y, mob.o.z - mob.definition->height), oldground = mob.o.z - mob.definition->height;
         if(!mob.airborne && fabsf(ground - oldground) <= SERVER_WORLD_BLOCK_SIZE &&
            servernpcclearance(vec(next.x, next.y, ground + mob.definition->height), *mob.definition, mob.id))
         {
@@ -3275,8 +3252,7 @@ namespace server
 
     static void updateservernpcs()
     {
-        tryspawnserveraggressivenpc();
-        tryspawnserverpassivenpcs();
+        tryspawnservernaturalnpcs();
         const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
                     existencedistance = servernpcmaxdist * GAMEUNITSPERMETER;
         for(int i = servernpcs.length() - 1; i >= 0; --i)
@@ -3544,7 +3520,6 @@ namespace server
         nextnpcid = 1;
         lastnpcsnapshot = 0;
         lastpassivenpcscan = 0;
-        lastnpcspawnattempt = 0;
         if(!game::numnpcdefinitions()) game::loadnpcdefinitions();
         worldclockmillis = SERVER_START_MILLIS;
         weatherclockmillis = 0;
@@ -5009,6 +4984,22 @@ namespace server
 
     static void serverworldcommand(clientinfo &ci, const char *request)
     {
+        if(request && cubecaseequal(request, "debugnpc"))
+        {
+            int focuses = 0;
+            loopv(clients) if(clients[i] && clients[i]->connected && clients[i]->worldready && clients[i]->hasposition && !clients[i]->dead)
+                ++focuses;
+            defformatstring(message, "Server NPC spawn: %s; seed=%d range=%d focuses=%d live=%d last-scan-age=%dms",
+                            servercreative() ? "disabled: not survival" : !focuses ? "waiting: no ready player" : "enabled",
+                            serverworldseed, serversimulationmaxdist, focuses, servernpcs.length(), max(totalmillis - lastpassivenpcscan, 0));
+            sendcommandresult(ci, message);
+            formatstring(message, "Server NPC last scan: candidates=%d floors=%d blocked=%d unloaded=%d spawned=%d nofit=%d existing=%d dead=%d",
+                         cavespawns.candidates, cavespawns.floors, cavespawns.blocked, cavespawns.unloaded,
+                         cavespawns.spawned, cavespawns.nofit, cavespawns.existing, cavespawns.dead);
+            sendcommandresult(ci, message);
+            return;
+        }
+
         if(ci.privilege < PRIV_ADMIN)
         {
             sendcommandresult(ci, "permission denied: this world command requires admin");

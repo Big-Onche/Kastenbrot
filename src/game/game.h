@@ -252,11 +252,87 @@ enum
 struct passivenpcspawn
 {
     ullong key;
-    int blockx, blocky;
+    int blockx, blocky, band;
+    uint grouproll;
     float yaw;
 
-    passivenpcspawn() : key(0), blockx(0), blocky(0), yaw(0) {}
+    passivenpcspawn() : key(0), blockx(0), blocky(0), band(-1), grouproll(0), yaw(0) {}
 };
+
+enum
+{
+    NPC_SCAN_READY = 0,
+    NPC_SCAN_SERVER,
+    NPC_SCAN_MODE,
+    NPC_SCAN_NO_FOCUS,
+    NPC_SCAN_INACTIVE_FOCUS
+};
+
+static inline int naturalnpcscanstate(bool survival, bool authority, int focusstate)
+{
+    if(!authority) return NPC_SCAN_SERVER;
+    if(!survival) return NPC_SCAN_MODE;
+    if(focusstate < 0) return NPC_SCAN_NO_FOCUS;
+    // Editing changes movement and combat, not deterministic world population.
+    if(focusstate != CS_ALIVE && focusstate != CS_EDITING) return NPC_SCAN_INACTIVE_FOCUS;
+    return NPC_SCAN_READY;
+}
+
+static inline const char *naturalnpcscanreason(int state)
+{
+    switch(state)
+    {
+        case NPC_SCAN_READY: return "enabled";
+        case NPC_SCAN_SERVER: return "server-authoritative";
+        case NPC_SCAN_MODE: return "disabled: not survival";
+        case NPC_SCAN_NO_FOCUS: return "waiting: no player";
+        default: return "waiting: player dead or spectating";
+    }
+}
+
+struct npcspawnstats
+{
+    int candidates, floors, blocked, unloaded, spawned, nofit, existing, dead, outofrange, noground, liquid, opensky;
+
+    npcspawnstats() : candidates(0), floors(0), blocked(0), unloaded(0), spawned(0), nofit(0), existing(0), dead(0), outofrange(0),
+                      noground(0), liquid(0), opensky(0) {}
+
+    bool skip(bool killed, bool present)
+    {
+        if(killed) { ++dead; return true; }
+        if(present) { ++existing; return true; }
+        return false;
+    }
+};
+
+// Fixed retries keep cave placement independent of player position and frame timing.
+template<class Probe>
+static bool findcavenpcfloor(const passivenpcspawn &spawn, int surface, int sealevel, Probe probe)
+{
+    // Retain the old candidates first, then cover the skipped columns of the same 5x5 neighborhood.
+    // A one-block-wide passage may lie entirely between the old two-block-spaced samples.
+    static const int offsets[25][2] =
+    {
+        {0, 0}, {2, 0}, {0, 2}, {-2, 0}, {0, -2}, {2, 2}, {-2, 2}, {-2, -2}, {2, -2},
+        {1, 0}, {0, 1}, {-1, 0}, {0, -1}, {1, 1}, {-1, 1}, {-1, -1}, {1, -1},
+        {2, 1}, {1, 2}, {-1, 2}, {-2, 1}, {-2, -1}, {-1, -2}, {1, -2}, {2, -1}
+    };
+    const int top = min((spawn.band + 1) * 32 - 1, surface - 4), bottom = max(spawn.band * 32, 1);
+    const float roll = float(spawn.grouproll & 0xFFFFFFU) / 16777216.0f;
+    const float maximumchance = 0.15f + 0.70f * min(max(sealevel - bottom, 0) / 128.0f, 1.0f);
+    if(top < bottom || roll >= maximumchance) return false;
+    loopi(25)
+    {
+        const int x = spawn.blockx + offsets[i][0], y = spawn.blocky + offsets[i][1];
+        for(int z = top; z >= bottom; --z)
+        {
+            const float depth = max(sealevel - z, 0), chance = 0.15f + 0.70f * min(depth / 128.0f, 1.0f);
+            if(roll >= chance) continue;
+            if(probe(x, y, z)) return true;
+        }
+    }
+    return false;
+}
 
 static inline bool inventoryslotclick(int &cursoritem, int &cursorcount, int &slotitem, int &slotcount, int button)
 {
@@ -494,7 +570,7 @@ namespace game
     extern npcdefinition *getnpcdefinition(int index);
     extern void loadnpcdefinitions();
     extern int generatepassivenpcgroup(const npcdefinition &definition, int worldseed, int cellx, int celly, passivenpcspawn *spawns,
-                                       int maxspawns);
+                                       int maxspawns, int band = -1);
     extern void resetlocalpassivenpcstates();
     extern bool savelocalpassivenpcs(const char *world);
     extern bool loadlocalpassivenpcs(const char *world);
