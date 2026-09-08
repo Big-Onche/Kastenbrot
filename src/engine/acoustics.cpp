@@ -1576,7 +1576,7 @@ namespace acoustics
             AcousticCell &cell = grid->cells.add();
             cell.origin = vec((x + 0.5f)*WORLD_SECTION_SIZE, (y + 0.5f)*WORLD_SECTION_SIZE, (z + 0.5f)*WORLD_SECTION_SIZE);
             const bool exterior = (flags&SECTION_EXTERIOR) != 0, interior = (flags&SECTION_INTERIOR) != 0,
-                       cave = (flags&SECTION_CAVE_ENTRANCE) != 0;
+                       cave = (flags&SECTION_CAVE_ENTRANCE) != 0 || (interior && !exterior);
             cell.valid = true;
             cell.boundary = exterior && interior;
             cell.airOccupancy = flags&SECTION_FULLY_SOLID ? 0.0f : 1.0f;
@@ -2290,7 +2290,11 @@ namespace acoustics
             info->path = false;
         }
 
-        if(!soundacoustics || !camera1 || dist <= 1.0f) return;
+        if(!soundacoustics || !camera1) return;
+
+        // The listener's room reverberates even when the source is nearby or directly visible.
+        acousticHudSource(reverbSend);
+        if(dist <= 1.0f) return;
 
         float directOcclusion = acousticDirectOcclusion(loc, camera1->o);
         if(directOcclusion <= 0.0f) return; // Cheap direct test first

@@ -726,7 +726,8 @@ namespace game
             }
             defformatstring(sample, "%s%d", block.footstepsound, 1 + rnd(block.footstepvariants));
             hit.z += 1.0f; // Keep the acoustic source above the solid surface.
-            playsoundname(sample, &hit, 100, SND_RADIUS, 0, 0, -1, 192);
+            const bool firstperson = d == player1 && !isthirdperson();
+            playsoundname(sample, firstperson ? NULL : &hit, 100, firstperson ? SND_HUD : SND_RADIUS, 0, 0, -1, 192);
             return;
         }
         d->footstepdistance = 0;
