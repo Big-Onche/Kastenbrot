@@ -1148,12 +1148,15 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
     if(!solid || !albedo || dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0 || resolution <= 0) return;
     const int halfresolution = resolution / 2;
     int cachedlocalchunkx = INT_MIN, cachedlocalchunky = INT_MIN, cachedchunkindex = -1;
-    loop(z, dimensions.z) loop(y, dimensions.y) loop(x, dimensions.x)
+    loop(z, dimensions.z) loop(y, dimensions.y) for(int x = 0; x < dimensions.x;)
     {
         const ivec position(origin.x + x * resolution + halfresolution, origin.y + y * resolution + halfresolution,
                             origin.z + z * resolution + halfresolution);
         bool occupied = true;
         bvec color(0, 0, 0);
+        int run = 1;
+        const cube *sectioncube = NULL;
+        int sectionsize = 0;
         if(worldchunks.empty())
         {
             ivec cubeorigin;
@@ -1161,11 +1164,18 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
             const cube &c = lookupcube(position, -1, cubeorigin, size);
             occupied = !isempty(c);
             if(occupied) color = getworldcubegialbedo(c);
+            // lookupcube clamps out-of-world samples to the border leaf.
+            run = position.x >= worldsize ? dimensions.x - x :
+                  min(dimensions.x - x, (cubeorigin.x + size - 1 - position.x) / resolution + 1);
         }
         else if(position.x >= 0 && position.y >= 0 && position.z >= 0 && position.x < worldsize && position.y < worldsize &&
                 position.z < WORLD_MAP_SIZE)
         {
             const int localchunkx = position.x / WORLD_CHUNK_SIZE, localchunky = position.y / WORLD_CHUNK_SIZE;
+            // Ownership and content metadata are uniform only within a section.
+            // Never carry a leaf run across its boundary, even if the leaf is larger.
+            const int sectionend = min((position.x / WORLD_SECTION_SIZE + 1) * WORLD_SECTION_SIZE, worldsize);
+            run = min(dimensions.x - x, (sectionend - 1 - position.x) / resolution + 1);
             if(localchunkx != cachedlocalchunkx || localchunky != cachedlocalchunky)
             {
                 cachedlocalchunkx = localchunkx;
@@ -1184,27 +1194,70 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
                 {
                     ivec cubeorigin;
                     int size;
-                    const cube &c = lookupcube(position, -1, cubeorigin, size);
-                    occupied = !isempty(c);
-                    if(occupied) color = getworldcubegialbedo(c);
+                    sectioncube = &lookupcube(position, -WORLD_SECTION_SIZE, cubeorigin, size);
+                    sectionsize = size;
                 }
                 else
                 {
                     int scale = WORLD_CHUNK_SCALE - 1;
                     const cube *c = &chunk.root[octastep(local.x, local.y, local.z, scale)];
-                    while(c->children)
+                    while(c->children && (1 << scale) > WORLD_SECTION_SIZE)
                     {
                         --scale;
                         c = &c->children[octastep(local.x, local.y, local.z, scale)];
                     }
-                    occupied = !isempty(*c);
-                    if(occupied) color = getworldcubegialbedo(*c);
+                    sectioncube = c;
+                    sectionsize = 1 << scale;
                 }
             }
+            else
+            {
+                // Missing/loading chunks are uniformly occupied, independent of sections.
+                const int chunkend = min((localchunkx + 1) * WORLD_CHUNK_SIZE, worldsize);
+                run = min(dimensions.x - x, (chunkend - 1 - position.x) / resolution + 1);
+            }
         }
-        const int destination = (z * dimensions.y + y) * dimensions.x + x;
-        solid[destination] = occupied ? 255 : 0;
-        albedo[destination] = bvec4(color, occupied ? 255 : 0);
+        else
+        {
+            // Out-of-world rows stay conservatively occupied. A negative x run
+            // must stop before the first sample that can enter the world.
+            run = position.y < 0 || position.y >= worldsize || position.z < 0 || position.z >= WORLD_MAP_SIZE || position.x >= worldsize ?
+                  dimensions.x - x : min(dimensions.x - x, (-1 - position.x) / resolution + 1);
+        }
+        const int end = x + run;
+        while(x < end)
+        {
+            int count = end - x;
+            if(sectioncube)
+            {
+                // Resolve the section once, then restart short walks there. A leaf
+                // has one occupancy/albedo value for every sample in its x span.
+                const int px = origin.x + x * resolution + halfresolution;
+                const cube *c = sectioncube;
+                int size = sectionsize;
+                while(c->children)
+                {
+                    size >>= 1;
+                    c = &c->children[((position.z & size) ? 4 : 0) | ((position.y & size) ? 2 : 0) | ((px & size) ? 1 : 0)];
+                }
+                occupied = !isempty(*c);
+                color = occupied ? getworldcubegialbedo(*c) : bvec(0, 0, 0);
+                count = min(count, (size - 1 - (px & (size - 1))) / resolution + 1);
+            }
+            const int destination = (z * dimensions.y + y) * dimensions.x + x;
+            const bvec4 sample(color, occupied ? 255 : 0);
+            if(count == 1)
+            {
+                solid[destination] = occupied ? 255 : 0;
+                albedo[destination] = sample;
+            }
+            else
+            {
+                memset(solid + destination, occupied ? 255 : 0, count);
+                loopi(count) albedo[destination + i] = sample;
+            }
+            x += count;
+        }
     }
 }
 
