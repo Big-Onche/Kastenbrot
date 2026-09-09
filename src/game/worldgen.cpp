@@ -259,11 +259,15 @@ static bool generateworldrock(const worldgencontext &ctx, int chunkx, int chunky
     return ctx.generator.rock(x, y, height / WORLD_BLOCK_SIZE);
 }
 
-static bool generateworldcliff(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, int height)
+enum { WORLD_CLIFF_ROCK = 1, WORLD_CLIFF_COAST = 2 };
+
+static int generateworldcliff(const worldgencontext &ctx, int chunkx, int chunky, int blockx, int blocky, int height)
 {
     const int x = chunkx * WORLD_CHUNK_BLOCKS + blockx,
               y = chunky * WORLD_CHUNK_BLOCKS + blocky;
-    return ctx.generator.cliff(x, y, height / WORLD_BLOCK_SIZE);
+    bool face = false;
+    const bool coast = ctx.generator.cliff(x, y, height / WORLD_BLOCK_SIZE, &face);
+    return (coast ? WORLD_CLIFF_COAST : 0) | (face ? WORLD_CLIFF_ROCK : 0);
 }
 
 static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
@@ -295,7 +299,8 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
             {
                 const int index = y * WORLD_CHUNK_BLOCKS + x;
                 ctx.biomemap[index] = generateworldbiome(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
-                ctx.cliffmap[index] = ctx.reliefcliffmap[index] || generateworldcliff(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
+                ctx.cliffmap[index] = (ctx.reliefcliffmap[index] ? WORLD_CLIFF_ROCK : 0) |
+                                     generateworldcliff(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
                 ctx.rockmap[index] = generateworldrock(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
             }
         }
@@ -398,12 +403,12 @@ static bool worldrock(const worldgencontext &ctx, int localx, int localy)
     return ctx.rockmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE] != 0;
 }
 
-static bool worldcliff(const worldgencontext &ctx, int localx, int localy)
+static int worldcliff(const worldgencontext &ctx, int localx, int localy)
 {
-    return ctx.cliffmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE] != 0;
+    return ctx.cliffmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE];
 }
 
-static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, bool cliff, bool rock)
+static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock)
 {
     const int surface = WORLD_GROUND_HEIGHT + height,
               watertop = WORLD_GROUND_HEIGHT + ctx.settings.sealevel * WORLD_BLOCK_SIZE,
@@ -416,7 +421,7 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     if(z >= max(surface, watertop)) return WORLD_TERRAIN_EMPTY;
     if(surface < watertop && z >= surface && z + size <= watertop) return WORLD_TERRAIN_WATER;
     if(z + size <= dirtbottom) return ctx.cubetype("stone");
-    if(cliff)
+    if(cliff & WORLD_CLIFF_ROCK)
     {
         // Every exposed stair of the cliff belongs to the rock face. Normal
         // surface rules resume immediately behind this band, producing a grassy
@@ -428,6 +433,14 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     {
         if(biome == game::WORLD_BIOME_SNOW && z >= grassbottom && z + size <= surface) return ctx.cubetype("snow");
         if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("stone");
+        return WORLD_TERRAIN_MIXED;
+    }
+    if(cliff & WORLD_CLIFF_COAST)
+    {
+        // Sea cliffs have one surface block over solid stone, never a deep exposed soil layer.
+        if(z + size <= grassbottom) return ctx.cubetype("stone");
+        if(z >= grassbottom && z + size <= surface)
+            return ctx.cubetype(biome == game::WORLD_BIOME_SNOW ? "snow" : biome == game::WORLD_BIOME_DESERT ? "sand" : "grass");
         return WORLD_TERRAIN_MIXED;
     }
     if(beach || biome == game::WORLD_BIOME_DESERT)
@@ -1847,9 +1860,8 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             {
                 if(!worldtreegrowablesurface(ctx, x, y, height, biome)) continue;
             }
-            else if(terrain.rockyledge > 0.22f
-                 || generateworldcliff(ctx, chunkx, chunky, x, y, height)
-                 || generateworldrock(ctx, chunkx, chunky, x, y, height)) continue;
+            else if(terrain.rockyledge > 0.22f || (generateworldcliff(ctx, chunkx, chunky, x, y, height) & WORLD_CLIFF_ROCK) ||
+                    generateworldrock(ctx, chunkx, chunky, x, y, height)) continue;
             const float density = biome == game::WORLD_BIOME_FOREST ? ctx.settings.foresttreedensity : ctx.settings.plainstreedensity;
             const uint spawn = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0xD1B54A35U);
             if(worldtreeunit(spawn) >= density) continue;
@@ -2202,7 +2214,8 @@ namespace game
         const int biome = generation->generator.biome(blockx, blocky, height);
         const int beachminimum = generation->settings.sealevel + min(generation->settings.beachminheight, generation->settings.beachmaxheight),
                   beachmaximum = generation->settings.sealevel + max(generation->settings.beachminheight, generation->settings.beachmaxheight);
-        const bool cliff = generation->generator.cliff(blockx, blocky, height),
+        bool cliffface = false;
+        const bool cliff = generation->generator.cliff(blockx, blocky, height, &cliffface),
                    rock = generation->generator.rock(blockx, blocky, height);
         bool beach = false;
         if(height >= beachminimum && height <= beachmaximum && !sampleterrainbeach(generation, blockx, blocky, beach)) return false;
@@ -2210,12 +2223,13 @@ namespace game
         surface.height = height;
         surface.waterheight = generation->settings.sealevel;
         surface.water = height < surface.waterheight;
-        if(cliff) surface.material = WORLD_SURFACE_STONE;
+        if(cliffface) surface.material = WORLD_SURFACE_STONE;
         else if(rock) surface.material = biome == WORLD_BIOME_SNOW ? WORLD_SURFACE_SNOW : WORLD_SURFACE_STONE;
-        else if(beach || biome == WORLD_BIOME_DESERT) surface.material = WORLD_SURFACE_SAND;
+        else if((beach && !cliff) || biome == WORLD_BIOME_DESERT) surface.material = WORLD_SURFACE_SAND;
         else if(biome == WORLD_BIOME_OCEAN) surface.material = WORLD_SURFACE_DIRT;
         else if(biome == WORLD_BIOME_SNOW) surface.material = WORLD_SURFACE_SNOW;
         else surface.material = WORLD_SURFACE_GRASS;
+        if(cliff && !cliffface && !rock) surface.material |= WORLD_SURFACE_STONE_BASE;
         return !generation->iscanceled();
     }
 

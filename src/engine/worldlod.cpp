@@ -139,7 +139,7 @@ static double worldlodlastgeneration = 0, worldlodlastupload = 0;
 
 static int worldlodtopmaterial(int material)
 {
-    switch(material)
+    switch(material & ~WORLD_SURFACE_STONE_BASE)
     {
         case WORLD_SURFACE_STONE: return WORLD_LOD_STONE;
         case WORLD_SURFACE_SAND: return WORLD_LOD_SAND;
@@ -151,6 +151,7 @@ static int worldlodtopmaterial(int material)
 
 static int worldlodsidematerial(int material)
 {
+    if(material & WORLD_SURFACE_STONE_BASE) return WORLD_LOD_STONE;
     return material == WORLD_SURFACE_GRASS ? WORLD_LOD_GRASS_SIDE : worldlodtopmaterial(material);
 }
 
@@ -253,6 +254,13 @@ static void addworldlodsidequad(worldlodcpumesh &mesh, float x0, float y0, float
 static void addworldlodcolumnside(worldlodcpumesh &mesh, float x0, float y0, float x1, float y1, float bottom, float top, int orient, int material)
 {
     if(bottom >= top) return;
+    if(material & WORLD_SURFACE_STONE_BASE)
+    {
+        const float capbottom = max(bottom, top - WORLD_BLOCK_SIZE);
+        if(bottom < capbottom) addworldlodsidequad(mesh, x0, y0, x1, y1, bottom, capbottom, orient, WORLD_LOD_STONE);
+        addworldlodsidequad(mesh, x0, y0, x1, y1, capbottom, top, orient, worldlodsidematerial(material & ~WORLD_SURFACE_STONE_BASE));
+        return;
+    }
     if(material == WORLD_SURFACE_GRASS)
     {
         const float grassbottom = max(bottom, top - WORLD_BLOCK_SIZE);

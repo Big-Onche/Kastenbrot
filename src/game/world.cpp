@@ -577,12 +577,10 @@ namespace game
                             // default while making the configured value a hard cap.
                             cliffheight = settings.cliffmaxheight * (0.4375f + 0.5625f * cliffshape),
                             cliffrise = smoothstep(-0.75f, 2.0f, shoredistance),
-                            // Hold a genuine plateau behind the rock face, then
-                            // blend it into the continental surface. Unlike the old
-                            // fade-to-zero profile, this cannot dig a trough between
-                            // the cliff and the inland terrain.
-                            cliffplateauend = max(plainend, 22.0f),
-                            cliffblendend = cliffplateauend + 32.0f,
+                            // Carry the cliff top inland before easing into the continental surface.
+                            // Taller cliffs need broader shoulders and longer slopes, rather than a narrow coastal ridge.
+                            cliffplateauend = max(plainend, max(64.0f, cliffheight * 4.0f)),
+                            cliffblendend = cliffplateauend + max(128.0f, cliffheight * 10.0f),
                             inlandtarget = max(continentalelevation, normalelevation),
                             cliffblend = smoothstep(cliffplateauend, cliffblendend, shoredistance),
                             cliffplateau = cliffheight + (inlandtarget - cliffheight) * cliffblend,
@@ -667,18 +665,35 @@ namespace game
         return WORLD_BIOME_PLAINS;
     }
 
-    bool worldgenerator::cliff(int x, int y, int height) const
+    bool worldgenerator::cliff(int x, int y, int height, bool *face) const
     {
-        const float noisex = x + 10000.5f, noisey = y - 10000.5f,continental = samplecontinental(*this, noisex, noisey), threshold = landthreshold(settings), cliffstrength = samplecliffstrength(*this, noisex, noisey);
-        if(continental >= threshold && height >= settings.sealevel + 2&& cliffstrength > 0.25f)
+        if(face) *face = false;
+        const float noisex = x + 10000.5f, noisey = y - 10000.5f,
+                    continental = samplecontinental(*this, noisex, noisey), threshold = landthreshold(settings),
+                    cliffstrength = samplecliffstrength(*this, noisex, noisey);
+        if(continental >= threshold && height >= settings.sealevel + 2 && cliffstrength > 0.25f)
         {
             const float shoredistance = samplecoastdistance(*this, noisex, noisey, continental),
-                        // The geometric cliff reaches its crest after roughly
-                        // three metres. Do not extend its stone material across
-                        // the much wider, flat inland plateau.
-                        facewidth = 2.5f + 0.5f * cliffstrength;
+                        cliffshape = clamp(coastshape.GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f),
+                        cliffheight = settings.cliffmaxheight * (0.4375f + 0.5625f * cliffshape);
+            float beachspan, plainrun, plainlevel;
+            samplecoastprofile(*this, noisex, noisey, beachspan, plainrun, plainlevel);
+            const float plainend = 2.0f * beachspan * powf(1.0f - cliffstrength, 4.0f) + plainrun,
+                        plateauend = max(plainend, max(64.0f, cliffheight * 4.0f)),
+                        blendend = plateauend + max(128.0f, cliffheight * 10.0f);
 
-            if(shoredistance <= facewidth) return true;
+            // Back the entire raised coast with stone, including recessed columns along a jagged shoreline.
+            if(shoredistance <= blendend)
+            {
+                if(face && shoredistance < 8.0f)
+                {
+                    // The rising sea face is bare rock. At its crest, only cap columns that are not below a higher ledge.
+                    *face = shoredistance < 2.0f;
+                    for(int dy = -1; dy <= 1 && !*face; ++dy) for(int dx = -1; dx <= 1 && !*face; ++dx)
+                        if((dx || dy) && this->height(x + dx, y + dy) > height + 1) *face = true;
+                }
+                return true;
+            }
         }
         return false;
     }
@@ -732,7 +747,9 @@ namespace game
                   beachmax = generator.settings.sealevel + max(generator.settings.beachminheight, generator.settings.beachmaxheight),
                   coasttreemax = generator.settings.sealevel + 2;
         if(generator.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) return false;
-        if(terrain.rockyledge > 0.22f || generator.cliff(x, y, height) || generator.rock(x, y, height)) return false;
+        bool cliffface = false;
+        generator.cliff(x, y, height, &cliffface);
+        if(terrain.rockyledge > 0.22f || cliffface || generator.rock(x, y, height)) return false;
         const float density = biome == WORLD_BIOME_FOREST ? generator.settings.foresttreedensity : generator.settings.plainstreedensity;
         const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64, chunky = y >= 0 ? y / 64 : (y - 63) / 64,
                   blockx = x - chunkx * 64, blocky = y - chunky * 64;

@@ -14,7 +14,8 @@ enum worldsurfacematerial
     WORLD_SURFACE_STONE,
     WORLD_SURFACE_SAND,
     WORLD_SURFACE_SNOW,
-    WORLD_SURFACE_DIRT
+    WORLD_SURFACE_DIRT,
+    WORLD_SURFACE_STONE_BASE = 1 << 3
 };
 
 struct worldsurfacesample
