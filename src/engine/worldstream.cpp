@@ -412,7 +412,7 @@ void clearworldchunks()
     shutdownworldchunkloader();
     reclaimworldchunktrees(true);
     worldchunkprunecursor = 0;
-    acoustics::clearChunkAcoustics();
+    acoustics::resetAcoustics();
     worldchunkvaupdates.setsize(0);
     worldchunkvaupdateset.clear();
     worldchunkvapendingbuilds.setsize(0);
@@ -573,7 +573,6 @@ static bool queueworldchunksave(worldchunk &chunk, cube **preparedroot)
     job->renderdata = chunk.renderdata;
     job->playeredited = chunk.playeredited;
     if(!chunk.scatter.empty()) job->scatter.put(chunk.scatter.getbuf(), chunk.scatter.length());
-    if(!chunk.acoustics.empty()) job->acoustics.put(chunk.acoustics.getbuf(), chunk.acoustics.length());
 
     chunk.saving = true;
     chunk.savingrevision = chunk.revision;
@@ -1312,14 +1311,12 @@ static void rebuildworldchunkindices()
     loopv(worldchunks) indexworldchunk(i);
 }
 
-bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata, int datlength,
-                              const uchar *acousticdata, int acousticlength)
+bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata, int datlength)
 {
-    if(!voxdata || voxlength <= 0 || !datdata || datlength <= 0 || !acousticdata || acousticlength <= 0 || !revision) return false;
-    vector<uchar> vox, dat, chunkacoustics;
+    if(!voxdata || voxlength <= 0 || !datdata || datlength <= 0 || !revision) return false;
+    vector<uchar> vox, dat;
     vox.put(voxdata, voxlength);
     dat.put(datdata, datlength);
-    chunkacoustics.put(acousticdata, acousticlength);
     worldchunksnapshot snapshot(chunkx, chunky);
     vector<worldsnapshotvoxel> voxels;
     string error;
@@ -1342,7 +1339,6 @@ bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar
     {
         worldchunk &old = worldchunks[oldindex];
         if(worldchunkmounted(old)) unmountworldchunk(old);
-        acoustics::unloadChunkAcoustics(old.x, old.y);
         if(old.root && old.root != worldroot) freeocta(old.root);
         worldchunks.removeunordered(oldindex);
         rebuildworldchunkindices();
@@ -1352,7 +1348,6 @@ bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar
     chunk.revision = chunk.savedrevision = revision;
     chunk.playeredited = snapshot.playeredited;
     chunk.renderdata = snapshot.renderdata;
-    chunk.acoustics.move(chunkacoustics);
     worldchunkdirtybounds renderdirty;
     renderdirty.minimum = ivec(0, 0, 0);
     renderdirty.maximum = ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE);
@@ -1365,7 +1360,6 @@ bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar
     addworldsectionvisibilitychunk(chunkx, chunky);
     invalidateworldsectionvisibility();
     const ivec localorigin = worldchunkorigin(chunk);
-    if(!acoustics::installChunkAcoustics(chunk.x, chunk.y, localorigin, chunk.acoustics)) return false;
     invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
     lastplayerchunkx = INT_MIN;
     return true;
@@ -1471,7 +1465,7 @@ static int worldchunkloader(void *)
                 ZoneTextF("%d_%d", savejob->x, savejob->y);
                 savejob->success = writeworldchunksnapshot(savejob->folder, savejob->x, savejob->y, savejob->revision, savejob->playeredited,
                                                            savejob->compress, savejob->root, savejob->renderdata, savejob->scatter, savejob->gameplay,
-                                                           savejob->acoustics, savejob->error);
+                                                           savejob->error);
                 freeocta(savejob->root);
                 savejob->root = NULL;
             }
@@ -1493,14 +1487,6 @@ static int worldchunkloader(void *)
                 job->snapshotresult = loadworldchunksnapshotdata(job->folder, job->x, job->y, job->root, job->scatter, job->renderdata,
                                                                   job->gameplay, job->snapshoterror, &job->snapshotrevision,
                                                                   &job->snapshotplayeredited);
-                if(job->snapshotresult == WORLD_SNAPSHOT_LOADED)
-                {
-                    string acgname;
-                    worldchunksnapshotfilename(acgname, sizeof(acgname), job->folder, job->x, job->y, "acg");
-                    if(!readworldsnapshotfile(acgname, job->acoustics) &&
-                       acoustics::bakeChunkAcoustics(job->renderdata, job->x, job->y, job->acoustics, &job->cancelled))
-                        writeworldsnapshotfile(acgname, job->acoustics, compresschunks != 0);
-                }
                 job->checksnapshot = false;
             }
             if(!job->root && !SDL_AtomicGet(&job->cancelled)) job->root = prepareworldchunk(*job);
@@ -1508,7 +1494,6 @@ static int worldchunkloader(void *)
             {
                 setworldleavesalpha(job->root, job->leavesalpha);
                 job->sectionstatesready = prepareworldchunksectionstates(*job);
-                if(job->acoustics.empty()) acoustics::bakeChunkAcoustics(job->renderdata, job->x, job->y, job->acoustics, &job->cancelled);
             }
             if(job->root && job->snapshotresult != WORLD_SNAPSHOT_LOADED && job->folder[0] && !SDL_AtomicGet(&job->cancelled))
             {
@@ -1713,7 +1698,6 @@ static int acquireworldchunksync(int x, int y, int &generated)
     ZoneScopedN("Chunks/Load synchronous");
     ZoneTextF("%d_%d", x, y);
     vector<worldscatterinstance> scatter;
-    vector<uchar> chunkacoustics;
     worldsectionrenderdata renderdata;
     cube *root = NULL;
     string snapshoterror;
@@ -1733,21 +1717,9 @@ static int acquireworldchunksync(int x, int y, int &generated)
         generated++;
     }
     if(root) setworldleavesalpha(root, leavesalpha != 0);
-    if(root)
-    {
-        bool loadedacoustics = false;
-        if(snapshotresult == WORLD_SNAPSHOT_LOADED && worldfolder[0])
-        {
-            string acgname;
-            worldchunksnapshotfilename(acgname, sizeof(acgname), worldfolder, x, y, "acg");
-            loadedacoustics = readworldsnapshotfile(acgname, chunkacoustics);
-        }
-        if(!loadedacoustics) acoustics::bakeChunkAcoustics(renderdata, x, y, chunkacoustics);
-    }
     worldchunk &chunk = worldchunks.add(worldchunk(x, y, root));
     indexworldchunk(worldchunks.length() - 1);
     chunk.scatter.move(scatter);
-    chunk.acoustics.move(chunkacoustics);
     chunk.renderdata = renderdata;
     if(snapshotresult == WORLD_SNAPSHOT_LOADED)
     {
@@ -1756,7 +1728,6 @@ static int acquireworldchunksync(int x, int y, int &generated)
     }
     addworldsectionvisibilitychunk(x, y);
     const ivec localorigin = worldchunkorigin(chunk);
-    acoustics::installChunkAcoustics(chunk.x, chunk.y, localorigin, chunk.acoustics);
     invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
     if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
         conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", x, y);
@@ -2016,7 +1987,6 @@ static int processworldchunkresults(double budget)
             retireworldchunktree(job->root, false);
             job->scatter.setsize(0);
             job->gameplay.setsize(0);
-            job->acoustics.setsize(0);
             job->snapshotresult = WORLD_SNAPSHOT_INVALID;
             job->sectionstatesready = false;
             SDL_LockMutex(worldchunkmutex);
@@ -2033,7 +2003,6 @@ static int processworldchunkresults(double budget)
             chunk.root = job->root;
             job->root = NULL;
             chunk.scatter.move(job->scatter);
-            chunk.acoustics.move(job->acoustics);
             chunk.renderdata = job->renderdata;
             bool leavesalphamatches = job->leavesalpha == (leavesalpha != 0);
             if(!leavesalphamatches)
@@ -2065,7 +2034,6 @@ static int processworldchunkresults(double budget)
             optimized += job->optimized;
             addworldsectionvisibilitychunk(chunk.x, chunk.y);
             const ivec localorigin = worldchunkorigin(chunk);
-            acoustics::installChunkAcoustics(chunk.x, chunk.y, localorigin, chunk.acoustics);
             invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
             if(job->snapshotresult == WORLD_SNAPSHOT_INVALID)
                 conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerated it", chunk.x, chunk.y,
@@ -2108,14 +2076,6 @@ static int processworldchunksaveresults(double budget)
             {
                 chunk.saving = false;
                 if(job->success) chunk.savedrevision = job->revision;
-                if(job->success && (chunk.acoustics.length() != job->acoustics.length() ||
-                   (job->acoustics.length() && memcmp(chunk.acoustics.getbuf(), job->acoustics.getbuf(), job->acoustics.length()))))
-                {
-                    // vector::move appends to a nonempty destination.
-                    chunk.acoustics.setsize(0);
-                    chunk.acoustics.move(job->acoustics);
-                    acoustics::installChunkAcoustics(chunk.x, chunk.y, worldchunkorigin(chunk), chunk.acoustics);
-                }
                 resave = job->success && chunk.savedrevision != chunk.revision;
             }
         }
@@ -2216,7 +2176,7 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
         player->o.y -= float(shifty);
     }
     if(shiftx || shifty) game::rebasenpcs(float(shiftx), float(shifty));
-    acoustics::rebaseChunkAcoustics(float(shiftx), float(shifty));
+    acoustics::rebaseAcoustics(float(shiftx), float(shifty));
     conoutf(CON_DEBUG, "rebased chunk window around %d_%d", chunkx, chunky);
 }
 
@@ -2293,7 +2253,6 @@ static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
             }
             if(chunk.saving) continue;
             if(game::islocalworld()) game::unloadlocalchunknpcs(chunk.x, chunk.y);
-            acoustics::unloadChunkAcoustics(chunk.x, chunk.y);
             retireworldchunktree(chunk.root, true);
         }
         worldchunkindices.remove(worldchunkindexkey(chunk.x, chunk.y));

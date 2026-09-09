@@ -452,7 +452,7 @@ extern int getworldsize();
 extern int getworldlightlevel(const vec &position);
 extern void updateworldchunks(bool force = false);
 extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata,
-                                     int datlength, const uchar *acousticdata, int acousticlength);
+                                     int datlength);
 extern int getmapversion();
 extern void renderentcone(const extentity &e, const vec &dir, float radius, float angle);
 extern void renderentarrow(const extentity &e, const vec &dir, float radius);

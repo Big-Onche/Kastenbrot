@@ -1462,6 +1462,7 @@ namespace sound
 
     void cleanup()
     {
+        acoustics::resetAcoustics();
         closemumble();
         music.cleanup(true);
         gameSounds.cleanup();
@@ -1485,6 +1486,7 @@ namespace sound
 
     void clearMapSounds()
     {
+        acoustics::resetAcoustics();
         stopMapSounds();
         mapSounds.clear();
     }
@@ -1770,12 +1772,12 @@ namespace sound
     void updateAcousticReverb(const EFXEAXREVERBPROPERTIES *acousticShape, float reverbGain, float reverbDecay, float reflectionAmount)
     {
         if(!efxReverb || !efxReverbEffect || !efxReverbSlot) return;
-        bool usebaked = acousticShape != NULL;
+        bool useacoustics = acousticShape != NULL;
         EFXEAXREVERBPROPERTIES generic = EFX_REVERB_PRESET_GENERIC;
-        const EFXEAXREVERBPROPERTIES &shape = usebaked ? *acousticShape : generic;
-        float gain = usebaked ? clamp(shape.flGain*reverbGain, 0.0f, 1.0f) : clamp(0.65f*sounddistancereverb, 0.0f, 1.0f),
-              decay = clamp(usebaked ? reverbDecay : shape.flDecayTime, 0.12f, 4.0f),
-              reflection = clamp(shape.flReflectionsGain*(usebaked ? 0.35f + reflectionAmount*0.65f : 1.0f), 0.0f, 3.16f),
+        const EFXEAXREVERBPROPERTIES &shape = useacoustics ? *acousticShape : generic;
+        float gain = useacoustics ? clamp(shape.flGain*reverbGain, 0.0f, 1.0f) : clamp(0.65f*sounddistancereverb, 0.0f, 1.0f),
+              decay = clamp(useacoustics ? reverbDecay : shape.flDecayTime, 0.12f, 4.0f),
+              reflection = clamp(shape.flReflectionsGain*(useacoustics ? 0.35f + reflectionAmount*0.65f : 1.0f), 0.0f, 3.16f),
               density = clamp(shape.flDensity, 0.0f, 1.0f),
               gainhf = clamp(shape.flGainHF, 0.0f, 1.0f),
               lateGain = clamp(shape.flLateReverbGain, 0.0f, 10.0f);
@@ -2271,43 +2273,6 @@ COMMAND(altmapsound, "si");
 
 ICOMMAND(numsounds, "", (), intret(sound::numSounds()));
 ICOMMAND(nummapsounds, "", (), intret(sound::numMapSounds()));
-ICOMMAND(soundacousticcells, "", (), intret(acoustics::numAcousticCells()));
-ICOMMAND(soundacousticregions, "", (), intret(acoustics::numAcousticRegions()));
-ICOMMAND(soundacousticportals, "", (), intret(acoustics::numAcousticPortals()));
-
-void bakesoundacoustics(int *cellsize, int *rays) { acoustics::bakeAcousticGrid(*cellsize, *rays); }
-COMMAND(bakesoundacoustics, "ii");
-
-void soundacousticbakecorner(int *corner, float *x, float *y, float *z)
-{
-    if(*corner < 1 || *corner > 2)
-    {
-        conoutf(CON_WARN, "soundacousticbakecorner: corner must be 1 or 2");
-        return;
-    }
-    acoustics::setAcousticBakeCorner(*corner - 1, vec(*x, *y, *z));
-}
-COMMAND(soundacousticbakecorner, "ifff");
-
-void getacousticbounds(int *corner)
-{
-    if(*corner < 1 || *corner > 2)
-    {
-        conoutf(CON_WARN, "getacousticbounds: corner must be 1 or 2");
-        return;
-    }
-    if(!camera1)
-    {
-        conoutf(CON_WARN, "getacousticbounds: no camera");
-        return;
-    }
-    acoustics::setAcousticBakeCorner(*corner - 1, camera1->o);
-}
-COMMAND(getacousticbounds, "i");
-
-void clearsoundacousticgrid() { acoustics::clearChunkAcoustics(); }
-COMMAND(clearsoundacousticgrid, "");
-
 void soundreset() { sound::soundReset(); }
 COMMAND(soundreset, "");
 

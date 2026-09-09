@@ -137,7 +137,6 @@ struct worldchunk
     int x, y;
     cube *root;
     vector<worldscatterinstance> scatter;
-    vector<uchar> acoustics;
     uint mountedtiles[WORLD_SECTION_LAYERS];
     uint contentknown[WORLD_SECTION_LAYERS], contenttiles[WORLD_SECTION_LAYERS], opaqueknown[WORLD_SECTION_LAYERS], opaquetiles[WORLD_SECTION_LAYERS],
          portalsknown[WORLD_SECTION_LAYERS], visibletiles[WORLD_SECTION_LAYERS], traversedtiles[WORLD_SECTION_LAYERS];
@@ -200,7 +199,7 @@ struct worldchunkjob
     SDL_atomic_t cancelled;
     cube *root, *saveroot;
     vector<worldscatterinstance> scatter;
-    vector<uchar> gameplay, acoustics;
+    vector<uchar> gameplay;
     string folder, snapshoterror;
     worldgencontext *generation;
 
