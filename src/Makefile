@@ -344,7 +344,7 @@ engine/localambient.o: shared/ents.h shared/command.h shared/glexts.h
 engine/localambient.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/localambient.o: engine/world.h engine/octa.h engine/light.h
 engine/localambient.o: engine/texture.h engine/bih.h engine/model.h
-engine/localambient.o: engine/worldruntime.h
+engine/localambient.o: engine/worldruntime.h engine/localambientfield.h
 engine/main.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/main.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/main.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h

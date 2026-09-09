@@ -1189,13 +1189,14 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
     {
         const ivec position(origin.x + x * resolution + halfresolution, origin.y + y * resolution + halfresolution,
                             origin.z + z * resolution + halfresolution);
-        bool occupied = true;
+        bool occupied = false, known = false;
         bvec color(0, 0, 0);
         int run = 1;
         const cube *sectioncube = NULL;
         int sectionsize = 0;
         if(worldchunks.empty())
         {
+            known = true;
             ivec cubeorigin;
             int size;
             const cube &c = lookupcube(position, -1, cubeorigin, size);
@@ -1219,8 +1220,10 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
                 cachedlocalchunky = localchunky;
                 cachedchunkindex = findworldchunk(worldfirstchunkx + localchunkx, worldfirstchunky + localchunky);
             }
-            if(worldchunks.inrange(cachedchunkindex) && !worldchunks[cachedchunkindex].loading && worldchunks[cachedchunkindex].root)
+            if(worldchunks.inrange(cachedchunkindex) && !worldchunks[cachedchunkindex].loading &&
+               !worldchunks[cachedchunkindex].corrupted && worldchunks[cachedchunkindex].root)
             {
+                known = true;
                 const worldchunk &chunk = worldchunks[cachedchunkindex];
                 const ivec local(position.x - localchunkx * WORLD_CHUNK_SIZE, position.y - localchunky * WORLD_CHUNK_SIZE, position.z);
                 const int section = local.z / WORLD_SECTION_SIZE,
@@ -1249,14 +1252,14 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
             }
             else
             {
-                // Missing/loading chunks are uniformly occupied, independent of sections.
+                // Unknown terrain must not become a fictitious wall of black ambient.
                 const int chunkend = min((localchunkx + 1) * WORLD_CHUNK_SIZE, worldsize);
                 run = min(dimensions.x - x, (chunkend - 1 - position.x) / resolution + 1);
             }
         }
         else
         {
-            // Out-of-world rows stay conservatively occupied. A negative x run
+            // Out-of-world rows use unknown daylight. A negative x run
             // must stop before the first sample that can enter the world.
             run = position.y < 0 || position.y >= worldsize || position.z < 0 || position.z >= WORLD_MAP_SIZE || position.x >= worldsize ?
                   dimensions.x - x : min(dimensions.x - x, (-1 - position.x) / resolution + 1);
@@ -1285,12 +1288,12 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
             const bvec4 sample(color, occupied ? 255 : 0);
             if(count == 1)
             {
-                solid[destination] = occupied ? 255 : 0;
+                solid[destination] = known ? (occupied ? 255 : 0) : 128;
                 albedo[destination] = sample;
             }
             else
             {
-                memset(solid + destination, occupied ? 255 : 0, count);
+                memset(solid + destination, known ? (occupied ? 255 : 0) : 128, count);
                 loopi(count) albedo[destination + i] = sample;
             }
             x += count;

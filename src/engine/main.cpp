@@ -853,8 +853,7 @@ void setupscreen()
 #ifdef __APPLE__
     static const int glversions[] = { 32, 20 };
 #else
-    // Local ambient compute propagation uses OpenGL 4.3 when available.
-    // Keep all legacy contexts as fallbacks for older hardware/drivers.
+    // Prefer newer contexts while keeping legacy fallbacks for older hardware/drivers.
     static const int glversions[] = { 43, 40, 33, 32, 31, 30, 20 };
 #endif
     loopi(sizeof(glversions)/sizeof(glversions[0]))
