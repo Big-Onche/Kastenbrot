@@ -522,6 +522,7 @@ void renderworldsolidshadows()
     // Use an owned VBO: do not leave the shared immediate-mode buffer or its attribute cache active for the next shadow pass.
     static vector<vec> vertices;
     vertices.setsize(0);
+    // Keep normal depth clipping: retaining sunward geometry via shader or GL_DEPTH_CLAMP triggered GPU timeouts on SurviTest.
     glDisable(GL_CULL_FACE);
     gle::enablevertex();
     loopv(worldchunks)

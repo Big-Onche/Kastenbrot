@@ -457,7 +457,7 @@ engine/acoustics.o: shared/ents.h shared/command.h shared/glexts.h
 engine/acoustics.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/acoustics.o: engine/world.h engine/octa.h engine/light.h
 engine/acoustics.o: engine/texture.h engine/bih.h engine/model.h
-engine/acoustics.o: engine/acoustics.h
+engine/acoustics.o: engine/acoustics.h engine/soundocclusion.h
 engine/sound.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/sound.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/sound.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h

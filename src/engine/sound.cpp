@@ -1560,6 +1560,7 @@ namespace sound
     FVAR(soundpitchrandomamount, 0.0f, 0.04f, 1.0f);
     VARP(soundacousticdualvoice, 0, 1, 1);
     VARP(soundacousticlooprefresh, 0, 100, 5000);
+    VARP(soundambientocclusionrefresh, 50, 250, 2000);
     VARP(soundairattenuation, 0, 0, 1);
     FVARP(maxsounddistance, 0.0f, 1024.0f, 4096.0f);
     FVARP(sounddistanceattenuationfactor, 0.0f, 2.0f, 4.0f);
@@ -1820,13 +1821,16 @@ namespace sound
             return;
         }
 
+        const bool ambient = (chan.flags&SND_AMBIENT) != 0;
+        const int interval = ambient ? soundambientocclusionrefresh + int(chan.ambienthandle % 67) : soundacousticlooprefresh;
         bool moved = acousticLoopCacheMoved(chan),
-             refresh = soundacousticlooprefresh <= 0 || chan.acousticCacheMillis < 0 || totalmillis - chan.acousticCacheMillis >= soundacousticlooprefresh;
-        if(!chan.acousticCacheValid || (moved && refresh))
+             refresh = interval <= 0 || chan.acousticCacheMillis < 0 || totalmillis - chan.acousticCacheMillis >= interval;
+        if(!chan.acousticCacheValid || ((ambient || moved) && refresh))
         {
             float cacheVol = 1.0f, cacheGainHF = 1.0f, cacheReverb = 0.0f;
             acoustics::AcousticSourceInfo cacheInfo;
-            acoustics::acousticSource(chan.loc, dist, cacheVol, cacheGainHF, cacheReverb, &cacheInfo);
+            if(ambient) acoustics::acousticAmbientSource(chan.loc, dist, cacheVol, cacheGainHF, cacheReverb, cacheInfo);
+            else acoustics::acousticSource(chan.loc, dist, cacheVol, cacheGainHF, cacheReverb, &cacheInfo);
             chan.acousticCacheLoc = chan.loc;
             chan.acousticCacheListener = camera1->o;
             chan.acousticCacheInfo = cacheInfo;
@@ -2383,6 +2387,25 @@ void stopambientloop(uint handle)
         sound::haltChannel(i);
         return;
     }
+}
+
+bool ambientloopocclusion(uint handle, float &occlusion, float &gain)
+{
+    occlusion = 0;
+    gain = 1;
+    if(!handle) return false;
+    loopv(sound::channels)
+    {
+        const sound::SoundChannel &chan = sound::channels[i];
+        if(!chan.inuse || chan.ambienthandle != handle) continue;
+        if(acoustics::soundacoustics && chan.acousticCacheValid)
+        {
+            occlusion = chan.acousticCacheInfo.occlusion;
+            gain = chan.acousticBlockGain;
+        }
+        return true;
+    }
+    return false;
 }
 
 ICOMMAND(playsound, "i", (int *n), sound::play(*n));

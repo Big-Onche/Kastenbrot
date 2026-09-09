@@ -24,8 +24,7 @@ namespace game
         FVARP(ambientwindscale, 0.01f, 10, 100);
         FVARP(ambientdepthscale, 1, 64, 256);
         FVARP(ambientaltitudewind, 0, 0.6f, 1);
-        // More than the section diagonal, including the five-block surface clearance.
-        FVARP(ambientradius, 640, 768, 4096);
+        FVARP(ambientradius, 640, 1024, 4096);
 
         static float smooth(float value)
         {
@@ -326,6 +325,17 @@ namespace game
                                             "calm / light_wind / cold_wind / rain / birds / crickets";
                         particle_splash(PART_SPARK, 1, 100, local, site.placement.cave ? 0xFFAA44 : 0x44FFAA, 2, 1, 0);
                         particle_textcopy(local, label, PART_TEXT, 300, 0xFFFFFF, 2);
+                    }
+                    loopi(96) if(voices[i].handle)
+                    {
+                        float occlusion, gain;
+                        if(!ambientloopocclusion(voices[i].handle, occlusion, gain)) continue;
+                        vec local(voices[i].position);
+                        worldpositiontolocal(local);
+                        local.z += 8 + voices[i].type * 4;
+                        defformatstring(label, "%s: blocked %.0f%%, transmitted %.0f%%", names[voices[i].type],
+                                        occlusion * 100, gain * 100);
+                        particle_textcopy(local, label, PART_TEXT, 300, occlusion > 0 ? 0xFF8866 : 0x88FF88, 1);
                     }
                 }
             }

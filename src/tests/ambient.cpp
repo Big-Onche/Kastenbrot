@@ -7,6 +7,7 @@
 #define VARP(name, low, current, high) int name = current
 #define FVARP(name, low, current, high) float name = current
 #include "../game/ambient.cpp"
+#include "soundocclusion.h"
 #include <cassert>
 #undef main
 
@@ -41,6 +42,10 @@ float worldpositionheight(float z)
 }
 void stopambientloop(uint handle)
 {
+}
+bool ambientloopocclusion(uint handle, float &occlusion, float &gain)
+{
+    return false;
 }
 void worldpositiontolocal(vec &position)
 {
@@ -138,6 +143,25 @@ int main()
     loopi(6) assert(streaming.voices[i].selected && streaming.voices[i].key.x < 6);
     streaming.select(vec(10000, 0, 0));
     loopi(8) assert(streaming.voices[i].handle == 0 && !streaming.voices[i].selected);
-    puts("Ambient tests passed, including debug particle safety and streamed-source voice starvation regression.");
+    const vec source(0, 0, 10), listener(100, 0, 10);
+    bool wall = false;
+    auto trace = [&wall](const vec &, const vec &, float length) { return wall ? 50.0f : length; };
+    assert(soundpointocclusion(source, listener, trace) == 0);
+    wall = true; // Geometry changes while both endpoints remain stationary.
+    assert(soundpointocclusion(source, listener, trace) == 1);
+    wall = false;
+    assert(soundpointocclusion(source, listener, trace) == 0);
+    assert(soundpointocclusion(source, listener, [](const vec &, const vec &, float) { return -1.0f; }) == 0);
+    assert(soundpointocclusion(source, listener, [](const vec &, const vec &, float length) { return length - 0.5f; }) == 0);
+    int probe = 0;
+    assert(soundpointocclusion(source, listener, [&probe](const vec &, const vec &, float length)
+    {
+        return probe++ < 2 ? 50.0f : length;
+    }) > 0);
+    auto solidwall = [](const ivec &point) { return point.x >= 32 && point.x < 48; };
+    assert(soundworldhit(vec(0, 0, 0), vec(1, 0, 0), 100, 16, solidwall) < 48);
+    assert(soundworldhit(vec(100, 0, 0), vec(-1, 0, 0), 100, 16, solidwall) < 69);
+    assert(soundworldhit(vec(0, 0, 0), vec(0, 0, 1), 100, 16, solidwall) == 100);
+    puts("Ambient tests passed: debug safety, streamed voice handoff, direct occlusion and streamed geometry traversal.");
     return 0;
 }

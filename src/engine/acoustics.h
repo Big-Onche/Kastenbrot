@@ -17,6 +17,7 @@ namespace acoustics
 
     void updateAcoustics();
     void acousticSource(const vec &loc, float dist, float &volf, float &gainhf, float &reverbSend, AcousticSourceInfo *info = NULL);
+    void acousticAmbientSource(const vec &loc, float dist, float &volf, float &gainhf, float &reverbSend, AcousticSourceInfo &info);
     void acousticHudSource(float &reverbSend);
     void drawAcousticsDebug();
 

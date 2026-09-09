@@ -685,6 +685,7 @@ extern void stopsounds();
 extern uint startambientloop(const char *name, const vec *position, uint seed, int radius);
 extern bool updateambientloop(uint handle, float gain, const vec *position);
 extern void stopambientloop(uint handle);
+extern bool ambientloopocclusion(uint handle, float &occlusion, float &gain);
 struct ambientplacement
 {
     ivec key;
