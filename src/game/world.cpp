@@ -221,6 +221,7 @@ namespace game
         clusenoise.SetNoiseType(FastNoiseLite::NoiseType_Perlin);
         setupnoise(terrainmicro, seed ^ 0x34A72C91, settings.terrainmicrofrequency, 4, 0.48f);
         setupnoise(terrainmicromask, seed ^ 0x62E9B4D7, settings.terrainmicrofrequency * 0.25f, 2, 0.45f);
+        setupnoise(plainsroll, seed ^ 0x39C6A17D, settings.terrainmicrofrequency * 0.35f, 2, 0.35f);
         setupnoise(tectonicnoise, seed ^ 0x68E31DA4, settings.mountainchainfrequency, 1);
         setupwarp(tectonicwarp, seed ^ 0x6C8E9CF5, settings.tectonicfrequency * 0.8f, min(settings.tectonicwarpamplitude, 36.0f));
         setupnoise(temperature, seed ^ 0x51D7348B, settings.temperaturefrequency, 3);
@@ -522,10 +523,10 @@ namespace game
         const float threshold = landthreshold(settings);
         const worldtectonicsample tectonicsample = sampletectonics(*this, x, y, continental, 0);
         if(tectonics) *tectonics = tectonicsample;
-        float elevation, plaindetailmask = 1.0f, cliffdetailmask = 0.0f;
+        float elevation, plaindetailmask = 1.0f, plainrollmask = 1.0f, cliffdetailmask = 0.0f;
         if(continental >= threshold)
         {
-            float minimumelevation = 3.0f;
+            float minimumelevation = 2.0f;
             const float distance = clamp((continental - threshold) / max(1.0f - threshold, 0.001f), 0.0f, 1.0f);
             const float coastrise = smoothstep(0.0f, 0.28f, distance);
             const float inland = smoothstep(0.0f, 0.72f, distance);
@@ -589,6 +590,7 @@ namespace game
 
                 elevation = normalelevation + (cliffelevation - normalelevation) * cliffstrength;
                 plaindetailmask = smoothstep(plainend, blendend, shoredistance);
+                plainrollmask = smoothstep(grassriseend, blendend, shoredistance);
                 cliffdetailmask = cliffstrength * (1.0f - smoothstep(cliffplateauend, cliffblendend, shoredistance));
             }
             elevation = clamp(elevation, 0.0f, settings.maxcontinentheight)
@@ -598,6 +600,14 @@ namespace game
 
             const float roughness = max(tectonicsample.terrainroughness, cliffdetailmask),
                         detailstrength = settings.plainsmicrovariation * plaindetailmask + settings.reliefmicrovariation * roughness;
+            const float rollstrength = 6.0f * settings.plainsmicrovariation * plainrollmask * (1.0f - smoothstep(0.1f, 0.65f, roughness));
+            if(rollstrength > 0.0f)
+            {
+                // Lift broad, smooth rolls above the land floor instead of clipping signed noise into flat lowlands.
+                // Fade them beyond the beach terraces and out again where mountain or cliff relief takes over.
+                const float roll = clamp(plainsroll.GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f);
+                elevation = max(elevation, minimumelevation) + roll * rollstrength;
+            }
             if(detailstrength > 0.0f) elevation = max(elevation + sampleterrainmicrovariation(*this, noisex, noisey) * detailstrength, 0.0f);
             // Only the beach terraces may fall below sea level +2, including after relief and microvariation.
             elevation = max(elevation, minimumelevation);

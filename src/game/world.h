@@ -89,7 +89,7 @@ namespace game
         FastNoiseLite geology, hills, coastshape, coastdetail, covenoise, oceanregional, beachnoise, cliffnoise;
         FastNoiseLite mountainrange, mountainnoise, mountainpeaks;
         FastNoiseLite secondarysummita, secondarysummitb, hollowshape, foldnoise, clusenoise;
-        FastNoiseLite terrainmicro, terrainmicromask;
+        FastNoiseLite terrainmicro, terrainmicromask, plainsroll;
         FastNoiseLite tectonicnoise, tectonicwarp;
         FastNoiseLite temperature, moisture, biomevariation, biomeblend, rockiness;
         FastNoiseLite caves, largecaves, tunnela, tunnelb, lakeshape;
