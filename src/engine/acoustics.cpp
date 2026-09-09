@@ -12,7 +12,7 @@ namespace acoustics
     VARP(soundacousticsmooth, 0, 1000, 10000);
 
     FVAR(soundacousticrange, 4.0f, 512.0f, 1024.0f);
-    FVAR(soundacousticocclusion, 0.0f, 1.0f, 2.0f);
+    FVAR(soundacousticocclusion, 0.0f, 1.25f, 2.0f);
     FVAR(soundacousticblockgain, 0.05f, 0.15f, 1.0f);
     FVAR(soundacousticmufflegainhf, 0.02f, 0.05f, 1.0f);
     FVARP(soundacousticreverb, 0.0f, 1.0f, 2.0f);

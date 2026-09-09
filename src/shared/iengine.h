@@ -662,7 +662,8 @@ namespace sound
     extern int usesound, soundchans, soundfreq, soundbufferlen, soundvol, musicvol;
     extern char *audiodriver;
 
-    extern int play(int n, const vec *loc = NULL, extentity *ent = NULL, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);
+    extern int play(int n, const vec *loc = NULL, extentity *ent = NULL, int flags = 0, int loops = 0, int fade = 0, int chanid = -1,
+                    int radius = 0, int expire = -1, float initialGain = 1.0f);
     extern int playName(const char *s, const vec *loc = NULL, int vol = 0, int flags = 0, int loops = 0, int fade = 0, int chanid = -1, int radius = 0, int expire = -1);
     extern void preload(int n);
     extern void preloadMap(int n);
@@ -682,7 +683,7 @@ extern void preloadmapsound(int n);
 extern bool stopsound(int n, int chanid, int fade = 0);
 extern void stopsounds();
 // Opaque managed-loop handles remain safe when channels are stolen or the backend resets.
-extern uint startambientloop(const char *name, const vec *position, uint seed, int radius);
+extern uint startambientloop(const char *name, const vec *position, uint seed, int radius, float gain);
 extern bool updateambientloop(uint handle, float gain, const vec *position);
 extern void stopambientloop(uint handle);
 extern bool ambientloopocclusion(uint handle, float &occlusion, float &gain);

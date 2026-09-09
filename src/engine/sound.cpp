@@ -42,7 +42,7 @@ namespace sound
     static ALuint efxReverbEffect = 0, efxReverbSlot = 0, efxDistanceReverbEffect = 0, efxDistanceReverbSlot = 0;
     static int efxMaxAuxiliarySends = 0;
 
-    int play(int n, const vec *loc, extentity *ent, int flags, int loops, int fade, int chanid, int radius, int expire);
+    int play(int n, const vec *loc, extentity *ent, int flags, int loops, int fade, int chanid, int radius, int expire, float initialGain);
     void stopAll();
 
     static sf_count_t sfLength(void *userData)
@@ -357,6 +357,11 @@ namespace sound
 
     static vector<SoundChannel> channels;
 
+    FVARFP(ambientstereo, 0.0f, 0.75f, 1.0f,
+    {
+        loopv(channels) if(channels[i].inuse && (channels[i].flags&SND_AMBIENT)) channels[i].dirty = true;
+    });
+
     static SoundChannel &newChannel(int n, SoundSlot *slot, const vec *loc = NULL, extentity *ent = NULL, int flags = 0, int radius = 0, int soundentity = 0)
     {
         if(ent)
@@ -518,6 +523,7 @@ namespace sound
 
         float gain = clamp(volume/float(MaxVolume)*chan.acousticGain, 0.0f, 1.0f),
               pan = clamp(chan.targetAcousticPan/127.5f - 1.0f, -1.0f, 1.0f);
+        if(chan.flags&SND_AMBIENT) pan *= ambientstereo;
         alSourcef(chan.acousticSource, AL_GAIN, gain);
         alSource3f(chan.acousticSource, AL_POSITION, pan, 0.0f, -1.0f);
         if(efxReverb && efxReverbSlot && gain > 0.001f && chan.targetReverbSend > 0.001f)
@@ -549,6 +555,7 @@ namespace sound
         chan.volume = volume;
         alSourcef(chan.source, AL_GAIN, clamp(chan.volume/float(MaxVolume), 0.0f, 1.0f));
         float pan = clamp(chan.pan/127.5f - 1.0f, -1.0f, 1.0f);
+        if(chan.flags&SND_AMBIENT) pan *= ambientstereo;
         alSource3f(chan.source, AL_POSITION, pan, 0.0f, -1.0f);
         if(efxFilters) syncDirectFilter(chan);
         else
@@ -1897,7 +1904,8 @@ namespace sound
                 distanceReverbSend = distanceReverb;
             }
             bool mapSoundInRadius = !(chan.flags&SND_MAP) || rad <= 0 || dist <= rad;
-            if((chan.flags&SND_MAP) && rad > 0) volf *= mapSoundRadiusGain(dist, float(rad), inner);
+            if((chan.flags&SND_AMBIENT) && rad > 0) volf *= 1.0f - smoothramp(dist, 0.0f, float(rad));
+            else if((chan.flags&SND_MAP) && rad > 0) volf *= mapSoundRadiusGain(dist, float(rad), inner);
             else if((chan.flags&SND_RADIUS) && rad > 0) volf *= 1.0f - clamp(attenDist/rad, 0.0f, 1.0f);
             else if(!soundairattenuation && rad > 0) volf -= clamp(attenDist/rad, 0.0f, 1.0f);
             acoustics::AcousticSourceInfo acousticInfo;
@@ -2037,7 +2045,7 @@ namespace sound
         }
     }
 
-    int play(int n, const vec *loc, extentity *ent, int flags, int loops, int fade, int chanid, int radius, int expire)
+    int play(int n, const vec *loc, extentity *ent, int flags, int loops, int fade, int chanid, int radius, int expire, float initialGain)
     {
         if(nosound || !soundvol || (minimized && !minimizedsounds)) return -1;
 
@@ -2105,6 +2113,7 @@ namespace sound
         if(chanid < 0) return -1;
 
         SoundChannel &chan = newChannel(chanid, &slot, loc, ent, flags, radius, soundentity);
+        chan.ambientgain = clamp(initialGain, 0.0f, 1.0f);
         chan.eventseed = eventseed;
         chan.pitch = randomPitchOffset(n, soundPitchSeed(n, loc, ent, soundentity));
         chan.looping = loops != 0;
@@ -2117,7 +2126,8 @@ namespace sound
 
         updateChannel(chan);
         chan.expire = expire >= 0 ? totalmillis + expire : -1;
-        if(soundairattenuation && chan.hasLoc()) fade = max(fade, soundDistanceAttackMillis(chan.loc.dist(camera1->o)));
+        if(soundairattenuation && chan.hasLoc() && !(flags&SND_AMBIENT))
+            fade = max(fade, soundDistanceAttackMillis(chan.loc.dist(camera1->o)));
         chan.fadeStart = totalmillis;
         chan.fadeEnd = fade > 0 ? totalmillis + fade : totalmillis;
         chan.fadeFrom = fade > 0 ? 0 : chan.targetVolume;
@@ -2293,20 +2303,18 @@ void stopsounds() { sound::stopAll(); }
 bool stopsound(int n, int chanid, int fade) { return sound::stop(n, chanid, fade); }
 int playsoundname(const char *s, const vec *loc, int vol, int flags, int loops, int fade, int chanid, int radius, int expire) { return sound::playName(s, loc, vol, flags, loops, fade, chanid, radius, expire); }
 
-uint startambientloop(const char *name, const vec *position, uint seed, int radius)
+uint startambientloop(const char *name, const vec *position, uint seed, int radius, float gain)
 {
     static uint serial = 0;
     if(!position) return 0;
     defformatstring(path, "ambient/%s", name);
     int config = sound::mapSounds.findSound(path, 100);
     if(config < 0) config = sound::mapSounds.addSound(path, 100);
-    int id = sound::play(config, position, NULL, SND_MAP | SND_AMBIENT, -1, 1000, -1, radius, -1);
+    int id = sound::play(config, position, NULL, SND_MAP | SND_AMBIENT, -1, 0, -1, radius, -1, gain);
     if(id < 0) return 0;
     sound::SoundChannel &chan = sound::channels[id];
     if(!++serial) ++serial;
     chan.ambienthandle = serial;
-    chan.ambientgain = 0;
-    chan.fadeEnd = chan.fadeStart;
     chan.pitch = 0.99f + float(seed & 65535) / 65535.0f * 0.02f;
     ALint bytes = 0, bits = 0, channels = 0, frequency = 0;
     alGetBufferi(chan.slot->sample->buffer, AL_SIZE, &bytes);
