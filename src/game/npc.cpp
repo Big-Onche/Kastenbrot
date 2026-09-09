@@ -1,6 +1,7 @@
 #include "game.h"
 #include "engine.h"
 #include "world.h"
+#include "npcsound.h"
 
 namespace game
 {
@@ -157,6 +158,25 @@ namespace game
             return;
         }
         definition->drops.add(npcdropdefinition(itemid, *mincount, *maxcount, *chance));
+    });
+
+    ICOMMAND(npcwandersound, "ssiii", (char *id, char *path, int *variants, int *minimum, int *maximum),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        if(!definition || !path[0] || strlen(path) + 2 >= sizeof(string) || *variants < 1 || *variants > 64 ||
+           *minimum < 1 || *maximum < *minimum || *maximum > 3600)
+        {
+            conoutf(CON_ERROR, "invalid wandering sound for NPC %s: expected a prefix, 1-64 variants, and interval of 1-3600 seconds",
+                    id[0] ? id : "<empty>");
+            return;
+        }
+        definition->wandersounds.setsize(0);
+        loopi(*variants)
+        {
+            defformatstring(sample, "%s%d", path, i + 1);
+            definition->wandersounds.add(npcwandersounddefinition(sample, *minimum * 1000, *maximum * 1000));
+        }
+        ++definition->wandersoundrevision;
     });
 
     void loadnpcdefinitions()
@@ -329,6 +349,8 @@ namespace game
         float serveryaw;
         physent *target;
         vector<characterhitbox> hitboxes;
+        npcvoice::schedule wandervoice;
+        uint wandervoicerevision;
 
         npc(npcdefinition *definition, int instanceid)
             : definition(definition), spawnkey(0), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior),
@@ -337,7 +359,7 @@ namespace game
               fleeuntil(0), renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
               totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), replicated(false), dropsspawned(false),
               snapshotmillis(0), servertick(0), serverstateflags(0), spawn(0, 0, 0), destination(0, 0, 0), fleeorigin(0, 0, 0),
-              serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL)
+              serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL), wandervoicerevision(0)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -1979,6 +2001,25 @@ namespace game
         if(spawned) cleardynentcache();
     }
 
+    static void updatenpcwandersound(npc &mob)
+    {
+        if(mob.state == CS_DEAD || mob.definition->wandersounds.empty()) return;
+        if(mob.wandervoicerevision != mob.definition->wandersoundrevision)
+        {
+            mob.wandervoice = npcvoice::schedule();
+            mob.wandervoicerevision = mob.definition->wandersoundrevision;
+        }
+        const ullong identity = mob.spawnkey ? mob.spawnkey : ullong(uint(mob.instanceid));
+        const uint seed = npcvoice::mix(uint(getworldseed()) ^ passivenpcdefinitionhash(*mob.definition) ^
+                                       npcvoice::mix(uint(identity)) ^ npcvoice::mix(uint(identity >> 32)));
+        const int variant = mob.wandervoice.update(uint(max(lastmillis, 0)), seed, mob.definition->wandersounds);
+        if(variant < 0 || mob.frozen || !camera1) return;
+        if(mob.replicated ? (mob.serverstateflags & NPC_STATE_ATTACKING) != 0 : mob.behavior != NPC_WANDERING) return;
+        const int radius = 64 * GAMEUNITSPERMETER;
+        if(mob.o.squaredist(camera1->o) >= float(radius) * radius) return;
+        playsoundname(mob.definition->wandersounds[variant].path, &mob.o, 100, SND_NO_ALT | SND_RADIUS, 0, 0, -1, radius);
+    }
+
     void updatenpcs()
     {
         ZoneScopedN("World/NPCs");
@@ -2029,6 +2070,7 @@ namespace game
                 mob.yaw = fmodf(mob.yaw + yawdelta * blend + 360.0f, 360.0f);
                 mob.vel = mob.servervelocity;
                 mob.falling = vec(0, 0, 0);
+                updatenpcwandersound(mob);
                 updatenpchitboxes(mob);
                 updatenpcbleeding(mob);
                 shownpcdebugtext(mob);
@@ -2068,6 +2110,7 @@ namespace game
                 walktowardsdestination(mob);
                 attacklocalplayer(mob);
             }
+            updatenpcwandersound(mob);
             updatenpchitboxes(mob);
             updatenpcbleeding(mob);
             shownpcdebugtext(mob);
