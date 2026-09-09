@@ -3,6 +3,7 @@
 #ifdef WORLDIO_MODULE_IMPLEMENTATION
 
 #include "acoustics.h"
+#include "localambientgeometry.h"
 
 static void invalidateworldsectionvisibility();
 static void addworldsectionvisibilitychunk(int x, int y);
@@ -1125,7 +1126,15 @@ bool sampleworldcolumnroof(const ivec &position, int &roof)
             size = 1 << scale;
             origin = ivec(local).mask(~0U << scale);
         }
-        if(!isempty(*c)) { roof = local.z; return true; }
+        // A remipped leaf may contain only a low slab or an offset ledge.
+        // Non-empty does not mean every point in its octree bounds is solid.
+        const ivec sample = chunk.mountedtiles[section] & (1U << tile) ? ivec(position.x, position.y, local.z) : local;
+        int hit;
+        if(localambientleafroof(*c, sample, origin, size, hit) && hit < (section + 1) * WORLD_SECTION_SIZE)
+        {
+            roof = hit;
+            return true;
+        }
         // A leaf may span sections whose geometry lives in different octrees.
         local.z = min(origin.z + size, (section + 1) * WORLD_SECTION_SIZE);
     }
@@ -1194,14 +1203,15 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
         int run = 1;
         const cube *sectioncube = NULL;
         int sectionsize = 0;
+        int shapexoffset = 0, shapeyoffset = 0;
         if(worldchunks.empty())
         {
             known = true;
             ivec cubeorigin;
             int size;
             const cube &c = lookupcube(position, -1, cubeorigin, size);
-            occupied = !isempty(c);
-            if(occupied) color = getworldcubegialbedo(c);
+            sectioncube = &c;
+            sectionsize = size;
             // lookupcube clamps out-of-world samples to the border leaf.
             run = position.x >= worldsize ? dimensions.x - x :
                   min(dimensions.x - x, (cubeorigin.x + size - 1 - position.x) / resolution + 1);
@@ -1239,6 +1249,8 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
                 }
                 else
                 {
+                    shapexoffset = localchunkx * WORLD_CHUNK_SIZE;
+                    shapeyoffset = localchunky * WORLD_CHUNK_SIZE;
                     int scale = WORLD_CHUNK_SCALE - 1;
                     const cube *c = &chunk.root[octastep(local.x, local.y, local.z, scale)];
                     while(c->children && (1 << scale) > WORLD_SECTION_SIZE)
@@ -1280,9 +1292,27 @@ void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int re
                     size >>= 1;
                     c = &c->children[((position.z & size) ? 4 : 0) | ((position.y & size) ? 2 : 0) | ((px & size) ? 1 : 0)];
                 }
+                count = min(count, (size - 1 - (px & (size - 1))) / resolution + 1);
                 occupied = !isempty(*c);
                 color = occupied ? getworldcubegialbedo(*c) : bvec(0, 0, 0);
-                count = min(count, (size - 1 - (px & (size - 1))) / resolution + 1);
+                if(occupied && !isentirelysolid(*c))
+                {
+                    // Remipping can put many air samples in the same non-empty
+                    // leaf. Reuse its shape over the row, but classify each point.
+                    const localambientleafshape shape(*c, size);
+                    vec point(float((px - shapexoffset) & (size - 1)), float((position.y - shapeyoffset) & (size - 1)),
+                              float(position.z & (size - 1)));
+                    const int destination = (z * dimensions.y + y) * dimensions.x + x;
+                    loopi(count)
+                    {
+                        const bool inside = shape.contains(point);
+                        solid[destination + i] = inside ? 255 : 0;
+                        albedo[destination + i] = inside ? bvec4(color, 255) : bvec4(0, 0, 0, 0);
+                        point.x += resolution;
+                    }
+                    x += count;
+                    continue;
+                }
             }
             const int destination = (z * dimensions.y + y) * dimensions.x + x;
             const bvec4 sample(color, occupied ? 255 : 0);

@@ -3,6 +3,7 @@
 #include "localambientfield.h"
 #include "engine.h"
 #include "worldruntime.h"
+#include "localambientgeometry.h"
 
 static void localambienttogglechanged();
 static void localambientfieldchanged();
@@ -346,7 +347,8 @@ static bool capturelocalambient(localambientjob &job)
                     ivec leaf;
                     int size;
                     const cube &c = lookupcube(ivec(above.x, above.y, height), -1, leaf, size);
-                    if(!isempty(c)) { visible = false; break; }
+                    int roof;
+                    if(localambientleafroof(c, ivec(above.x, above.y, height), leaf, size, roof)) { visible = false; break; }
                     height = leaf.z + size;
                 }
             }

@@ -345,7 +345,7 @@ engine/localambient.o: shared/ents.h shared/command.h shared/glexts.h
 engine/localambient.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/localambient.o: engine/world.h engine/octa.h engine/light.h
 engine/localambient.o: engine/texture.h engine/bih.h engine/model.h
-engine/localambient.o: engine/worldruntime.h engine/localambientfield.h
+engine/localambient.o: engine/worldruntime.h engine/localambientfield.h engine/localambientgeometry.h
 engine/main.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/main.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/main.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
@@ -488,6 +488,7 @@ engine/world.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/world.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
 engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldcube.h engine/worldruntime.h
 engine/worldio.o: engine/worldcache.cpp engine/worldstream.cpp engine/worldlod.cpp engine/worldvisibility.cpp
+engine/worldio.o: engine/localambientgeometry.h
 engine/worldio.o: engine/worldedit.cpp game/worldcontent.cpp game/worldrender.cpp game/worldgen.h shared/cube.h shared/tools.h shared/geom.h
 engine/worldio.o: shared/ents.h shared/command.h shared/glexts.h
 engine/worldio.o: shared/glemu.h shared/iengine.h shared/igame.h
