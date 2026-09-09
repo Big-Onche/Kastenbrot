@@ -525,12 +525,13 @@ namespace game
         float elevation, plaindetailmask = 1.0f, cliffdetailmask = 0.0f;
         if(continental >= threshold)
         {
+            float minimumelevation = 3.0f;
             const float distance = clamp((continental - threshold) / max(1.0f - threshold, 0.001f), 0.0f, 1.0f);
             const float coastrise = smoothstep(0.0f, 0.28f, distance);
             const float inland = smoothstep(0.0f, 0.72f, distance);
             const float hill = clamp(hills.GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f);
             elevation = settings.maxcontinentheight * coastrise * (0.55f + 0.30f * inland + 0.15f * hill);
-            const float continentalelevation = elevation;
+            const float continentalelevation = max(elevation, minimumelevation);
 
             // Build a deliberate beach cross-section near the continental edge.
             // A local gradient converts continental density into approximate metres
@@ -555,6 +556,7 @@ namespace game
                             blendend = plainend + 14.0f;
 
                 float normalelevation;
+                if(effectivebeachspan > 0.01f && shoredistance < beachend) minimumelevation = 0.0f;
                 if(effectivebeachspan > 0.01f && shoredistance < sandstepstart) normalelevation = 0.0f;
                 else if(effectivebeachspan > 0.01f && shoredistance < beachend) normalelevation = 1.0f;
                 // The first grass column is always level 2 on ordinary coasts.
@@ -597,6 +599,8 @@ namespace game
             const float roughness = max(tectonicsample.terrainroughness, cliffdetailmask),
                         detailstrength = settings.plainsmicrovariation * plaindetailmask + settings.reliefmicrovariation * roughness;
             if(detailstrength > 0.0f) elevation = max(elevation + sampleterrainmicrovariation(*this, noisex, noisey) * detailstrength, 0.0f);
+            // Only the beach terraces may fall below sea level +2, including after relief and microvariation.
+            elevation = max(elevation, minimumelevation);
         }
         else
         {
