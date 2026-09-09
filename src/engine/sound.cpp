@@ -1275,6 +1275,8 @@ namespace sound
             return false;
         }
 
+        // World sources require mono buffers: OpenAL pans these into the stereo output.
+        // Stereo buffers bypass source positioning and lose directional cues.
         int outputSamples = int(audio.info.frames);
         float *mono = pcm;
         if(audio.info.channels > 1)
@@ -1286,12 +1288,12 @@ namespace sound
                 delete[] pcm;
                 return false;
             }
-            loopi(outputSamples)
+            loopi(int(audio.info.frames))
             {
                 const float *frame = &pcm[i*audio.info.channels];
                 float sample = 0;
                 loopj(audio.info.channels) sample += frame[j];
-                mono[i] = sample/audio.info.channels;
+                mono[i] = sample / audio.info.channels;
             }
         }
 
@@ -1313,7 +1315,8 @@ namespace sound
         alGenBuffers(1, &newBuffer);
         if(checkAl("alGenBuffers"))
         {
-            alBufferData(newBuffer, AL_FORMAT_MONO16, out, ALsizei(outputSamples*sizeof(short)), ALsizei(audio.info.samplerate));
+            alBufferData(newBuffer, AL_FORMAT_MONO16, out,
+                         ALsizei(outputSamples*sizeof(short)), ALsizei(audio.info.samplerate));
             if(!checkAl("alBufferData"))
             {
                 alDeleteBuffers(1, &newBuffer);
@@ -1824,7 +1827,7 @@ namespace sound
 
     static void acousticSourceForChannel(SoundChannel &chan, float dist, float &volf, float &gainhf, float &reverbSend, acoustics::AcousticSourceInfo &info)
     {
-        if(!chan.looping)
+        if(!chan.looping && !(chan.flags&SND_AMBIENT))
         {
             acoustics::acousticSource(chan.loc, dist, volf, gainhf, reverbSend, &info);
             return;
@@ -2303,14 +2306,14 @@ void stopsounds() { sound::stopAll(); }
 bool stopsound(int n, int chanid, int fade) { return sound::stop(n, chanid, fade); }
 int playsoundname(const char *s, const vec *loc, int vol, int flags, int loops, int fade, int chanid, int radius, int expire) { return sound::playName(s, loc, vol, flags, loops, fade, chanid, radius, expire); }
 
-uint startambientloop(const char *name, const vec *position, uint seed, int radius, float gain)
+static uint startmanagedambientsound(const char *name, const vec *position, uint seed, int radius, float gain, bool looping)
 {
     static uint serial = 0;
     if(!position) return 0;
-    defformatstring(path, "ambient/%s", name);
+    defformatstring(path, "%s/%s", looping ? "ambient" : "physical", name);
     int config = sound::mapSounds.findSound(path, 100);
     if(config < 0) config = sound::mapSounds.addSound(path, 100);
-    int id = sound::play(config, position, NULL, SND_MAP | SND_AMBIENT, -1, 0, -1, radius, -1, gain);
+    int id = sound::play(config, position, NULL, SND_MAP | SND_AMBIENT, looping ? -1 : 0, 0, -1, radius, -1, gain);
     if(id < 0) return 0;
     sound::SoundChannel &chan = sound::channels[id];
     if(!++serial) ++serial;
@@ -2324,16 +2327,26 @@ uint startambientloop(const char *name, const vec *position, uint seed, int radi
     float duration = bits && channels && frequency ? bytes / (float(bits / 8) * channels * frequency) : 0;
     float offset = duration * float((seed >> 16) & 65535) / 65536.0f;
     alSourcef(chan.source, AL_PITCH, chan.pitch);
-    if(duration > 0) alSourcef(chan.source, AL_SEC_OFFSET, offset);
+    if(looping && duration > 0) alSourcef(chan.source, AL_SEC_OFFSET, offset);
     if(chan.acousticSource)
     {
         alSourcef(chan.acousticSource, AL_PITCH, chan.pitch);
-        if(duration > 0) alSourcef(chan.acousticSource, AL_SEC_OFFSET, offset);
+        if(looping && duration > 0) alSourcef(chan.acousticSource, AL_SEC_OFFSET, offset);
     }
     sound::updateChannel(chan);
     chan.dirty = true;
     sound::syncChannel(chan);
     return serial;
+}
+
+uint startambientloop(const char *name, const vec *position, uint seed, int radius, float gain)
+{
+    return startmanagedambientsound(name, position, seed, radius, gain, true);
+}
+
+uint startphysicalsound(const char *name, const vec &position, uint seed, int radius, float gain)
+{
+    return startmanagedambientsound(name, &position, seed, radius, gain, false);
 }
 
 bool updateambientloop(uint handle, float gain, const vec *position)

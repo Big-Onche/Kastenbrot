@@ -6,6 +6,8 @@
 
 extern int mainmenu;
 extern float cloudwindspeed;
+extern bool sampleworldcolumnroof(const ivec &position, int &roof);
+extern bool sampleworldsolid(const ivec &position, int &bottom);
 namespace sound { extern int soundchans; }
 
 namespace game
@@ -21,6 +23,12 @@ namespace game
         FVARP(ambientdepthscale, 1, 64, 256);
         FVARP(ambientaltitudewind, 0, 0.6f, 1);
         FVARP(ambientradius, 640, 1024, 4096);
+        VARP(ambientphysical, 0, 1, 1);
+        FVARP(ambientphysicalvolume, 0, 0.8f, 1);
+        FVARP(ambientphysicalsmallgain, 0, 0.2f, 1);
+        FVARP(ambientdropinterval, 0.5f, 4, 120);
+        FVARP(ambientrockinterval, 0.5f, 7, 120);
+        FVARP(ambientbigrockinterval, 5, 45, 300);
 
         static float smooth(float value)
         {
@@ -76,22 +84,50 @@ namespace game
             }
         };
 
+        struct PhysicalVoice
+        {
+            uint handle;
+            vec position;
+            float gain;
+            int kind, variant;
+            PhysicalVoice() : handle(0), position(0, 0, 0), gain(0), kind(0), variant(0)
+            {
+            }
+        };
+
+        static int physicaldelay(int kind, bool cave, uint seed)
+        {
+            float seconds = kind == 0 ? ambientdropinterval : kind == 1 ? ambientrockinterval : ambientbigrockinterval;
+            return int(seconds * (0.65f + (mix(seed) & 65535) / 65535.0f * 0.7f) * (cave ? 1000 : 4000) + 0.5f);
+        }
+
+        static bool physicalrange(int kind, float distance)
+        {
+            return distance >= 500 && distance <= 900;
+        }
+
         class AmbientManager
         {
         public:
             vector<Site> sites;
             hashtable<ivec, int> indices;
             Voice voices[96];
+            PhysicalVoice physical[4];
+            int nextPhysical[3];
+            uint physicalSerial[3];
             worldgenerator *terrain;
             int cursor, epoch, nextMix, nextDebug;
             int waiting;
 
             AmbientManager() : terrain(NULL), cursor(0), epoch(1), nextMix(0), nextDebug(0), waiting(0)
             {
+                loopi(3) { nextPhysical[i] = 0; physicalSerial[i] = 0; }
             }
 
             void reset()
             {
+                loopi(4) { stopambientloop(physical[i].handle); physical[i] = PhysicalVoice(); }
+                loopi(3) { nextPhysical[i] = 0; physicalSerial[i] = 0; }
                 loopi(96)
                 {
                     stopambientloop(voices[i].handle);
@@ -276,6 +312,55 @@ namespace game
                 }
             }
 
+            void physicalevents(const vec &listener)
+            {
+                int roof = -1;
+                const bool cave = sampleworldcolumnroof(ivec(camera1->o), roof) && roof >= 0;
+                loop(kind, 3)
+                {
+                    uint seed = placementseed(getworldseed(), ivec(int(floorf(listener.x / 256)),
+                                                                  int(floorf(listener.y / 256)), kind));
+                    seed = mix(seed ^ physicalSerial[kind]);
+                    if(!nextPhysical[kind])
+                    {
+                        nextPhysical[kind] = totalmillis + physicaldelay(kind, cave, seed);
+                        continue;
+                    }
+                    if(totalmillis < nextPhysical[kind]) continue;
+                    ++physicalSerial[kind];
+                    nextPhysical[kind] = totalmillis + physicaldelay(kind, cave, seed);
+                    if(!ambientenabled || !ambientphysical || (!cave && kind == 0)) continue;
+                    int slot = -1;
+                    loopi(4) if(!physical[i].handle) { slot = i; break; }
+                    if(slot < 0) continue;
+                    // Deterministic ranking is independent of streamed site insertion order.
+                    int chosen = -1;
+                    uint best = ~0U;
+                    loopv(sites)
+                    {
+                        const Site &site = sites[i];
+                        if(site.placement.cave != cave || site.water || !physicalrange(kind, listener.dist(site.placement.position))) continue;
+                        uint rank = mix(seed ^ site.seed);
+                        if(chosen >= 0 && rank >= best) continue;
+                        chosen = i;
+                        best = rank;
+                    }
+                    if(chosen < 0) continue;
+                    PhysicalVoice &voice = physical[slot];
+                    voice.position = sites[chosen].placement.position;
+                    voice.kind = kind;
+                    voice.variant = 1 + mix(seed + 17) % (kind == 2 ? 2 : 3);
+                    voice.gain = ambientvolume * ambientphysicalvolume * (0.75f + (mix(seed + 31) & 65535) / 65535.0f * 0.25f);
+                    if(kind != 2) voice.gain *= ambientphysicalsmallgain;
+                    vec local(voice.position);
+                    worldpositiontolocal(local);
+                    int bottom;
+                    if(sampleworldsolid(ivec(local), bottom)) continue;
+                    defformatstring(name, "%s_%d", kind == 0 ? "water_drop" : kind == 1 ? "rock" : "rock_big", voice.variant);
+                    voice.handle = startphysicalsound(name, local, seed, kind == 2 ? 1536 : 1100, voice.gain);
+                }
+            }
+
             void update()
             {
                 if(mainmenu || !player1 || !camera1) { if(terrain) reset(); return; }
@@ -289,6 +374,15 @@ namespace game
                     nextMix = totalmillis + 250;
                     weather::update(getworldseed());
                     select(listener);
+                    physicalevents(listener);
+                }
+                loopi(4) if(physical[i].handle)
+                {
+                    PhysicalVoice &voice = physical[i];
+                    vec local(voice.position);
+                    worldpositiontolocal(local);
+                    if(!ambientenabled || !ambientphysical) { stopambientloop(voice.handle); voice.handle = 0; }
+                    else if(!updateambientloop(voice.handle, voice.gain, &local)) voice.handle = 0;
                 }
                 loopi(96)
                 {
@@ -313,6 +407,15 @@ namespace game
             {
                 if(debugambient && totalmillis >= nextDebug)
                 {
+                    loopi(4) if(physical[i].handle)
+                    {
+                        vec local(physical[i].position);
+                        worldpositiontolocal(local);
+                        defformatstring(label, "%s_%d (one shot)", physical[i].kind == 0 ? "water_drop" :
+                                        physical[i].kind == 1 ? "rock" : "rock_big", physical[i].variant);
+                        particle_textcopy(local, label, PART_TEXT, 300, 0x88BBFF, 2);
+                        particle_splash(PART_SPARK, 1, 100, local, 0x88BBFF, 2, 1, 0);
+                    }
                     nextDebug = totalmillis + 250;
                     bool playing[96];
                     float occlusions[96], gains[96];

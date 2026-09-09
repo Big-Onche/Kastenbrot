@@ -684,6 +684,7 @@ extern bool stopsound(int n, int chanid, int fade = 0);
 extern void stopsounds();
 // Opaque managed-loop handles remain safe when channels are stolen or the backend resets.
 extern uint startambientloop(const char *name, const vec *position, uint seed, int radius, float gain);
+extern uint startphysicalsound(const char *name, const vec &position, uint seed, int radius, float gain);
 extern bool updateambientloop(uint handle, float gain, const vec *position);
 extern void stopambientloop(uint handle);
 extern bool ambientloopocclusion(uint handle, float &occlusion, float &gain);

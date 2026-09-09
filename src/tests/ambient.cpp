@@ -188,6 +188,22 @@ int main()
     assert(soundworldhit(vec(0, 0, 0), vec(1, 0, 0), 100, 16, solidwall) < 48);
     assert(soundworldhit(vec(100, 0, 0), vec(-1, 0, 0), 100, 16, solidwall) < 69);
     assert(soundworldhit(vec(0, 0, 0), vec(0, 0, 1), 100, 16, solidwall) == 100);
-    puts("Ambient tests passed: one voice per source, exclusive replacement, debug safety, streaming and occlusion.");
+    loopi(1000)
+    {
+        int drop = physicaldelay(0, true, i), rock = physicaldelay(1, true, i), big = physicaldelay(2, true, i);
+        assert(drop >= 2600 && drop <= 5400);
+        assert(rock >= 4550 && rock <= 9450);
+        assert(big >= 29250 && big <= 60750);
+        assert(big > rock && rock > drop);
+        assert(physicaldelay(2, true, i) == big);
+        assert(physicaldelay(1, false, i) >= rock * 4 - 4);
+    }
+    assert(!physicalrange(2, 499) && physicalrange(2, 500) && physicalrange(2, 900) && !physicalrange(2, 901));
+    loop(kind, 2)
+    {
+        assert(!physicalrange(kind, 499) && physicalrange(kind, 500));
+        assert(physicalrange(kind, 900) && !physicalrange(kind, 901));
+    }
+    puts("Ambient tests passed: voices, debug safety, streaming, occlusion, physical event timing and distance bounds.");
     return 0;
 }
