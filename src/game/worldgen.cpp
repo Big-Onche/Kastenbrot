@@ -64,6 +64,13 @@ struct worldcavechamber
     }
 };
 
+enum
+{
+    WORLD_GEOLOGY_STEP = 8,
+    WORLD_GEOLOGY_WIDTH = WORLD_CHUNK_BLOCKS / WORLD_GEOLOGY_STEP + 1,
+    WORLD_GEOLOGY_HEIGHT = WORLD_HEIGHT_BLOCKS / WORLD_GEOLOGY_STEP + 1
+};
+
 struct worldgencontext
 {
     game::worldgenerator generator;
@@ -74,6 +81,8 @@ struct worldgencontext
     uchar cliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar reliefcliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar rockmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
+    float geology[WORLD_GEOLOGY_WIDTH * WORLD_GEOLOGY_WIDTH * WORLD_GEOLOGY_HEIGHT];
+    int geologymaterials[3], geologytextures[3];
     worldsectionrenderdata renderdata;
     vector<worldcavesegment> cavesegments;
     vector<worldcavechamber> cavechambers;
@@ -95,6 +104,14 @@ struct worldgencontext
         loopv(this->cubetextures) cubeids[this->cubetextures[i].id] = i;
         int *error = cubeids.access("error");
         errorcube = error ? *error : -1;
+        const char *rockids[] = { "stone", "gabbro", "peridotitis" };
+        loopi(3)
+        {
+            geologymaterials[i] = cubetype(rockids[i]);
+            if(!cubeids.access(rockids[i]) || !this->cubetextures.inrange(geologymaterials[i])) geologymaterials[i] = geologymaterials[0];
+            geologytextures[i] = this->cubetextures.inrange(geologymaterials[i])
+                              ? indexedtextures ? geologymaterials[i] : this->cubetextures[geologymaterials[i]].side : -1;
+        }
     }
 
     bool iscanceled() const { return cancelled && SDL_AtomicGet(cancelled); }
@@ -471,6 +488,73 @@ static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int
     return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt");
 }
 
+static bool generateworldgeology(worldgencontext &ctx, int chunkx, int chunky)
+{
+    // One shared 3D field bends both contacts. Sampling a world-aligned lattice keeps chunks seamless and avoids voxel noise calls.
+    loop(z, WORLD_GEOLOGY_HEIGHT)
+    {
+        if(ctx.iscanceled()) return false;
+        const int elevation = WORLD_MIN_HEIGHT + z * WORLD_GEOLOGY_STEP;
+        const float depth = float(ctx.settings.sealevel - elevation);
+        loop(y, WORLD_GEOLOGY_WIDTH) loop(x, WORLD_GEOLOGY_WIDTH)
+        {
+            float warpeddepth = depth;
+            if((depth >= 48 && depth <= 112) || (depth >= 144 && depth <= 208))
+                warpeddepth += 32.0f * ctx.generator.deeprock.GetNoise(float(chunkx * WORLD_CHUNK_BLOCKS + x * WORLD_GEOLOGY_STEP),
+                                                                    float(chunky * WORLD_CHUNK_BLOCKS + y * WORLD_GEOLOGY_STEP),
+                                                                    float(elevation));
+            ctx.geology[(z * WORLD_GEOLOGY_WIDTH + y) * WORLD_GEOLOGY_WIDTH + x] = warpeddepth;
+        }
+    }
+    return true;
+}
+
+static float sampleworldgeology(const worldgencontext &ctx, float x, float y, float z)
+{
+    const float scale = float(WORLD_GEOLOGY_STEP * WORLD_BLOCK_SIZE);
+    x /= scale;
+    y /= scale;
+    z /= scale;
+    const int ix = min(int(x), WORLD_GEOLOGY_WIDTH - 2), iy = min(int(y), WORLD_GEOLOGY_WIDTH - 2),
+              iz = min(int(z), WORLD_GEOLOGY_HEIGHT - 2);
+    x -= ix;
+    y -= iy;
+    z -= iz;
+    float depth = 0;
+    loop(dz, 2) loop(dy, 2) loop(dx, 2)
+        depth += ctx.geology[((iz + dz) * WORLD_GEOLOGY_WIDTH + iy + dy) * WORLD_GEOLOGY_WIDTH + ix + dx] *
+                 (dx ? x : 1 - x) * (dy ? y : 1 - y) * (dz ? z : 1 - z);
+    return depth;
+}
+
+static int worldgeologylayer(float depth)
+{
+    return depth >= 176 ? 2 : depth >= 80 ? 1 : 0;
+}
+
+static int worldgeologicalcubetype(const worldgencontext &ctx, const ivec &o, int size)
+{
+    const float bottomdepth = ctx.settings.sealevel - WORLD_MIN_HEIGHT - o.z / float(WORLD_BLOCK_SIZE),
+                topdepth = bottomdepth - size / float(WORLD_BLOCK_SIZE);
+    if(bottomdepth <= 48) return ctx.geologymaterials[0];
+    if(topdepth >= 208) return ctx.geologymaterials[2];
+    if(topdepth >= 112 && bottomdepth <= 144) return ctx.geologymaterials[1];
+    if(size > WORLD_GEOLOGY_STEP * WORLD_BLOCK_SIZE) return WORLD_TERRAIN_MIXED;
+    if(size <= WORLD_BLOCK_SIZE)
+        return ctx.geologymaterials[worldgeologylayer(sampleworldgeology(ctx, o.x + size * 0.5f, o.y + size * 0.5f, o.z + size * 0.5f))];
+
+    // Octree cells fit inside one lattice cell. Trilinear values stay within their corner bounds, so uniform cells need no subdivision.
+    int layer = -1;
+    loopi(8)
+    {
+        const ivec corner(i, o, size);
+        const int current = worldgeologylayer(sampleworldgeology(ctx, corner.x, corner.y, corner.z));
+        if(layer >= 0 && current != layer) return WORLD_TERRAIN_MIXED;
+        layer = current;
+    }
+    return ctx.geologymaterials[layer];
+}
+
 static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
 {
     if(o.x >= WORLD_CHUNK_SIZE || o.y >= WORLD_CHUNK_SIZE || o.z >= WORLD_MAP_SIZE)
@@ -487,7 +571,7 @@ static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
         if(columntype == WORLD_TERRAIN_MIXED || (type != WORLD_TERRAIN_UNSET && type != columntype)) return WORLD_TERRAIN_MIXED;
         type = columntype;
     }
-    return type;
+    return type == ctx.geologymaterials[0] ? worldgeologicalcubetype(ctx, o, size) : type;
 }
 
 static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o, int size)
@@ -509,7 +593,8 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
     if(visibletop > o.z && visibletop <= o.z + size)
         z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
 
-    return worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
+    const int type = worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
+    return type == ctx.geologymaterials[0] ? worldgeologicalcubetype(ctx, ivec(x, y, z), 1) : type;
 }
 
 static bool generateworldcube(worldgencontext &ctx, cube &c, const ivec &o, int size, int mingridsize)
@@ -1709,8 +1794,15 @@ static bool worldorecaveedge(const worldgencontext &ctx, int worldx, int worldy,
     return false;
 }
 
+static bool worldorehost(const worldgencontext &ctx, const cube &c)
+{
+    if(isempty(c) || c.material != MAT_AIR) return false;
+    loopi(3) if(ctx.geologytextures[i] >= 0 && c.texture[0] == ctx.geologytextures[i]) return true;
+    return false;
+}
+
 static void placeworldoreblock(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky, int worldx, int worldy,
-                               int elevation, int stonetexture, int orecube)
+                               int elevation, int orecube)
 {
     if(elevation < WORLD_MIN_HEIGHT || elevation >= WORLD_MAX_HEIGHT) return;
     const int localx = worldx - chunkx * WORLD_CHUNK_BLOCKS,
@@ -1725,10 +1817,11 @@ static void placeworldoreblock(worldgencontext &ctx, cube *root, const worldored
 
     cube &c = lookupworldgenblock(
         ctx, root, ivec(localx * WORLD_BLOCK_SIZE, localy * WORLD_BLOCK_SIZE, (elevation - WORLD_MIN_HEIGHT) * WORLD_BLOCK_SIZE));
-    if(!isempty(c) && c.texture[0] == stonetexture) setworldcubetype(c, ctx, orecube);
+    if(worldorehost(ctx, c)) setworldcubetype(c, ctx, orecube);
 }
 
-static void placeworldorevein(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky, long long cellx, long long celly, int cellz, int centerx, int centery, int centerz, int stonetexture, int orecube)
+static void placeworldorevein(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky,
+                              long long cellx, long long celly, int cellz, int centerx, int centery, int centerz, int orecube)
 {
     const uint sizehash = hashworldfeature(uint(ctx.seed), cellx, celly, cellz, ore.salt ^ 0xA511E9B3U),
                shapehash = hashworldfeature(uint(ctx.seed), cellx, celly, cellz, ore.salt ^ 0x63D83595U);
@@ -1778,17 +1871,14 @@ static void placeworldorevein(worldgencontext &ctx, cube *root, const worldorede
         if(!added) break;
     }
 
-    loopv(blocks) placeworldoreblock(ctx, root, ore, chunkx, chunky, blocks[i].x, blocks[i].y, blocks[i].z, stonetexture, orecube);
+    loopv(blocks) placeworldoreblock(ctx, root, ore, chunkx, chunky, blocks[i].x, blocks[i].y, blocks[i].z, orecube);
 }
 
 static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chunky)
 {
     const long long chunkstartx = (long long)chunkx * WORLD_CHUNK_BLOCKS,
                     chunkstarty = (long long)chunky * WORLD_CHUNK_BLOCKS;
-    const int stonecube = ctx.cubetype("stone"),
-              stonetexture = ctx.cubetextures.inrange(stonecube) ? ctx.indexedtextures ? stonecube : ctx.cubetextures[stonecube].side : -1;
-
-    if(stonetexture < 0) return true;
+    if(ctx.geologytextures[0] < 0) return true;
 
     loopi(int(sizeof(worldores) / sizeof(worldores[0])))
     {
@@ -1828,7 +1918,7 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
             const float chance = clamp(ore.chance * worldoreelevationweight(ore, centerz) * worldoregeologicalweight(ore, tectonics, centerz) * caveweight, 0.0f, 1.0f);
             if(worldtreeunit(chancehash) >= chance) continue;
 
-            placeworldorevein(ctx, root, ore, chunkx, chunky, cellx, celly, cellz, centerx, centery, centerz, stonetexture, orecube);
+            placeworldorevein(ctx, root, ore, chunkx, chunky, cellx, celly, cellz, centerx, centery, centerz, orecube);
         }
     }
     return !ctx.iscanceled();
@@ -1937,6 +2027,7 @@ static cube *generateworldchunk(int chunkx, int chunky, worldgencontext &ctx)
     {
         ZoneScopedN("Chunks/Generate height and biomes");
         if(!generateworldheightmap(ctx, chunkx, chunky)) return NULL;
+        if(!generateworldgeology(ctx, chunkx, chunky)) return NULL;
         markworldgenexteriorshell(ctx, chunkx, chunky);
     }
     cube *root;

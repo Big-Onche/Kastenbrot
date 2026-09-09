@@ -222,6 +222,7 @@ namespace game
         setupnoise(terrainmicro, seed ^ 0x34A72C91, settings.terrainmicrofrequency, 4, 0.48f);
         setupnoise(terrainmicromask, seed ^ 0x62E9B4D7, settings.terrainmicrofrequency * 0.25f, 2, 0.45f);
         setupnoise(plainsroll, seed ^ 0x39C6A17D, settings.terrainmicrofrequency * 0.35f, 2, 0.35f);
+        setupnoise(deeprock, seed ^ 0x53B8D291, 0.015f, 1);
         setupnoise(tectonicnoise, seed ^ 0x68E31DA4, settings.mountainchainfrequency, 1);
         setupwarp(tectonicwarp, seed ^ 0x6C8E9CF5, settings.tectonicfrequency * 0.8f, min(settings.tectonicwarpamplitude, 36.0f));
         setupnoise(temperature, seed ^ 0x51D7348B, settings.temperaturefrequency, 3);
