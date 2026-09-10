@@ -55,7 +55,15 @@ namespace game
         return -1;
     }
 
-    enum { NPCDEF_ROOT, NPCDEF_MODEL, NPCDEF_NATURAL, NPCDEF_CAVES, NPCDEF_HITFLEE, NPCDEF_WANDERSOUND };
+    enum
+    {
+        NPCDEF_ROOT, NPCDEF_MODEL, NPCDEF_NATURAL, NPCDEF_CAVES, NPCDEF_HITFLEE, NPCDEF_WANDERSOUND,
+        NPCDEF_ANIMATIONS, NPCDEF_ANIMATION, NPCDEF_TRACK
+    };
+    static vector<npcanimationdefinition *> npcanimations;
+    static npcanimationdefinition *currentnpcanimation = NULL;
+    static npcanimationtrack *currentnpctrack = NULL;
+    static string npcanimationnames[NUM_NPC_ANIMS];
     static npcdefinition *currentnpcdefinition = NULL;
     static int currentnpccomponent = NPCDEF_ROOT;
     static bool npcdefinitionfailed = false;
@@ -65,7 +73,8 @@ namespace game
 
     static void npcdefinitionerror(const char *message)
     {
-        conoutf(CON_ERROR, "npcdef \"%s\": %s", currentnpcdefinition ? currentnpcdefinition->id : "<none>", message);
+        const char *id = currentnpcdefinition ? currentnpcdefinition->id : currentnpcanimation ? currentnpcanimation->id : "<none>";
+        conoutf(CON_ERROR, "%s \"%s\": %s", currentnpcanimation ? "npcanimdef" : "npcdef", id, message);
         npcdefinitionfailed = true;
     }
 
@@ -88,6 +97,7 @@ namespace game
             if(!strcmp(command, "caves")) return "npcdef_root_caves";
             if(!strcmp(command, "hitflee")) return "npcdef_root_hitflee";
             if(!strcmp(command, "wandersound")) return "npcdef_root_wandersound";
+            if(!strcmp(command, "animations")) return "npcdef_animations";
             if(!strcmp(command, "drop")) return "npcdef_root_drop";
         }
         if(component == NPCDEF_MODEL)
@@ -120,6 +130,53 @@ namespace game
             if(!strcmp(command, "prefix")) return "npcdef_wandersound_prefix";
             if(!strcmp(command, "variants")) return "npcdef_wandersound_variants";
             if(!strcmp(command, "interval")) return "npcdef_wandersound_interval";
+        }
+        if(component == NPCDEF_ANIMATIONS)
+        {
+            if(!strcmp(command, "idle")) return "npcdef_animation_idle";
+            if(!strcmp(command, "walk")) return "npcdef_animation_walk";
+            if(!strcmp(command, "attack")) return "npcdef_animation_attack";
+            if(!strcmp(command, "limp")) return "npcdef_animation_limp";
+            if(!strcmp(command, "crawl")) return "npcdef_animation_crawl";
+        }
+        if(component == NPCDEF_ANIMATION)
+        {
+            if(!strcmp(command, "rig")) return "npcanim_rig";
+            if(!strcmp(command, "duration")) return "npcanim_duration";
+            if(!strcmp(command, "transition")) return "npcanim_transition";
+            if(!strcmp(command, "travel")) return "npcanim_travel";
+            if(!strcmp(command, "travelheight")) return "npcanim_travelheight";
+            if(!strcmp(command, "fullspeed")) return "npcanim_fullspeed";
+            if(!strcmp(command, "height")) return "npcanim_height";
+            if(!strcmp(command, "rearanchor")) return "npcanim_rearanchor";
+            if(!strcmp(command, "torsopitch")) return "npcanim_torsopitch";
+            if(!strcmp(command, "torsoroll")) return "npcanim_torsoroll";
+            if(!strcmp(command, "head")) return "npcanim_head";
+            if(!strcmp(command, "leftarm")) return "npcanim_leftarm";
+            if(!strcmp(command, "rightarm")) return "npcanim_rightarm";
+            if(!strcmp(command, "leftleg")) return "npcanim_leftleg";
+            if(!strcmp(command, "rightleg")) return "npcanim_rightleg";
+            if(!strcmp(command, "leftfront")) return "npcanim_leftfront";
+            if(!strcmp(command, "rightfront")) return "npcanim_rightfront";
+            if(!strcmp(command, "leftrear")) return "npcanim_leftrear";
+            if(!strcmp(command, "rightrear")) return "npcanim_rightrear";
+        }
+        if(component == NPCDEF_TRACK)
+        {
+            if(!strcmp(command, "wave")) return "npcanim_track_wave";
+            if(!strcmp(command, "key")) return "npcanim_track_key";
+            if(!strcmp(command, "mode")) return "npcanim_track_mode";
+            if(!strcmp(command, "base")) return "npcanim_track_base";
+            if(!strcmp(command, "amplitude")) return "npcanim_track_amplitude";
+            if(!strcmp(command, "frequency")) return "npcanim_track_frequency";
+            if(!strcmp(command, "phase")) return "npcanim_track_phase";
+            if(!strcmp(command, "peak")) return "npcanim_track_peak";
+            if(!strcmp(command, "min")) return "npcanim_track_min";
+            if(!strcmp(command, "max")) return "npcanim_track_max";
+            if(!strcmp(command, "movement")) return "npcanim_track_movement";
+            if(!strcmp(command, "amplitudemovement")) return "npcanim_track_amplitudemovement";
+            if(!strcmp(command, "mirror")) return "npcanim_track_mirror";
+            if(!strcmp(command, "envelope")) return "npcanim_track_envelope";
         }
         return NULL;
     }
@@ -185,6 +242,337 @@ namespace game
         rewritten.add('\0');
         execute(rewritten.getbuf());
     }
+
+    static npcanimationdefinition *findnpcanimation(const char *id)
+    {
+        loopv(npcanimations) if(!cubecasecmp(npcanimations[i]->id, id)) return npcanimations[i];
+        return NULL;
+    }
+
+    ICOMMAND(npcanimdef, "sS", (char *id, char *body),
+    {
+        if(currentnpcdefinition || currentnpcanimation) { npcdefinitionerror("nested definitions are not allowed"); return; }
+        if(!id[0] || strlen(id) >= sizeof(string) || findnpcanimation(id))
+        {
+            conoutf(CON_ERROR, "duplicate, empty, or oversized animation id: %s", id);
+            return;
+        }
+        npcanimationdefinition animation(id);
+        currentnpcanimation = &animation;
+        currentnpccomponent = NPCDEF_ANIMATION;
+        npcdefinitionfailed = false;
+        executenpcdefinitionbody(body, NPCDEF_ANIMATION);
+        if(animation.rig < 0 || animation.duration <= 0 || animation.transition < 0 ||
+           !(animation.travel > 0 && animation.travel <= 1e6f && animation.fullspeed > 0 && animation.fullspeed <= 1e6f))
+            npcdefinitionerror("animation requires a rig, positive duration/travel/fullspeed, and nonnegative transition");
+        loopv(animation.tracks)
+        {
+            const npcanimationtrack &track = animation.tracks[i];
+            if(track.wave < 0 || track.mode < 0 || !(track.peak > 0 && track.peak < 1 && track.minimum <= track.maximum &&
+               fabsf(track.base) <= 1e6f && fabsf(track.amplitude) <= 1e6f && fabsf(track.frequency) <= 1e6f && fabsf(track.phase) <= 1e6f &&
+               fabsf(track.minimum) <= 1e6f && fabsf(track.maximum) <= 1e6f))
+                npcdefinitionerror("invalid track wave, mode, peak, or limits");
+            if(track.wave == NPC_ANIM_KEYS && track.keys.length() < 2)
+                npcdefinitionerror("keyframe tracks require at least two keys");
+            loopvj(track.keys)
+            {
+                const npcanimationkey &key = track.keys[j];
+                if(!(key.time >= 0 && key.time <= 1 && fabsf(key.value) <= 1e6f) || (j && key.time <= track.keys[j - 1].time))
+                    npcdefinitionerror("key times must increase within 0-1 and values must be finite within +/-1000000");
+            }
+        }
+        currentnpcanimation = NULL;
+        currentnpccomponent = NPCDEF_ROOT;
+        if(!npcdefinitionfailed) *npcanimations.add(new npcanimationdefinition(id)) = animation;
+    });
+
+    ICOMMAND(npcdef_animations, "S", (char *body),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT || (npcdefinitioncomponents & (1U << NPCDEF_ANIMATIONS)))
+        {
+            npcdefinitionerror("animations must occur once directly inside npcdef");
+            return;
+        }
+        npcdefinitioncomponents |= 1U << NPCDEF_ANIMATIONS;
+        currentnpccomponent = NPCDEF_ANIMATIONS;
+        executenpcdefinitionbody(body, NPCDEF_ANIMATIONS);
+        currentnpccomponent = NPCDEF_ROOT;
+    });
+
+    ICOMMAND(npcdef_animation_idle, "s", (char *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ANIMATIONS)
+        {
+            npcdefinitionerror("idle outside animations");
+            return;
+        }
+        copystring(npcanimationnames[NPC_ANIM_IDLE], value);
+    });
+    ICOMMAND(npcdef_animation_walk, "s", (char *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ANIMATIONS)
+        {
+            npcdefinitionerror("walk outside animations");
+            return;
+        }
+        copystring(npcanimationnames[NPC_ANIM_WALK], value);
+    });
+    ICOMMAND(npcdef_animation_attack, "s", (char *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ANIMATIONS)
+        {
+            npcdefinitionerror("attack outside animations");
+            return;
+        }
+        copystring(npcanimationnames[NPC_ANIM_ATTACK], value);
+    });
+    ICOMMAND(npcdef_animation_limp, "s", (char *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ANIMATIONS)
+        {
+            npcdefinitionerror("limp outside animations");
+            return;
+        }
+        copystring(npcanimationnames[NPC_ANIM_LIMP], value);
+    });
+    ICOMMAND(npcdef_animation_crawl, "s", (char *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ANIMATIONS)
+        {
+            npcdefinitionerror("crawl outside animations");
+            return;
+        }
+        copystring(npcanimationnames[NPC_ANIM_CRAWL], value);
+    });
+    ICOMMAND(npcanim_rig, "s", (char *value),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("rig outside animation"); return; }
+        currentnpcanimation->rig = parsemodeltype(value);
+    });
+    ICOMMAND(npcanim_duration, "i", (int *value),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("duration outside animation"); return; }
+        currentnpcanimation->duration = *value;
+    });
+    ICOMMAND(npcanim_transition, "i", (int *value),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("transition outside animation"); return; }
+        currentnpcanimation->transition = *value;
+    });
+    ICOMMAND(npcanim_travel, "f", (float *value),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("travel outside animation"); return; }
+        currentnpcanimation->travel = *value;
+    });
+    ICOMMAND(npcanim_travelheight, "i", (int *value),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("travelheight outside animation"); return; }
+        currentnpcanimation->travelheight = *value != 0;
+    });
+    ICOMMAND(npcanim_fullspeed, "f", (float *value),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("fullspeed outside animation"); return; }
+        currentnpcanimation->fullspeed = *value;
+    });
+    ICOMMAND(npcanim_rearanchor, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("rearanchor outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_REARANCHOR));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_height, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("height outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_HEIGHT));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_torsopitch, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("torsopitch outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_TORSOPITCH));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_torsoroll, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("torsoroll outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_TORSOROLL));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_head, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("head outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_HEAD));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_leftarm, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("leftarm outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_LEFTARM));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_rightarm, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("rightarm outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_RIGHTARM));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_leftleg, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("leftleg outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_LEFTLEG));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_rightleg, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("rightleg outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_RIGHTLEG));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_leftfront, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("leftfront outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_LEFTARM));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_rightfront, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("rightfront outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_RIGHTARM));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_leftrear, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("leftrear outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_LEFTLEG));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_rightrear, "S", (char *body),
+    {
+        if(!currentnpcanimation || currentnpccomponent != NPCDEF_ANIMATION) { npcdefinitionerror("rightrear outside animation"); return; }
+        currentnpctrack = &currentnpcanimation->tracks.add(npcanimationtrack(NPC_ANIM_RIGHTLEG));
+        currentnpccomponent = NPCDEF_TRACK;
+        executenpcdefinitionbody(body, NPCDEF_TRACK);
+        currentnpctrack = NULL;
+        currentnpccomponent = NPCDEF_ANIMATION;
+    });
+    ICOMMAND(npcanim_track_key, "ff", (float *time, float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK)
+        {
+            npcdefinitionerror("key outside animation track");
+            return;
+        }
+        currentnpctrack->wave = NPC_ANIM_KEYS;
+        currentnpctrack->keys.add(npcanimationkey(*time, *value));
+    });
+    ICOMMAND(npcanim_track_wave, "s", (char *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("wave outside animation track"); return; }
+        currentnpctrack->wave = !strcmp(value, "constant") ? NPC_ANIM_CONSTANT : !strcmp(value, "sin") ? NPC_ANIM_SIN :
+                                !strcmp(value, "abssin") ? NPC_ANIM_ABSSIN : !strcmp(value, "abscos") ? NPC_ANIM_ABSCOS :
+                                !strcmp(value, "pulse") ? NPC_ANIM_PULSE : !strcmp(value, "keys") ? NPC_ANIM_KEYS : -1;
+    });
+    ICOMMAND(npcanim_track_mode, "s", (char *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("mode outside animation track"); return; }
+        currentnpctrack->mode = !strcmp(value, "add") ? NPC_ANIM_ADD : !strcmp(value, "set") ? NPC_ANIM_SET :
+                                !strcmp(value, "multiply") ? NPC_ANIM_MULTIPLY : -1;
+    });
+    ICOMMAND(npcanim_track_base, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("base outside animation track"); return; }
+        currentnpctrack->base = *value;
+    });
+    ICOMMAND(npcanim_track_amplitude, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("amplitude outside animation track"); return; }
+        currentnpctrack->amplitude = *value;
+    });
+    ICOMMAND(npcanim_track_frequency, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("frequency outside animation track"); return; }
+        currentnpctrack->frequency = *value;
+    });
+    ICOMMAND(npcanim_track_phase, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("phase outside animation track"); return; }
+        currentnpctrack->phase = *value;
+    });
+    ICOMMAND(npcanim_track_peak, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("peak outside animation track"); return; }
+        currentnpctrack->peak = *value;
+    });
+    ICOMMAND(npcanim_track_min, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("min outside animation track"); return; }
+        currentnpctrack->minimum = *value;
+    });
+    ICOMMAND(npcanim_track_max, "f", (float *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("max outside animation track"); return; }
+        currentnpctrack->maximum = *value;
+    });
+    ICOMMAND(npcanim_track_movement, "i", (int *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("movement outside animation track"); return; }
+        currentnpctrack->movement = *value != 0;
+    });
+    ICOMMAND(npcanim_track_amplitudemovement, "i", (int *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK)
+        {
+            npcdefinitionerror("amplitudemovement outside animation track");
+            return;
+        }
+        currentnpctrack->amplitudemovement = *value != 0;
+    });
+    ICOMMAND(npcanim_track_mirror, "i", (int *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("mirror outside animation track"); return; }
+        currentnpctrack->mirror = *value != 0;
+    });
+    ICOMMAND(npcanim_track_envelope, "i", (int *value),
+    {
+        if(!currentnpctrack || currentnpccomponent != NPCDEF_TRACK) { npcdefinitionerror("envelope outside animation track"); return; }
+        currentnpctrack->envelope = *value != 0;
+    });
 
     ICOMMAND(npcdef_root_model, "S", (char *body),
     {
@@ -399,13 +787,14 @@ namespace game
 
     ICOMMAND(npcdef, "sS", (char *id, char *body),
     {
-        if(currentnpcdefinition) { npcdefinitionerror("nested npcdef blocks are not allowed"); return; }
+        if(currentnpcdefinition || currentnpcanimation) { npcdefinitionerror("nested definitions are not allowed"); return; }
         if(!id[0] || strlen(id) >= sizeof(string) || findnpcdefinition(id))
         {
             conoutf(CON_ERROR, "duplicate, empty, or oversized NPC id: %s", id);
             return;
         }
         npcdefinition definition(id);
+        loopi(NUM_NPC_ANIMS) npcanimationnames[i][0] = '\0';
         currentnpcdefinition = &definition;
         currentnpccomponent = NPCDEF_ROOT;
         npcdefinitionfailed = false;
@@ -445,6 +834,15 @@ namespace game
                     definition.wandersounds.add(npcwandersounddefinition(sample, soundminimum * 1000, soundmaximum * 1000));
                 }
                 ++definition.wandersoundrevision;
+            }
+        }
+        loopi(NUM_NPC_ANIMS) if(npcanimationnames[i][0])
+        {
+            definition.animations[i] = findnpcanimation(npcanimationnames[i]);
+            if(!definition.animations[i] || definition.animations[i]->rig != definition.modeltype)
+            {
+                defformatstring(message, "unknown animation or mismatched rig: %s", npcanimationnames[i]);
+                npcdefinitionerror(message);
             }
         }
         currentnpcdefinition = NULL;

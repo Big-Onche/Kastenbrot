@@ -212,6 +212,8 @@ enum npcmodeltype
     NPC_MODEL_QUADRUPED
 };
 
+#include "npcanimation.h"
+
 struct npcdropdefinition
 {
     string itemid;
@@ -244,6 +246,7 @@ struct npcdefinition
     vector<npcdropdefinition> drops;
     vector<npcwandersounddefinition> wandersounds;
     uint wandersoundrevision;
+    const npcanimationdefinition *animations[NUM_NPC_ANIMS];
 
     npcdefinition(const char *id = "")
         : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), modeltype(NPC_MODEL_HUMANOID), naturalbiome(-1),
@@ -254,6 +257,7 @@ struct npcdefinition
         copystring(this->id, id);
         copystring(name, id);
         model[0] = '\0';
+        loopi(NUM_NPC_ANIMS) animations[i] = NULL;
     }
 };
 

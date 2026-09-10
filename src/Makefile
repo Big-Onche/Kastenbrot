@@ -206,7 +206,8 @@ $(CLIENT_OBJS): CXXFLAGS += $(CLIENT_INCLUDES)
 $(filter shared/%,$(CLIENT_OBJS)): $(filter shared/%,$(CLIENT_PCH))
 $(filter engine/%,$(CLIENT_OBJS)): $(filter engine/%,$(CLIENT_PCH))
 $(filter game/%,$(CLIENT_OBJS)): $(filter game/%,$(CLIENT_PCH))
-game/npc.o standalone/game/npc.o: game/npcsound.h game/npcdef.h game/game.h
+game/game.h.gch standalone/game/game.h.gch: game/npcanimation.h
+game/npc.o standalone/game/npc.o: game/npcsound.h game/npcdef.h game/npcanimation.h game/game.h
 game/world.o standalone/game/world.o: game/worldhydrology.h game/world.h
 engine/material.o: engine/watergeometry.h engine/watercache.h
 

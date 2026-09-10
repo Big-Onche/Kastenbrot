@@ -13,6 +13,7 @@ namespace game
         resetnpcs();
 #endif
         npcdefinitions.deletecontents();
+        npcanimations.deletecontents();
     }
 
     COMMANDN(npcreset, clearnpcdefinitions, "");
@@ -498,80 +499,53 @@ namespace game
 
     static void calcnpcpose(npc &mob, npcpose &pose)
     {
-        const bool quadruped = mob.definition->modeltype == NPC_MODEL_QUADRUPED;
+        const npcdefinition &definition = *mob.definition;
+        const bool quadruped = definition.modeltype == NPC_MODEL_QUADRUPED;
         const int legs = npcremaininglegs(mob), maximumlegs = quadruped ? 4 : 2;
+        const npcanimationdefinition *walk = definition.animations[NPC_ANIM_WALK], *crawl = definition.animations[NPC_ANIM_CRAWL],
+                                     *attack = definition.animations[NPC_ANIM_ATTACK];
         const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
-                    movement = clamp(gamespeed / max(mob.definition->height * 2.25f, 1.0f), 0.0f, 1.0f),
-                    stride = sinf(mob.renderstride) * movement,
-                    smoothcrawl = legs ? 0.0f : clamp((lastmillis - mob.crawlstart) / 350.0f, 0.0f, 1.0f);
-        pose.crawlprogress = smoothcrawl * smoothcrawl * (3.0f - 2.0f * smoothcrawl);
-        pose.torsopitch = -90.0f * pose.crawlprogress;
-        pose.headpitch = -30.0f * pose.crawlprogress;
-        const bool zombiepose = !strcmp(mob.definition->id, "zombie") && legs > 0;
-        if(quadruped)
-        {
-            pose.leftarmpitch = stride * 28.0f;
-            pose.rightarmpitch = -stride * 28.0f;
-            pose.leftlegpitch = -stride * 28.0f;
-            pose.rightlegpitch = stride * 28.0f;
-        }
-        else if(zombiepose)
-        {
-            pose.leftarmpitch = 80.0f - stride * 6.0f;
-            pose.rightarmpitch = 80.0f + stride * 6.0f;
-        }
-        else
-        {
-            pose.leftarmpitch = -stride * 28.0f;
-            pose.rightarmpitch = stride * 28.0f;
-        }
-        if(!quadruped)
-        {
-            pose.leftlegpitch = stride * 32.0f;
-            pose.rightlegpitch = -stride * 32.0f;
-        }
+                    movement = clamp(gamespeed / max(definition.height * (walk ? walk->fullspeed : 1), 1.0f), 0.0f, 1.0f),
+                    stride = mob.renderstride / (2 * PI),
+                    progress = legs || !crawl ? 0 : crawl->transition
+                        ? clamp((lastmillis - mob.crawlstart) / float(crawl->transition), 0.0f, 1.0f) : 1;
+        pose.crawlprogress = progress * progress * (3 - 2 * progress);
+        const bool leftmissing = (mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (quadruped ? 1U << HITBOX_LEFT_ARM : 0))) != 0;
+        const float mirror = leftmissing ? -1 : 1;
+        float channels[NUM_NPC_ANIM_CHANNELS] = { definition.rootheight, 0, 0, 0, 0, 0, 0, 0 };
+        const npcanimationdefinition *idle = definition.animations[NPC_ANIM_IDLE];
+        applynpcanimation(idle, idle ? float(lastmillis % idle->duration) / idle->duration : 0, movement, mirror, 1, channels);
+        applynpcanimation(walk, stride, movement, mirror, movement, channels);
         const int attackelapsed = lastmillis - mob.lastattack;
-        if(attackelapsed >= 0 && attackelapsed < CREATIVE_ARM_CYCLE)
+        if(attack && mob.lastattack >= 0 && attackelapsed >= 0 && attackelapsed < attack->duration)
+            applynpcanimation(attack, attackelapsed / float(attack->duration), movement, mirror, 1, channels);
+        if(legs > 0 && legs < maximumlegs)
+            applynpcanimation(definition.animations[NPC_ANIM_LIMP], stride, movement, mirror, 1, channels);
+        applynpcanimation(crawl, stride, movement, mirror, pose.crawlprogress, channels);
+        pose.torsoorigin = mob.feetpos(channels[NPC_ANIM_HEIGHT]);
+        pose.torsopitch = channels[NPC_ANIM_TORSOPITCH];
+        pose.torsoroll = channels[NPC_ANIM_TORSOROLL];
+        pose.headpitch = channels[NPC_ANIM_HEAD];
+        pose.leftarmpitch = channels[NPC_ANIM_LEFTARM];
+        pose.rightarmpitch = channels[NPC_ANIM_RIGHTARM];
+        pose.leftlegpitch = channels[NPC_ANIM_LEFTLEG];
+        pose.rightlegpitch = channels[NPC_ANIM_RIGHTLEG];
+        const float rearanchor = quadruped ? clamp(channels[NPC_ANIM_REARANCHOR], 0.0f, 1.0f) * (1 - pose.crawlprogress) : 0;
+        if(rearanchor > 0 && !(mob.detachedparts & ((1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG))))
         {
-            const float progress = attackelapsed / float(CREATIVE_ARM_CYCLE);
-            if(zombiepose)
+            string torso;
+            npcmodelpath(definition, NPC_PART_TORSO, torso);
+            const char *tags[] = { npcparttag(definition, NPC_PART_LEFT_LEG), npcparttag(definition, NPC_PART_RIGHT_LEG) };
+            vec resting[2], raised[2];
+            bool restfound[2], raisedfound[2];
+            modeltagpositions(torso, tags, resting, restfound, 2, mob.feetpos(definition.rootheight), mob.yaw, 0, 0);
+            modeltagpositions(torso, tags, raised, raisedfound, 2, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
+            if(restfound[0] && restfound[1] && raisedfound[0] && raisedfound[1])
             {
-                float lift = progress < 0.35f ? progress / 0.35f : (1.0f - progress) / 0.65f;
-                lift = clamp(lift, 0.0f, 1.0f);
-                lift = lift * lift * (3.0f - 2.0f * lift);
-                pose.leftarmpitch += (132.0f - pose.leftarmpitch) * lift;
-                pose.rightarmpitch += (132.0f - pose.rightarmpitch) * lift;
-            }
-            else
-            {
-                const float swing = sinf(progress * PI) * 75.0f;
-                pose.leftarmpitch += swing;
-                pose.rightarmpitch += swing;
+                const vec correction = vec(resting[0]).add(resting[1]).sub(raised[0]).sub(raised[1]).mul(0.5f * rearanchor);
+                pose.torsoorigin.add(correction);
             }
         }
-
-        float torsoheight = mob.definition->rootheight + fabsf(cosf(mob.renderstride)) * (quadruped ? 0.25f : 0.45f) * movement;
-        if(!quadruped && legs == 1)
-        {
-            const bool leftmissing = (mob.detachedparts & (1U << HITBOX_LEFT_LEG)) != 0;
-            pose.torsoroll = (leftmissing ? -8.0f : 8.0f) * (0.65f + 0.35f * fabsf(sinf(mob.renderstride)));
-            torsoheight += fabsf(sinf(mob.renderstride)) * 0.9f * movement;
-            pose.leftlegpitch *= 0.75f;
-            pose.rightlegpitch *= 0.75f;
-        }
-        else if(!legs)
-        {
-            const float crawlstroke = sinf(mob.renderstride) * 35.0f * movement;
-            const float leftarmtarget = clamp(110.0f + crawlstroke, 90.0f, 140.0f),
-                        rightarmtarget = clamp(110.0f - crawlstroke, 90.0f, 140.0f);
-            torsoheight += (2.25f - torsoheight) * pose.crawlprogress;
-            torsoheight += fabsf(sinf(mob.renderstride * 2.0f)) * 0.3f * movement * pose.crawlprogress;
-            pose.leftarmpitch += (leftarmtarget - pose.leftarmpitch) * pose.crawlprogress;
-            pose.rightarmpitch += (rightarmtarget - pose.rightarmpitch) * pose.crawlprogress;
-        }
-        else if(quadruped && legs < maximumlegs)
-            pose.torsoroll = ((mob.detachedparts & ((1U << HITBOX_LEFT_ARM) | (1U << HITBOX_LEFT_LEG))) ? -4.0f : 4.0f) * movement;
-        pose.torsoorigin = mob.feetpos(torsoheight);
     }
 
     static vec rotatedradius(const vec &radius, float yaw)
@@ -1879,9 +1853,11 @@ namespace game
 
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
         const int legs = npcremaininglegs(mob);
-        const float speed = horizontalmeterspersecond(&mob),
-                     gamespeed = speed * GAMEUNITSPERMETER,
-                     gaitcycletravel = legs == 1 ? 10.0f : !legs ? 7.0f : mob.definition->height * 0.75f;
+        const int maximumlegs = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? 4 : 2;
+        const npcanimationdefinition *gait = mob.definition->animations[!legs ? NPC_ANIM_CRAWL : legs < maximumlegs ? NPC_ANIM_LIMP : NPC_ANIM_WALK];
+        if(!gait) gait = mob.definition->animations[NPC_ANIM_WALK];
+        const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
+                    gaitcycletravel = gait ? gait->travel * (gait->travelheight ? mob.definition->height : 1) : 1;
         if(mob.renderlastmillis < 0 || lastmillis < mob.renderlastmillis) mob.renderlastmillis = lastmillis;
         const int elapsed = min(lastmillis - mob.renderlastmillis, 100);
         mob.renderlastmillis = lastmillis;
