@@ -587,3 +587,5 @@ standalone/engine/engine.h.gch: engine/world.h
 standalone/game/game.h.gch: shared/cube.h shared/tools.h shared/geom.h
 standalone/game/game.h.gch: shared/ents.h shared/command.h shared/iengine.h
 standalone/game/game.h.gch: shared/igame.h
+
+engine/physics.o: shared/jump.h

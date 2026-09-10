@@ -327,14 +327,15 @@ namespace server
         npcdefinition *definition;
         vec o, velocity, spawn, destination, fleeorigin;
         float yaw, health, falldistance, parthealth[NUM_HUMANOID_HITBOXES];
-        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis, fleeuntil, retaliateclient;
-        bool paused, frozen, attacking, airborne;
+        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, lastjump, deathmillis, fleeuntil, retaliateclient;
+        bool paused, frozen, attacking, airborne, running;
 
         servernpc(uint id, npcdefinition *definition)
             : id(id), detachedparts(0), spawnkey(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0),
               fleeorigin(0, 0, 0), yaw(0),
               health(definition->health), falldistance(0), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis),
-              lastattack(-1000), deathmillis(0), fleeuntil(0), retaliateclient(-1), paused(true), frozen(false), attacking(false), airborne(false)
+              lastattack(-1000), lastjump(-1000), deathmillis(0), fleeuntil(0), retaliateclient(-1),
+              paused(true), frozen(false), attacking(false), airborne(false), running(false)
         {
             parthealth[HITBOX_TORSO] = definition->health;
             loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
@@ -2466,6 +2467,7 @@ namespace server
         int flags = mob.deathmillis ? NPC_STATE_DEAD : 0;
         if(mob.frozen) flags |= NPC_STATE_FROZEN;
         if(mob.attacking) flags |= NPC_STATE_ATTACKING;
+        if(mob.running) flags |= NPC_STATE_RUNNING;
         const uint legmask = mob.definition->modeltype == NPC_MODEL_QUADRUPED
                            ? (1U << HITBOX_LEFT_ARM) | (1U << HITBOX_RIGHT_ARM) | (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG)
                            : (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG);
@@ -2976,7 +2978,25 @@ namespace server
         mob.airborne = true;
         const float seconds = elapsed / 1000.0f, previousvelocity = mob.velocity.z;
         mob.velocity.z -= 210.0f * seconds;
-        const float distance = max(-(previousvelocity + mob.velocity.z) * 0.5f * seconds, 0.0f);
+        const float displacement = (previousvelocity + mob.velocity.z) * 0.5f * seconds;
+        if(displacement > 0)
+        {
+            // Sweep upward so a high jump cannot skip through a ceiling between server ticks.
+            const int steps = max(int(ceilf(displacement / 2.0f)), 1);
+            const float step = displacement / steps;
+            loopi(steps)
+            {
+                const vec next = vec(mob.o).addz(step);
+                if(!servernpcclearance(next, *mob.definition, mob.id))
+                {
+                    mob.velocity.z = 0;
+                    break;
+                }
+                mob.o = next;
+            }
+            return;
+        }
+        const float distance = -displacement;
         if(feet - distance > ground)
         {
             mob.o.z -= distance;
@@ -3003,6 +3023,7 @@ namespace server
     static void updateservernpc(servernpc &mob)
     {
         mob.attacking = false;
+        mob.running = false;
         if(mob.deathmillis) return;
         const int elapsed = clamp(totalmillis - mob.lastupdate, 0, 100);
         mob.lastupdate = totalmillis;
@@ -3024,6 +3045,7 @@ namespace server
             target = nearestservernpcplayer(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
         if(forcedflee || target)
         {
+            mob.running = true;
             const vec targetposition = target ? vec(target->o).addz(28.0f) : mob.fleeorigin;
             vec offset;
             if(forcedflee || mob.definition->attitude == NPC_SCARED)
@@ -3037,7 +3059,7 @@ namespace server
             else
             {
                 mob.destination = targetposition;
-                if(mob.o.dist(targetposition) <= game::NPC_ATTACK_REACH && serverlineofsight(mob.o, targetposition) &&
+                if(mob.o.dist(targetposition) <= mob.definition->attackrange * GAMEUNITSPERMETER && serverlineofsight(mob.o, targetposition) &&
                    totalmillis - mob.lastattack >= mob.definition->attackmillis)
                 {
                     mob.lastattack = totalmillis;
@@ -3084,13 +3106,24 @@ namespace server
             next.z = ground + mob.definition->height;
             mob.o = next;
         }
-        else if(ground < oldground - SERVER_WORLD_BLOCK_SIZE && servernpcclearance(vec(next.x, next.y, mob.o.z), *mob.definition, mob.id))
+        else if((mob.airborne || ground < oldground - SERVER_WORLD_BLOCK_SIZE) &&
+                servernpcclearance(vec(next.x, next.y, mob.o.z), *mob.definition, mob.id))
         {
             mob.o.x = next.x;
             mob.o.y = next.y;
             mob.airborne = true;
         }
-        else mob.velocity.x = mob.velocity.y = 0;
+        else
+        {
+            mob.velocity.x = mob.velocity.y = 0;
+            if(!mob.airborne && !missinglegs && totalmillis - mob.lastjump >= 400)
+            {
+                mob.velocity.z = 135.0f * sqrtf(mob.definition->jumpheightfor(mob.running));
+                mob.airborne = true;
+                mob.lastjump = totalmillis;
+                mob.falldistance = 0;
+            }
+        }
     }
 
     static void updateservernpcinterest()

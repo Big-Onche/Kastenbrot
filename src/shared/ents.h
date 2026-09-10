@@ -65,6 +65,7 @@ struct physent                                  // base entity type, can be affe
     vec o, vel, falling;                        // origin, velocity
     vec deltapos, newpos;                       // movement interpolation
     float yaw, pitch, roll;
+    float jumpheight;                          // jump apex multiplier; defaults to standard player physics
     float maxspeed;                             // cubes per second, 100 for player
     float falldistance, fallvelocity;            // downward travel in game units and greatest downward speed during the current fall
     float radius, eyeheight, maxheight, aboveeye; // bounding box size
@@ -84,7 +85,7 @@ struct physent                                  // base entity type, can be affe
 
     bool blocked;                               // used by physics to signal ai
 
-    physent() : o(0, 0, 0), deltapos(0, 0, 0), newpos(0, 0, 0), yaw(0), pitch(0), roll(0), maxspeed(100), falldistance(0), fallvelocity(0),
+    physent() : o(0, 0, 0), deltapos(0, 0, 0), newpos(0, 0, 0), yaw(0), pitch(0), roll(0), jumpheight(1), maxspeed(100), falldistance(0), fallvelocity(0),
                radius(4.1f), eyeheight(28), maxheight(28), aboveeye(2), xradius(4.1f), yradius(4.1f), zmargin(0), obbradius(0, 0, 0),
                state(CS_ALIVE), editstate(CS_ALIVE), type(ENT_PLAYER),
                collidetype(COLLIDE_ELLIPSE),

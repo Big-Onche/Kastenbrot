@@ -88,6 +88,9 @@ namespace game
             if(!strcmp(command, "health")) return "npcdef_root_health";
             if(!strcmp(command, "damage")) return "npcdef_root_damage";
             if(!strcmp(command, "speed")) return "npcdef_root_speed";
+            if(!strcmp(command, "runjumpheight")) return "npcdef_root_runjumpheight";
+            if(!strcmp(command, "jumpheight")) return "npcdef_root_jumpheight";
+            if(!strcmp(command, "attackrange")) return "npcdef_root_attackrange";
             if(!strcmp(command, "attackmillis")) return "npcdef_root_attackmillis";
             if(!strcmp(command, "wanderradius")) return "npcdef_root_wanderradius";
             if(!strcmp(command, "aggrodist")) return "npcdef_root_aggrodist";
@@ -135,6 +138,7 @@ namespace game
         {
             if(!strcmp(command, "idle")) return "npcdef_animation_idle";
             if(!strcmp(command, "walk")) return "npcdef_animation_walk";
+            if(!strcmp(command, "run")) return "npcdef_animation_run";
             if(!strcmp(command, "attack")) return "npcdef_animation_attack";
             if(!strcmp(command, "limp")) return "npcdef_animation_limp";
             if(!strcmp(command, "crawl")) return "npcdef_animation_crawl";
@@ -316,6 +320,15 @@ namespace game
             return;
         }
         copystring(npcanimationnames[NPC_ANIM_WALK], value);
+    });
+    ICOMMAND(npcdef_animation_run, "s", (char *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ANIMATIONS)
+        {
+            npcdefinitionerror("run outside animations");
+            return;
+        }
+        copystring(npcanimationnames[NPC_ANIM_RUN], value);
     });
     ICOMMAND(npcdef_animation_attack, "s", (char *value),
     {
@@ -669,6 +682,38 @@ namespace game
         if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT) { npcdefinitionerror("speed outside its component"); return; }
         currentnpcdefinition->speed = *value;
     });
+    ICOMMAND(npcdef_root_runjumpheight, "f", (float *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT)
+        {
+            npcdefinitionerror("runjumpheight outside its component");
+            return;
+        }
+        if(!(*value > 0 && *value <= 1e6f))
+        {
+            npcdefinitionerror("runjumpheight must be a positive multiplier no greater than 1000000");
+            return;
+        }
+        currentnpcdefinition->runjumpheight = *value;
+    });
+    ICOMMAND(npcdef_root_jumpheight, "f", (float *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT)
+        {
+            npcdefinitionerror("jumpheight outside its component");
+            return;
+        }
+        currentnpcdefinition->jumpheight = *value;
+    });
+    ICOMMAND(npcdef_root_attackrange, "f", (float *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT)
+        {
+            npcdefinitionerror("attackrange outside its component");
+            return;
+        }
+        currentnpcdefinition->attackrange = *value;
+    });
     ICOMMAND(npcdef_root_attackmillis, "i", (int *value),
     {
         if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT) { npcdefinitionerror("attackmillis outside its component"); return; }
@@ -805,8 +850,10 @@ namespace game
         if(!definition.name[0]) copystring(definition.name, id);
         if(!definition.model[0] || definition.attitude < 0 || definition.behavior < 0 || definition.health <= 0 ||
            !(definition.damage >= 0 && definition.speed > 0 && definition.wanderradius >= 0 && definition.aggrodist >= 0 &&
-             definition.fleedist >= 0) || definition.attackmillis <= 0)
+             definition.fleedist >= 0 && definition.attackrange > 0) || definition.attackmillis <= 0)
             npcdefinitionerror("invalid name, model path, attitude, behavior, or stats");
+        if(!(definition.jumpheight > 0 && definition.jumpheight <= 1e6f))
+            npcdefinitionerror("jumpheight must be a positive multiplier no greater than 1000000");
         if(definition.modeltype < 0 || !(definition.radius > 0 && definition.height > 0 && definition.rootheight > 0 &&
                                        definition.rootheight < definition.height))
             npcdefinitionerror("invalid model type or dimensions");

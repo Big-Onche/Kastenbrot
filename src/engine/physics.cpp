@@ -4,6 +4,7 @@
 // very robust (uses discrete steps at fixed fps).
 
 #include "engine.h"
+#include "jump.h"
 #include "mpr.h"
 #include "worldruntime.h"
 
@@ -1742,7 +1743,7 @@ void modifyvelocity(physent *pl, bool local, bool water, float immersion, bool f
         if(pl->jumping && allowmove)
         {
             pl->jumping = false;
-            pl->vel.z = max(pl->vel.z, JUMPVEL);
+            pl->vel.z = max(pl->vel.z, JUMPVEL * sqrtf(pl->jumpheight));
         }
     }
     else if(pl->physstate >= PHYS_SLOPE || water)
@@ -1752,7 +1753,8 @@ void modifyvelocity(physent *pl, bool local, bool water, float immersion, bool f
         {
             pl->jumping = false;
 
-            pl->vel.z = max(pl->vel.z, JUMPVEL); // physics impulse upwards
+            const float impulse = water ? JUMPVEL * sqrtf(pl->jumpheight) : scaledjumpimpulse(JUMPVEL, GRAVITY, pl->jumpheight, curtime);
+            pl->vel.z = max(pl->vel.z, impulse); // physics impulse upwards
             if(water) { pl->vel.x /= 8.0f; pl->vel.y /= 8.0f; } // dampen velocity change even harder, gives correct water feel
 
             game::physicstrigger(pl, local, 1, 0);

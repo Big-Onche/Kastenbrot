@@ -203,6 +203,7 @@ namespace game
             type = ENT_PLAYER;
             state = CS_ALIVE;
             maxspeed = definition->speed;
+            jumpheight = definition->jumpheight;
             radius = xradius = yradius = definition->radius;
             maxheight = eyeheight = definition->height;
             aboveeye = max(definition->height * 0.08f, 2.0f);
@@ -497,12 +498,28 @@ namespace game
         }
     };
 
+    static bool npcrunning(const npc &mob)
+    {
+        return mob.replicated ? (mob.serverstateflags & NPC_STATE_RUNNING) != 0
+                              : mob.behavior == NPC_CHASE || mob.behavior == NPC_FLEE;
+    }
+
+    static const npcanimationdefinition *npcmovementanimation(const npc &mob)
+    {
+        const npcdefinition &definition = *mob.definition;
+        const bool running = npcrunning(mob);
+        const int maximumlegs = definition.modeltype == NPC_MODEL_QUADRUPED ? 4 : 2;
+        if(running && npcremaininglegs(mob) == maximumlegs && definition.animations[NPC_ANIM_RUN])
+            return definition.animations[NPC_ANIM_RUN];
+        return definition.animations[NPC_ANIM_WALK];
+    }
+
     static void calcnpcpose(npc &mob, npcpose &pose)
     {
         const npcdefinition &definition = *mob.definition;
         const bool quadruped = definition.modeltype == NPC_MODEL_QUADRUPED;
         const int legs = npcremaininglegs(mob), maximumlegs = quadruped ? 4 : 2;
-        const npcanimationdefinition *walk = definition.animations[NPC_ANIM_WALK], *crawl = definition.animations[NPC_ANIM_CRAWL],
+        const npcanimationdefinition *walk = npcmovementanimation(mob), *crawl = definition.animations[NPC_ANIM_CRAWL],
                                      *attack = definition.animations[NPC_ANIM_ATTACK];
         const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
                     movement = clamp(gamespeed / max(definition.height * (walk ? walk->fullspeed : 1), 1.0f), 0.0f, 1.0f),
@@ -1494,6 +1511,7 @@ namespace game
         }
         else if(legs == maximumlegs && mob.blocked && mob.physstate >= PHYS_SLOPE && lastmillis - mob.lastjump >= 400)
         {
+            mob.jumpheight = mob.definition->jumpheightfor(npcrunning(mob));
             mob.jumping = true;
             mob.lastjump = lastmillis;
         }
@@ -1507,7 +1525,7 @@ namespace game
            lastmillis - mob.lastattack < mob.definition->attackmillis) return;
         vec direction = vec(player1->o).sub(mob.o);
         const float distance = direction.magnitude();
-        if(distance > NPC_ATTACK_REACH || distance < 1e-4f) return;
+        if(distance > mob.definition->attackrange * GAMEUNITSPERMETER || distance < 1e-4f) return;
         direction.div(distance);
         const float obstruction = raycube(mob.o, direction, distance, RAY_CLIPMAT | RAY_SKIPFIRST);
         if(obstruction >= 0 && obstruction + 0.5f < distance) return;
@@ -1854,8 +1872,9 @@ namespace game
         const int flags = MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED;
         const int legs = npcremaininglegs(mob);
         const int maximumlegs = mob.definition->modeltype == NPC_MODEL_QUADRUPED ? 4 : 2;
-        const npcanimationdefinition *gait = mob.definition->animations[!legs ? NPC_ANIM_CRAWL : legs < maximumlegs ? NPC_ANIM_LIMP : NPC_ANIM_WALK];
-        if(!gait) gait = mob.definition->animations[NPC_ANIM_WALK];
+        const npcanimationdefinition *gait = !legs ? mob.definition->animations[NPC_ANIM_CRAWL]
+            : legs < maximumlegs ? mob.definition->animations[NPC_ANIM_LIMP] : npcmovementanimation(mob);
+        if(!gait) gait = npcmovementanimation(mob);
         const float gamespeed = horizontalmeterspersecond(&mob) * GAMEUNITSPERMETER,
                     gaitcycletravel = gait ? gait->travel * (gait->travelheight ? mob.definition->height : 1) : 1;
         if(mob.renderlastmillis < 0 || lastmillis < mob.renderlastmillis) mob.renderlastmillis = lastmillis;

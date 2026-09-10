@@ -188,7 +188,8 @@ enum
     NPC_STATE_DEAD = 1<<0,
     NPC_STATE_FROZEN = 1<<1,
     NPC_STATE_ATTACKING = 1<<2,
-    NPC_STATE_CRAWLING = 1<<3
+    NPC_STATE_CRAWLING = 1<<3,
+    NPC_STATE_RUNNING = 1<<4
 };
 
 enum npcattitude
@@ -242,7 +243,8 @@ struct npcdefinition
 {
     string id, name, model;
     int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, cavebands, cavegroupmin, cavegroupmax, fleeonhitmillis;
-    float damage, speed, wanderradius, aggrodist, fleedist, radius, height, rootheight, spawnchance, fleespeed, herdradius;
+    float damage, speed, wanderradius, aggrodist, fleedist, attackrange, jumpheight, runjumpheight, radius, height, rootheight,
+          spawnchance, fleespeed, herdradius;
     vector<npcdropdefinition> drops;
     vector<npcwandersounddefinition> wandersounds;
     uint wandersoundrevision;
@@ -251,13 +253,18 @@ struct npcdefinition
     npcdefinition(const char *id = "")
         : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), modeltype(NPC_MODEL_HUMANOID), naturalbiome(-1),
           groupmin(1), groupmax(1), cavebands(0), cavegroupmin(1), cavegroupmax(4), fleeonhitmillis(0), damage(1), speed(40),
-          wanderradius(8), aggrodist(16), fleedist(12),
+          wanderradius(8), aggrodist(16), fleedist(12), attackrange(2), jumpheight(1), runjumpheight(0),
           radius(4.1f), height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0), wandersoundrevision(0)
     {
         copystring(this->id, id);
         copystring(name, id);
         model[0] = '\0';
         loopi(NUM_NPC_ANIMS) animations[i] = NULL;
+    }
+
+    float jumpheightfor(bool running) const
+    {
+        return running && runjumpheight > 0 ? runjumpheight : jumpheight;
     }
 };
 
@@ -564,8 +571,7 @@ namespace game
     enum
     {
         CREATIVE_ARM_CYCLE = 300,
-        SURVIVAL_BUILD_REACH = 4 * 16,
-        NPC_ATTACK_REACH = 2 * 16
+        SURVIVAL_BUILD_REACH = 4 * 16
     };
 
     struct networkedit
