@@ -84,6 +84,7 @@ struct worldgencontext
     uchar rockmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     float geology[WORLD_GEOLOGY_WIDTH * WORLD_GEOLOGY_WIDTH * WORLD_GEOLOGY_HEIGHT];
     int geologymaterials[3], geologytextures[3];
+    vector<ivec> rockvariants;
     worldsectionrenderdata renderdata;
     vector<worldcavesegment> cavesegments;
     vector<worldcavechamber> cavechambers;
@@ -113,6 +114,14 @@ struct worldgencontext
             if(!cubeids.access(rockids[i]) || !this->cubetextures.inrange(geologymaterials[i])) geologymaterials[i] = geologymaterials[0];
             geologytextures[i] = this->cubetextures.inrange(geologymaterials[i])
                               ? indexedtextures ? geologymaterials[i] : this->cubetextures[geologymaterials[i]].side : -1;
+        }
+        loopv(this->cubetextures) rockvariants.add(ivec(i, i, i));
+        loopv(this->cubetextures)
+        {
+            const worldgencubetextures &variant = this->cubetextures[i];
+            int *base = cubeids.access(variant.variantbase);
+            if(!base || !variant.varianthost[0]) continue;
+            loopj(3) if(!strcmp(variant.varianthost, rockids[j])) rockvariants[*base][j] = i;
         }
     }
 
@@ -1810,11 +1819,11 @@ static bool worldorecaveedge(const worldgencontext &ctx, int worldx, int worldy,
     return false;
 }
 
-static bool worldorehost(const worldgencontext &ctx, const cube &c)
+static int worldorehost(const worldgencontext &ctx, const cube &c)
 {
-    if(isempty(c) || c.material != MAT_AIR) return false;
-    loopi(3) if(ctx.geologytextures[i] >= 0 && c.texture[0] == ctx.geologytextures[i]) return true;
-    return false;
+    if(isempty(c) || c.material != MAT_AIR) return -1;
+    loopi(3) if(ctx.geologytextures[i] >= 0 && c.texture[0] == ctx.geologytextures[i]) return i;
+    return -1;
 }
 
 static void placeworldoreblock(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky, int worldx, int worldy,
@@ -1833,7 +1842,8 @@ static void placeworldoreblock(worldgencontext &ctx, cube *root, const worldored
 
     cube &c = lookupworldgenblock(
         ctx, root, ivec(localx * WORLD_BLOCK_SIZE, localy * WORLD_BLOCK_SIZE, (elevation - WORLD_MIN_HEIGHT) * WORLD_BLOCK_SIZE));
-    if(worldorehost(ctx, c)) setworldcubetype(c, ctx, orecube);
+    const int host = worldorehost(ctx, c);
+    if(host >= 0) setworldcubetype(c, ctx, ctx.rockvariants[orecube][host]);
 }
 
 static void placeworldorevein(worldgencontext &ctx, cube *root, const worldoredefinition &ore, int chunkx, int chunky,

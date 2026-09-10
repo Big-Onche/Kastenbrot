@@ -32,12 +32,13 @@ worlddefinition::worlddefinition(const char *id)
       hasheld(false), hascube(false),
       scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), haschest(false), hasfood(false), hassupport(false),
       hasequipment(false),
-      itemstackset(false),
+      itemstackset(false), cubetextureset(false),
       scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
       placeableblockcollision(false), heldflipx(false), heldflipy(false), handbreakable(true), supportdecay(false), supportpersistentonplace(false)
 {
     copystring(this->id, id);
+    variantbase[0] = varianthost[0] = '\0';
     footstepsound[0] = '\0';
     miningsound[0] = '\0';
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
@@ -484,6 +485,45 @@ static void registerworlddefinition(const char *id, const char *body)
 ICOMMAND(worlddef, "sS", (char *id, char *body),
 {
     registerworlddefinition(id, body);
+});
+
+// A host variant reuses the complete base definition; only its identity, cube skin and host mining properties change.
+static void registerworldvariant(const char *id, const char *baseid, const char *hostid, const char *texture)
+{
+    worlddefinition *base = findworldcube(baseid);
+    worlddefinition *host = findworldcube(hostid);
+    if(currentworlddefinition || !id[0] || findworlddefinition(id) || !base || !host || !texture[0] ||
+       !base->hasmining || !host->hasmining || base->variantbase[0])
+    {
+        worlddefinitionerror("worldvariant requires a unique id, existing base/host mining cubes, and a texture; nested variants are unsupported");
+        return;
+    }
+    loopv(worlddefinitions) if(!cubecasecmp(worlddefinitions[i]->variantbase, baseid) &&
+                              !cubecasecmp(worlddefinitions[i]->varianthost, hostid))
+    {
+        worlddefinitionerror("duplicate worldvariant base/host pair");
+        return;
+    }
+    worlddefinition *variant = new worlddefinition(*base);
+    copystring(variant->id, id);
+    variant->persistentid = worldpersistentid(id);
+    copystring(variant->variantbase, base->id);
+    copystring(variant->varianthost, host->id);
+    copystring(variant->cubetexture, texture);
+    variant->sidetexture[0] = variant->bottom[0] = '\0';
+    variant->cubetextureset = true;
+    variant->hardness = host->hardness;
+    variant->hardnessset = host->hardnessset;
+    variant->requiredtier = max(base->requiredtier, host->requiredtier);
+    worlddefinitions.add(variant);
+    worldcubedefinitions.add(variant);
+    if(variant->hasitem) inventoryitemdefinitions.add(variant);
+    if(variant->scatter || variant->placeable) worldscatterdefinitions.add(variant);
+}
+
+ICOMMAND(worldvariant, "ssss", (char *id, char *baseid, char *hostid, char *texture),
+{
+    registerworldvariant(id, baseid, hostid, texture);
 });
 
 ICOMMAND(wornslot, "ssi", (char *id, char *name, int *mirrored),

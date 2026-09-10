@@ -112,13 +112,16 @@ struct worldscatterinstance
 
 struct worldgencubetextures
 {
-    string id;
+    string id, variantbase, varianthost;
     int top, side, bottom;
 
-    worldgencubetextures(const char *id = "", int top = DEFAULT_GEOM, int side = DEFAULT_GEOM, int bottom = DEFAULT_GEOM)
+    worldgencubetextures(const char *id = "", int top = DEFAULT_GEOM, int side = DEFAULT_GEOM, int bottom = DEFAULT_GEOM,
+                        const char *variantbase = "", const char *varianthost = "")
         : top(top), side(side), bottom(bottom)
     {
         copystring(this->id, id);
+        copystring(this->variantbase, variantbase);
+        copystring(this->varianthost, varianthost);
     }
 };
 

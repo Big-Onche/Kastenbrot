@@ -832,7 +832,7 @@ static bool loadworlddefinitions(bool assets = true)
         loopv(worldcubedefinitions)
         {
             const worlddefinition &type = *worldcubedefinitions[i];
-            worldgentextures.add(worldgencubetextures(type.id, i, i, i));
+            worldgentextures.add(worldgencubetextures(type.id, i, i, i, type.variantbase, type.varianthost));
         }
         worldgrassscatter = getworldscatteridindex("weeds");
         worldrosescatter = getworldscatteridindex("rose");
@@ -940,7 +940,7 @@ static bool loadworlddefinitions(bool assets = true)
     loopv(worldcubedefinitions)
     {
         const worlddefinition &type = *worldcubedefinitions[i];
-        worldgentextures.add(worldgencubetextures(type.id, type.slot, type.sideslot, type.bottomslot));
+        worldgentextures.add(worldgencubetextures(type.id, type.slot, type.sideslot, type.bottomslot, type.variantbase, type.varianthost));
     }
     loopv(worldscatterdefinitions)
     {
@@ -1014,7 +1014,7 @@ void initserverworlddefinitions()
     loopv(worldcubedefinitions)
     {
         const worlddefinition &type = *worldcubedefinitions[i];
-        worldgentextures.add(worldgencubetextures(type.id, i, i, i));
+        worldgentextures.add(worldgencubetextures(type.id, i, i, i, type.variantbase, type.varianthost));
     }
     worldgrassscatter = getworldscatteridindex("weeds");
     worldrosescatter = getworldscatteridindex("rose");
