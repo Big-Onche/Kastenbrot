@@ -2302,9 +2302,12 @@ namespace game
         uint count = 0;
         vector<vec> occupied;
         vector<float> radii;
-        loopv(ctx.npcdefinitions)
+        cavenpcpool pool;
+        loopv(ctx.npcdefinitions) pool.definitions.add(&ctx.npcdefinitions[i]);
+        pool.sort();
+        loopv(pool.definitions)
         {
-            const npcdefinition &definition = ctx.npcdefinitions[i];
+            const npcdefinition &definition = *pool.definitions[i];
             const bool cave = definition.attitude == NPC_AGGRESSIVE;
             if(!cave && definition.naturalbiome < 0) continue;
             const int cells = WORLD_CHUNK_BLOCKS / PASSIVE_NPC_CELL_BLOCKS;
@@ -2312,6 +2315,8 @@ namespace game
             for(int band = cave ? 0 : -1; band < (cave ? definition.cavebands : 0); ++band)
             {
                 if(ctx.iscanceled()) { data.setsize(0); return; }
+                if(cave && pool.choose(ctx.seed, chunkx * cells + x, chunky * cells + y, band, definition.cavebands) != &definition)
+                    continue;
                 passivenpcspawn spawns[16];
                 const int members = generatepassivenpcgroup(definition, ctx.seed, chunkx * cells + x, chunky * cells + y, spawns, 16, band);
                 loopj(members)

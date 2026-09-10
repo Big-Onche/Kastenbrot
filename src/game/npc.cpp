@@ -62,9 +62,9 @@ namespace game
         const bool cave = definition.attitude == NPC_AGGRESSIVE;
         if(!spawns || maxspawns <= 0 ||
            (cave ? band < 0 || band >= definition.cavebands : definition.naturalbiome < 0 || definition.spawnchance <= 0)) return 0;
-        const uint definitionhash = passivenpcdefinitionhash(definition),
-                   cellseed = worlddrophash(uint(worldseed) ^ uint(cellx) * 0x9E3779B9U ^ uint(celly) * 0x85EBCA6BU ^
-                                            definitionhash ^ (cave ? worlddrophash(uint(band) ^ 0xB5297A4DU) : 0)),
+        const uint cellseed = cave ? cavepoolseed(worldseed, cellx, celly, band, definition.cavebands)
+                                   : worlddrophash(uint(worldseed) ^ uint(cellx) * 0x9E3779B9U ^ uint(celly) * 0x85EBCA6BU ^
+                                                   passivenpcdefinitionhash(definition)),
                    spawnroll = worlddrophash(cellseed ^ 0xC2B2AE35U);
         if(!cave && float(spawnroll & 0xFFFFFFU) / float(0xFFFFFFU) >= definition.spawnchance) return 0;
 
@@ -82,7 +82,8 @@ namespace game
             const uint memberseed = worlddrophash(cellseed ^ uint(i + 1) * 0x9E3779B9U);
             const float angle = rotation + (i ? 2.0f * PI * float(i - 1) / max(count - 1, 1) : 0),
                         radius = i ? 3.0f + float(memberseed % uint(PASSIVE_NPC_GROUP_RADIUS_BLOCKS - 2)) : 0;
-            spawns[i].key = passivenpcspawnkey(definition, worldseed, cellx, celly, cave ? 16 + band * 4 + i : i);
+            spawns[i].key = cave ? cavepoolspawnkey(worldseed, cellx, celly, band, definition.cavebands, i)
+                                 : passivenpcspawnkey(definition, worldseed, cellx, celly, i);
             spawns[i].band = cave ? band : -1;
             spawns[i].bandbottom = cave ? band * NPC_WORLD_HEIGHT_BLOCKS / definition.cavebands : 0;
             spawns[i].bandtop = cave ? (band + 1) * NPC_WORLD_HEIGHT_BLOCKS / definition.cavebands : 0;

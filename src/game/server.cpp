@@ -2631,6 +2631,9 @@ namespace server
         if(servercreative() || totalmillis - lastpassivenpcscan < servernpcspawnmillis || clients.empty()) return;
         lastpassivenpcscan = totalmillis;
         cavespawns = npcspawnstats();
+        cavenpcpool pool;
+        loopi(game::numnpcdefinitions()) pool.definitions.add(game::getnpcdefinition(i));
+        pool.sort();
         const int margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1;
         const float simulationdistance = serversimulationmaxdist * GAMEUNITSPERMETER,
                     simulationdistancesquared = simulationdistance * simulationdistance;
@@ -2643,14 +2646,15 @@ namespace server
                       maxcellx = int(floorf((focusblockx + serversimulationmaxdist + margin) / PASSIVE_NPC_CELL_BLOCKS)),
                       mincelly = int(floorf((focusblocky - serversimulationmaxdist - margin) / PASSIVE_NPC_CELL_BLOCKS)),
                       maxcelly = int(floorf((focusblocky + serversimulationmaxdist + margin) / PASSIVE_NPC_CELL_BLOCKS));
-            loopj(game::numnpcdefinitions())
+            loopvj(pool.definitions)
             {
-                npcdefinition *definition = game::getnpcdefinition(j);
+                npcdefinition *definition = game::findnpcdefinition(pool.definitions[j]->id);
                 if(!definition || (definition->attitude != NPC_AGGRESSIVE && definition->naturalbiome < 0)) continue;
                 for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
                 for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1;
                     band < (definition->attitude == NPC_AGGRESSIVE ? definition->cavebands : 0); ++band)
                 {
+                    if(band >= 0 && pool.choose(serverworldseed, cellx, celly, band, definition->cavebands) != definition) continue;
                     passivenpcspawn spawns[16];
                     const int count = game::generatepassivenpcgroup(*definition, serverworldseed, cellx, celly, spawns, 16, band);
                     if(!count) continue;

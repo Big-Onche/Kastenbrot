@@ -244,7 +244,7 @@ struct npcdefinition
     string id, name, model;
     int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, cavebands, cavegroupmin, cavegroupmax, fleeonhitmillis;
     float damage, speed, wanderradius, aggrodist, fleedist, attackrange, jumpheight, runjumpheight, radius, height, rootheight,
-          spawnchance, fleespeed, herdradius;
+          spawnchance, fleespeed, herdradius, weight;
     vector<npcdropdefinition> drops;
     vector<npcwandersounddefinition> wandersounds;
     uint wandersoundrevision;
@@ -254,7 +254,7 @@ struct npcdefinition
         : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), modeltype(NPC_MODEL_HUMANOID), naturalbiome(-1),
           groupmin(1), groupmax(1), cavebands(0), cavegroupmin(1), cavegroupmax(4), fleeonhitmillis(0), damage(1), speed(40),
           wanderradius(8), aggrodist(16), fleedist(12), attackrange(2), jumpheight(1), runjumpheight(0),
-          radius(4.1f), height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0), wandersoundrevision(0)
+          radius(4.1f), height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0), weight(1), wandersoundrevision(0)
     {
         copystring(this->id, id);
         copystring(name, id);
@@ -345,14 +345,14 @@ static bool findcavenpcfloor(const passivenpcspawn &spawn, int surface, int seal
     };
     const int top = min(spawn.bandtop - 1, surface - 4), bottom = max(spawn.bandbottom, 1);
     const float roll = float(spawn.grouproll & 0xFFFFFFU) / 16777216.0f;
-    const float maximumchance = 0.15f + 0.70f * min(max(sealevel - bottom, 0) / 128.0f, 1.0f);
+    const float maximumchance = 0.30f + 0.65f * min(max(sealevel - bottom, 0) / 128.0f, 1.0f);
     if(top < bottom || roll >= maximumchance) return false;
     loopi(25)
     {
         const int x = spawn.blockx + offsets[i][0], y = spawn.blocky + offsets[i][1];
         for(int z = top; z >= bottom; --z)
         {
-            const float depth = max(sealevel - z, 0), chance = 0.15f + 0.70f * min(depth / 128.0f, 1.0f);
+            const float depth = max(sealevel - z, 0), chance = 0.30f + 0.65f * min(depth / 128.0f, 1.0f);
             if(roll >= chance) continue;
             if(probe(x, y, z)) return true;
         }
@@ -438,6 +438,8 @@ static inline uint worlddrophash(uint value)
     value *= 0x846CA68BU;
     return value ^ (value >> 16);
 }
+
+#include "npcspawn.h"
 
 static inline bool worlddroproll(int source, uint requestid, int objectitem, int dropindex, int mincount, int maxcount, float chance, int &quantity)
 {

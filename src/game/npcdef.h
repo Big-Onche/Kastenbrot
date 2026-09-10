@@ -85,6 +85,7 @@ namespace game
             if(!strcmp(command, "name")) return "npcdef_root_name";
             if(!strcmp(command, "attitude")) return "npcdef_root_attitude";
             if(!strcmp(command, "behavior")) return "npcdef_root_behavior";
+            if(!strcmp(command, "weight")) return "npcdef_root_weight";
             if(!strcmp(command, "health")) return "npcdef_root_health";
             if(!strcmp(command, "damage")) return "npcdef_root_damage";
             if(!strcmp(command, "speed")) return "npcdef_root_speed";
@@ -667,6 +668,15 @@ namespace game
         if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT) { npcdefinitionerror("behavior outside its component"); return; }
         currentnpcdefinition->behavior = parsebehavior(value);
     });
+    ICOMMAND(npcdef_root_weight, "f", (float *value),
+    {
+        if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT)
+        {
+            npcdefinitionerror("weight outside its component");
+            return;
+        }
+        currentnpcdefinition->weight = *value;
+    });
     ICOMMAND(npcdef_root_health, "i", (int *value),
     {
         if(!currentnpcdefinition || currentnpccomponent != NPCDEF_ROOT) { npcdefinitionerror("health outside its component"); return; }
@@ -852,6 +862,8 @@ namespace game
            !(definition.damage >= 0 && definition.speed > 0 && definition.wanderradius >= 0 && definition.aggrodist >= 0 &&
              definition.fleedist >= 0 && definition.attackrange > 0) || definition.attackmillis <= 0)
             npcdefinitionerror("invalid name, model path, attitude, behavior, or stats");
+        if(!(definition.weight >= 0 && definition.weight <= 1e6f))
+            npcdefinitionerror("weight must be within 0-1000000 (0 excludes the NPC from the cave pool)");
         if(!(definition.jumpheight > 0 && definition.jumpheight <= 1e6f))
             npcdefinitionerror("jumpheight must be a positive multiplier no greater than 1000000");
         if(definition.modeltype < 0 || !(definition.radius > 0 && definition.height > 0 && definition.rootheight > 0 &&
