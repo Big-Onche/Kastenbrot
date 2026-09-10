@@ -1520,6 +1520,7 @@ namespace game
         const vec impulse = strikeimpulse(camdir, damage);
         spawnblood(hitposition, false);
         hitmob->totalhealth = max(hitmob->totalhealth - damage, 0.0f);
+        if(damage > 0 && hitmob->attitude == NPC_NEUTRAL) hitmob->target = player1;
         triggernpcherdflee(*hitmob, player1->o);
         if(hitpart != HITBOX_TORSO)
         {
@@ -1591,6 +1592,13 @@ namespace game
         {
             const float radius = mob.definition->aggrodist * GAMEUNITSPERMETER;
             mob.target = player1 && player1->state == CS_ALIVE && mob.o.squaredist(player1->o) <= radius * radius ? player1 : NULL;
+            mob.behavior = mob.target ? NPC_CHASE : mob.definition->behavior;
+        }
+        else if(mob.attitude == NPC_NEUTRAL)
+        {
+            const float radius = mob.definition->aggrodist * GAMEUNITSPERMETER;
+            if(mob.target != player1 || !player1 || player1->state != CS_ALIVE || mob.o.squaredist(player1->o) > radius * radius)
+                mob.target = NULL;
             mob.behavior = mob.target ? NPC_CHASE : mob.definition->behavior;
         }
         else if(mob.attitude == NPC_SCARED)
@@ -1696,7 +1704,7 @@ namespace game
 
     static void attacklocalplayer(npc &mob)
     {
-        if(mob.target != player1 || !player1 || player1->state != CS_ALIVE ||
+        if(mob.behavior != NPC_CHASE || mob.definition->damage <= 0 || mob.target != player1 || !player1 || player1->state != CS_ALIVE ||
            lastmillis - mob.lastattack < mob.definition->attackmillis) return;
         vec direction = vec(player1->o).sub(mob.o);
         const float distance = direction.magnitude();

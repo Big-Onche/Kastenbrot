@@ -327,14 +327,14 @@ namespace server
         npcdefinition *definition;
         vec o, velocity, spawn, destination, fleeorigin;
         float yaw, health, falldistance, parthealth[NUM_HUMANOID_HITBOXES];
-        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis, fleeuntil;
+        int behavior, nextdecision, pauseuntil, lastupdate, lastattack, deathmillis, fleeuntil, retaliateclient;
         bool paused, frozen, attacking, airborne;
 
         servernpc(uint id, npcdefinition *definition)
             : id(id), detachedparts(0), spawnkey(0), definition(definition), o(0, 0, 0), velocity(0, 0, 0), spawn(0, 0, 0), destination(0, 0, 0),
               fleeorigin(0, 0, 0), yaw(0),
               health(definition->health), falldistance(0), behavior(definition->behavior), nextdecision(0), pauseuntil(0), lastupdate(totalmillis),
-              lastattack(-1000), deathmillis(0), fleeuntil(0), paused(true), frozen(false), attacking(false), airborne(false)
+              lastattack(-1000), deathmillis(0), fleeuntil(0), retaliateclient(-1), paused(true), frozen(false), attacking(false), airborne(false)
         {
             parthealth[HITBOX_TORSO] = definition->health;
             loopi(NUM_HUMANOID_HITBOXES - 1) parthealth[i + 1] = max(definition->health * 0.25f, 1.0f);
@@ -2916,6 +2916,7 @@ namespace server
             sendinventory(ci);
         }
         hit->health = max(hit->health - damage, 0.0f);
+        if(damage > 0 && hit->definition->attitude == NPC_NEUTRAL) hit->retaliateclient = ci.clientnum;
         triggerservernpcherdflee(*hit, vec(ci.o).addz(28.0f));
         bool detached = false;
         if(hitpart != HITBOX_TORSO)
@@ -3011,6 +3012,14 @@ namespace server
         const bool forcedflee = totalmillis < mob.fleeuntil;
         if(!forcedflee && mob.definition->attitude == NPC_AGGRESSIVE)
             target = nearestservernpcplayer(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
+        else if(!forcedflee && mob.definition->attitude == NPC_NEUTRAL && mob.retaliateclient >= 0)
+        {
+            clientinfo *attacker = getinfo(mob.retaliateclient);
+            const float radius = mob.definition->aggrodist * GAMEUNITSPERMETER;
+            if(attacker && attacker->connected && attacker->worldready && attacker->hasposition && !attacker->dead &&
+               mob.o.squaredist(attacker->o) <= radius * radius) target = attacker;
+            else mob.retaliateclient = -1;
+        }
         else if(!forcedflee && mob.definition->attitude == NPC_SCARED)
             target = nearestservernpcplayer(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
         if(forcedflee || target)
@@ -3403,6 +3412,7 @@ namespace server
     int numchannels() { return 3; }
     void clientdisconnect(int n)
     {
+        loopv(servernpcs) if(servernpcs[i]->retaliateclient == n) servernpcs[i]->retaliateclient = -1;
         for(int i = serverchunkrequests.length() - 1; i >= 0; --i)
             if(serverchunkrequests[i].clientnum == n) serverchunkrequests.remove(i);
         for(int i = serverchunkdeliveries.length() - 1; i >= 0; --i)
