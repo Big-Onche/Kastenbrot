@@ -76,6 +76,7 @@ struct worldgencontext
     game::worldgenerator generator;
     game::worldsettings settings;
     int heightmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
+    int watermap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar biomemap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar beachmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar cliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
@@ -299,6 +300,7 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
                 const int index = y * WORLD_CHUNK_BLOCKS + x;
                 game::worldtectonicsample tectonics;
                 ctx.heightmap[index] = generateworldheight(ctx, chunkx, chunky, x, y, &tectonics);
+                ctx.watermap[index] = ctx.generator.surface(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y).water * WORLD_BLOCK_SIZE;
                 ctx.reliefcliffmap[index] = tectonics.rockyledge > 0.22f;
             }
         }
@@ -361,12 +363,12 @@ static void markworldgencarvedsection(worldgencontext &ctx, int blockx, int bloc
 static void markworldgenexteriorshell(worldgencontext &ctx, int chunkx, int chunky)
 {
     static const int directions[][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
-    const int sealevel = clamp(ctx.settings.sealevel - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
     ctx.renderdata.clear();
     loopi(WORLD_SECTION_LAYERS) loopj(WORLD_SECTION_TILES) ctx.renderdata.flags[i][j] = SECTION_FULLY_SOLID;
 
     loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
     {
+        const int sealevel = clamp(ctx.watermap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
         const int surface = clamp(ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0,
                                   int(WORLD_HEIGHT_BLOCKS));
         if(surface > 0) worldgensectionflags(ctx, x, y, surface - 1) |= SECTION_EXTERIOR;
@@ -425,10 +427,16 @@ static int worldcliff(const worldgencontext &ctx, int localx, int localy)
     return ctx.cliffmap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE];
 }
 
-static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock)
+static int worldwaterheight(const worldgencontext &ctx, int localx, int localy)
+{
+    return ctx.watermap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE];
+}
+
+static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock,
+                               int waterheight = INT_MIN)
 {
     const int surface = WORLD_GROUND_HEIGHT + height,
-              watertop = WORLD_GROUND_HEIGHT + ctx.settings.sealevel * WORLD_BLOCK_SIZE,
+              watertop = WORLD_GROUND_HEIGHT + (waterheight == INT_MIN ? ctx.settings.sealevel * WORLD_BLOCK_SIZE : waterheight),
               dirtbottom = surface - ctx.settings.soildepth * WORLD_BLOCK_SIZE,
               grassbottom = surface - WORLD_BLOCK_SIZE,
               beachmin = (ctx.settings.sealevel + min(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
@@ -438,6 +446,11 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     if(z >= max(surface, watertop)) return WORLD_TERRAIN_EMPTY;
     if(surface < watertop && z >= surface && z + size <= watertop) return WORLD_TERRAIN_WATER;
     if(z + size <= dirtbottom) return ctx.cubetype("stone");
+    if(waterheight > ctx.settings.sealevel * WORLD_BLOCK_SIZE && surface < watertop)
+    {
+        if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("dirt");
+        return WORLD_TERRAIN_MIXED;
+    }
     if(cliff & WORLD_CLIFF_ROCK)
     {
         // Every exposed stair of the cliff belongs to the rock face. Normal
@@ -478,6 +491,7 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
 
 static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int blocky, int height, int biome)
 {
+    if(height < worldwaterheight(ctx, blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE)) return false;
     const int localx = blockx * WORLD_BLOCK_SIZE,
               localy = blocky * WORLD_BLOCK_SIZE,
               surfacez = WORLD_GROUND_HEIGHT + height - WORLD_BLOCK_SIZE,
@@ -567,7 +581,7 @@ static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
     for(int x = o.x; x < o.x + size; x += WORLD_BLOCK_SIZE)
     {
         int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y), worldbiome(ctx, x, y), worldbeach(ctx, x, y), worldcliff(ctx, x, y),
-                                             worldrock(ctx, x, y));
+                                             worldrock(ctx, x, y), worldwaterheight(ctx, x, y));
         if(columntype == WORLD_TERRAIN_MIXED || (type != WORLD_TERRAIN_UNSET && type != columntype)) return WORLD_TERRAIN_MIXED;
         type = columntype;
     }
@@ -581,7 +595,7 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
               height = worldheight(ctx, x, y),
               biome = worldbiome(ctx, x, y),
               surface = WORLD_GROUND_HEIGHT + height,
-              watertop = WORLD_GROUND_HEIGHT + ctx.settings.sealevel * WORLD_BLOCK_SIZE,
+              watertop = WORLD_GROUND_HEIGHT + worldwaterheight(ctx, x, y),
               visibletop = max(surface, watertop);
     int z = clamp(o.z + size / 2, 0, WORLD_MAP_SIZE - 1);
 
@@ -593,7 +607,8 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
     if(visibletop > o.z && visibletop <= o.z + size)
         z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
 
-    const int type = worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y));
+    const int type = worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y),
+                                         worldwaterheight(ctx, x, y));
     return type == ctx.geologymaterials[0] ? worldgeologicalcubetype(ctx, ivec(x, y, z), 1) : type;
 }
 
@@ -1202,7 +1217,7 @@ static void addworldcaveworm(const worldgencontext &ctx, worldcaverandom &random
                     steplength = (3.5f + random.unit() * 3.0f) * (1.0f - deepness * 0.34f),
                     horizontal = cosf(pitch) * steplength;
         vec next(position.x + cosf(yaw) * horizontal, position.y + sinf(yaw) * horizontal, position.z + sinf(pitch) * steplength);
-        const int surface = ctx.generator.height(int(floorf(next.x)), int(floorf(next.y))),
+        const int surface = ctx.generator.baseheight(int(floorf(next.x)), int(floorf(next.y))),
                   ceiling = surface - max(mindepth, int(ceilf(nextradius))) - 1;
         next.z = clamp(next.z, float(bottom), float(max(ceiling, bottom)));
 
@@ -1316,7 +1331,7 @@ static bool generateworldcavesystem(const worldgencontext &ctx, long long region
     worldcaverandom random(systemhash ^ 0x68E31DA4U);
     const float originx = float(regionx * WORLD_CAVE_REGION_SIZE + 24) + random.unit() * (WORLD_CAVE_REGION_SIZE - 48),
                 originy = float(regiony * WORLD_CAVE_REGION_SIZE + 24) + random.unit() * (WORLD_CAVE_REGION_SIZE - 48);
-    const int surface = ctx.generator.height(int(floorf(originx)), int(floorf(originy))),
+    const int surface = ctx.generator.baseheight(int(floorf(originx)), int(floorf(originy))),
               bottom = WORLD_MIN_HEIGHT + clamp(ctx.settings.bottomlavalayers, 0, int(WORLD_HEIGHT_BLOCKS)) + 8,
               mindepth = min(ctx.settings.cavemindepth, ctx.settings.cavefulldepth),
               depth = random.range(28, density == 2 ? 105 : 82) + (random.unit() < 0.18f ? random.range(35, 90) : 0),
@@ -1394,7 +1409,7 @@ static bool generateworldcavesystem(const worldgencontext &ctx, long long region
         const worldcaveanchor &attachment = anchors[random.next() % uint(anchors.length())];
         const float angle = random.unit() * 2.0f * M_PI, distance = 10.0f + random.unit() * 34.0f,
                     entrancex = originx + cosf(angle) * distance, entrancey = originy + sinf(angle) * distance;
-        const int entranceheight = ctx.generator.height(int(floorf(entrancex)), int(floorf(entrancey)));
+        const int entranceheight = ctx.generator.baseheight(int(floorf(entrancex)), int(floorf(entrancey)));
         if(entranceheight <= ctx.settings.sealevel + 2) continue;
 
         const vec entrance(entrancex, entrancey, entranceheight - 0.25f);
@@ -1767,7 +1782,7 @@ static bool worldcaveairat(const worldgencontext &ctx, int worldx, int worldy, i
     const int bottomlayers = clamp(ctx.settings.bottomlavalayers, 0, int(WORLD_HEIGHT_BLOCKS)),
               minheight = WORLD_MIN_HEIGHT + bottomlayers,
               mindepth = min(ctx.settings.cavemindepth, ctx.settings.cavefulldepth),
-              surfaceheight = ctx.generator.height(worldx, worldy),
+              surfaceheight = ctx.generator.baseheight(worldx, worldy),
               caveceiling = min(surfaceheight - 1, WORLD_MAX_HEIGHT - 1);
     if(elevation < minheight || elevation > caveceiling) return false;
     const float x = worldx + 0.5f, y = worldy + 0.5f, z = elevation + 0.5f;
@@ -1909,7 +1924,8 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
 
             if(centerz < ore.minheight || centerz > ore.maxheight) continue;
 
-            const int surfaceheight = ctx.generator.height(centerx, centery);
+            // Ore eligibility uses uncarved terrain; distant vein candidates must not start surface hydrology planning.
+            const int surfaceheight = ctx.generator.baseheight(centerx, centery);
             const int depth = surfaceheight - centerz;
             if(depth < ore.mindepth || depth > ore.maxdepth) continue;
 
@@ -1944,6 +1960,8 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             game::worldtectonicsample terrain;
             const int height = inside ? ctx.heightmap[index] : generateworldheight(ctx, chunkx, chunky, x, y, &terrain),
                       biome = inside ? ctx.biomemap[index] : generateworldbiome(ctx, chunkx, chunky, x, y, height);
+            if(!inside && height < ctx.generator.surface(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y).water * WORLD_BLOCK_SIZE)
+                continue;
             if(biome != game::WORLD_BIOME_FOREST && biome != game::WORLD_BIOME_PLAINS) continue;
             if(ctx.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) continue;
             if(inside)
@@ -2110,7 +2128,7 @@ static cube *generateworldchunk(int chunkx, int chunky, worldsectionrenderdata *
 static bool dryworldspawnblock(const game::worldgenerator &generator, const game::worldsettings &settings, int x, int y)
 {
     const int height = generator.height(x, y);
-    return height >= settings.sealevel && height <= WORLD_MAX_HEIGHT - 3;
+    return height >= generator.surface(x, y).water && height <= WORLD_MAX_HEIGHT - 3;
 }
 
 bool game::chooseworldspawn(double originx, double originy, double &spawnx, double &spawny)
@@ -2142,10 +2160,10 @@ bool game::chooseworldspawn(double originx, double originy, double &spawnx, doub
     for(int y = originblocky - exactradius; y <= originblocky + exactradius; ++y)
     for(int x = originblockx - exactradius; x <= originblockx + exactradius; ++x)
     {
-        if(!dryworldspawnblock(generator, settings, x, y)) continue;
         const long long dx = x - originblockx, dy = y - originblocky,
                         dist = dx * dx + dy * dy;
         if(dist >= bestdist) continue;
+        if(!dryworldspawnblock(generator, settings, x, y)) continue;
         bestx = x;
         besty = y;
         bestdist = dist;
@@ -2157,10 +2175,10 @@ bool game::chooseworldspawn(double originx, double originy, double &spawnx, doub
         for(int y = originblocky - searchradius; y <= originblocky + searchradius; y += searchstep)
         for(int x = originblockx - searchradius; x <= originblockx + searchradius; x += searchstep)
         {
-            if(!dryworldspawnblock(generator, settings, x, y)) continue;
             const long long dx = x - originblockx, dy = y - originblocky,
                             dist = dx * dx + dy * dy;
             if(dist >= bestdist) continue;
+            if(!dryworldspawnblock(generator, settings, x, y)) continue;
             bestx = x;
             besty = y;
             bestdist = dist;
@@ -2176,10 +2194,10 @@ bool game::chooseworldspawn(double originx, double originy, double &spawnx, doub
         for(int y = besty - refine; y <= besty + refine; ++y)
         for(int x = bestx - refine; x <= bestx + refine; ++x)
         {
-            if(!dryworldspawnblock(generator, settings, x, y)) continue;
             const long long dx = x - originblockx, dy = y - originblocky,
                             dist = dx * dx + dy * dy;
             if(dist >= refineddist) continue;
+            if(!dryworldspawnblock(generator, settings, x, y)) continue;
             refinedx = x;
             refinedy = y;
             refineddist = dist;
@@ -2312,7 +2330,8 @@ namespace game
         if(height >= beachminimum && height <= beachmaximum && !sampleterrainbeach(generation, blockx, blocky, beach)) return false;
 
         surface.height = height;
-        surface.waterheight = generation->settings.sealevel;
+        const worldwatersample hydro = generation->generator.surface(blockx, blocky);
+        surface.waterheight = hydro.water;
         surface.water = height < surface.waterheight;
         if(cliffface) surface.material = WORLD_SURFACE_STONE;
         else if(rock) surface.material = biome == WORLD_BIOME_SNOW ? WORLD_SURFACE_SNOW : WORLD_SURFACE_STONE;
@@ -2321,6 +2340,7 @@ namespace game
         else if(biome == WORLD_BIOME_SNOW) surface.material = WORLD_SURFACE_SNOW;
         else surface.material = WORLD_SURFACE_GRASS;
         if(cliff && !cliffface && !rock) surface.material |= WORLD_SURFACE_STONE_BASE;
+        if(hydro.freshwater) surface.material = WORLD_SURFACE_DIRT;
         return !generation->iscanceled();
     }
 

@@ -815,6 +815,12 @@ static inline float vertwphase(float angle)
     return WATER_AMPLITUDE*s-WATER_OFFSET;
 }
 
+float getwatergeometryoffset()
+{
+    if(!vertwater || drawtex == DRAWTEX_MINIMAP) return -WATER_OFFSET;
+    return vertwphase(fmod(float(lastmillis/600.0f/(2*M_PI)), 1.0f));
+}
+
 static inline void vertw(int v1, int v2, int v3)
 {
     float h = vertwphase(vertwangle(v1, v2));
@@ -1013,12 +1019,17 @@ static inline void renderwater(const materialsurface &m, int mat = MAT_WATER)
     {
         flushwater(mat);
         if(gle::attribbuf.empty()) { gle::defvertex(); gle::begin(GL_QUADS); }
-        const float offset = drawtex == DRAWTEX_MINIMAP ? -WATER_OFFSET : whphase;
-        const float x = m.o.x, y = m.o.y, z = m.o.z, rsize = m.rsize, csize = m.csize;
-        gle::attribf(x,         y,         z - getwatercornerdrop(x,         y,         z) + offset);
-        gle::attribf(x + rsize, y,         z - getwatercornerdrop(x + rsize, y,         z) + offset);
-        gle::attribf(x + rsize, y + csize, z - getwatercornerdrop(x + rsize, y + csize, z) + offset);
-        gle::attribf(x,         y + csize, z - getwatercornerdrop(x,         y + csize, z) + offset);
+        const float offset = getwatergeometryoffset();
+        const int z = m.o.z;
+        for(int y = m.o.y; y < m.o.y + m.csize; y += WATER_BLOCK_SIZE)
+            for(int x = m.o.x; x < m.o.x + m.rsize; x += WATER_BLOCK_SIZE)
+            {
+                const int x1 = min(x + WATER_BLOCK_SIZE, m.o.x + m.rsize), y1 = min(y + WATER_BLOCK_SIZE, m.o.y + m.csize);
+                gle::attribf(x,  y,  z - getwatercornerdrop(x,  y,  z) + offset);
+                gle::attribf(x1, y,  z - getwatercornerdrop(x1, y,  z) + offset);
+                gle::attribf(x1, y1, z - getwatercornerdrop(x1, y1, z) + offset);
+                gle::attribf(x,  y1, z - getwatercornerdrop(x,  y1, z) + offset);
+            }
         return;
     }
     const int z = m.o.z - int(getwatermaterialdrop(m));
@@ -1132,6 +1143,20 @@ static void renderwaterfall(const materialsurface &m, float offset)
     }
     float x = m.o.x, y = m.o.y, zmin = m.o.z, zmax = zmin - getwatermaterialdrop(m);
     bool falling = false;
+    if((m.material & MATF_VOLUME) == MAT_WATER && getwatermateriallevel(m, falling) < 0)
+    {
+        const int dim = dimension(m.orient), width = dim == 0 ? m.rsize : m.csize;
+        for(int along = 0; along < width; along += WATER_BLOCK_SIZE)
+        {
+            vec vertices[4];
+            if(getnaturalwaterfallverts(m, along, 0, offset, vertices)) loopi(4)
+            {
+                gle::attrib(vertices[i]);
+                gle::attrib(matnormals[m.orient]);
+            }
+        }
+        return;
+    }
     if(getwatermateriallevel(m, falling) >= 0 && !falling)
     {
         const float ztop = zmin + (dimension(m.orient) == 0 ? m.csize : m.rsize);

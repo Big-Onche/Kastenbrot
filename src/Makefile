@@ -207,6 +207,8 @@ $(filter shared/%,$(CLIENT_OBJS)): $(filter shared/%,$(CLIENT_PCH))
 $(filter engine/%,$(CLIENT_OBJS)): $(filter engine/%,$(CLIENT_PCH))
 $(filter game/%,$(CLIENT_OBJS)): $(filter game/%,$(CLIENT_PCH))
 game/npc.o standalone/game/npc.o: game/npcsound.h game/game.h
+game/world.o standalone/game/world.o: game/worldhydrology.h game/world.h
+engine/material.o: engine/watergeometry.h
 
 $(filter-out standalone/shared/%,$(SERVER_PCH)): $(filter standalone/shared/%,$(SERVER_PCH))
 $(SERVER_PCH) $(SERVER_MASTER_OBJS): | $(STANDALONE_DIRS)

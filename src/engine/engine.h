@@ -568,6 +568,8 @@ extern int optimizematsurfs(materialsurface *matbuf, int matsurfs);
 extern int getwatermateriallevel(const materialsurface &m, bool &falling);
 extern float getwatermaterialdrop(const materialsurface &m);
 extern float getwatercornerdrop(int x, int y, int z);
+extern float getwatergeometryoffset();
+extern bool getnaturalwaterfallverts(const materialsurface &m, int along, int z, float offset, vec *vertices);
 extern void setupmaterials(int start = 0, int len = 0);
 extern void preloadmaterials(int hasmat);
 extern void preloadhud();

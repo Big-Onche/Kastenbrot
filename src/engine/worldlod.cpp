@@ -682,12 +682,13 @@ static bool buildworldlodmesh(worldlodjob &job)
     }
 
     const int resolution = job.key.resolution, stride = resolution + 1, samples = stride * stride;
-    vector<int> heights;
+    vector<int> heights, waterheights;
     vector<uchar> materials, waters;
     heights.pad(samples);
+    waterheights.pad(samples);
     materials.pad(samples);
     waters.pad(samples);
-    int waterheight = 0;
+    int waterheight = INT_MIN;
 
     const Uint64 samplingstart = SDL_GetPerformanceCounter();
     {
@@ -758,7 +759,8 @@ static bool buildworldlodmesh(worldlodjob &job)
             heights[index] = selectedheight;
             materials[index] = uchar(surface.material);
             waters[index] = selectedheight < surface.waterheight;
-            waterheight = surface.waterheight;
+            waterheights[index] = surface.waterheight;
+            waterheight = max(waterheight, surface.waterheight);
         }
     }
     loop(y, stride) loop(x, stride)
@@ -818,7 +820,8 @@ static bool buildworldlodmesh(worldlodjob &job)
         const float waterz = WORLD_GROUND_HEIGHT + waterheight * WORLD_BLOCK_SIZE;
         loop(y, stride) loop(x, stride)
         {
-            const vec position(x * WORLD_CHUNK_SIZE / float(resolution), y * WORLD_CHUNK_SIZE / float(resolution), waterz);
+            const vec position(x * WORLD_CHUNK_SIZE / float(resolution), y * WORLD_CHUNK_SIZE / float(resolution),
+                               WORLD_GROUND_HEIGHT + waterheights[y * stride + x] * WORLD_BLOCK_SIZE);
             mesh.vertices.add(worldlodvertex(position, vec(0, 0, 1), worldlodtexcoord(position, O_TOP), WORLD_LOD_WATER));
         }
         loop(y, resolution) loop(x, resolution)
@@ -1647,7 +1650,7 @@ static bool visibleworldlodwater(const worldlodselection &selection, worldlodchu
     if(!chunk->waterindices) return false;
     origin = ivec((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE,
                   (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
-    const ivec bbmin(origin.x, origin.y, int(chunk->waterheight - WATER_OFFSET)),
+    const ivec bbmin(origin.x, origin.y, int(chunk->bbmin.z - WATER_OFFSET)),
                bbmax(origin.x + WORLD_CHUNK_SIZE, origin.y + WORLD_CHUNK_SIZE, int(chunk->waterheight));
     return isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) < VFC_FOGGED;
 }
@@ -1674,7 +1677,7 @@ bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2)
         ivec origin;
         if(!visibleworldlodwater(worldlodselections[i], chunk, origin)) continue;
         float csx1, csy1, csx2, csy2;
-        const ivec bbmin(origin.x, origin.y, int(chunk->waterheight - WATER_OFFSET)),
+        const ivec bbmin(origin.x, origin.y, int(chunk->bbmin.z - WATER_OFFSET)),
                    bbmax(origin.x + WORLD_CHUNK_SIZE, origin.y + WORLD_CHUNK_SIZE, int(chunk->waterheight));
         if(!calcbbscissor(bbmin, bbmax, csx1, csy1, csx2, csy2)) continue;
         sx1 = min(sx1, csx1); sy1 = min(sy1, csy1);
@@ -1686,7 +1689,7 @@ bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2)
 
 static void drawworldlodwater(bool split, bool below)
 {
-    // The fixed LOD plane stays in the chunk's compact VBO; only its trailing index range is resubmitted here.
+    // Water surfaces stay in the chunk's compact VBO; only their trailing index range is resubmitted here.
     bool drew = false;
     loopv(worldlodselections)
     {

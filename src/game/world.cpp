@@ -1,3 +1,6 @@
+#include <map>
+#include <vector>
+#include <set>
 #include "game.h"
 #include "world.h"
 
@@ -195,7 +198,7 @@ namespace game
     }
 
     worldgenerator::worldgenerator(int seed, const worldsettings &settings)
-        : settings(settings), seed(seed), treeblockcache(1 << 12)
+        : settings(settings), seed(seed), treeblockcache(1 << 12), hydrology(NULL)
     {
         // Isotropic, unwarped mega noise owns the continental topology. Macro
         // noise adds lobes and inland seas without bending the whole landmass.
@@ -517,7 +520,7 @@ namespace game
         return fabs(fracturecorridors.GetNoise(x + 24500.5f, y - 24500.5f));
     }
 
-    int worldgenerator::height(int x, int y, worldtectonicsample *tectonics) const
+    int worldgenerator::baseheight(int x, int y, worldtectonicsample *tectonics) const
     {
         const float noisex = x + 10000.5f, noisey = y - 10000.5f;
         const float continental = samplecontinental(*this, noisex, noisey);
@@ -627,6 +630,25 @@ namespace game
             elevation = min(elevation, -1.0f);
         }
         return clamp(int(floor(settings.sealevel + elevation + 0.5f)), -255, 255);
+    }
+
+    #include "worldhydrology.h"
+
+    worldgenerator::~worldgenerator()
+    {
+        delete hydrology;
+    }
+
+    worldwatersample worldgenerator::surface(int x, int y) const
+    {
+        if(!hydrology) hydrology = new worldhydrology(*this);
+        return hydrology->sample(x, y);
+    }
+
+    int worldgenerator::height(int x, int y, worldtectonicsample *tectonics) const
+    {
+        if(tectonics) *tectonics = this->tectonics(x, y);
+        return surface(x, y).height;
     }
 
     void worldgenerator::climate(int x, int y, float &temperaturevalue, float &moisturevalue) const
@@ -743,6 +765,7 @@ namespace game
     {
         worldtectonicsample terrain;
         const int height = generator.height(x, y, &terrain), biome = generator.biome(x, y, height);
+        if(height < generator.surface(x, y).water) return false;
         if(biome != WORLD_BIOME_FOREST && biome != WORLD_BIOME_PLAINS) return false;
         const int beachmin = generator.settings.sealevel + min(generator.settings.beachminheight, generator.settings.beachmaxheight),
                   beachmax = generator.settings.sealevel + max(generator.settings.beachminheight, generator.settings.beachmaxheight),

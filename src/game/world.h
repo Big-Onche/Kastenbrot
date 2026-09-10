@@ -84,6 +84,14 @@ namespace game
         worldsettings();
     };
 
+    struct worldhydrology;
+    struct worldwatersample
+    {
+        int height, water;
+        bool freshwater, bank;
+        worldwatersample(int height = 0, int water = 0) : height(height), water(water), freshwater(false), bank(false) {}
+    };
+
     struct worldgenerator
     {
         FastNoiseLite geology, hills, coastshape, coastdetail, covenoise, oceanregional, beachnoise, cliffnoise;
@@ -98,8 +106,12 @@ namespace game
         int seed;
         float foldcos, foldsin;
         mutable hashtable<ivec, int> treeblockcache;
+        mutable worldhydrology *hydrology;
 
         worldgenerator(int seed, const worldsettings &settings = worldsettings());
+        ~worldgenerator();
+        worldgenerator(const worldgenerator &) = delete;
+        worldgenerator &operator=(const worldgenerator &) = delete;
 
         worldtectonicsample tectonics(int x, int y, float cavedepth = 0) const;
         float beachtransitionwidth(int x, int y) const;
@@ -110,6 +122,8 @@ namespace game
         bool coast(int x, int y) const;
         float fracturecorridor(int x, int y) const;
         int height(int x, int y, worldtectonicsample *tectonics = NULL) const;
+        int baseheight(int x, int y, worldtectonicsample *tectonics = NULL) const;
+        worldwatersample surface(int x, int y) const;
         int biome(int x, int y, int height) const;
         void climate(int x, int y, float &temperaturevalue, float &moisturevalue) const;
         bool cliff(int x, int y, int height, bool *face = NULL) const;
