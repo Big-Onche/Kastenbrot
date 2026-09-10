@@ -1989,7 +1989,7 @@ float calcfogcull()
     return log(fogcullintensity) / (M_LN2*calcfogdensity(fog - (fog+64)/8));
 }
 
-static void setfog(int fogmat, float below = 0, float blend = 1, int abovemat = MAT_AIR)
+void setfog(int fogmat, float below = 0, float blend = 1, int abovemat = MAT_AIR)
 {
     float start = 0, end = 0;
     float logscale = 256, logblend = log(1 + (logscale - 1)*blend) / log(logscale);
@@ -2315,16 +2315,7 @@ void drawcubemap(int size, const vec &o, float yaw, float pitch, const cubemapsi
         shadegbuffer();
         GLERROR;
 
-        if(fogmat)
-        {
-            setfog(fogmat, fogbelow, 1, abovemat);
-
-            renderwaterfog(fogmat, fogbelow);
-
-            setfog(fogmat, fogbelow, clamp(fogbelow, 0.0f, 1.0f), abovemat);
-        }
-
-        rendertransparent(fogmat != MAT_AIR);
+        rendertransparent(fogmat, fogbelow, abovemat);
         GLERROR;
     }
 
@@ -2575,19 +2566,9 @@ void gl_drawview()
         GLERROR;
     }
 
-    if(fogmat)
-    {
-        ZoneScopedN("Render/Underwater fog");
-        setfog(fogmat, fogbelow, 1, abovemat);
-
-        renderwaterfog(fogmat, fogbelow);
-
-        setfog(fogmat, fogbelow, clamp(fogbelow, 0.0f, 1.0f), abovemat);
-    }
-
     {
         ZoneScopedN("Render/Transparency");
-        rendertransparent(fogmat != MAT_AIR, fogmat != MAT_AIR);
+        rendertransparent(fogmat, fogbelow, abovemat, fogmat != MAT_AIR);
         GLERROR;
     }
 

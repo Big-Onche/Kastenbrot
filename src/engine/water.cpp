@@ -716,7 +716,7 @@ void setupcaustics(int tmu, float surface = -1e16f)
     GLOBALPARAMF(causticsblend, blendscale*(1-frac), blendscale*frac, blendoffset - causticoffset*blendscale);
 }
 
-void rendercaustics(float surface, float syl, float syr)
+void rendercaustics(float surface)
 {
     if(!caustics || !causticscale || !causticmillis) return;
     glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
@@ -726,8 +726,8 @@ void rendercaustics(float surface, float syl, float syr)
     gle::begin(GL_TRIANGLE_STRIP);
     gle::attribf(1, -1);
     gle::attribf(-1, -1);
-    gle::attribf(1, syr);
-    gle::attribf(-1, syl);
+    gle::attribf(1, 1);
+    gle::attribf(-1, 1);
     gle::end();
 }
 
@@ -744,16 +744,7 @@ void renderwaterfog(int mat, float surface)
     else glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
     glActiveTexture_(GL_TEXTURE0);
 
-    vec p[4] =
-    {
-        invcamprojmatrix.perspectivetransform(vec(-1, -1, -1)),
-        invcamprojmatrix.perspectivetransform(vec(-1, 1, -1)),
-        invcamprojmatrix.perspectivetransform(vec(1, -1, -1)),
-        invcamprojmatrix.perspectivetransform(vec(1, 1, -1))
-    };
-    float bz = surface + camera1->o.z + (vertwater ? WATER_AMPLITUDE : 0),
-          syl = p[1].z > p[0].z ? 2*(bz - p[0].z)/(p[1].z - p[0].z) - 1 : 1,
-          syr = p[3].z > p[2].z ? 2*(bz - p[2].z)/(p[3].z - p[2].z) - 1 : 1;
+    const float bz = surface + camera1->o.z + (vertwater ? WATER_AMPLITUDE : 0);
 
     if((mat&MATF_VOLUME) == MAT_WATER)
     {
@@ -767,7 +758,7 @@ void renderwaterfog(int mat, float surface)
             deepfade.z ? calcfogdensity(deepfade.z) : -1e4f,
             deep ? calcfogdensity(deep) : -1e4f);
 
-        rendercaustics(surface, syl, syr);
+        rendercaustics(surface);
     }
     else
     {
@@ -784,8 +775,8 @@ void renderwaterfog(int mat, float surface)
     gle::begin(GL_TRIANGLE_STRIP);
     gle::attribf(1, -1, 1);
     gle::attribf(-1, -1, 1);
-    gle::attribf(1, syr, 1);
-    gle::attribf(-1, syl, 1);
+    gle::attribf(1, 1, 1);
+    gle::attribf(-1, 1, 1);
     gle::end();
 
     glDisable(GL_BLEND);
@@ -1132,7 +1123,7 @@ void preloadwatershaders(bool force)
 
 static float wfwave = 0.0f;
 
-static void renderwaterfall(const materialsurface &m, float offset)
+static void renderlavafall(const materialsurface &m, float offset)
 {
     if(gle::attribbuf.empty())
     {
@@ -1140,70 +1131,7 @@ static void renderwaterfall(const materialsurface &m, float offset)
         gle::defnormal(4, GL_BYTE);
         gle::begin(GL_QUADS);
     }
-    if(m.orient == O_BOTTOM)
-    {
-        const float x = m.o.x, y = m.o.y, z = m.o.z - offset;
-        gle::attribf(x,           y,           z); gle::attrib(matnormals[O_BOTTOM]);
-        gle::attribf(x,           y + m.csize, z); gle::attrib(matnormals[O_BOTTOM]);
-        gle::attribf(x + m.rsize, y + m.csize, z); gle::attrib(matnormals[O_BOTTOM]);
-        gle::attribf(x + m.rsize, y,           z); gle::attrib(matnormals[O_BOTTOM]);
-        return;
-    }
-    float x = m.o.x, y = m.o.y, zmin = m.o.z, zmax = zmin - getwatermaterialdrop(m);
-    bool falling = false;
-    if((m.material & MATF_VOLUME) == MAT_WATER && getwatermateriallevel(m, falling) < 0)
-    {
-        const int dim = dimension(m.orient), width = dim == 0 ? m.rsize : m.csize;
-        for(int along = 0; along < width; along += WATER_BLOCK_SIZE)
-        {
-            vec vertices[4];
-            if(getnaturalwaterfallverts(m, along, 0, offset, vertices)) loopi(4)
-            {
-                gle::attrib(vertices[i]);
-                gle::attrib(matnormals[m.orient]);
-            }
-        }
-        return;
-    }
-    if(getwatermateriallevel(m, falling) >= 0 && !falling)
-    {
-        const float ztop = zmin + (dimension(m.orient) == 0 ? m.csize : m.rsize);
-        switch(m.orient)
-        {
-            case O_LEFT:
-                gle::attribf(x - offset, y + m.rsize, ztop - getwatercornerdrop(x, y + m.rsize, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x - offset, y + m.rsize, zmin); gle::attrib(matnormals[m.orient]);
-                gle::attribf(x - offset, y, zmin); gle::attrib(matnormals[m.orient]);
-                gle::attribf(x - offset, y, ztop - getwatercornerdrop(x, y, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                return;
-            case O_RIGHT:
-                gle::attribf(x + offset, y + m.rsize, ztop - getwatercornerdrop(x, y + m.rsize, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x + offset, y, ztop - getwatercornerdrop(x, y, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x + offset, y, zmin); gle::attrib(matnormals[m.orient]);
-                gle::attribf(x + offset, y + m.rsize, zmin); gle::attrib(matnormals[m.orient]);
-                return;
-            case O_BACK:
-                gle::attribf(x + m.csize, y - offset, ztop - getwatercornerdrop(x + m.csize, y, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x, y - offset, ztop - getwatercornerdrop(x, y, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x, y - offset, zmin); gle::attrib(matnormals[m.orient]);
-                gle::attribf(x + m.csize, y - offset, zmin); gle::attrib(matnormals[m.orient]);
-                return;
-            case O_FRONT:
-                gle::attribf(x, y + offset, zmin); gle::attrib(matnormals[m.orient]);
-                gle::attribf(x, y + offset, ztop - getwatercornerdrop(x, y, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x + m.csize, y + offset, ztop - getwatercornerdrop(x + m.csize, y, ztop) + wfwave);
-                gle::attrib(matnormals[m.orient]);
-                gle::attribf(x + m.csize, y + offset, zmin); gle::attrib(matnormals[m.orient]);
-                return;
-        }
-    }
+    float x = m.o.x, y = m.o.y, zmin = m.o.z, zmax = zmin;
     if(m.ends&1) zmin += -WATER_OFFSET-WATER_AMPLITUDE;
     if(m.ends&2) zmax += wfwave;
     int csize = m.csize, rsize = m.rsize;
@@ -1284,7 +1212,7 @@ void renderlava()
             loopv(surfs)
             {
                 materialsurface &m = surfs[i];
-                renderwaterfall(m, 0.1f);
+                renderlavafall(m, 0.1f);
             }
             xtraverts += gle::end();
         }
@@ -1296,16 +1224,11 @@ void renderwaterfalls()
     ZoneScopedN("Transparency/Waterfalls");
     loopk(4)
     {
-        vector<materialsurface> &surfs = waterfallsurfs[k];
-        if(surfs.empty()) continue;
+        if(!haswaterfallgeometry(k)) continue;
 
         MatSlot &wslot = lookupmaterialslot(MAT_WATER+k);
 
         Texture *tex = wslot.sts.inrange(2) ? wslot.sts[2].t : (wslot.sts.inrange(0) ? wslot.sts[0].t : notexture);
-        float angle = fmod(float(lastmillis/600.0f/(2*M_PI)), 1.0f),
-              s = angle - int(angle) - 0.5f;
-        s *= 8 - fabs(s)*16;
-        wfwave = vertwater ? WATER_AMPLITUDE*s-WATER_OFFSET : -WATER_OFFSET;
         float scroll = -16.0f*lastmillis/1000.0f;
         float xscale = TEX_SCALE/(tex->xs*wslot.scale);
         float yscale = TEX_SCALE/(tex->ys*wslot.scale);
@@ -1334,12 +1257,7 @@ void renderwaterfalls()
         }
         glActiveTexture_(GL_TEXTURE0);
 
-        loopv(surfs)
-        {
-            materialsurface &m = surfs[i];
-            renderwaterfall(m, 0.1f);
-        }
-        xtraverts += gle::end();
+        renderwaterfallgeometry(k);
     }
 }
 

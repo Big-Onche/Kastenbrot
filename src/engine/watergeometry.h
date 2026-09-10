@@ -1,6 +1,96 @@
 #ifndef __WATER_GEOMETRY_H__
 #define __WATER_GEOMETRY_H__
 
+struct waterfacepatch
+{
+    ivec origin;
+    int orient, rsize, csize;
+
+    waterfacepatch() : origin(0, 0, 0), orient(O_TOP), rsize(0), csize(0) {}
+    waterfacepatch(const ivec &origin, int orient, int rsize, int csize)
+        : origin(origin), orient(orient), rsize(rsize), csize(csize) {}
+};
+
+struct watergeometrycell
+{
+    ivec origin;
+    int size;
+    bool water, occludes;
+
+    watergeometrycell(const ivec &origin, int size, bool water, bool occludes)
+        : origin(origin), size(size), water(water), occludes(occludes) {}
+};
+
+static inline bool waterfallpatchless(const waterfacepatch &a, const waterfacepatch &b)
+{
+    if(a.orient != b.orient) return a.orient < b.orient;
+    if(a.origin.x != b.origin.x) return a.origin.x < b.origin.x;
+    if(a.origin.y != b.origin.y) return a.origin.y < b.origin.y;
+    const int awidth = dimension(a.orient) == 0 ? a.rsize : a.csize, bwidth = dimension(b.orient) == 0 ? b.rsize : b.csize;
+    if(awidth != bwidth) return awidth < bwidth;
+    return a.origin.z < b.origin.z;
+}
+
+// Cell boundaries determine visibility, not tessellation. Rejoin exposed vertical runs before fitting their endpoints.
+static void mergewaterfallpatches(vector<waterfacepatch> &patches)
+{
+    patches.sort(waterfallpatchless);
+    int count = 0;
+    loopv(patches)
+    {
+        const waterfacepatch patch = patches[i];
+        if(count && dimension(patch.orient) < 2)
+        {
+            waterfacepatch &previous = patches[count - 1];
+            const int dim = dimension(patch.orient);
+            int &height = dim == 0 ? previous.csize : previous.rsize;
+            if(previous.orient == patch.orient && previous.origin.x == patch.origin.x && previous.origin.y == patch.origin.y &&
+               (dim == 0 ? previous.rsize == patch.rsize : previous.csize == patch.csize) && previous.origin.z + height == patch.origin.z)
+            {
+                height += dim == 0 ? patch.csize : patch.rsize;
+                continue;
+            }
+        }
+        patches[count++] = patch;
+    }
+    patches.setsize(count);
+}
+
+// Resolve only water/air boundaries. Leaf extents skip whole submerged rectangles, including mismatched octree sizes.
+// Partially exposed merged faces are split at actual cell boundaries before any corner fitting or vertex generation.
+template<class CellAt, class Emit>
+static void exposedwaterpatches(const waterfacepatch &face, CellAt cellat, Emit emit, vector<waterfacepatch> &pending)
+{
+    const int dim = dimension(face.orient), row = R[dim], col = C[dim];
+    pending.setsize(0);
+    pending.add(face);
+    while(!pending.empty())
+    {
+        waterfacepatch patch = pending.pop();
+        ivec inside(patch.origin), outside(patch.origin);
+        if(dimcoord(face.orient)) --inside[dim];
+        else --outside[dim];
+        const watergeometrycell source = cellat(inside), neighbour = cellat(outside);
+        const int rsize = min(patch.rsize, min(source.origin[row] + source.size, neighbour.origin[row] + neighbour.size) - patch.origin[row]),
+                  csize = min(patch.csize, min(source.origin[col] + source.size, neighbour.origin[col] + neighbour.size) - patch.origin[col]);
+        if(rsize <= 0 || csize <= 0) continue;
+        if(rsize < patch.rsize)
+        {
+            ivec origin(patch.origin);
+            origin[row] += rsize;
+            pending.add(waterfacepatch(origin, face.orient, patch.rsize - rsize, patch.csize));
+        }
+        if(csize < patch.csize)
+        {
+            ivec origin(patch.origin);
+            origin[col] += csize;
+            pending.add(waterfacepatch(origin, face.orient, rsize, patch.csize - csize));
+        }
+        if(source.water && !neighbour.water && !neighbour.occludes)
+            emit(waterfacepatch(patch.origin, face.orient, rsize, csize));
+    }
+}
+
 // Shared corner heights join river slopes across several voxel steps without flattening large waterfalls.
 // The sampler reads mounted material, so edits and streaming are reflected without consulting world generation.
 template<class WaterAt, class SolidAt> static float naturalwatercornerheight(int x, int y, int z, WaterAt waterat, SolidAt solidat)
@@ -61,8 +151,8 @@ static bool naturalwaterfallquad(int x, int y, int z, int orient, int length, in
     b[along] += length;
     inside[along] += length / 2;
     outside[along] += length / 2;
-    inside[dim] -= sign;
-    outside[dim] += sign;
+    if(sign > 0) --inside[dim];
+    else --outside[dim];
     const int top = z + height;
     int surface = top;
     bool upper = false;

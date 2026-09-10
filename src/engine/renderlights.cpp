@@ -696,7 +696,7 @@ void setupmsbuffer(int w, int h)
         glBindFramebuffer_(GL_FRAMEBUFFER, msrefractfbo);
 
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
-        glTexImage2DMultisample_(GL_TEXTURE_2D_MULTISAMPLE, msaasamples, GL_RGB, w, h, GL_TRUE);
+        glTexImage2DMultisample_(GL_TEXTURE_2D_MULTISAMPLE, msaasamples, GL_RGBA8, w, h, GL_TRUE);
 
         glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, msrefracttex, 0);
         bindmsdepth();
@@ -842,7 +842,7 @@ void setupgbuffer()
 
         glBindFramebuffer_(GL_FRAMEBUFFER, refractfbo);
 
-        createtexture(refracttex, gw, gh, NULL, 3, 0, GL_RGB, GL_TEXTURE_RECTANGLE);
+        createtexture(refracttex, gw, gh, NULL, 3, 0, GL_RGBA8, GL_TEXTURE_RECTANGLE);
 
         glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, refracttex, 0);
         bindgdepth();
@@ -4989,22 +4989,20 @@ FVAR(refractdepth, 1e-3f, 16, 1e3f);
 
 int transparentlayer = 0;
 
-void rendertransparent(bool liquidlast, bool cloudsbeforeliquid)
+void rendertransparent(int fogmat, float fogbelow, int abovemat, bool cloudsbeforeliquid)
 {
-    GLOBALPARAMF(underwaterfog, liquidlast ? 1.0f : 0.0f);
+    const bool liquidlast = fogmat != MAT_AIR;
 
     int hasalphavas = findalphavas();
     int hasmats = findmaterials();
     bool hasmodels = transmdlsx1 < transmdlsx2 && transmdlsy1 < transmdlsy2;
-    if(!hasalphavas && !hasmats && !hasmodels)
+    const bool usewaterfogmask = (hasmats & 4) && (fogmat & MATF_VOLUME) == MAT_WATER;
+    if(!fogmat && !hasalphavas && !hasmats && !hasmodels)
     {
         if(!editmode) renderparticles();
         if(cloudsbeforeliquid) renderclouds();
         return;
     }
-
-    if(!editmode && particlelayers && ghasstencil) renderparticles(PL_UNDER);
-
     timer *transtimer = begintimer("transparent");
 
     if(hasalphavas&4 || hasmats&4)
@@ -5015,7 +5013,8 @@ void rendertransparent(bool liquidlast, bool cloudsbeforeliquid)
         else glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
         float sx1 = min(alpharefractsx1, matrefractsx1), sy1 = min(alpharefractsy1, matrefractsy1),
               sx2 = max(alpharefractsx2, matrefractsx2), sy2 = max(alpharefractsy2, matrefractsy2);
-        bool scissor = sx1 > -1 || sy1 > -1 || sx2 < 1 || sy2 < 1;
+        // Fog reads coverage over the whole view; pixels outside today's refraction bounds must not retain old exits.
+        bool scissor = !usewaterfogmask && (sx1 > -1 || sy1 > -1 || sx2 < 1 || sy2 < 1);
         if(scissor)
         {
             int x1 = int(floor(max(sx1*0.5f+0.5f-refractmargin*viewh/vieww, 0.0f)*vieww)),
@@ -5030,11 +5029,39 @@ void rendertransparent(bool liquidlast, bool cloudsbeforeliquid)
         if(scissor) glDisable(GL_SCISSOR_TEST);
         GLOBALPARAMF(refractdepth, 1.0f/refractdepth);
         SETSHADER(refractmask);
+        LOCALPARAMF(liquidmask, 0.0f);
         if(hasalphavas&4) renderrefractmask();
         if(hasmats&4) rendermaterialmask();
 
         glDepthMask(GL_TRUE);
     }
+
+    glActiveTexture_(GL_TEXTURE7);
+    if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
+    else glBindTexture(GL_TEXTURE_RECTANGLE, refracttex);
+    glActiveTexture_(GL_TEXTURE0);
+
+    if(fogmat)
+    {
+        ZoneScopedN("Render/Underwater fog");
+        glBindFramebuffer_(GL_FRAMEBUFFER, msaalight ? mshdrfbo : hdrfbo);
+        setfog(fogmat, fogbelow, 1, abovemat);
+        GLOBALPARAMF(waterfogmask, usewaterfogmask ? 1.0f : 0.0f);
+        renderwaterfog(fogmat, fogbelow);
+        setfog(fogmat, fogbelow, clamp(fogbelow, 0.0f, 1.0f), abovemat);
+    }
+
+    if(!hasalphavas && !hasmats && !hasmodels)
+    {
+        endtimer(transtimer);
+        if(!editmode) renderparticles();
+        if(cloudsbeforeliquid) renderclouds();
+        return;
+    }
+
+    // Underwater fog needs the exit mask first, but particles still composite over the fogged opaque scene.
+    glBindFramebuffer_(GL_FRAMEBUFFER, msaalight ? mshdrfbo : hdrfbo);
+    if(!editmode && particlelayers && ghasstencil) renderparticles(PL_UNDER);
 
     glActiveTexture_(GL_TEXTURE7);
     if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
@@ -5101,6 +5128,8 @@ void rendertransparent(bool liquidlast, bool cloudsbeforeliquid)
         }
 
         transparentlayer = layer+1;
+        // A liquid boundary gives the actual exit distance, including slopes above the camera's local water level.
+        GLOBALPARAMF(underwaterfog, liquidlast && layer != 0 ? 1.0f : 0.0f);
 
         allsx1 = min(allsx1, sx1);
         allsy1 = min(allsy1, sy1);
