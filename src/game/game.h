@@ -657,7 +657,7 @@ namespace game
                                 vector<chestinstance *> &chests, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
                                 vector<chunkdropstate> &drops);
     extern bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data);
-    extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length);
+    extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length, bool merge);
     extern bool debuglocalchunknpcs(stream *file, const uchar *data, int length);
     extern void unloadlocalchunknpcs(int chunkx, int chunky);
     extern void receiveactionresult(uint requestid, int result, const char *reason);

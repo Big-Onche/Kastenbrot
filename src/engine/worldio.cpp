@@ -506,6 +506,7 @@ static bool loadworldmetadata(const char *folder, worldsnapshotmetadata &metadat
 static bool saveactiveworld()
 {
     if(!saveworldchunksnapshots()) return false;
+    if(!game::savelocalpassivenpcs(worldfolder)) return false;
     if(!saveworldmetadata()) return false;
     conoutf("queued local world save for %s", worldfolder);
     return true;
@@ -637,6 +638,8 @@ static void loadworldcommand(const char *requested)
                                 inventorycursoritem, metadata.inventorycursorcount, metadata.inventorycursordurability,
                                 wornitems, metadata.worndurabilities, min(numwornslots(), int(game::WORN_SLOT_MAX)));
     game::loadworldseed(metadata.seed);
+    if(!game::loadlocalpassivenpcs(worldfolder))
+        conoutf(CON_ERROR, "could not read NPC death records for world %s", worldfolder);
     game::weather::preparemap(worldfolder, metadata.seed);
 
     freeocta(worldroot);

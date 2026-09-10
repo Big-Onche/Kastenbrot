@@ -74,6 +74,8 @@ namespace game
     extern bool haslocalchunkdynamicstate(int chunkx, int chunky);
     extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
     extern void unloadlocalchunknpcs(int chunkx, int chunky);
+    extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length, bool merge = false);
+    extern bool needschunknpcgeneration(const uchar *data, int length);
     extern bool savelocalpassivenpcs(const char *world);
     extern bool loadlocalpassivenpcs(const char *world);
     extern void resetlocalpassivenpcstates();

@@ -763,13 +763,25 @@ static worldsnapshotloadresult loadworldchunksnapshotdata(const char *folder, in
 #if !defined(STANDALONE) && !defined(WORLD_SNAPSHOT_SERVER_CODEC)
 static worldsnapshotloadresult loadworldchunksnapshot(const char *folder, int x, int y, cube *&root, vector<worldscatterinstance> &scatter,
                                                        worldsectionrenderdata &renderdata, string &error, uint *revision = NULL,
-                                                       bool *playeredited = NULL, bool allowcompression = true)
+                                                       bool *playeredited = NULL, bool allowcompression = true, bool *migratednpcs = NULL)
 {
     vector<uchar> gameplay;
     const worldsnapshotloadresult result = loadworldchunksnapshotdata(folder, x, y, root, scatter, renderdata, gameplay, error, revision,
                                                                        playeredited, NULL, NULL, allowcompression);
     if(result != WORLD_SNAPSHOT_LOADED) return result;
-    if(game::restorelocalchunkdata(x, y, gameplay.getbuf(), gameplay.length())) return result;
+    if(game::restorelocalchunkdata(x, y, gameplay.getbuf(), gameplay.length()))
+    {
+        if(game::islocalworld() && game::needschunknpcgeneration(gameplay.getbuf(), gameplay.length()))
+        {
+            worldgencontext *generation = game::createworldgeneration(false, false);
+            game::snapshotworldnpcdefinitions(generation);
+            vector<uchar> naturalnpcs;
+            game::generateworldnpcs(generation, root, x, y, naturalnpcs, false);
+            game::destroyworldgeneration(generation);
+            if(game::restorelocalchunknpcs(x, y, naturalnpcs.getbuf(), naturalnpcs.length(), true) && migratednpcs) *migratednpcs = true;
+        }
+        return result;
+    }
     copystring(error, "invalid sparse gameplay data");
     freeworldsnapshotfamily(root);
     root = NULL;

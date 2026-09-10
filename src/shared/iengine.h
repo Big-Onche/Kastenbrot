@@ -301,6 +301,7 @@ extern bool worldcellhaswater(const ivec &position);
 extern int worldcellmaterial(const ivec &position);
 extern bool worldcellsolid(const ivec &position);
 extern void worldwaterchanged(const ivec &minimum, const ivec &maximum);
+extern void worldnpcchanged(const vec &position);
 extern void resetwatersimulation();
 extern void setwatersimulationsettings(int updates, int distance, int speed);
 extern void resetwatersimulationsettings();

@@ -443,11 +443,10 @@ namespace game
     static const float STANDING_HEIGHT = 28.0f, CRAWLING_EYEHEIGHT = 6.0f, CRAWLING_ABOVEEYE = 4.0f;
     static vector<npc *> npcs, pendinglocalnpcs;
     static vector<severedlimb *> severedlimbs;
-    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0, lastpassivenpcscan = 0;
+    static int nextnpcid = 1, debughitboxenabled = 0, debugnpcenabled = 0;
     static uint nextnpcattackrequest = 1;
 
     VARP(npcmaxdist, 1, 256, 4096);
-    VAR(npcspawnmillis, 100, 500, 60000);
     VARP(npcdebrisduration, 1000, 20000, 120000);
     VARP(npcdebrissinktime, 250, 3000, 10000);
     VAR(npcbleedduration, 0, 2000, 10000);
@@ -517,7 +516,6 @@ namespace game
         severedlimbs.deletecontents();
         nextnpcid = 1;
         nextnpcattackrequest = 1;
-        lastpassivenpcscan = 0;
         cleardynentcache();
     }
 
@@ -1504,6 +1502,7 @@ namespace game
         }
 
         const float damage = heldattackdamage() * npcdamagemultiplier(hitpart);
+        worldnpcchanged(hitmob->o);
         wearselectedsurvivaltool();
         const vec impulse = strikeimpulse(camdir, damage);
         spawnblood(hitposition, false);
@@ -1805,13 +1804,6 @@ namespace game
         }
     }
 
-    static npc *findlocalpassivenpc(ullong key)
-    {
-        loopv(npcs) if(npcs[i]->spawnkey == key) return npcs[i];
-        loopv(pendinglocalnpcs) if(pendinglocalnpcs[i]->spawnkey == key) return pendinglocalnpcs[i];
-        return NULL;
-    }
-
     static bool localnpcworldready(const npc &mob)
     {
         const float padding = 1.0f;
@@ -1827,16 +1819,33 @@ namespace game
 
     static void activatependinglocalnpcs()
     {
-        int activated = 0;
-        for(int i = pendinglocalnpcs.length() - 1; i >= 0; --i)
+        ZoneScopedN("NPC/Activate chunk inhabitants");
+        if(!player1) return;
+        static int cursor = 0;
+        const float distance = getnpcsimulationmaxdist() * GAMEUNITSPERMETER;
+        const bool naturalready = naturalnpcscanstate(m_survival, !waitforserveredit(), player1->state) == NPC_SCAN_READY;
+        int activated = 0, probes = 0;
+        // Round-robin makes unloaded geometry retryable without an unbounded per-frame scan.
+        for(int remaining = min(pendinglocalnpcs.length(), 256); remaining > 0 && probes < 8 && !pendinglocalnpcs.empty(); --remaining)
         {
+            if(cursor >= pendinglocalnpcs.length()) cursor = 0;
+            const int i = cursor++;
             npc *mob = pendinglocalnpcs[i];
+            if((mob->spawnkey && !naturalready) || mob->o.squaredist(player1->o) > distance * distance) continue;
+            ++probes;
             if(!localnpcworldready(*mob)) continue;
-            pendinglocalnpcs.remove(i);
-            mob->instanceid = nextnpcid++;
-            mob->newpos = mob->o;
-            mob->spawn = mob->destination = mob->o;
-            beginwanderpause(*mob);
+            if(mob->spawnkey && (collide(mob, vec(0, 0, 0), 0, false) || collideinside)) continue;
+            pendinglocalnpcs.removeunordered(i);
+            cursor = i;
+            if(!mob->instanceid)
+            {
+                mob->instanceid = nextnpcid++;
+                mob->spawn = mob->destination = mob->o;
+                beginwanderpause(*mob);
+            }
+            mob->resetinterp();
+            mob->lastmovementmillis = lastmillis;
+            mob->frozen = false;
             updatenpchitboxes(*mob);
             npcs.add(mob);
             ++activated;
@@ -1844,161 +1853,6 @@ namespace game
         if(!activated) return;
         cleardynentcache();
         conoutf(CON_DEBUG, "activated %d persistent NPCs after their chunk geometry became ready", activated);
-    }
-
-    static npcspawnstats cavespawns;
-
-    static bool localnaturalspawnposition(const npcdefinition &definition, worldgenerator &generator, const passivenpcspawn &spawn, vec &position)
-    {
-        position = vec((spawn.blockx + 0.5f) * GAMEUNITSPERMETER, (spawn.blocky + 0.5f) * GAMEUNITSPERMETER, 0);
-        worldpositiontolocal(position);
-        const float worldlimit = float(getworldsize() - 1);
-        if(position.x < 1 || position.y < 1 || position.x >= worldlimit || position.y >= worldlimit) return false;
-        if(spawn.band >= 0)
-        {
-            ++cavespawns.candidates;
-            return findcavenpcfloor(spawn, 256 + generator.height(spawn.blockx, spawn.blocky),
-                                   256 + generator.settings.sealevel, [&](int x, int y, int z)
-            {
-                vec feet((x + 0.5f) * GAMEUNITSPERMETER, (y + 0.5f) * GAMEUNITSPERMETER, z * GAMEUNITSPERMETER + 0.1f);
-                worldpositiontolocal(feet);
-                if(feet.x < 1 || feet.y < 1 || feet.x >= worldlimit || feet.y >= worldlimit) return false;
-                if(!isempty(lookupcube(ivec(feet))) || isempty(lookupcube(ivec(vec(feet).subz(1))))) return false;
-                ++cavespawns.floors;
-                // Deformed cave floors need their actual surface height, not the voxel's top boundary.
-                const float ground = raycube(feet, vec(0, 0, -1), GAMEUNITSPERMETER + 1, RAY_CLIPMAT | RAY_POLY);
-                if(ground < 0 || ground >= GAMEUNITSPERMETER + 1) { ++cavespawns.noground; return false; }
-                // raycube steps 0.1 units into the hit voxel; retain clearance above its actual surface.
-                feet.z -= ground - 0.2f;
-                if((lookupmaterial(feet)&MATF_VOLUME) != MAT_AIR) { ++cavespawns.liquid; return false; }
-                npc test(const_cast<npcdefinition *>(&definition), 0);
-                test.o = vec(feet).addz(definition.height);
-                if(!localnpcworldready(test)) { ++cavespawns.unloaded; return false; }
-                if(collide(&test, vec(0, 0, 0), 0, false) || collideinside) { ++cavespawns.blocked; return false; }
-                int roof;
-                if(!sampleworldcolumnroof(ivec(vec(test.o).addz(test.aboveeye)), roof)) { ++cavespawns.unloaded; return false; }
-                if(roof < 0) { ++cavespawns.opensky; return false; }
-                position = test.o;
-                return true;
-            });
-        }
-        vec probe(position.x, position.y, min(player1->o.z + 128.0f, worldlimit));
-        const float grounddistance = raycube(probe, vec(0, 0, -1), probe.z, RAY_CLIPMAT | RAY_POLY | RAY_SKIPFIRST);
-        if(grounddistance < 0 || grounddistance >= probe.z) return false;
-        position.z = probe.z - grounddistance + definition.height + 0.1f;
-        if((lookupmaterial(vec(position).subz(definition.height))&MATF_VOLUME) == MAT_WATER) return false;
-
-        const int height = generator.height(spawn.blockx, spawn.blocky);
-        if(generator.biome(spawn.blockx, spawn.blocky, height) != definition.naturalbiome) return false;
-        const float skydistance = worldlimit - position.z;
-        if(skydistance > 0)
-        {
-            const float obstruction = raycube(position, vec(0, 0, 1), skydistance, RAY_CLIPMAT | RAY_POLY | RAY_SKIPFIRST);
-            if(obstruction >= 0 && obstruction < skydistance) return false;
-        }
-        return true;
-    }
-
-    static bool placecavenpc(physent &mob)
-    {
-        // Cave positions already include eye height. entinmap expects feet and also randomizes blocked positions.
-        if(collide(&mob) || collideinside || collideplayer) return false;
-        mob.resetinterp();
-        return true;
-    }
-
-    static int localnaturalnpcscanstate()
-    {
-        return naturalnpcscanstate(m_survival, !waitforserveredit(), player1 ? player1->state : -1);
-    }
-
-    static void tryspawnlocalnaturalnpcs()
-    {
-        ZoneScopedN("NPC/Natural spawn scan");
-        if(localnaturalnpcscanstate() != NPC_SCAN_READY || lastmillis - lastpassivenpcscan < npcspawnmillis) return;
-        lastpassivenpcscan = lastmillis;
-        cavespawns = npcspawnstats();
-        const int simulationdistanceblocks = getnpcsimulationmaxdist(), margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1;
-        const float simulationdistance = simulationdistanceblocks * GAMEUNITSPERMETER,
-                    simulationdistancesquared = simulationdistance * simulationdistance;
-        vec absolutefocus(player1->o);
-        worldpositiontoabsolute(absolutefocus);
-        const float focusblockx = absolutefocus.x / GAMEUNITSPERMETER, focusblocky = absolutefocus.y / GAMEUNITSPERMETER;
-        const int mincellx = int(floorf((focusblockx - simulationdistanceblocks - margin) / PASSIVE_NPC_CELL_BLOCKS)),
-                  maxcellx = int(floorf((focusblockx + simulationdistanceblocks + margin) / PASSIVE_NPC_CELL_BLOCKS)),
-                  mincelly = int(floorf((focusblocky - simulationdistanceblocks - margin) / PASSIVE_NPC_CELL_BLOCKS)),
-                  maxcelly = int(floorf((focusblocky + simulationdistanceblocks + margin) / PASSIVE_NPC_CELL_BLOCKS));
-        worldgenerator generator(getworldseed());
-        bool spawned = false;
-        loopi(numnpcdefinitions())
-        {
-            npcdefinition *definition = getnpcdefinition(i);
-            if(!definition || (definition->attitude != NPC_AGGRESSIVE && definition->naturalbiome < 0)) continue;
-            for(int cellx = mincellx; cellx <= maxcellx; ++cellx) for(int celly = mincelly; celly <= maxcelly; ++celly)
-            for(int band = definition->attitude == NPC_AGGRESSIVE ? 0 : -1;
-                band < (definition->attitude == NPC_AGGRESSIVE ? definition->cavebands : 0); ++band)
-            {
-                passivenpcspawn spawns[16];
-                const int count = generatepassivenpcgroup(*definition, getworldseed(), cellx, celly, spawns, 16, band);
-                if(!count) continue;
-                if(band >= 0 && (spawns[0].bandtop * GAMEUNITSPERMETER + definition->height < player1->o.z - simulationdistance ||
-                                 spawns[0].bandbottom * GAMEUNITSPERMETER > player1->o.z + simulationdistance)) continue;
-                vec anchor((spawns[0].blockx + 0.5f) * GAMEUNITSPERMETER, (spawns[0].blocky + 0.5f) * GAMEUNITSPERMETER, player1->o.z);
-                worldpositiontolocal(anchor);
-                if(anchor.squaredist(player1->o) > simulationdistancesquared) continue;
-
-                vector<npc *> group;
-                bool valid = true;
-                loopj(count)
-                {
-                    const bool killed = localpassivenpcdead(spawns[j].key), present = findlocalpassivenpc(spawns[j].key) != NULL;
-                    if(band >= 0 ? cavespawns.skip(killed, present) : killed || present) continue;
-                    vec position;
-                    if(!localnaturalspawnposition(*definition, generator, spawns[j], position))
-                    {
-                        if(band >= 0) { ++cavespawns.nofit; continue; }
-                        valid = false;
-                        break;
-                    }
-                    if(band >= 0 && position.squaredist(player1->o) > simulationdistancesquared)
-                    {
-                        ++cavespawns.outofrange;
-                        continue;
-                    }
-                    bool overlaps = false;
-                    if(band >= 0) loopvk(group)
-                    {
-                        if(group[k]->o.squaredist(position) < powf(definition->radius * 2 + 1, 2)) { overlaps = true; break; }
-                    }
-                    if(overlaps) continue;
-                    npc *mob = new npc(definition, nextnpcid + group.length());
-                    mob->spawnkey = spawns[j].key;
-                    mob->o = position;
-                    mob->yaw = spawns[j].yaw;
-                    if(!localnpcworldready(*mob) || !(band >= 0 ? placecavenpc(*mob) : entinmap(mob, true)))
-                    {
-                        delete mob;
-                        if(band >= 0) continue;
-                        valid = false;
-                        break;
-                    }
-                    mob->spawn = mob->destination = mob->o;
-                    beginwanderpause(*mob);
-                    updatenpchitboxes(*mob);
-                    group.add(mob);
-                    if(band >= 0) ++cavespawns.spawned;
-                }
-                if(!valid) group.deletecontents();
-                else
-                {
-                    if(!group.empty()) spawned = true;
-                    nextnpcid += group.length();
-                    loopvk(group) npcs.add(group[k]);
-                    group.setsize(0);
-                }
-            }
-        }
-        if(spawned) cleardynentcache();
     }
 
     static void updatenpcwandersound(npc &mob)
@@ -2028,20 +1882,8 @@ namespace game
         {
             lastspawndebug = lastmillis;
             if(waitforserveredit()) requestworldcommand("debugnpc");
-            else
-            {
-                int living = 0;
-                loopv(npcs) if(npcs[i]->attitude == NPC_AGGRESSIVE && npcs[i]->state != CS_DEAD) ++living;
-                conoutf(CON_INFO, "NPC spawn: %s; seed=%d range=%d live-hostiles=%d last-scan-age=%dms",
-                        naturalnpcscanreason(localnaturalnpcscanstate()), getworldseed(), getnpcsimulationmaxdist(),
-                        living, max(lastmillis - lastpassivenpcscan, 0));
-                conoutf(CON_INFO, "NPC last scan: candidates=%d floors=%d blocked=%d unloaded=%d spawned=%d nofit=%d "
-                        "existing=%d dead=%d out-of-range=%d",
-                        cavespawns.candidates, cavespawns.floors, cavespawns.blocked, cavespawns.unloaded, cavespawns.spawned,
-                        cavespawns.nofit, cavespawns.existing, cavespawns.dead, cavespawns.outofrange);
-                conoutf(CON_INFO, "NPC floor rejects: no-ground=%d liquid=%d open-sky=%d",
-                        cavespawns.noground, cavespawns.liquid, cavespawns.opensky);
-            }
+            else conoutf(CON_INFO, "NPC population: active=%d dormant=%d range=%d; positions generated with chunks",
+                         npcs.length(), pendinglocalnpcs.length(), getnpcsimulationmaxdist());
         }
         if(waitforserveredit())
         {
@@ -2080,10 +1922,22 @@ namespace game
         }
 
         activatependinglocalnpcs();
-        const vec focus = camera1 ? camera1->o : player1 ? player1->o : vec(0, 0, 0);
-        tryspawnlocalnaturalnpcs();
+        const vec focus = player1 ? player1->o : vec(0, 0, 0);
 
         const float simulationdistance = getnpcsimulationmaxdist() * GAMEUNITSPERMETER;
+        bool deactivated = false;
+        for(int i = npcs.length() - 1; i >= 0; --i)
+        {
+            npc *mob = npcs[i];
+            if(!mob->spawnkey || mob->state == CS_DEAD || mob->o.squaredist(focus) <= simulationdistance * simulationdistance) continue;
+            mob->stopmoving();
+            mob->vel = mob->falling = vec(0, 0, 0);
+            mob->target = NULL;
+            mob->hitboxes.setsize(0);
+            pendinglocalnpcs.add(npcs.removeunordered(i));
+            deactivated = true;
+        }
+        if(deactivated) cleardynentcache();
         loopv(npcs)
         {
             npc &mob = *npcs[i];
@@ -2106,8 +1960,10 @@ namespace game
             }
             else
             {
+                worldnpcchanged(mob.o);
                 updatebehavior(mob);
                 walktowardsdestination(mob);
+                worldnpcchanged(mob.o);
                 attacklocalplayer(mob);
             }
             updatenpcwandersound(mob);
@@ -2391,7 +2247,7 @@ namespace game
     bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data)
     {
         data.setsize(0);
-        chunknpcputuint(data, 1);
+        chunknpcputuint(data, 2);
         int count = 0;
         loopv(npcs) if(persistentlocalnpc(*npcs[i]) && npcs[i]->state != CS_DEAD && chunknpcposition(npcs[i]->o, chunkx, chunky)) ++count;
         loopv(pendinglocalnpcs)
@@ -2412,7 +2268,7 @@ namespace game
     {
         chunknpcreader reader(data, length);
         uint version, count;
-        if(!reader.readuint(version) || version != 1 || !reader.readuint(count) || count > 100000U) return false;
+        if(!reader.readuint(version) || (version != 1 && version != 2) || !reader.readuint(count) || count > 100000U) return false;
         loopi(count)
         {
             string id;
@@ -2443,7 +2299,7 @@ namespace game
         return reader.finished();
     }
 
-    bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length)
+    bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length, bool merge)
     {
         vector<npc *> decoded;
         if(!decodechunknpcs(data, length, decoded)) { decoded.deletecontents(); return false; }
@@ -2452,17 +2308,45 @@ namespace game
             decoded.deletecontents();
             return false;
         }
+        if(merge)
+        {
+            // Legacy snapshots contain only previously activated animals. Backfill once, preserving their current state.
+            loopv(decoded)
+            {
+                npc *mob = decoded[i];
+                bool exists = mob->spawnkey && localpassivenpcdead(mob->spawnkey);
+                if(!exists) loopvj(npcs) if(npcs[j]->spawnkey == mob->spawnkey) { exists = true; break; }
+                if(!exists) loopvj(pendinglocalnpcs) if(pendinglocalnpcs[j]->spawnkey == mob->spawnkey) { exists = true; break; }
+                if(exists) delete mob;
+                else pendinglocalnpcs.add(mob);
+            }
+            return true;
+        }
         for(int i = npcs.length() - 1; i >= 0; --i)
         {
             npc *mob = npcs[i];
-            if(!persistentlocalnpc(*mob) || !chunknpcposition(mob->o, chunkx, chunky)) continue;
+            if(!persistentlocalnpc(*mob)) continue;
+            bool replaced = chunknpcposition(mob->o, chunkx, chunky);
+            if(!replaced && mob->spawnkey) loopvj(decoded)
+                if(decoded[j]->spawnkey == mob->spawnkey) { worldnpcchanged(mob->o); replaced = true; break; }
+            if(!replaced) continue;
             loopvj(npcs) if(npcs[j]->target == mob) npcs[j]->target = NULL;
             delete npcs.remove(i);
         }
         for(int i = pendinglocalnpcs.length() - 1; i >= 0; --i)
-            if(chunknpcposition(pendinglocalnpcs[i]->o, chunkx, chunky)) delete pendinglocalnpcs.remove(i);
+        {
+            npc *mob = pendinglocalnpcs[i];
+            bool replaced = chunknpcposition(mob->o, chunkx, chunky);
+            if(!replaced && mob->spawnkey) loopvj(decoded)
+                if(decoded[j]->spawnkey == mob->spawnkey) { worldnpcchanged(mob->o); replaced = true; break; }
+            if(replaced) delete pendinglocalnpcs.remove(i);
+        }
         const int queued = decoded.length();
-        loopv(decoded) pendinglocalnpcs.add(decoded[i]);
+        loopv(decoded)
+        {
+            if(decoded[i]->spawnkey && localpassivenpcdead(decoded[i]->spawnkey)) delete decoded[i];
+            else pendinglocalnpcs.add(decoded[i]);
+        }
         decoded.setsize(0);
         cleardynentcache();
         if(queued) conoutf(CON_DEBUG, "queued %d persistent NPCs from chunk %d_%d until its geometry is ready", queued, chunkx, chunky);

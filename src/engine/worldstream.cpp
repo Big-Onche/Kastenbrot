@@ -40,6 +40,7 @@ worldchunkjob::worldchunkjob(int x, int y, uint epoch, uint request, const char 
     copystring(this->folder, folder ? folder : "");
     snapshoterror[0] = '\0';
     generation = game::createworldgeneration(true, remip, &cancelled);
+    if(game::islocalworld()) game::snapshotworldnpcdefinitions(generation);
 }
 
 worldchunkjob::~worldchunkjob()
@@ -275,6 +276,13 @@ static void clearworldscattermeshes();
 static void updateworldlods(int chunkx, int chunky, bool force = false);
 static void clearworldlods();
 static int findworldchunk(int x, int y);
+void worldnpcchanged(const vec &position)
+{
+    vec absolute(position);
+    worldpositiontoabsolute(absolute);
+    const int index = findworldchunk(int(floor(double(absolute.x) / WORLD_CHUNK_SIZE)), int(floor(double(absolute.y) / WORLD_CHUNK_SIZE)));
+    if(worldchunks.inrange(index)) worldchunks[index].npcdirty = true;
+}
 int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled = NULL);
 static int remipworldchunkbounded(cube *root, bool prepared, int &families, SDL_atomic_t *cancelled,
                                   const worldchunkdirtybounds *dirty);
@@ -560,6 +568,12 @@ static bool queueworldchunksave(worldchunk &chunk, cube **preparedroot)
         conoutf(CON_ERROR, "could not capture chunk %d_%d for asynchronous saving: %s", chunk.x, chunk.y, job->error);
         delete job;
         return false;
+    }
+    if(chunk.npcdirty)
+    {
+        if(++chunk.revision == 0) chunk.revision = 1;
+        job->revision = chunk.revision;
+        chunk.npcdirty = false;
     }
     if(preparedroot && *preparedroot)
     {
@@ -1523,6 +1537,9 @@ static int worldchunkloader(void *)
                                                                   job->gameplay, job->snapshoterror, &job->snapshotrevision,
                                                                   &job->snapshotplayeredited);
                 job->checksnapshot = false;
+                if(job->snapshotresult == WORLD_SNAPSHOT_LOADED &&
+                   game::needschunknpcgeneration(job->gameplay.getbuf(), job->gameplay.length()))
+                    game::generateworldnpcs(job->generation, job->root, job->x, job->y, job->naturalnpcs, false);
             }
             if(!job->root && !SDL_AtomicGet(&job->cancelled)) job->root = prepareworldchunk(*job);
             if(job->root && !SDL_AtomicGet(&job->cancelled))
@@ -1737,18 +1754,31 @@ static int acquireworldchunksync(int x, int y, int &generated)
     cube *root = NULL;
     string snapshoterror;
     uint snapshotrevision = 0;
-    bool snapshotplayeredited = false;
+    bool snapshotplayeredited = false, migratednpcs = false;
     const worldsnapshotloadresult snapshotresult = worldfolder[0]
                                                    ? loadworldchunksnapshot(worldfolder, x, y, root, scatter, renderdata, snapshoterror,
-                                                                            &snapshotrevision, &snapshotplayeredited, false)
+                                                                            &snapshotrevision, &snapshotplayeredited, false, &migratednpcs)
                                                    : WORLD_SNAPSHOT_MISSING;
     if(snapshotresult == WORLD_SNAPSHOT_INVALID)
         conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerating it", x, y, snapshoterror);
     if(!root)
     {
         ZoneScopedN("Chunks/Generate unsaved");
-        root = game::generateworldchunk(x, y, &renderdata);
-        if(root) game::generateworldscatter(root, x, y, scatter);
+        worldgencontext *generation = game::createworldgeneration(false, chunkremip != 0);
+        if(game::islocalworld()) game::snapshotworldnpcdefinitions(generation);
+        int families = 0, optimized = 0;
+        root = game::generateworldchunk(generation, x, y, families, optimized, &renderdata);
+        if(root)
+        {
+            game::generateworldscatter(generation, root, x, y, scatter);
+            if(game::islocalworld())
+            {
+                vector<uchar> naturalnpcs;
+                game::generateworldnpcs(generation, root, x, y, naturalnpcs);
+                game::restorelocalchunknpcs(x, y, naturalnpcs.getbuf(), naturalnpcs.length());
+            }
+        }
+        game::destroyworldgeneration(generation);
         generated++;
     }
     if(root) setworldleavesalpha(root, leavesalpha != 0);
@@ -1760,11 +1790,12 @@ static int acquireworldchunksync(int x, int y, int &generated)
     {
         chunk.revision = chunk.savedrevision = snapshotrevision;
         chunk.playeredited = snapshotplayeredited;
+        if(migratednpcs) ++chunk.revision;
     }
     addworldsectionvisibilitychunk(x, y);
     const ivec localorigin = worldchunkorigin(chunk);
     invalidatelocalambient(localorigin, ivec(localorigin).add(ivec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, WORLD_MAP_SIZE)));
-    if(snapshotresult != WORLD_SNAPSHOT_LOADED && root && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
+    if((snapshotresult != WORLD_SNAPSHOT_LOADED || migratednpcs) && root && worldfolder[0] && game::islocalworld() && !queueworldchunksave(chunk))
         conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", x, y);
     return worldchunks.length() - 1;
 }
@@ -2061,9 +2092,17 @@ static int processworldchunkresults(double budget)
             }
             chunk.loading = false;
             chunk.generating = false;
+            if(job->snapshotresult != WORLD_SNAPSHOT_LOADED && game::islocalworld() && !job->naturalnpcs.empty())
+                game::restorelocalchunknpcs(chunk.x, chunk.y, job->naturalnpcs.getbuf(), job->naturalnpcs.length());
             chunk.revision = job->snapshotresult == WORLD_SNAPSHOT_LOADED ? job->snapshotrevision : 1;
             chunk.savedrevision = job->snapshotresult == WORLD_SNAPSHOT_LOADED ? job->snapshotrevision : 0;
             chunk.playeredited = job->snapshotresult == WORLD_SNAPSHOT_LOADED && job->snapshotplayeredited;
+            const bool migratednpcs = job->snapshotresult == WORLD_SNAPSHOT_LOADED && game::islocalworld() && !job->naturalnpcs.empty();
+            if(migratednpcs)
+            {
+                game::restorelocalchunknpcs(chunk.x, chunk.y, job->naturalnpcs.getbuf(), job->naturalnpcs.length(), true);
+                ++chunk.revision;
+            }
             allocnodes += job->families;
             if(job->snapshotresult != WORLD_SNAPSHOT_LOADED) generated++;
             optimized += job->optimized;
@@ -2073,7 +2112,7 @@ static int processworldchunkresults(double budget)
             if(job->snapshotresult == WORLD_SNAPSHOT_INVALID)
                 conoutf(CON_ERROR, "authoritative chunk %d_%d could not be loaded: %s; regenerated it", chunk.x, chunk.y,
                         job->snapshoterror[0] ? job->snapshoterror : "invalid snapshot");
-            if(job->snapshotresult != WORLD_SNAPSHOT_LOADED && worldfolder[0] && game::islocalworld() &&
+            if((job->snapshotresult != WORLD_SNAPSHOT_LOADED || migratednpcs) && worldfolder[0] && game::islocalworld() &&
                !queueworldchunksave(chunk, &job->saveroot))
                 conoutf(CON_ERROR, "generated chunk %d_%d remains unsaved and is not authoritative", chunk.x, chunk.y);
             published++;
@@ -2282,7 +2321,7 @@ static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
         {
             ZoneScopedN("Chunks/Release cache");
             ZoneTextF("%d_%d", chunk.x, chunk.y);
-            if(worldfolder[0] && game::islocalworld() && chunk.savedrevision != chunk.revision && !queueworldchunksave(chunk))
+            if(worldfolder[0] && game::islocalworld() && (chunk.npcdirty || chunk.savedrevision != chunk.revision) && !queueworldchunksave(chunk))
             {
                 conoutf(CON_ERROR, "refusing to release unsaved authoritative chunk %d_%d", chunk.x, chunk.y);
                 break;
@@ -2849,6 +2888,7 @@ static cube *prepareworldchunk(worldchunkjob &job)
     cube *root = game::generateworldchunk(job.generation, job.x, job.y, job.families, job.optimized, &job.renderdata);
     if(!root) return NULL;
     game::generateworldscatter(job.generation, root, job.x, job.y, job.scatter);
+    game::generateworldnpcs(job.generation, root, job.x, job.y, job.naturalnpcs);
     setworldleavesalpha(root, job.leavesalpha);
     return root;
 }

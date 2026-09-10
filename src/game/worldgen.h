@@ -34,6 +34,9 @@ namespace game
     extern void activateworldseed();
     extern worldgencontext *createworldgeneration(bool prepared, bool remip, SDL_atomic_t *cancelled = NULL, bool indexedtextures = false);
     extern void destroyworldgeneration(worldgencontext *generation);
+    extern void snapshotworldnpcdefinitions(worldgencontext *generation);
+    extern void generateworldnpcs(worldgencontext *generation, const cube *root, int chunkx, int chunky, vector<uchar> &data,
+                                 bool generated = true);
     extern bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height);
     extern bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface);
     extern bool sampleworldtree(worldgencontext *generation, int blockx, int blocky, int &base, int &height, uint &shape, bool &pine);

@@ -2280,6 +2280,37 @@ namespace game
     }
 #endif
 
+    bool needschunknpcgeneration(const uchar *data, int length)
+    {
+        // Inspect the serialized header without looking up items or touching live gameplay state on a chunk worker.
+        if(!data || length < 8) return false;
+        localchunkdatareader reader(data, length);
+        uint version, count, ignored;
+        string value;
+        const auto skipuints = [&](int n)
+        {
+            loopi(n) if(!reader.readuint(ignored)) return false;
+            return true;
+        };
+        const auto skipstack = [&]() { return reader.readstring(value, sizeof(value)) && skipuints(2); };
+        if(!reader.readuint(version) || version != 2 || !reader.readuint(count) || count > 100000U) return false;
+        loopi(count)
+        {
+            if(!skipuints(3) || !reader.readstring(value, sizeof(value))) return false;
+            loopj(FURNACE_INPUT_MAX + 2) if(!skipstack()) return false;
+            if(!reader.readstring(value, sizeof(value)) || !skipuints(4)) return false;
+        }
+        if(!reader.readuint(count) || count > 100000U) return false;
+        loopi(count)
+        {
+            if(!skipuints(3) || !reader.readstring(value, sizeof(value)) || !skipuints(1)) return false;
+            loopj(CHEST_SLOTS_MAX) if(!skipstack()) return false;
+        }
+        uint bytes;
+        return reader.readuint(bytes) && bytes >= 8 && bytes <= uint(reader.end - reader.position) &&
+               reader.readuint(version) && version == 1;
+    }
+
     bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
                          vector<chestinstance *> &chests, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
                          vector<chunkdropstate> &drops)

@@ -147,12 +147,12 @@ struct worldchunk
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request, revision, savedrevision, savingrevision;
     int varesidencylod;
-    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted, playeredited;
+    bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted, playeredited, npcdirty;
 
     worldchunk(int x, int y, cube *root, bool loading = false)
         : x(x), y(y), root(root), request(0), revision(root ? 1 : 0), savedrevision(0), savingrevision(0), varesidencylod(-1),
           varesidencydirty(true), scattermeshesregistered(false), placeablesregistered(false), loading(loading), generating(false), saving(false),
-          corrupted(false), playeredited(false)
+          corrupted(false), playeredited(false), npcdirty(false)
     {
         memclear(mountedtiles);
         memclear(contentknown);
@@ -200,6 +200,7 @@ struct worldchunkjob
     cube *root, *saveroot;
     vector<worldscatterinstance> scatter;
     vector<uchar> gameplay;
+    vector<uchar> naturalnpcs;
     string folder, snapshoterror;
     worldgencontext *generation;
 
