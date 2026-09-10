@@ -239,7 +239,7 @@ struct npcwandersounddefinition
 struct npcdefinition
 {
     string id, name, model;
-    int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, cavebands, fleeonhitmillis;
+    int attitude, behavior, health, attackmillis, modeltype, naturalbiome, groupmin, groupmax, cavebands, cavegroupmin, cavegroupmax, fleeonhitmillis;
     float damage, speed, wanderradius, aggrodist, fleedist, radius, height, rootheight, spawnchance, fleespeed, herdradius;
     vector<npcdropdefinition> drops;
     vector<npcwandersounddefinition> wandersounds;
@@ -247,7 +247,8 @@ struct npcdefinition
 
     npcdefinition(const char *id = "")
         : attitude(NPC_NEUTRAL), behavior(NPC_WANDERING), health(20), attackmillis(1000), modeltype(NPC_MODEL_HUMANOID), naturalbiome(-1),
-          groupmin(1), groupmax(1), cavebands(0), fleeonhitmillis(0), damage(1), speed(40), wanderradius(8), aggrodist(16), fleedist(12),
+          groupmin(1), groupmax(1), cavebands(0), cavegroupmin(1), cavegroupmax(4), fleeonhitmillis(0), damage(1), speed(40),
+          wanderradius(8), aggrodist(16), fleedist(12),
           radius(4.1f), height(28.0f), rootheight(11.25f), spawnchance(0), fleespeed(1), herdradius(0), wandersoundrevision(0)
     {
         copystring(this->id, id);

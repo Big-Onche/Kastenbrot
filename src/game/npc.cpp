@@ -136,6 +136,19 @@ namespace game
         definition->cavebands = *count;
     });
 
+    ICOMMAND(npccavegroup, "sii", (char *id, int *minimum, int *maximum),
+    {
+        npcdefinition *definition = findnpcdefinition(id);
+        if(!definition || definition->attitude != NPC_AGGRESSIVE || *minimum < 1 || *maximum < *minimum || *maximum > 4)
+        {
+            conoutf(CON_ERROR, "invalid cave group size for NPC %s: expected an aggressive NPC and a range within 1-4",
+                    id[0] ? id : "<empty>");
+            return;
+        }
+        definition->cavegroupmin = *minimum;
+        definition->cavegroupmax = *maximum;
+    });
+
     ICOMMAND(npchitflee, "sffi", (char *id, float *speed, float *herdradius, int *duration),
     {
         npcdefinition *definition = findnpcdefinition(id);
@@ -229,9 +242,9 @@ namespace game
                    spawnroll = worlddrophash(cellseed ^ 0xC2B2AE35U);
         if(!cave && float(spawnroll & 0xFFFFFFU) / float(0xFFFFFFU) >= definition.spawnchance) return 0;
 
-        const int groupsize = cave ? 1 + int(worlddrophash(cellseed ^ 0x27D4EB2FU) % 4U) :
-                                     definition.groupmin + int(worlddrophash(cellseed ^ 0x27D4EB2FU) %
-                                                               uint(definition.groupmax - definition.groupmin + 1)),
+        const int groupmin = cave ? definition.cavegroupmin : definition.groupmin,
+                  groupmax = cave ? definition.cavegroupmax : definition.groupmax,
+                  groupsize = groupmin + int(worlddrophash(cellseed ^ 0x27D4EB2FU) % uint(groupmax - groupmin + 1)),
                   count = min(groupsize, maxspawns),
                   margin = PASSIVE_NPC_GROUP_RADIUS_BLOCKS + 1,
                   anchorspan = PASSIVE_NPC_CELL_BLOCKS - margin * 2,
