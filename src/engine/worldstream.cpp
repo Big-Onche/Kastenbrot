@@ -21,6 +21,7 @@ static bool flushworldchunksaves();
 static int queueworldchunk(int x, int y);
 static int processworldchunkresults(double budget = -1);
 static int acquireworldchunkblocking(int x, int y, int &generated);
+static int reprioritizeworldchunkqueue(int chunkx, int chunky, int aheadx, int aheady);
 
 static bool worldchunkmounted(const worldchunk &chunk);
 static int worldchunkvaupdatekey(const ivec &origin);
@@ -1472,7 +1473,12 @@ static int worldchunkcoordinatescore(int x, int y)
               urgent = currentdist <= 1 ? 0 : 0x10000000LL,
               score = urgent + (long long)currentdist * 0x200000
                     + (long long)viewdist * 0x20000
-                    + (long long)aheaddist * 0x1000 + dx * dx + dy * dy;
+                    + (long long)aheaddist * 0x1000;
+    // Saturate before squaring: opposite signed-int chunk coordinates can
+    // overflow even a signed 64-bit squared distance. If the linear part fits,
+    // aheaddist also bounds dx and dy tightly enough for the squares to fit.
+    if(score >= INT_MAX) return INT_MAX;
+    score += dx * dx + dy * dy;
     return int(min(score, (long long)INT_MAX));
 }
 
@@ -1873,6 +1879,11 @@ static int queueworldchunk(int x, int y)
 
 static int acquireworldchunkblocking(int x, int y, int &generated)
 {
+    ZoneScopedN("Chunks/Wait for destination");
+    ZoneTextF("%d_%d", x, y);
+    // Saved-world entry and teleport load before the normal view update. Set
+    // their focus now, rather than scoring the destination against the old world.
+    reprioritizeworldchunkqueue(x, y, x, y);
     int index = findworldchunk(x, y);
     if(index < 0) index = queueworldchunk(x, y);
     if(index < 0) return index;
@@ -1930,7 +1941,7 @@ static int queueworldchunkview(int chunkx, int chunky, int aheadx, int aheady)
                findworldchunk(x, y) >= 0)
                 continue;
             int score = worldchunkcoordinatescore(x, y);
-            if(score >= bestscore) continue;
+            if(found && score >= bestscore) continue;
             bestx = x;
             besty = y;
             bestscore = score;
@@ -2036,7 +2047,8 @@ static int processworldchunkresults(double budget)
                         break;
                     }
                     int score = worldchunkjobscore(*worldchunkresults[i]);
-                    if(score < bestscore) { best = i; bestscore = score; }
+                    // INT_MAX is a valid saturated priority, not an empty queue.
+                    if(best < 0 || score < bestscore) { best = i; bestscore = score; }
                 }
                 if(best >= 0) job = worldchunkresults.remove(best);
             }
@@ -2656,7 +2668,10 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
     worldchunkaheadx = chunkx;
     worldchunkaheady = chunky;
     worlddebugcachemillis = -1;
-    rebuildworldchunks(chunkx, chunky, chunkx, chunky, true, true);
+    // The runtime octree was replaced by the rebase, but this is not a fresh
+    // world load. Bootstrap collision around the player and let the normal
+    // visibility/VA queues publish destination geometry within their budgets.
+    rebuildworldchunks(chunkx, chunky, chunkx, chunky, true, false);
 
     conoutf("teleported to voxel %.2f %.2f %.2f (chunk %d_%d%s)", voxelx, voxely, voxelz, chunkx, chunky, generated ? ", generated" : "");
 }
