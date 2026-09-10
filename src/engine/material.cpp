@@ -1,5 +1,39 @@
 #include "engine.h"
 #include "watergeometry.h"
+#include "watercache.h"
+
+static waterheightcache naturalwaterheights;
+
+struct watercornerkey : ivec
+{
+    watercornerkey() {}
+    watercornerkey(int x, int y, int z) : ivec(x, y, z) {}
+};
+
+static inline uint hthash(const watercornerkey &position)
+{
+    return watergeometryhash(position);
+}
+
+static hashtable<watercornerkey, float> watercornerdrops(1 << 14);
+static int watercornermillis = -1;
+
+void invalidatewatercorners()
+{
+    watercornerdrops.recycle();
+}
+
+void invalidatewatergeometry()
+{
+    naturalwaterheights.clear();
+    watercornerdrops.recycle();
+}
+
+void invalidatewatergeometry(const ivec &minimum, const ivec &maximum)
+{
+    naturalwaterheights.invalidate(minimum, maximum);
+    watercornerdrops.recycle();
+}
 
 struct QuadNode
 {
@@ -113,6 +147,11 @@ static void drawmaterial(const materialsurface &m, float offset, const bvec4 &co
         const float surfaceoffset = watermask ? getwatergeometryoffset() : -offset;
         for(int sy = m.o.y; sy < m.o.y + m.csize; sy += 16) for(int sx = m.o.x; sx < m.o.x + m.rsize; sx += 16)
         {
+            if(gle::attribbuf.length() >= (1 << 16) * int(sizeof(vec) + sizeof(bvec4)))
+            {
+                xtraverts += gle::end();
+                gle::begin(GL_QUADS);
+            }
             const int x1 = min(sx + 16, m.o.x + m.rsize), y1 = min(sy + 16, m.o.y + m.csize);
             gle::attribf(sx, sy, z - getwatercornerdrop(sx, sy, z) + surfaceoffset); gle::attrib(color);
             gle::attribf(x1, sy, z - getwatercornerdrop(x1, sy, z) + surfaceoffset); gle::attrib(color);
@@ -172,16 +211,9 @@ static void drawmaterial(const materialsurface &m, float offset, const bvec4 &co
 
 static float naturalwatercornerdrop(int x, int y, int z)
 {
-    static hashtable<ivec, float> heights(1 << 12);
-    static int cachemillis = -1;
-    if(cachemillis != totalmillis)
-    {
-        heights.clear();
-        cachemillis = totalmillis;
-    }
     const ivec position(x, y, z);
-    float *cached = heights.access(position);
-    if(cached) return *cached;
+    float cached;
+    if(naturalwaterheights.get(position, cached)) return cached;
     const float drop = z - naturalwatercornerheight(x, y, z, [](int sx, int sy, int sz)
     {
         return (lookupmaterial(vec(sx, sy, sz)) & MATF_VOLUME) == MAT_WATER;
@@ -192,7 +224,7 @@ static float naturalwatercornerdrop(int x, int y, int z)
         int size;
         return !isempty(lookupcube(ivec(sx, sy, sz), 0, origin, size));
     });
-    heights.access(position, drop);
+    naturalwaterheights.put(position, drop);
     return drop;
 }
 
@@ -242,6 +274,14 @@ float getwatermaterialdrop(const materialsurface &m)
 
 float getwatercornerdrop(int x, int y, int z)
 {
+    // Simulation can change heights without changing voxel material. Share resolved corners only within this frame.
+    if(watercornermillis != totalmillis)
+    {
+        watercornerdrops.recycle();
+        watercornermillis = totalmillis;
+    }
+    const watercornerkey position(x, y, z);
+    if(float *cached = watercornerdrops.access(position)) return *cached;
     float drop = 16.0f;
     bool found = false, simulated = false;
     loopi(2) loopj(2)
@@ -261,7 +301,11 @@ float getwatercornerdrop(int x, int y, int z)
             found = true;
         }
     }
-    return simulated ? drop : found ? naturalwatercornerdrop(x, y, z) : 16.0f;
+    drop = simulated ? drop : found ? naturalwatercornerdrop(x, y, z) : 16.0f;
+    // Bound scratch storage even when generating unusually large minimaps.
+    if(watercornerdrops.numelems >= 1 << 17) watercornerdrops.recycle();
+    watercornerdrops.access(position, drop);
+    return drop;
 }
 
 const struct material
@@ -756,6 +800,7 @@ uint matliquidtiles[LIGHTTILE_MAXH], matsolidtiles[LIGHTTILE_MAXH];
 
 int findmaterials()
 {
+    ZoneScopedN("Transparency/Find materials");
     editsurfs.setsize(0);
     loopi(4)
     {
@@ -857,6 +902,7 @@ int findmaterials()
 
 void rendermaterialmask()
 {
+    ZoneScopedN("Transparency/Refraction material mask");
     glDisable(GL_CULL_FACE);
     LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
     loopk(4) { vector<materialsurface> &surfs = glasssurfs[k]; loopv(surfs) drawmaterial(surfs[i], 0.1f); }

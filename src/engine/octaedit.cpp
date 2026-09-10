@@ -797,6 +797,7 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
     ivec dirtymin, dirtymax;
     if(!dirtygeometrybounds(bbmin, bbmax, dirtymin, dirtymax)) return;
+    invalidatewatergeometry(bbmin, bbmax);
     const int sectionsize = getworldsectionsize();
     if(sectionsize)
     {
@@ -838,6 +839,7 @@ void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bo
     {
         markworldchunksdirty(bbmins[i], bbmaxs[i]);
         editinggeometry.invalidate(bbmins[i], bbmaxs[i]);
+        invalidatewatergeometry(bbmins[i], bbmaxs[i]);
         invalidatelocalambient(bbmins[i], bbmaxs[i]);
         streaminggeometry.changed(bbmins[i], bbmaxs[i], sectionsize, worldsize);
     }

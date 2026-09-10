@@ -69,6 +69,7 @@ static int watercelllevel(const fluidcell &cell)
 
 void resetwatersimulation()
 {
+    invalidatewatergeometry();
     fluidcells.clear();
     fluidupdates.setsize(0);
     fluidupdatecursor = 0;
@@ -620,6 +621,7 @@ void updatewatersimulation()
 {
     ZoneScopedN("World/Water simulation");
     if(fluidupdates.empty()) return;
+    invalidatewatercorners();
     const Uint64 start = SDL_GetPerformanceCounter(),
                  allowance = Uint64(fluidupdatebudget * SDL_GetPerformanceFrequency() / 1000.0);
     const int updatebudget = authoritativewatersettings ? authoritativewaterupdates : fluidupdatespertick;
@@ -1017,13 +1019,19 @@ static inline void renderwater(const materialsurface &m, int mat = MAT_WATER)
     bool falling = false;
     if(getwatermateriallevel(m, falling) >= 0 && !falling)
     {
-        flushwater(mat);
+        // Sloped river patches use the same quad format as flat water. Keep them in the current material batch.
+        flushwater(mat, false);
         if(gle::attribbuf.empty()) { gle::defvertex(); gle::begin(GL_QUADS); }
         const float offset = getwatergeometryoffset();
         const int z = m.o.z;
         for(int y = m.o.y; y < m.o.y + m.csize; y += WATER_BLOCK_SIZE)
             for(int x = m.o.x; x < m.o.x + m.rsize; x += WATER_BLOCK_SIZE)
             {
+                if(gle::attribbuf.length() >= (1 << 16) * int(sizeof(vec)))
+                {
+                    xtraverts += gle::end();
+                    gle::begin(GL_QUADS);
+                }
                 const int x1 = min(x + WATER_BLOCK_SIZE, m.o.x + m.rsize), y1 = min(y + WATER_BLOCK_SIZE, m.o.y + m.csize);
                 gle::attribf(x,  y,  z - getwatercornerdrop(x,  y,  z) + offset);
                 gle::attribf(x1, y,  z - getwatercornerdrop(x1, y,  z) + offset);
@@ -1285,6 +1293,7 @@ void renderlava()
 
 void renderwaterfalls()
 {
+    ZoneScopedN("Transparency/Waterfalls");
     loopk(4)
     {
         vector<materialsurface> &surfs = waterfallsurfs[k];
@@ -1336,6 +1345,7 @@ void renderwaterfalls()
 
 void renderwater()
 {
+    ZoneScopedN("Transparency/Water surfaces");
     const bool lodwater = hasworldlodwater();
     if(lodwater) preloadwatershaders(true);
     loopk(4)

@@ -1772,6 +1772,7 @@ void precachetextures()
 
 void allchanged(bool load)
 {
+    invalidatewatergeometry();
     resetgeometrychanges();
     if(mainmenu && !isconnected()) load = false;
     invalidatelocalambient();

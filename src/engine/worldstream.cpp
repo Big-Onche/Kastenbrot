@@ -1002,6 +1002,7 @@ static bool mountworldchunktile(worldchunk &chunk, int section, int tile)
     }
     moveworldcube(lookupworldchunkcube(chunk, pos, WORLD_SECTION_SIZE),
                   lookupcube(runtimepos, WORLD_SECTION_SIZE));
+    invalidatewatergeometry(runtimepos, ivec(runtimepos).add(WORLD_SECTION_SIZE));
     restoreworldwatersources(lookupcube(runtimepos, WORLD_SECTION_SIZE), runtimepos, WORLD_SECTION_SIZE);
     readyworldsectioncollision(lookupcube(runtimepos, WORLD_SECTION_SIZE));
     resetclipplanes();
@@ -1036,6 +1037,7 @@ static bool unmountworldchunktile(worldchunk &chunk, int section, int tile)
     chunk.portalsknown[section] &= ~tilebit;
     detachworldcubegeometry(c);
     moveworldcube(c, lookupworldchunkcube(chunk, pos, WORLD_SECTION_SIZE));
+    invalidatewatergeometry(runtimepos, ivec(runtimepos).add(WORLD_SECTION_SIZE));
     worldsectionowners.remove(key);
     chunk.mountedtiles[section] &= ~tilebit;
     return true;
@@ -2173,6 +2175,7 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
 
 static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = true)
 {
+    invalidatewatergeometry();
     ZoneScopedN("Chunks/Rebase runtime world");
     // Cached cells and captures belong to the old runtime coordinate system.
     resetlocalambient();
