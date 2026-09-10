@@ -1025,6 +1025,20 @@ static bool mountworldchunktile(worldchunk &chunk, int section, int tile)
     return true;
 }
 
+static bool mountworldchunkcolumn(worldchunk &chunk, double absolutex, double absolutey)
+{
+    if(!chunk.root || chunk.loading || chunk.corrupted) return false;
+    int localx = int(floor(absolutex - double(chunk.x) * WORLD_CHUNK_SIZE)),
+        localy = int(floor(absolutey - double(chunk.y) * WORLD_CHUNK_SIZE));
+    if(localx < 0 || localx >= WORLD_CHUNK_SIZE || localy < 0 || localy >= WORLD_CHUNK_SIZE) return false;
+
+    const int tilex = localx / WORLD_SECTION_SIZE,
+              tiley = localy / WORLD_SECTION_SIZE,
+              tile = tiley * WORLD_SECTION_COLUMNS + tilex;
+    loopi(WORLD_SECTION_LAYERS) mountworldchunktile(chunk, i, tile);
+    return !chunk.corrupted;
+}
+
 static bool unmountworldchunktile(worldchunk &chunk, int section, int tile)
 {
     const uint tilebit = 1U << tile;
@@ -2530,35 +2544,51 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
         return;
     }
 
-    double x, y, z;
-    if(!parseworldcoordinate(xtext, x) || !parseworldcoordinate(ytext, y) ||
-       !parseworldcoordinate(ztext, z))
+    double voxelx, voxely, voxelz = 0;
+    const bool findground = !ztext || !*ztext;
+    if(!parseworldcoordinate(xtext, voxelx) || !parseworldcoordinate(ytext, voxely) ||
+       (!findground && !parseworldcoordinate(ztext, voxelz)))
     {
-        conoutf(CON_ERROR, "usage: /teleport <absolute x> <absolute y> <absolute z>");
+        conoutf(CON_ERROR, "usage: /teleport <voxel x> <voxel y> [voxel z]");
         return;
     }
 
+    const double x = voxelx * WORLD_BLOCK_SIZE,
+                 y = voxely * WORLD_BLOCK_SIZE;
+    double z = voxelz * WORLD_BLOCK_SIZE;
+
     if(worldchunks.empty())
     {
-        if(x < 0 || x >= worldsize || y < 0 || y >= worldsize ||
-           z < 0 || z >= worldsize)
+        if(x < 0 || x >= worldsize || y < 0 || y >= worldsize || (!findground && (z < 0 || z >= worldsize)))
         {
-            conoutf(CON_ERROR, "teleport: coordinates must be inside this map (0 <= x, y, z < %d)",
-                    worldsize);
+            conoutf(CON_ERROR, "teleport: coordinates must be inside this map (0 <= x, y, z < %.0f voxels)", double(worldsize) / WORLD_BLOCK_SIZE);
             return;
+        }
+
+        if(findground)
+        {
+            const vec sky(float(x), float(y), worldsize - 1.0f);
+            const float grounddist = raycube(sky, vec(0, 0, -1), worldsize, RAY_CLIPMAT);
+            if(grounddist >= worldsize)
+            {
+                conoutf(CON_ERROR, "teleport: could not find solid ground at voxel %.2f %.2f", voxelx, voxely);
+                return;
+            }
+            const double groundz = sky.z - grounddist;
+            voxelz = groundz / WORLD_BLOCK_SIZE;
+            z = groundz + player->eyeheight + 0.1f;
         }
 
         player->o = vec(float(x), float(y), float(z));
         player->reset();
         player->resetinterp();
-        conoutf("teleported to %.2f %.2f %.2f", x, y, z);
+        conoutf("teleported to voxel %.2f %.2f %.2f", voxelx, voxely, voxelz);
         return;
     }
 
-    if(z < 0 || z >= WORLD_MAP_SIZE)
+    if(!findground && (z < 0 || z >= WORLD_MAP_SIZE))
     {
-        conoutf(CON_ERROR, "teleport: z must be in the generated world band (0 <= z < %d)",
-                WORLD_MAP_SIZE);
+        conoutf(CON_ERROR, "teleport: z must be in the generated world band (0 <= z < %d voxels)", WORLD_HEIGHT_BLOCKS);
         return;
     }
 
@@ -2570,8 +2600,8 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
     if(chunkxd < minchunk || chunkxd > maxchunk ||
        chunkyd < minchunk || chunkyd > maxchunk)
     {
-        double mincoordinate = double(minchunk) * WORLD_CHUNK_SIZE,
-               maxcoordinate = double(maxchunk + 1LL) * WORLD_CHUNK_SIZE;
+        double mincoordinate = double(minchunk) * WORLD_CHUNK_BLOCKS,
+               maxcoordinate = double(maxchunk + 1LL) * WORLD_CHUNK_BLOCKS;
         conoutf(CON_ERROR,
                 "teleport: x and y must be in the safe streamed range [%.0f, %.0f)",
                 mincoordinate, maxcoordinate);
@@ -2597,9 +2627,28 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
     }
 
     rebaseworldchunks(chunkx, chunky, false);
-    player->o = vec(float(x - double(worldfirstchunkx) * WORLD_CHUNK_SIZE),
-                    float(y - double(worldfirstchunky) * WORLD_CHUNK_SIZE),
-                    float(z));
+    const float runtimex = float(x - double(worldfirstchunkx) * WORLD_CHUNK_SIZE),
+                runtimey = float(y - double(worldfirstchunky) * WORLD_CHUNK_SIZE);
+    if(findground)
+    {
+        const int rebaseddestination = findworldchunk(chunkx, chunky);
+        if(!worldchunks.inrange(rebaseddestination) || !mountworldchunkcolumn(worldchunks[rebaseddestination], x, y))
+        {
+            conoutf(CON_ERROR, "teleport: could not mount geometry at voxel %.2f %.2f", voxelx, voxely);
+            return;
+        }
+        const vec sky(runtimex, runtimey, WORLD_MAP_SIZE - 1.0f);
+        const float grounddist = raycube(sky, vec(0, 0, -1), WORLD_MAP_SIZE, RAY_CLIPMAT);
+        if(grounddist >= WORLD_MAP_SIZE)
+        {
+            conoutf(CON_ERROR, "teleport: could not find solid ground at voxel %.2f %.2f", voxelx, voxely);
+            return;
+        }
+        const double groundz = sky.z - grounddist;
+        voxelz = groundz / WORLD_BLOCK_SIZE;
+        z = groundz + player->eyeheight + 0.1f;
+    }
+    player->o = vec(runtimex, runtimey, float(z));
     player->reset();
     player->resetinterp();
 
@@ -2609,8 +2658,7 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
     worlddebugcachemillis = -1;
     rebuildworldchunks(chunkx, chunky, chunkx, chunky, true, true);
 
-    conoutf("teleported to absolute %.2f %.2f %.2f (chunk %d_%d%s)",
-            x, y, z, chunkx, chunky, generated ? ", generated" : "");
+    conoutf("teleported to voxel %.2f %.2f %.2f (chunk %d_%d%s)", voxelx, voxely, voxelz, chunkx, chunky, generated ? ", generated" : "");
 }
 
 COMMANDN(teleport, teleportplayer, "sss");

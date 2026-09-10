@@ -240,22 +240,6 @@ static vec preparedworldspawnposition;
 static vec preparedworldspawnabsolute;
 static float preparedworldspawnyaw = 0, preparedworldspawnpitch = 0;
 
-static bool mountworldspawncolumn(worldchunk &chunk, double absolutex, double absolutey)
-{
-    if(!chunk.root || chunk.loading || chunk.corrupted) return false;
-    int localx = int(floor(absolutex - double(chunk.x) * WORLD_CHUNK_SIZE)),
-        localy = int(floor(absolutey - double(chunk.y) * WORLD_CHUNK_SIZE));
-    if(localx < 0 || localx >= WORLD_CHUNK_SIZE ||
-       localy < 0 || localy >= WORLD_CHUNK_SIZE)
-        return false;
-
-    int tilex = localx / WORLD_SECTION_SIZE,
-        tiley = localy / WORLD_SECTION_SIZE,
-        tile = tiley * WORLD_SECTION_COLUMNS + tilex;
-    loopi(WORLD_SECTION_LAYERS) mountworldchunktile(chunk, i, tile);
-    return !chunk.corrupted;
-}
-
 static bool prepareworldspawn(const worldspawnmetadata &saved)
 {
     if(!player || worldchunks.empty() || !worldroot) return false;
@@ -295,7 +279,7 @@ static bool prepareworldspawn(const worldspawnmetadata &saved)
     const float runtimex = float(absolutex - double(worldfirstchunkx) * WORLD_CHUNK_SIZE),
                 runtimey = float(absolutey - double(worldfirstchunky) * WORLD_CHUNK_SIZE);
     player->o = vec(runtimex, runtimey, WORLD_MAP_SIZE - 1.0f);
-    if(!mountworldspawncolumn(worldchunks[destination], absolutex, absolutey))
+    if(!mountworldchunkcolumn(worldchunks[destination], absolutex, absolutey))
     {
         conoutf(CON_ERROR, "could not mount the geometry beneath the spawn point");
         return false;
