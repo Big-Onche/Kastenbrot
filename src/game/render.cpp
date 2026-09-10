@@ -817,6 +817,8 @@ namespace game
             };
             rendermodelwithskins(worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP, position, yaw, 0, 0, flags, NULL, skins, 3, 0.45f);
         }
+        else if(type == WORLD_ITEM_SCATTER && !getworldscattermodel(worldindex)[0])
+            renderitemsprite(getworldscattericon(worldindex), position, yaw, 0, 0, flags, 0.4f * getinventoryitemworldsize(drop.item));
         else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
         {
             const char *model = getworldscattermodel(worldindex);
@@ -964,11 +966,6 @@ namespace game
         rendermodel(model, ANIM_MAPMODEL | ANIM_LOOP, pose.origin, pose.yaw, pose.pitch, pose.roll, flags, d, NULL, 0, 0, size);
     }
 
-    static void renderheldscatter(gameent *d, int selected, const helditempose &pose, int flags, float size)
-    {
-        renderheldmodel(d, getworldscattermodel(selected), pose, flags, size);
-    }
-
     static void renderhelditem(gameent *d, int selected, const vec &origin, float yaw, float pitch, float roll, int flags, bool hud)
     {
         helditempose pose;
@@ -979,8 +976,12 @@ namespace game
         const int type = getworlditemtype(selected), worldindex = getworlditemindex(selected);
         const float heldsize = getinventoryitemheldsize(selected);
         if(type == WORLD_ITEM_CUBE) renderheldcube(d, worldindex, pose, flags, (hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE) * heldsize, hud);
+        else if(type == WORLD_ITEM_SCATTER && !getworldscattermodel(worldindex)[0])
+            renderitemsprite(getworldscattericon(worldindex), pose.origin, pose.yaw, pose.pitch, pose.roll, flags,
+                             (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize,
+                             extrudedspritegriphoffset, extrudedspritegripvoffset);
         else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
-            renderheldscatter(d, worldindex, pose, flags, (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize);
+            renderheldmodel(d, getworldscattermodel(worldindex), pose, flags, (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize);
         else if(type == WORLD_ITEM_NONE)
             renderitemsprite(getinventoryitemtexture(selected), pose.origin, pose.yaw, pose.pitch, pose.roll, flags,
                              (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * getinventoryitemworldsize(selected) * heldsize,

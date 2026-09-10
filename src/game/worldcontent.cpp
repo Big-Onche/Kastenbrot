@@ -205,6 +205,11 @@ const char *getworldscattericon(int index)
     index = validworldobjectindex(index);
     if(index < 0) return "";
     const worlddefinition &type = *worldscatterdefinitions[index];
+    if(type.scattertexture[0])
+    {
+        formatstring(iconpath, "media/texture/%s", type.scattertexture);
+        return iconpath;
+    }
     if(type.modelicon[0]) return type.modelicon;
     formatstring(iconpath, "media/model/%s/diffuse.png", type.model);
     return iconpath;
@@ -228,8 +233,7 @@ bool isworldplaceable(int index)
 
 bool getworldplaceableblockcollision(int index)
 {
-    return worldscatterdefinitions.inrange(index) && worldscatterdefinitions[index]->placeable &&
-           worldscatterdefinitions[index]->placeableblockcollision;
+    return worldscatterdefinitions.inrange(index) && worldscatterdefinitions[index]->placeable && worldscatterdefinitions[index]->placeableblockcollision;
 }
 
 int numworldplaceables()
@@ -689,6 +693,7 @@ static bool findworldscatterimage(const char *model, const char *basename, strin
 static void resolveworldscattericon(worlddefinition &type)
 {
     type.modelicon[0] = '\0';
+    if(type.scattertexture[0]) return;
     if(findworldscatterimage(type.model, "logo", type.modelicon)) return;
     if(findworldscatterimage(type.model, "diffuse", type.modelicon)) return;
     formatstring(type.modelicon, "media/model/%s/diffuse.png", type.model);
@@ -708,6 +713,13 @@ static void resolveworldscatterrenderdata(int index, worlddefinition &type)
 {
     while(worldscatterrenderdefinitions.length() <= index) worldscatterrenderdefinitions.add();
     worldscatterrenderdefinition &render = worldscatterrenderdefinitions[index];
+    if(type.scattertexture[0])
+    {
+        formatstring(render.texture, "media/texture/%s", type.scattertexture);
+        render.center = vec(0, 0, WORLD_BLOCK_SIZE * 0.5f);
+        render.radius = vec(WORLD_BLOCK_SIZE * 0.5f);
+        return;
+    }
     render.texture[0] = '\0';
     if(!findworldscatterimage(type.model, "diffuse", render.texture) && !findworldscatterimage(type.model, "logo", render.texture))
         formatstring(render.texture, "media/model/%s/diffuse.png", type.model);
@@ -789,7 +801,7 @@ void preloadworldassets()
     }
     loopv(worldscatterdefinitions)
     {
-        preloadmodel(worldscatterdefinitions[i]->model);
+        if(worldscatterdefinitions[i]->model[0]) preloadmodel(worldscatterdefinitions[i]->model);
         const worldscatterrenderdefinition &render = worldscatterrenderdefinitions[i];
         if(render.texture[0]) textureload(render.texture, 3, true, true, true);
     }
@@ -822,7 +834,7 @@ static bool loadworlddefinitions(bool assets = true)
             const worlddefinition &type = *worldcubedefinitions[i];
             worldgentextures.add(worldgencubetextures(type.id, i, i, i));
         }
-        worldgrassscatter = getworldscatteridindex("grass_scatter");
+        worldgrassscatter = getworldscatteridindex("weeds");
         worldrosescatter = getworldscatteridindex("rose");
         worldtulipscatter = getworldscatteridindex("tulip");
         worlddandelionscatter = getworldscatteridindex("dandelion");
@@ -939,6 +951,11 @@ static bool loadworlddefinitions(bool assets = true)
             resolveworldscatterrenderdata(i, type);
             continue;
         }
+        if(type.scattertexture[0] && !type.placeable)
+        {
+            resolveworldscatterrenderdata(i, type);
+            continue;
+        }
         type.mapmodel = registermapmodelpath(type.model);
         if(type.mapmodel < 0 || !loadmapmodel(type.mapmodel))
         {
@@ -949,7 +966,7 @@ static bool loadworlddefinitions(bool assets = true)
         resolveworldscattericon(type);
         resolveworldscatterrenderdata(i, type);
     }
-    worldgrassscatter = getworldscatteridindex("grass_scatter");
+    worldgrassscatter = getworldscatteridindex("weeds");
     worldrosescatter = getworldscatteridindex("rose");
     worldtulipscatter = getworldscatteridindex("tulip");
     worlddandelionscatter = getworldscatteridindex("dandelion");
@@ -999,7 +1016,7 @@ void initserverworlddefinitions()
         const worlddefinition &type = *worldcubedefinitions[i];
         worldgentextures.add(worldgencubetextures(type.id, i, i, i));
     }
-    worldgrassscatter = getworldscatteridindex("grass_scatter");
+    worldgrassscatter = getworldscatteridindex("weeds");
     worldrosescatter = getworldscatteridindex("rose");
     worldtulipscatter = getworldscatteridindex("tulip");
     worlddandelionscatter = getworldscatteridindex("dandelion");
