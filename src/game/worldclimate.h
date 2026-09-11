@@ -21,9 +21,10 @@ namespace game
     {
         enum { BLOCK_UNITS = 16, GROUND_UNITS = 4096 };
         FastNoiseLite regionaltemperature, regionalhumidity;
-        float sealevel, snowheight;
+        float sealevel, temperaturelapserate;
 
-        worldclimate(int seed, float sealevel, float snowheight) : sealevel(sealevel), snowheight(snowheight)
+        worldclimate(int seed, float sealevel, float temperaturelapserate)
+            : sealevel(sealevel), temperaturelapserate(temperaturelapserate)
         {
             regionaltemperature.SetSeed(seed ^ 0x37A91D25);
             regionalhumidity.SetSeed(seed ^ 0x62B4E713);
@@ -46,12 +47,8 @@ namespace game
 
         float gettemperature(const vec &worldpos) const
         {
-            const float regional = getregionaltemperature(worldpos),
-                        snowaltitude = max(snowheight - sealevel, 1.0f),
-                        lapserate = max(0.0065f, regional / snowaltitude);
-            // Compress mountain cooling to the world's snow line. Warm regions reach zero there;
-            // already cold regions retain at least the physical lapse rate and never warm with altitude.
-            return regional - getaltitude(worldpos) * lapserate;
+            // A consistent cooling rate lets each region reach freezing at its own altitude.
+            return getregionaltemperature(worldpos) - getaltitude(worldpos) * temperaturelapserate;
         }
 
         static float transition(float low, float high, float value)

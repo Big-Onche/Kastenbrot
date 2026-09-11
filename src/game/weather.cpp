@@ -1,5 +1,6 @@
 #include "game.h"
 #include "weather.h"
+#include "world.h"
 
 #ifdef SQRT3
 #pragma push_macro("SQRT3")
@@ -57,12 +58,10 @@ FVAR(weatherprecipitationwind, 0.0f, 5.0f, 500.0f);
 FVAR(weatherprecipitationsnowdrift, 0.0f, 5.0f, 100.0f);
 FVAR(weatherprecipitationrainsize, 0.05f, 2.0f, 4.0f);
 FVAR(weatherprecipitationsnowsize, 0.05f, 1.25f, 4.0f);
-FVAR(weatherprecipitationsnowblendheight, 1.0f, 20.0f, 100.0f);
 VAR(weatherprecipitationsnowgroundtime, 0, 1500, 30000);
 VAR(weatherprecipitationsnowgroundfade, 100, 4000, 30000);
 
 extern int mainmenu;
-extern int worldsnowheight;
 extern float cloudwindspeed, cloudwindangle;
 
 namespace game
@@ -408,15 +407,16 @@ namespace game
             return smoothstep(start, end, value);
         }
 
-        static float samplesnowblend(float height)
+        static float samplesnowblend(float x, float y, float height)
         {
-            const float range = max(weatherprecipitationsnowblendheight, 1.0f);
-            return smoothstep(worldsnowheight - range, worldsnowheight + range, height);
+            const vec position(x, y, worldclimate::GROUND_UNITS + height * worldclimate::BLOCK_UNITS);
+            const float temperature = getenvironmentgenerator().environmentclimate.gettemperature(position);
+            return 1.0f - smoothstep(-2.0f, 2.0f, temperature);
         }
 
         float samplecurrentrain(float x, float y, float height)
         {
-            return weatherprecipitation ? samplecurrentprecipitation(x, y) * (1.0f - samplesnowblend(height)) : 0.0f;
+            return weatherprecipitation ? samplecurrentprecipitation(x, y) * (1.0f - samplesnowblend(x, y, height)) : 0.0f;
         }
 
         void addparticles()
@@ -439,7 +439,7 @@ namespace game
                 return;
             }
 
-            const float snowblend = samplesnowblend(playerheight);
+            const float snowblend = samplesnowblend(absolute.x, absolute.y, playerheight);
             const float frameamount = MAIN_RATE * intensity * min(curtime, 100) / 1000.0f;
             rainbudget += frameamount * RAIN_RATE_MULT * (1.0f - snowblend);
             snowbudget += frameamount * SNOW_RATE_MULT * snowblend;

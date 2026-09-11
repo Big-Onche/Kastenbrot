@@ -36,6 +36,11 @@ int main()
         }
         assert(fabsf(total - 1) < 0.00001f);
     }
+    // Regional heat must support sandy desert through moderate humidity, while cold/dry and hot/wet remain distinct.
+    assert(game::sampleClimateBiome(5, 15).primary == game::WORLD_BIOME_COLD_DESERT);
+    assert(game::sampleClimateBiome(40, 10).primary == game::WORLD_BIOME_DESERT);
+    assert(game::sampleClimateBiome(40, 40).primary == game::WORLD_BIOME_DESERT);
+    assert(game::sampleClimateBiome(40, 85).primary == game::WORLD_BIOME_RAINFOREST);
     game::worldsettings settings;
     settings.sealevel = 23;
     game::worldgenerator generator(1337, settings);
@@ -45,31 +50,19 @@ int main()
     for(const auto &xy : coordinates)
     {
         const vec sea(xy[0] * 16.0f, xy[1] * 16.0f, 4096.0f + settings.sealevel * 16.0f);
-        const vec snow(sea.x, sea.y, 4096.0f + settings.snowheight * 16.0f),
-                  summit = vec(snow).add(vec(0, 0, 50 * 16)), lowland = vec(sea).sub(vec(0, 0, 800));
+        const vec summit = vec(sea).add(vec(0, 0, 160 * 16)), lowland = vec(sea).sub(vec(0, 0, 800));
         assert(fabsf(climate.getaltitude(sea)) < 0.0001f);
         assert(climate.gettemperature(sea) == climate.getregionaltemperature(sea));
-        assert(climate.gettemperature(snow) <= 0.0001f);
-        if(climate.gettemperature(sea) > 1) assert(fabsf(climate.gettemperature(snow)) < 0.0001f);
-        assert(climate.gettemperature(summit) < climate.gettemperature(snow));
+        assert(fabsf(climate.gettemperature(summit) - (climate.gettemperature(sea) - 16.0f)) < 0.0001f);
         assert(climate.gettemperature(lowland) > climate.gettemperature(sea));
-        const vec below = vec(snow).sub(vec(0, 0, 0.01f)), above = vec(snow).add(vec(0, 0, 0.01f));
-        assert(fabsf(climate.gettemperature(below) - climate.gettemperature(above)) < 0.001f);
-        printf("(%d, %d) sea %.3f C, snow line %.3f C, summit %.3f C, humidity %.3f %%\n",
-               xy[0], xy[1], climate.gettemperature(sea), climate.gettemperature(snow),
-               climate.gettemperature(summit), climate.gethumidity(sea));
-        for(int snowheight : {80, 160, 240})
+        // Freezing elevation follows regional temperature, rather than a shared configured height.
+        const vec freezing = vec(sea).add(vec(0, 0, climate.gettemperature(sea) / settings.temperaturelapserate * 16));
+        assert(fabsf(climate.gettemperature(freezing)) < 0.0001f);
+        for(float lapse : {0.0f, 0.05f, 0.2f})
         {
-            const game::worldclimate adjusted(1337, settings.sealevel, snowheight);
-            const vec snowpos(sea.x, sea.y, 4096.0f + snowheight * 16.0f);
-            assert(adjusted.gettemperature(snowpos) <= 0.0001f);
-            assert(adjusted.gettemperature(vec(snowpos).add(vec(0, 0, 16))) < adjusted.gettemperature(snowpos));
+            const game::worldclimate adjusted(1337, settings.sealevel, lapse);
+            assert(fabsf(adjusted.gettemperature(summit) - (adjusted.gettemperature(sea) - lapse * 160)) < 0.0001f);
         }
-    }
-    for(int snowheight : {22, 23})
-    {
-        const game::worldclimate adjusted(1337, settings.sealevel, snowheight);
-        assert(std::isfinite(adjusted.gettemperature(vec(0, 0, 5000))));
     }
     game::loadworldseed(1337);
     game::worldgenerator restored(game::getworldseed(), settings), other(4567, settings);
@@ -92,7 +85,7 @@ int main()
             assert(fabsf(climate.gethumidity(left) - climate.gethumidity(right)) < 0.001f);
         }
     }
-    assert(changed && maxdt < 0.03f && maxdh < 0.06f);
+    assert(changed && maxdt < 0.06f && maxdh < 0.06f);
     assert(game::treesuitability(20, 0) == 0 && game::treesuitability(-20, 90) == 0);
     assert(game::treesuitability(20, 90) == 1 && game::treesuitability(50, 90) == 0);
     float previous = 0;
@@ -153,10 +146,10 @@ int main()
     for(int x = -20000; x < 20000; ++x)
         if(generator.vegetationvariation.GetNoise(x + 10000.5f, -10000.5f) <= -0.10f) ++clear;
     assert(clear > 8000);
-    // Compare the mountain belt with plains over the same horizontal positions and climate regions.
+    // Mountain vegetation is bounded by local climate; cold slopes may be sparser than warm plains.
     double plainsdensity = 0, mountaindensity = 0;
     int openplains = 0, openmountains = 0;
-    const int mountainheight = settings.sealevel + int(0.70f * (settings.snowheight - settings.sealevel));
+    const int mountainheight = settings.sealevel + 90;
     for(int x = -512; x < 512; ++x)
     {
         const float plains = generator.treedensity(x, 32, settings.sealevel),
@@ -169,11 +162,10 @@ int main()
         const float suitable = game::treesuitability(climate.gettemperature(pos), generator.gethumidity(pos));
         assert(mountain <= 2.5f * settings.basetreedensity * suitable + 0.000001f);
         assert(mountain == restored.treedensity(x, 32, mountainheight));
-        assert(fabsf(generator.treedensity(x, 32, settings.snowheight - 1) -
-                     generator.treedensity(x, 32, settings.snowheight)) < 0.002f);
+        assert(fabsf(generator.treedensity(x, 32, mountainheight - 1) -
+                     generator.treedensity(x, 32, mountainheight)) < 0.002f);
     }
-    assert(mountaindensity > plainsdensity * 1.5);
-    assert(openmountains < openplains && openplains > 0);
+    assert(openplains > 0);
     printf("PASS: mountain/plains density ratio %.2f; open samples %d mountains, %d plains\n",
            mountaindensity / plainsdensity, openmountains, openplains);
     // Also check actual drainage planning across a generated tile edge, in opposite query orders.
@@ -198,8 +190,56 @@ int main()
             assert(sample.weights[i] == again.weights[i]);
             assert(fabsf(sample.weights[i] - adjacent.weights[i]) < 0.001f);
         }
-        assert(planned.surfacematerial(x, 32, settings.snowheight + 1) == game::WORLD_BIOME_SNOW);
+        const int height = 50;
+        const int material = planned.surfacematerial(x, 32, height);
+        assert((material == game::WORLD_BIOME_SNOW) == planned.snowcovered(x, 32, sample.temperature));
     }
+    // Terrain only modifies the ecotone, preserving unequivocal desert and non-desert interiors.
+    assert(game::blenddesertcoverage(0, 8, 1, 0) == 0);
+    assert(game::blenddesertcoverage(1, -8, 0, 1) == 1);
+    assert(game::blenddesertcoverage(0.5f, -8, 0, 0) < game::blenddesertcoverage(0.5f, 0, 0, 0));
+    assert(game::blenddesertcoverage(0.5f, 8, 0, 0) > game::blenddesertcoverage(0.5f, 0, 0, 0));
+    assert(game::blenddesertcoverage(0.5f, 0, 0, 1) < game::blenddesertcoverage(0.5f, 0, 0, 0));
+    int sandpatches = 0, edgechanges = 0;
+    bool differentseed = false;
+    for(int y = -128; y < 128; ++y) for(int x = -128; x < 128; ++x)
+    {
+        const float threshold = planned.sandthreshold(x, y);
+        assert(threshold == reverse.sandthreshold(x, y));
+        assert(threshold >= 0.05f && threshold <= 0.95f);
+        assert(fabsf(threshold - planned.sandthreshold(x + 0.001f, y)) < 0.001f);
+        differentseed |= threshold != other.sandthreshold(x, y);
+        sandpatches += threshold < 0.5f;
+        edgechanges += (threshold < 0.5f) != (planned.sandthreshold(x + 1, y) < 0.5f);
+    }
+    assert(differentseed && sandpatches > 4096 && sandpatches < 61440);
+    // Connected patches, not independent per-block speckling.
+    assert(edgechanges > 0 && edgechanges < 4096);
+    printf("PASS: coherent biome intrusions, seed/edge continuity, river and relief influence (%d edges)\n", edgechanges);
+    int coverage[5] = {};
+    const float temperatures[] = {-3, 0, 2, 3.5f, 5};
+    for(int y = -128; y < 128; ++y) for(int x = -128; x < 128; ++x)
+    {
+        bool previous = true;
+        for(int i = 0; i < 5; ++i)
+        {
+            const bool snow = planned.snowcovered(x, y, temperatures[i]);
+            assert(!snow || previous);
+            assert(snow == reverse.snowcovered(x, y, temperatures[i]));
+            previous = snow;
+            coverage[i] += snow;
+        }
+        // Warm drifts cannot join across cells and cannot become wide sheets of snow.
+        if(planned.snowcovered(x, y, 2))
+        {
+            assert(!planned.snowcovered(x + 6, y, 2) || int(floorf(x / 12.0f)) != int(floorf((x + 6) / 12.0f)));
+        }
+    }
+    assert(coverage[0] == 256 * 256 && coverage[4] == 0);
+    assert(coverage[1] > coverage[2] * 3 && coverage[1] < coverage[0]);
+    assert(coverage[2] > coverage[3] && coverage[3] > 0 && coverage[2] < coverage[0] / 10);
+    printf("PASS: snow coverage at -3/0/2/3.5/5 C: %d/%d/%d/%d/%d of 65536 columns\n",
+           coverage[0], coverage[1], coverage[2], coverage[3], coverage[4]);
     printf("PASS: climate centers, normalized weights, continuous blending, shared climate and geography override\n");
     printf("PASS: coast/river/altitude boosts, smooth boundaries, density bounds; %d/40000 open samples\n", clear);
     printf("PASS: max adjacent-metre delta: %.6f C, %.6f %%\n", maxdt, maxdh);

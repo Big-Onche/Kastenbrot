@@ -80,7 +80,7 @@ namespace game
         float tectonicactivitythreshold, maxlanduplift, maxoceansubsidence;
         float tectoniccavestrength, tectonicfracturestrength, coastprotectionwidth;
         float cliffchance, cliffmaxheight;
-        float rockfrequency;
+        float rockfrequency, temperaturelapserate;
         float basetreedensity;
         float grassfrequency, grassdensity, grassmaxoffset;
         float flowerchance, roseweight, tulipweight, dandelionweight;
@@ -89,7 +89,7 @@ namespace game
         float tunnelfrequency, tunnelwidth, caveentrancewidth;
         float lavalakeshallowchance, lavalakedeepchance;
         float lavalakeshapefrequency, lavalakeshapevariation;
-        int sealevel, soildepth, snowheight, stonelow, stonehigh;
+        int sealevel, soildepth, stonelow, stonehigh;
         int biomeblend, coastwidth, coastvariation;
         int beachminheight, beachmaxheight;
         int pinestartheight, pinefullheight;
@@ -119,7 +119,8 @@ namespace game
         FastNoiseLite caves, largecaves, tunnela, tunnelb, lakeshape;
         FastNoiseLite fracturecorridors, fracturevertical;
         worldclimate environmentclimate;
-        FastNoiseLite vegetationvariation;
+        FastNoiseLite vegetationvariation, snowpatches;
+        FastNoiseLite biomeintrusions, biomedetail, biomeedgewarp;
         worldsettings settings;
         int seed;
         float foldcos, foldsin;
@@ -149,6 +150,11 @@ namespace game
         int biome(int x, int y, int height) const;
         // Legacy material codes only: snow is temperature driven, independent of ecosystem identity.
         int surfacematerial(int x, int y, int height) const;
+        // Continuous sand influence and a coherent material threshold, shared by surface and vegetation queries.
+        float sandcoverage(int x, int y, int height, const BiomeSample &soil) const;
+        float sandthreshold(float x, float y) const;
+        // Surface snow mask in absolute block coordinates; raw climate is never modified.
+        bool snowcovered(int x, int y, float temperature) const;
         bool cliff(int x, int y, int height, bool *face = NULL) const;
         bool rock(int x, int y, int height) const;
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;
