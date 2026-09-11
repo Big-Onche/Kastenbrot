@@ -216,6 +216,29 @@ static vec2 worldlodtexcoord(const vec &position, int orient)
 static void addworldlodquad(worldlodcpumesh &mesh, const vec &a, const vec &b, const vec &c, const vec &d, const vec &normal, int material,
                             int orient)
 {
+    // Match near terrain's color spacing even when LOD1 merges a large flat grass surface.
+    if(material == WORLD_LOD_GRASS_TOP || material == WORLD_LOD_GRASS_SIDE)
+    {
+        const vec ab = vec(b).sub(a), ad = vec(d).sub(a);
+        const float width = max(max(fabsf(ab.x), fabsf(ab.y)), fabsf(ab.z)),
+                    height = max(max(fabsf(ad.x), fabsf(ad.y)), fabsf(ad.z));
+        if(width > 64.0f)
+        {
+            const float fraction = 64.0f * floorf(ceilf(width / 64.0f) * 0.5f) / width;
+            const vec e = vec().lerp(a, b, fraction), f = vec().lerp(d, c, fraction);
+            addworldlodquad(mesh, a, e, f, d, normal, material, orient);
+            addworldlodquad(mesh, e, b, c, f, normal, material, orient);
+            return;
+        }
+        if(height > 64.0f)
+        {
+            const float fraction = 64.0f * floorf(ceilf(height / 64.0f) * 0.5f) / height;
+            const vec e = vec().lerp(a, d, fraction), f = vec().lerp(b, c, fraction);
+            addworldlodquad(mesh, a, b, f, e, normal, material, orient);
+            addworldlodquad(mesh, e, f, c, d, normal, material, orient);
+            return;
+        }
+    }
     const uint first = mesh.vertices.length();
     mesh.vertices.add(worldlodvertex(a, normal, worldlodtexcoord(a, orient), material));
     mesh.vertices.add(worldlodvertex(b, normal, worldlodtexcoord(b, orient), material));
@@ -668,6 +691,67 @@ static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Ui
     return !SDL_AtomicGet(&job.cancelled);
 }
 
+static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
+{
+    const vec origin(float(double(job.key.x) * WORLD_CHUNK_SIZE), float(double(job.key.y) * WORLD_CHUNK_SIZE), 0);
+    vec averages[4];
+    if(job.key.lod == 2)
+    {
+        // Four shared regional averages, sixteen climate samples total regardless of mesh resolution.
+        // Neighbouring chunks compute identical corner averages, so the cheap far color has no hard zone border.
+        loopi(4)
+        {
+            averages[i] = vec(0, 0, 0);
+            loopj(4)
+            {
+                const int x = (job.key.x + (i & 1)) * WORLD_CHUNK_BLOCKS + (j & 1 ? 1 : -1) * WORLD_CHUNK_BLOCKS / 4,
+                          y = (job.key.y + (i >> 1)) * WORLD_CHUNK_BLOCKS + (j & 2 ? 1 : -1) * WORLD_CHUNK_BLOCKS / 4;
+                int height = 0;
+                if(!game::sampleterrainheight(generation, x, y, height)) return;
+                const vec absolute(float(x) * WORLD_BLOCK_SIZE, float(y) * WORLD_BLOCK_SIZE,
+                                   WORLD_GROUND_HEIGHT + float(height) * WORLD_BLOCK_SIZE);
+                averages[i].add(game::samplegrassgenerationcolor(generation, absolute));
+            }
+            averages[i].mul(0.25f);
+        }
+    }
+    hashtable<ivec, vec> samples(1024);
+    loopv(job.mesh.vertices)
+    {
+        if(SDL_AtomicGet(&job.cancelled)) return;
+        worldlodvertex &vertex = job.mesh.vertices[i];
+        if(vertex.material.x != WORLD_LOD_GRASS_TOP && vertex.material.x != WORLD_LOD_GRASS_SIDE) continue;
+        vec color(0, 0, 0);
+        if(job.key.lod == 2)
+        {
+            const float x = clamp(vertex.position.x / WORLD_CHUNK_SIZE, 0.0f, 1.0f),
+                        y = clamp(vertex.position.y / WORLD_CHUNK_SIZE, 0.0f, 1.0f);
+            color.lerp(vec().lerp(averages[0], averages[1], x), vec().lerp(averages[2], averages[3], x), y);
+        }
+        else
+        {
+            // Same four-metre lattice and interpolation as near terrain, using only this worker's generator.
+            const vec grid = vec(vertex.position).add(origin).div(64.0f);
+            const ivec base(int(floorf(grid.x)), int(floorf(grid.y)), int(floorf(grid.z)));
+            const vec fraction = vec(grid).sub(vec(base));
+            loopj(8)
+            {
+                const ivec key(base.x + (j & 1), base.y + ((j >> 1) & 1), base.z + ((j >> 2) & 1));
+                const float weight = (j & 1 ? fraction.x : 1 - fraction.x) * (j & 2 ? fraction.y : 1 - fraction.y) *
+                                     (j & 4 ? fraction.z : 1 - fraction.z);
+                if(weight <= 0) continue;
+                vec *sample = samples.access(key);
+                if(!sample) sample = &samples.access(key, game::samplegrassgenerationcolor(generation, vec(key).mul(64.0f)));
+                color.add(vec(*sample).mul(weight));
+            }
+        }
+        // Material occupies R; the three spare bytes carry RGB without growing the LOD vertex.
+        vertex.material.y = uchar(color.x * 255 + 0.5f);
+        vertex.material.z = uchar(color.y * 255 + 0.5f);
+        vertex.material.w = uchar(color.z * 255 + 0.5f);
+    }
+}
+
 static bool buildworldlodmesh(worldlodjob &job)
 {
     const Uint64 frequency = SDL_GetPerformanceFrequency(), generationstart = SDL_GetPerformanceCounter();
@@ -676,9 +760,10 @@ static bool buildworldlodmesh(worldlodjob &job)
     if(job.key.lod == 1)
     {
         const bool succeeded = buildworldlod1mesh(job, generation, frequency);
+        if(succeeded) colorworldlodgrass(job, generation);
         job.generationmillis = (SDL_GetPerformanceCounter() - generationstart) * 1000.0 / frequency;
         game::destroyworldgeneration(generation);
-        return succeeded;
+        return succeeded && !SDL_AtomicGet(&job.cancelled);
     }
 
     const int resolution = job.key.resolution, stride = resolution + 1, samples = stride * stride;
@@ -842,6 +927,7 @@ static bool buildworldlodmesh(worldlodjob &job)
         mesh.bbmax = vec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, max(maximumz, waterz));
     }
     job.buildmillis = (SDL_GetPerformanceCounter() - buildstart) * 1000.0 / frequency;
+    colorworldlodgrass(job, generation);
     job.generationmillis = (SDL_GetPerformanceCounter() - generationstart) * 1000.0 / frequency;
     game::destroyworldgeneration(generation);
     return !SDL_AtomicGet(&job.cancelled);
@@ -1551,6 +1637,11 @@ static GLuint worldlodtexture(const char *id, bool side = false)
 {
     VSlot &vslot = lookupvslot(findworldlodtextureslot(id, side), true);
     Texture *texture = vslot.slot && !vslot.slot->sts.empty() && vslot.slot->sts[0].t ? vslot.slot->sts[0].t : notexture;
+    if(side && !strcmp(id, "grass") && texture != notexture && !strstr(texture->name, "<grasslayers>"))
+    {
+        defformatstring(name, "<grasslayers>%s", texture->name);
+        texture = textureload(name, 0, true, false);
+    }
     return texture->id;
 }
 

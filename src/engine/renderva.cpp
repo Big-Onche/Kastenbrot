@@ -1541,7 +1541,7 @@ static void changevbuf(renderstate &cur, int pass, vtxarray *va)
     if(pass==RENDERPASS_GBUFFER || pass==RENDERPASS_RSM || pass==RENDERPASS_SMALPHA)
     {
         gle::normalpointer(sizeof(vertex), vdata->norm.v, GL_BYTE);
-        gle::texcoord0pointer(sizeof(vertex), vdata->tc.v);
+        gle::texcoord0pointer(sizeof(vertex), vdata->tc.v, GL_FLOAT, 3);
         gle::tangentpointer(sizeof(vertex), vdata->tangent.v, GL_BYTE);
     }
 }
@@ -1744,6 +1744,9 @@ static inline void changeshader(renderstate &cur, int pass, geombatch &b)
         extern Shader *rsmworldshader;
         if(b.es.layer&LAYER_BOTTOM) rsmworldshader->setvariant(0, 0, slot, vslot);
         else rsmworldshader->set(slot, vslot);
+        const bool climate = slot.shader && !strncmp(slot.shader->name, "grassclimateworld", 17);
+        LOCALPARAMF(grassclimateparams, climate ? 1.0f : 0.0f,
+                    climate && !strcmp(slot.shader->name, "grassclimateworldside") ? 1.0f : 0.0f);
     }
     else if(cur.alphaing) slot.shader->setvariant(cur.alphaing > 1 && vslot.refractscale > 0 ? 1 : 0, 1, slot, vslot);
     else if(b.es.layer&LAYER_BOTTOM) slot.shader->setvariant(0, 0, slot, vslot);

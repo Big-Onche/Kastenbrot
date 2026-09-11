@@ -1,6 +1,7 @@
 // generation.cpp: Kastenbrot procedural world generation
 
 #include "game.h"
+#include "world/grasscolor.h"
 #include "engine.h"
 #include "worlddef.h"
 #ifdef STANDALONE
@@ -2502,6 +2503,12 @@ namespace game
             }
         }
         return !generation->iscanceled();
+    }
+
+    vec samplegrassgenerationcolor(worldgencontext *generation, const vec &absolute)
+    {
+        worldgenerator &generator = generation->generator;
+        return getgrassclimatecolor(generator.environmentclimate.gettemperature(absolute), generator.gethumidity(absolute));
     }
 
     bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height)

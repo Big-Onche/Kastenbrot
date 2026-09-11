@@ -2,6 +2,7 @@
 #include <vector>
 #include <set>
 #include "game.h"
+#include "world/grasscolor.h"
 #include "world/generation.h"
 
 VARP(worldseed, 0, 1337, INT_MAX);
@@ -1004,6 +1005,8 @@ namespace game
         return foliage;
     }
 
+    static uint grassclimaterevision = 0;
+
     worldgenerator &getenvironmentgenerator()
     {
         // Main-thread environment queries retain drainage plans as the camera moves.
@@ -1020,8 +1023,47 @@ namespace game
         {
             delete state.generator;
             state.generator = new worldgenerator(getworldseed(), settings);
+            ++grassclimaterevision;
         }
         return *state.generator;
+    }
+
+    vec getgrassworldcolor(const vec &absolute)
+    {
+        // A bounded, disposable cache of the existing climate, independent of terrain residency and LOD.
+        // Fixed four-metre nodes give continuous trilinear color and avoid repeated hydrology/noise queries.
+        enum { STEP = 64, CACHE_SIZE = 8192 };
+        struct entry
+        {
+            ivec key;
+            vec color;
+            uint revision;
+            entry() : key(0, 0, 0), color(0, 0, 0), revision(0) {}
+        };
+        static entry cache[CACHE_SIZE];
+        worldgenerator &generator = getenvironmentgenerator();
+        const vec grid = vec(absolute).div(float(STEP));
+        const ivec base(int(floorf(grid.x)), int(floorf(grid.y)), int(floorf(grid.z)));
+        const vec fraction = vec(grid).sub(vec(base));
+        vec result(0, 0, 0);
+        loopi(8)
+        {
+            const ivec key(base.x + (i & 1), base.y + ((i >> 1) & 1), base.z + ((i >> 2) & 1));
+            const float weight = (i & 1 ? fraction.x : 1 - fraction.x) * (i & 2 ? fraction.y : 1 - fraction.y) *
+                                 (i & 4 ? fraction.z : 1 - fraction.z);
+            if(weight <= 0) continue;
+            const uint hash = uint(key.x) * 0x8DA6B343U ^ uint(key.y) * 0xD8163841U ^ uint(key.z) * 0xCB1AB31FU;
+            entry &sample = cache[hash & (CACHE_SIZE - 1)];
+            if(sample.revision != grassclimaterevision || sample.key != key)
+            {
+                const vec position = vec(key).mul(float(STEP));
+                sample.color = getgrassclimatecolor(generator.environmentclimate.gettemperature(position), generator.gethumidity(position));
+                sample.key = key;
+                sample.revision = grassclimaterevision;
+            }
+            result.add(vec(sample.color).mul(weight));
+        }
+        return result;
     }
 
     int getworldseed()

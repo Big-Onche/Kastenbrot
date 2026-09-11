@@ -1,6 +1,7 @@
 // worldio.cpp: loading & saving of maps and savegames
 
 #include "engine.h"
+#include "world/grasscolor.h"
 #include "worlddef.h"
 #ifndef STANDALONE
 #include "world/generation.h"

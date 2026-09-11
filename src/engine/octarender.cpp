@@ -1,11 +1,27 @@
 // octarender.cpp: fill vertex arrays with different cube surfaces.
 
 #include "engine.h"
+#include "world/grasscolor.h"
 #include "worldruntime.h"
 
 #define OCTARENDER_MODULE_IMPLEMENTATION
 #include "worldvbo.cpp"
 #undef OCTARENDER_MODULE_IMPLEMENTATION
+
+static bool grassclimateslot(const VSlot &slot)
+{
+    return slot.slot->shader && !strncmp(slot.slot->shader->name, "grassclimateworld", 17);
+}
+
+static float grassclimatevertex(const vec &position)
+{
+    vec absolute = position;
+    worldpositiontoabsolute(absolute);
+    // tc.z is unused by opaque world surfaces. A float stores all 24 RGB bits exactly.
+    const vec color = game::getgrassworldcolor(absolute);
+    const bvec rgb(uchar(color.x * 255 + 0.5f), uchar(color.y * 255 + 0.5f), uchar(color.z * 255 + 0.5f));
+    return float(rgb.tohexcolor());
+}
 
 struct verthash
 {
@@ -620,6 +636,7 @@ void addtris(VSlot &vslot, int orient, const sortkey &key, vertex *verts, int *i
                     vertex vt;
                     vt.pos = vec(d).mul(t.offset/8.0f).add(o);
                     vt.tc.lerp(v1.tc, v2.tc, offset);
+                    if(grassclimateslot(vslot)) vt.tc.z = grassclimatevertex(vt.pos);
                     vt.norm.lerp(v1.norm, v2.norm, offset);
                     vt.tangent.lerp(v1.tangent, v2.tangent, offset);
                     if(v1.tangent.w != v2.tangent.w)
@@ -751,6 +768,70 @@ void guessnormals(const vec *pos, int numverts, vec *normals)
 
 void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, ushort texture, vertinfo *vinfo, int numverts, int tj = -1, ushort envmap = EMID_NONE, int grassy = 0, bool alpha = false, int layer = LAYER_TOP)
 {
+    // Keep merged/LOD grass polygons on a fixed absolute grid. Large faces must not interpolate
+    // across whole sections while their neighbours sample the same climate at much shorter edges.
+    if(grassclimateslot(vslot) && convex && numverts > 3)
+    {
+        // Preserve the original triangle fan on non-planar edited faces before clipping it.
+        for(int k = 1; k + 1 < numverts; ++k)
+        {
+            vec triangle[3] = { pos[0], pos[k], pos[k + 1] };
+            vertinfo triangleinfo[3];
+            if(vinfo) { triangleinfo[0] = vinfo[0]; triangleinfo[1] = vinfo[k]; triangleinfo[2] = vinfo[k + 1]; }
+            addcubeverts(vslot, orient, size, triangle, 0, texture, vinfo ? triangleinfo : NULL, 3, -1, envmap, grassy, alpha, layer);
+        }
+        return;
+    }
+    if(grassclimateslot(vslot)) loop(axis, 3)
+    {
+        float low = pos[0][axis], high = low;
+        loopk(numverts) { low = min(low, pos[k][axis]); high = max(high, pos[k][axis]); }
+        vec origin(0, 0, 0);
+        worldpositiontoabsolute(origin);
+        float split = floorf(((low + high) * 0.5f + origin[axis]) / 64.0f) * 64.0f - origin[axis];
+        if(split <= low) split += 64.0f;
+        if(split >= high) continue;
+        loop(side, 2)
+        {
+            vec clipped[MAXFACEVERTS + 1];
+            vertinfo normals[MAXFACEVERTS + 1];
+            int count = 0;
+            loopk(numverts)
+            {
+                const int next = (k + 1) % numverts;
+                const float a = pos[k][axis] - split, b = pos[next][axis] - split;
+                if(side ? a >= 0 : a <= 0)
+                {
+                    clipped[count] = pos[k];
+                    if(vinfo) normals[count] = vinfo[k];
+                    ++count;
+                }
+                if((a < 0 && b > 0) || (a > 0 && b < 0))
+                {
+                    const float fraction = a / (a - b);
+                    clipped[count].lerp(pos[k], pos[next], fraction);
+                    clipped[count][axis] = split;
+                    if(vinfo)
+                    {
+                        normals[count] = vinfo[k];
+                        normals[count].norm = vinfo[k].norm && vinfo[next].norm ?
+                            encodenormal(vec().lerp(decodenormal(vinfo[k].norm), decodenormal(vinfo[next].norm), fraction).normalize()) : 0;
+                    }
+                    ++count;
+                }
+            }
+            if(count >= 3 && count <= MAXFACEVERTS)
+                addcubeverts(vslot, orient, size, clipped, convex, texture, vinfo ? normals : NULL, count, -1, envmap, grassy, alpha, layer);
+            else if(count > MAXFACEVERTS) for(int k = 1; k + 1 < count; ++k)
+            {
+                vec triangle[3] = { clipped[0], clipped[k], clipped[k + 1] };
+                vertinfo triangleinfo[3];
+                if(vinfo) { triangleinfo[0] = normals[0]; triangleinfo[1] = normals[k]; triangleinfo[2] = normals[k + 1]; }
+                addcubeverts(vslot, orient, size, triangle, 0, texture, vinfo ? triangleinfo : NULL, 3, -1, envmap, grassy, alpha, layer);
+            }
+        }
+        return;
+    }
     vec4 sgen, tgen;
     calctexgen(vslot, orient, sgen, tgen);
     vertex verts[MAXFACEVERTS];
@@ -761,6 +842,7 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
         vertex &v = verts[k];
         v.pos = pos[k];
         v.tc = vec(sgen.dot(v.pos), tgen.dot(v.pos), 0);
+        if(grassclimateslot(vslot)) v.tc.z = grassclimatevertex(v.pos);
         if(vinfo && vinfo[k].norm)
         {
             vec n = decodenormal(vinfo[k].norm), t = orientation_tangent[vslot.rotation][orient];

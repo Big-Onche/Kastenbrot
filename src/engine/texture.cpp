@@ -536,6 +536,22 @@ void texcolormask(ImageData &s, const vec &color1, const vec &color2)
     s.replace(d);
 }
 
+void texgrasslayers(ImageData &s)
+{
+    // Opaque grass/dirt albedo only: RGB stores dirt, A stores grayscale grass luminance.
+    // Separating before filtering keeps both contributions correct at every mip level.
+    if(s.bpp < 3) return;
+    ImageData d(s.w, s.h, 4);
+    readwritetex(d, s,
+        const int chroma = max(max(src[0], src[1]), src[2]) - min(min(src[0], src[1]), src[2]);
+        const float t = clamp(chroma / 5.1f, 0.0f, 1.0f);
+        const float dirt = t * t * (3.0f - 2.0f * t);
+        loopk(3) dst[k] = uchar(src[k] * dirt + 0.5f);
+        dst[3] = uchar((src[0] + src[1] + src[2]) * ((1.0f - dirt) / 3.0f) + 0.5f);
+    );
+    s.replace(d);
+}
+
 void texdup(ImageData &s, int srcchan, int dstchan)
 {
     if(srcchan==dstchan || max(srcchan, dstchan) >= s.bpp) return;
@@ -1670,6 +1686,7 @@ static bool texturedata(ImageData &d, const char *tname, bool msg = true, int *c
         #define COPYTEXARG(dst, src) copystring(dst, stringslice(src, strcspn(src, ":,><")))
         PARSETEXCOMMANDS(pcmds);
         if(matchstring(cmd, len, "dds")) dds = true;
+        else if(matchstring(cmd, len, "grasslayers")) raw = true;
         else if(matchstring(cmd, len, "thumbnail"))
         {
             raw = true;
@@ -1723,6 +1740,7 @@ static bool texturedata(ImageData &d, const char *tname, bool msg = true, int *c
         if(matchstring(cmd, len, "mad")) texmad(d, parsevec(arg[0]), parsevec(arg[1]));
         else if(matchstring(cmd, len, "colorify")) texcolorify(d, parsevec(arg[0]), parsevec(arg[1]));
         else if(matchstring(cmd, len, "colormask")) texcolormask(d, parsevec(arg[0]), *arg[1] ? parsevec(arg[1]) : vec(1, 1, 1));
+        else if(matchstring(cmd, len, "grasslayers")) texgrasslayers(d);
         else if(matchstring(cmd, len, "normal"))
         {
             int emphasis = atoi(arg[0]);

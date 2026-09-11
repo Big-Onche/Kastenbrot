@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "world/grasscolor.h"
 
 VARP(grass, 0, 1, 1);
 VAR(dbggrass, 0, 0, 1);
@@ -179,12 +180,17 @@ static void gengrassquads(grassgroup *&group, const grasswedge &w, const grasstr
               tc1 = tc.dot(p1) + tcoffset, tc2 = tc.dot(p2) + tcoffset,
               fade = dist - t > taperdist ? (grassdist - (dist - t))*taperscale : 1,
               height = grassheight * fade;
-        bvec4 color(grasscolour, 255);
+        vec absolute1 = p1, absolute2 = p2;
+        worldpositiontoabsolute(absolute1);
+        worldpositiontoabsolute(absolute2);
+        const vec modulation = grasscolour.tocolor();
+        const bvec4 color1(bvec::fromcolor(game::getgrassworldcolor(absolute1).mul(modulation)), 255),
+                    color2(bvec::fromcolor(game::getgrassworldcolor(absolute2).mul(modulation)), 255);
 
         #define GRASSVERT(n, tcv, modify) { \
             grassvert &gv = grassverts.add(); \
             gv.pos = p##n; \
-            gv.color = color; \
+            gv.color = color##n; \
             gv.tc = vec2(tc##n, tcv); \
             gv.bounds = w.vertbounds; \
             modify; \

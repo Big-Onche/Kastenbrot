@@ -627,10 +627,17 @@ bool isworldobjecthandbreakable(int type, int index)
 
 static int loadworldtextureslot(const char *path, float texsize, bool alpha)
 {
-    const char *texture = escapestring(path);
+    const bool grassside = !alpha && !strcmp(path, "terrain/grass_dirt.png");
+    defformatstring(texturepath, "%s%s", grassside ? "<grasslayers>" : "", path);
+    const char *texture = escapestring(texturepath);
     string command;
     if(alpha) formatstring(command, "setshader leafworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
-    else formatstring(command, "setshader stdworld; texture 0 %s; texscale %.9g", texture, texsize);
+    else
+    {
+        const char *shader = !strcmp(path, "terrain/grass.png") ? "grassclimateworld" :
+                             !strcmp(path, "terrain/grass_dirt.png") ? "grassclimateworldside" : "stdworld";
+        formatstring(command, "setshader %s; texture 0 %s; texscale %.9g", shader, texture, texsize);
+    }
     execute(command);
     return slots.last()->variants->index;
 }

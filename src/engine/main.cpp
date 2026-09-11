@@ -343,7 +343,8 @@ static void renderproceduralbackground(int w, int h)
     }
 
     // Grass surface
-    setbackgroundtiletexture("media/texture/terrain/grass_dirt.png");
+    setbackgroundtiletexture("<grasslayers>media/texture/terrain/grass_dirt.png");
+    SETSHADER(hudgrass);
 
     loopi(columns)
     {
@@ -379,6 +380,7 @@ void renderbackgroundview(int w, int h, const char *caption, Texture *mapshot, c
     glDisable(GL_BLEND);
 
     renderproceduralbackground(w, h);
+    resethudshader();
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

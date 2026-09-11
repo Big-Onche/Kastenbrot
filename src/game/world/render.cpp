@@ -66,9 +66,10 @@ struct worldscattermeshvertex
 {
     vec position, normal;
     vec2 texcoord;
+    bvec4 color;
 
     worldscattermeshvertex(const vec &position = vec(0, 0, 0), const vec &normal = vec(0, 0, 1), const vec2 &texcoord = vec2(0, 0))
-        : position(position), normal(normal), texcoord(texcoord)
+        : position(position), normal(normal), texcoord(texcoord), color(255, 255, 255, 255)
     {
     }
 };
@@ -334,8 +335,17 @@ static void addworldscattergeometry(const worldchunk &chunk, const worldscatteri
                      scatter.y + WORLD_BLOCK_SIZE * 0.5f + scatter.renderoffsety + localcenter.y, scatter.z + localcenter.z);
     const float halfwidth = max(max(type.radius.x, type.radius.y), 0.5f),
                 bottom = center.z - max(type.radius.z, 0.5f), top = center.z + max(type.radius.z, 0.5f);
+    const int firstvertex = vertices.length();
     addworldscatterquad(vertices, indices, center, halfwidth, bottom, top, yaw, mesh);
     addworldscatterquad(vertices, indices, center, halfwidth, bottom, top, yaw + M_PI / 2.0f, mesh);
+    if(scatter.type == worldgrassscatter)
+    {
+        // Sample the stable root once per plant, before wind; baked RGB survives origin shifts unchanged.
+        vec absolute = vec(center.x, center.y, bottom).add(vec(worldchunkorigin(chunk)));
+        worldpositiontoabsolute(absolute);
+        const bvec4 color(bvec::fromcolor(game::getgrassworldcolor(absolute)), 255);
+        for(int i = firstvertex; i < vertices.length(); ++i) vertices[i].color = color;
+    }
 }
 
 static void addworldcactusgeometry(const worldscatterinstance &scatter, int part, vector<worldscattermeshvertex> &vertices,
@@ -519,7 +529,7 @@ static void drawworldscattermeshes(bool shadow)
     glDisable(GL_CULL_FACE);
     gle::enablevertex();
     gle::enabletexcoord0();
-    if(!shadow) gle::enablenormal();
+    if(!shadow) { gle::enablenormal(); gle::enablecolor(); }
     loopv(worldscattermeshes)
     {
         worldscattermesh &mesh = *worldscattermeshes[i];
@@ -537,7 +547,11 @@ static void drawworldscattermeshes(bool shadow)
         const worldscattermeshvertex *pointer = 0;
         gle::vertexpointer(sizeof(worldscattermeshvertex), pointer->position.v);
         gle::texcoord0pointer(sizeof(worldscattermeshvertex), pointer->texcoord.v);
-        if(!shadow) gle::normalpointer(sizeof(worldscattermeshvertex), pointer->normal.v);
+        if(!shadow)
+        {
+            gle::normalpointer(sizeof(worldscattermeshvertex), pointer->normal.v);
+            gle::colorpointer(sizeof(worldscattermeshvertex), pointer->color.v);
+        }
         loopvj(mesh.batches)
         {
             const worldscattermeshbatch &batch = mesh.batches[j];
@@ -557,7 +571,7 @@ static void drawworldscattermeshes(bool shadow)
     }
     gle::clearvbo();
     gle::clearebo();
-    if(!shadow) gle::disablenormal();
+    if(!shadow) { gle::disablenormal(); gle::disablecolor(); }
     gle::disabletexcoord0();
     gle::disablevertex();
     glEnable(GL_CULL_FACE);

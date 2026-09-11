@@ -591,6 +591,9 @@ standalone/game/game.h.gch: shared/igame.h
 engine/physics.o: shared/jump.h
 
 # Climate is shared by procedural generation and the camera debug HUD.
+engine/grass.o engine/octarender.o engine/worldio.o game/world/world.o game/world/generation.o \
+standalone/engine/worldio.o standalone/game/world/world.o standalone/game/world/generation.o: game/world/grasscolor.h
+
 engine/worldio.o game/world/world.o game/world/generation.o game/server.o game/ambient.o \
 standalone/game/world/world.o standalone/game/world/generation.o standalone/game/server.o: game/world/climate.h game/world/world.h
 
