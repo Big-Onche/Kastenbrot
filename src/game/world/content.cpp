@@ -631,7 +631,9 @@ static int loadworldtextureslot(const char *path, float texsize, bool alpha)
     defformatstring(texturepath, "%s%s", grassside ? "<grasslayers>" : "", path);
     const char *texture = escapestring(texturepath);
     string command;
-    if(alpha) formatstring(command, "setshader leafworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
+    if(!strcmp(path, "terrain/ice.png"))
+        formatstring(command, "setshader alphaworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
+    else if(alpha) formatstring(command, "setshader leafworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
     else
     {
         const char *shader = !strcmp(path, "terrain/grass.png") ? "grassclimateworld" :
@@ -731,8 +733,11 @@ static void resolveworldscatterrenderdata(int index, worlddefinition &type)
     if(type.scattertexture[0])
     {
         formatstring(render.texture, "media/texture/%s", type.scattertexture);
-        render.center = vec(0, 0, WORLD_BLOCK_SIZE * 0.5f);
-        render.radius = vec(WORLD_BLOCK_SIZE * 0.5f);
+        const float scale = !strcmp(type.id, "tundra_tuft") ? 0.4f : !strcmp(type.id, "dwarf_shrub") ? 0.6f :
+                            !strcmp(type.id, "moss_clump") || !strcmp(type.id, "tundra_branch") ? 0.2f :
+                            !strcmp(type.id, "tundra_stones") ? 0.3f : 1.0f;
+        render.center = vec(0, 0, WORLD_BLOCK_SIZE * 0.5f * scale);
+        render.radius = vec(WORLD_BLOCK_SIZE * 0.5f * scale);
         return;
     }
     render.texture[0] = '\0';

@@ -330,6 +330,8 @@ struct worlddebugstats
     float tectonicactivity, tectonicuplift, tectonictrench, tectoniccaveexpansion;
     float altitude, regionaltemperature, temperature, humidity, treesuitability;
     game::BiomeSample biomes;
+    game::ColdSample cold;
+    int surfacematerial;
 };
 
 static void getworlddebugstats(const vec &position, worlddebugstats &stats)
@@ -374,6 +376,12 @@ static void getworlddebugstats(const vec &position, worlddebugstats &stats)
     stats.biomes = environment.sampleBiome(absolute);
     stats.temperature = stats.biomes.temperature;
     stats.humidity = stats.biomes.humidity;
+    const int coldx = int(floor(stats.absolutex / WORLD_BLOCK_SIZE)), coldy = int(floor(stats.absolutey / WORLD_BLOCK_SIZE));
+    const int coldheight = environment.height(coldx, coldy);
+    const vec surfacepos(float(coldx) * WORLD_BLOCK_SIZE, float(coldy) * WORLD_BLOCK_SIZE,
+                         WORLD_GROUND_HEIGHT + float(coldheight) * WORLD_BLOCK_SIZE);
+    stats.surfacematerial = environment.surfacematerial(coldx, coldy, coldheight);
+    stats.cold = environment.samplecold(coldx, coldy, coldheight, environment.sampleBiome(surfacepos));
     stats.treesuitability = game::treesuitability(stats.temperature, stats.humidity);
     if(!worldchunks.empty())
     {
@@ -410,6 +418,58 @@ static void debugworldvalueresult(float value)
     result(formatted);
 }
 
+static const char *debugsurfacename(int material)
+{
+    switch(material)
+    {
+        case game::WORLD_FROZEN_GRASS: return "Frozen grass";
+        case game::WORLD_FROZEN_DIRT: return "Frozen dirt";
+        case game::WORLD_FROZEN_GRAVEL: return "Frozen gravel";
+        case game::WORLD_MOSS: return "Moss";
+        case game::WORLD_FROZEN_MOSS: return "Frozen moss";
+        case game::WORLD_SNOW_CRUST: return "Snow crust";
+        case game::WORLD_DEEP_SNOW: return "Deep snow";
+        case game::WORLD_COLD_ROCK: return "Rock";
+        case game::WORLD_ICE: case game::WORLD_FROZEN_WATER: return "Ice";
+        case game::WORLD_BIOME_SNOW: return "Snow";
+        case game::WORLD_BIOME_OCEAN: return "Water bed";
+        case game::WORLD_BIOME_DESERT: return "Sand";
+        default: return "Grass";
+    }
+}
+
+ICOMMAND(getdebugsurface, "", (), result(debugsurfacename(currentworlddebugstats().surfacematerial)));
+ICOMMAND(getdebuggrassscore, "", (), debugworldvalueresult(currentworlddebugstats().cold.grassscore));
+ICOMMAND(getdebugdirtscore, "", (), debugworldvalueresult(currentworlddebugstats().cold.dirtscore));
+ICOMMAND(getdebugmossscore, "", (), debugworldvalueresult(currentworlddebugstats().cold.mossscore));
+ICOMMAND(getdebuggravelscore, "", (), debugworldvalueresult(currentworlddebugstats().cold.gravelscore));
+ICOMMAND(getdebugsnowscore, "", (), debugworldvalueresult(currentworlddebugstats().cold.snowscore));
+static void debugbiomematerials()
+{
+    const worlddebugstats &stats = currentworlddebugstats();
+    game::worldgenerator &generator = game::getenvironmentgenerator();
+    int counts[game::WORLD_MOSS + 1] = {}, samples = 0;
+    loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+    {
+        const int wx = stats.chunkx * WORLD_CHUNK_BLOCKS + x, wy = stats.chunky * WORLD_CHUNK_BLOCKS + y;
+        const game::worldwatersample water = generator.surface(wx, wy);
+        if(water.height < water.water || generator.biome(wx, wy, water.height) != game::WORLD_BIOME_TUNDRA) continue;
+        ++counts[generator.surfacematerial(wx, wy, water.height)];
+        ++samples;
+    }
+    conoutf("TUNDRA SURFACE DISTRIBUTION - generated ground in camera chunk (%d, %d): %d samples", stats.chunkx, stats.chunky, samples);
+    const int materials[] = { game::WORLD_FROZEN_GRASS, game::WORLD_FROZEN_DIRT, game::WORLD_FROZEN_GRAVEL,
+                             game::WORLD_MOSS, game::WORLD_FROZEN_MOSS, game::WORLD_SNOW_CRUST };
+    loopi(6) conoutf("%s: %.1f%% (%d)", debugsurfacename(materials[i]), 100.0f * counts[materials[i]] / max(samples, 1), counts[materials[i]]);
+    loopi(game::WORLD_MOSS + 1)
+    {
+        bool listed = false;
+        loopj(6) if(materials[j] == i) listed = true;
+        if(!listed && counts[i]) conoutf("%s: %.1f%% (%d)", debugsurfacename(i), 100.0f * counts[i] / max(samples, 1), counts[i]);
+    }
+}
+COMMAND(debugbiomematerials, "");
+
 ICOMMAND(getdebugaltitude, "", (), debugcoordinateresult(currentworlddebugstats().altitude));
 ICOMMAND(getdebugregionaltemperature, "", (), debugcoordinateresult(currentworlddebugstats().regionaltemperature));
 ICOMMAND(getdebugtemperature, "", (), debugcoordinateresult(currentworlddebugstats().temperature));
@@ -418,6 +478,12 @@ ICOMMAND(getdebugbiome, "", (), result(game::biomeName(currentworlddebugstats().
 ICOMMAND(getdebugsecondarybiome, "", (), result(game::biomeName(currentworlddebugstats().biomes.secondary)));
 ICOMMAND(getdebugbiomeweight, "", (), debugworldvalueresult(currentworlddebugstats().biomes.primaryWeight));
 ICOMMAND(getdebugsecondarybiomeweight, "", (), debugworldvalueresult(currentworlddebugstats().biomes.secondaryWeight));
+ICOMMAND(getdebugbiomeid, "", (), intret(currentworlddebugstats().biomes.primary));
+ICOMMAND(getdebugcoldness, "", (), debugworldvalueresult(currentworlddebugstats().cold.coldness));
+ICOMMAND(getdebugsnowcoverage, "", (), debugworldvalueresult(currentworlddebugstats().cold.snow));
+ICOMMAND(getdebugslope, "", (), debugworldvalueresult(currentworlddebugstats().cold.slope));
+ICOMMAND(getdebugexposure, "", (), debugworldvalueresult(currentworlddebugstats().cold.exposure));
+ICOMMAND(getdebugdeposition, "", (), debugworldvalueresult(currentworlddebugstats().cold.deposition));
 ICOMMAND(getdebugtreesuitability, "", (), debugworldvalueresult(currentworlddebugstats().treesuitability));
 ICOMMAND(getdebugcamx, "", (), debugcoordinateresult(currentworlddebugstats().absolutex));
 ICOMMAND(getdebugcamy, "", (), debugcoordinateresult(currentworlddebugstats().absolutey));

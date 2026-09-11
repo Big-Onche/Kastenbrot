@@ -12,5 +12,6 @@ tin_lump.png
 Source: https://opengameart.org/content/assorted-minecraft-style-textures
 
 Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed.fr
+ice_cubes.png
 leather.png
 moon_dust.png

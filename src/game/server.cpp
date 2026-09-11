@@ -2101,7 +2101,7 @@ namespace server
             freeworldsnapshotfamily(voxel->children);
             voxel->children = NULL;
             voxel->ext = NULL;
-            voxel->material = MAT_AIR;
+            voxel->material = worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
             voxel->visible = voxel->merged = 0;
             solidfaces(*voxel);
             loopi(6) voxel->texture[i] = ushort(worldindex);

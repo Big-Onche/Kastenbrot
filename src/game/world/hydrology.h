@@ -167,6 +167,13 @@ struct worldhydrology
         result.level = min(center - 1, low - 1);
         if(terminal) result.level = min(result.level, rawhead(key(divide(ix, STEP), divide(iy, STEP))));
         result.depth = min(20.0f, 2.0f + radius * 0.19f + float((h >> 16) & 3));
+        const vec position(x * worldclimate::BLOCK_UNITS, y * worldclimate::BLOCK_UNITS,
+                           worldclimate::GROUND_UNITS + center * worldclimate::BLOCK_UNITS);
+        const float cold = 1.0f - smoothstep(-4.0f, 2.0f, generator.environmentclimate.gettemperature(position)),
+                    humidity = generator.environmentclimate.gethumidity(position);
+        // Cold basins remain broad and shallow. Dry regions admit fewer isolated ponds.
+        if(cold > 0.5f && humidity < 45.0f && (h & 3U)) return result;
+        result.depth += cold * (2.0f - result.depth);
         result.valid = true;
         return result;
     }
@@ -406,7 +413,10 @@ struct worldhydrology
                         slope = fabsf(c.a.head - c.b.head) / max(length, 1.0f),
                         // Leave clearance below the smoothed surface on steep reaches, with a shallow bank apron.
                         clearance = 1.0f + min(4.0f, slope * 1.5f),
-                        floor = level - clearance - depth * (1 - smoothstep(0.0f, bankwidth, distance)),
+                        temperature = generator.environmentclimate.gettemperature(vec(x * float(worldclimate::BLOCK_UNITS),
+                            y * float(worldclimate::BLOCK_UNITS), worldclimate::GROUND_UNITS + base * float(worldclimate::BLOCK_UNITS))),
+                        cold = 1.0f - smoothstep(-4.0f, 2.0f, temperature),
+                        floor = level - clearance - (depth + cold * (2.0f - depth)) * (1 - smoothstep(0.0f, bankwidth, distance)),
                         target = base + (min(float(base), floor) - base) * bankblend,
                         // On a low bank, taper the water down into the excavation instead of ending above dry ground.
                         banklevel = min(level, base - 1 + max(0.0f, level - base + 1) * bankblend);

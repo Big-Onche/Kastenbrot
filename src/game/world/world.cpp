@@ -188,6 +188,10 @@ namespace game
         : environmentclimate(seed, settings.sealevel, settings.temperaturelapserate), settings(settings), seed(seed), treeblockcache(1 << 12), hydrology(NULL)
     {
         setupnoise(biomeedgewarp, seed ^ 0x4D71C923, 0.05f, 1);
+        setupnoise(coldbroad, seed ^ 0x35DAA821, 0.0008f, 3);
+        setupnoise(coldroll, seed ^ 0x45E19327, 0.0018f, 4);
+        setupnoise(coldmicro, seed ^ 0x196AB391, 0.0060f, 2);
+        setupnoise(coldregions, seed ^ 0x2F59C741, 0.0009f, 3);
         setupnoise(snowpatches, seed ^ 0x71D49A23, 0.035f, 2, 0.35f);
         setupnoise(vegetationvariation, seed ^ 0x4C87A219, 0.006f, 2, 0.35f);
         // Isotropic, unwarped mega noise owns the continental topology. Macro
@@ -598,6 +602,24 @@ namespace game
                 elevation = max(elevation, minimumelevation) + roll * rollstrength;
             }
             if(detailstrength > 0.0f) elevation = max(elevation + sampleterrainmicrovariation(*this, noisex, noisey) * detailstrength, 0.0f);
+            // Evaluate climate at the continental datum, never through hydrology (which calls baseheight).
+            // A stable datum avoids a temperature/height feedback loop at the cold boundary.
+            const vec coldpos(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                              worldclimate::GROUND_UNITS + (settings.sealevel + continentalelevation) * worldclimate::BLOCK_UNITS);
+            const float temperature = environmentclimate.gettemperature(coldpos),
+                        humidity = environmentclimate.gethumidity(coldpos),
+                        cold = (1.0f - smoothstep(-4.0f, 2.0f, temperature)) * smoothstep(2.0f, 18.0f, continentalelevation),
+                        polar = (1.0f - smoothstep(-16.0f, -6.0f, temperature)) * (1.0f - smoothstep(30.0f, 55.0f, humidity)),
+                        broad = coldbroad.GetNoise(float(x), float(y)), roll = coldroll.GetNoise(float(x), float(y)),
+                        micro = coldmicro.GetNoise(float(x), float(y)), region = coldregions.GetNoise(float(x), float(y)),
+                        ridge = powf(1.0f - fabsf(coldroll.GetNoise(x * 1.5f + y * 0.3f, y * 0.45f)), 3.0f),
+                        tundra = 10.0f * broad + 18.0f * roll + 2.5f * micro,
+                        barren = 12.0f * broad + 8.0f * ridge + 1.5f * micro,
+                        channel = smoothstep(0.1f, 0.4f, region) * (1.0f - smoothstep(0.02f, 0.10f, fabsf(micro))),
+                        boulders = smoothstep(0.20f, 0.40f, region) * smoothstep(0.40f, 0.72f,
+                            coldmicro.GetNoise(float(x) * 8.0f, float(y) * 8.0f)) * (4.0f + polar * 3.0f),
+                        target = boulders + continentalelevation * 0.65f + 8.0f + tundra * (1.0f - polar) + barren * polar - 3.0f * channel;
+            elevation += cold * (max(target, minimumelevation) - elevation);
             // Only the beach terraces may fall below sea level +2, including after relief and microvariation.
             elevation = max(elevation, minimumelevation);
         }
@@ -653,6 +675,7 @@ namespace game
     // Ranges normalize Celsius and percent independently; density scales existing climate suitability.
     const ClimateBiome climateBiomes[] =
     {
+        { WORLD_BIOME_SNOW_DESERT, "Snow Desert", "snow_desert", -20, 20, 10, 25, 0.0f },
         { WORLD_BIOME_TUNDRA, "Tundra", "tundra", -10, 40, 12, 25, 0.02f },
         { WORLD_BIOME_TAIGA, "Taiga", "taiga", 3, 60, 12, 25, 0.85f },
         { WORLD_BIOME_COLD_DESERT, "Cold Desert", "cold_desert", 5, 15, 12, 25, 0.02f },
@@ -693,6 +716,20 @@ namespace game
             weight = expf(-2.0f * (weight - nearest));
             total += weight;
         }
+        const float cold = 1.0f - smoothstep(-2.0f, 2.0f, temperature),
+                    desert = (1.0f - smoothstep(-16.0f, -6.0f, temperature)) * (1.0f - smoothstep(30.0f, 55.0f, humidity));
+        loopi(climateBiomeCount)
+        {
+            const int type = climateBiomes[i].type;
+            // Cold candidates do not leak into warm climates; all weights remain normalized.
+            if(type == WORLD_BIOME_TUNDRA || type == WORLD_BIOME_SNOW_DESERT) sample.weights[type] = 0;
+        }
+        total = 0;
+        loopi(climateBiomeCount) total += sample.weights[climateBiomes[i].type];
+        loopi(climateBiomeCount) sample.weights[climateBiomes[i].type] *= (1.0f - cold) / max(total, 1e-20f);
+        sample.weights[WORLD_BIOME_TUNDRA] = cold * (1.0f - desert);
+        sample.weights[WORLD_BIOME_SNOW_DESERT] = cold * desert;
+        total = 1.0f;
         loopi(climateBiomeCount)
         {
             const worldbiome type = climateBiomes[i].type;
@@ -726,31 +763,78 @@ namespace game
                                worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS)).primary;
     }
 
+    ColdSample worldgenerator::samplecold(int x, int y, int h, const BiomeSample &climate) const
+    {
+        ColdSample c = {};
+        c.coldness = clamp((2.0f - climate.temperature) / 22.0f, 0.0f, 1.0f);
+        const float humidity = clamp(climate.humidity * 0.01f, 0.0f, 1.0f);
+        c.desert = (1.0f - smoothstep(-16.0f, -6.0f, climate.temperature)) *
+                   (1.0f - smoothstep(30.0f, 55.0f, climate.humidity));
+        // Four-metre support reduces voxel quantization bias; sample the final carved surface across chunk boundaries.
+        const float left = height(x - 4, y), right = height(x + 4, y), down = height(x, y - 4), up = height(x, y + 4),
+                    dx = (right - left) / 8.0f, dy = (up - down) / 8.0f, gradient = sqrtf(dx * dx + dy * dy);
+        c.slope = clamp(gradient / 1.25f, 0.0f, 1.0f);
+        c.basin = clamp(0.5f + (left + right + down + up - 4.0f * h) / 12.0f, 0.0f, 1.0f);
+        c.exposure = clamp(0.5f + (dx * 0.9701425f + dy * 0.2425356f) * 0.5f, 0.0f, 1.0f);
+        c.deposition = clamp(c.basin * 0.6f + (1.0f - c.exposure) * 0.4f, 0.0f, 1.0f);
+        c.region = coldregions.GetNoise(float(x), float(y)) * 0.5f + 0.5f;
+        const float large = coldroll.GetNoise(float(x) * 0.83f, float(y) * 0.83f),
+                    small = snowpatches.GetNoise(float(x) * 0.23f, float(y) * 0.23f),
+                    altitude = clamp(float(h - settings.sealevel) / 80.0f, 0.0f, 1.0f);
+        c.snow = clamp(c.coldness * 0.45f + humidity * 0.08f + altitude * 0.08f + c.deposition * 0.22f +
+                       large * 0.25f + small * 0.12f + c.desert * 0.25f - c.slope * 0.35f - c.exposure * 0.08f, 0.0f, 1.0f);
+        // Persistent regional wind scour opens bare shelves even on otherwise flat polar ground.
+        c.snow = max(0.0f, c.snow - c.desert * smoothstep(0.55f, 0.72f, c.region) * (0.55f + c.exposure * 0.20f));
+        c.snow *= 1.0f - smoothstep(0.0f, 5.0f, climate.temperature);
+        // One coherent soil field establishes regional identity. Fine fields only perturb its borders.
+        const float region = coldroll.GetNoise(x * 0.833333f + 3171.0f, y * 0.833333f - 951.0f),
+                    detail = coldmicro.GetNoise(x * 1.166667f, y * 1.166667f),
+                    micro = snowpatches.GetNoise(x * 0.714286f, y * 0.714286f),
+                    patch = clamp(0.5f + region * 0.85f + detail * 0.10f + micro * 0.025f, 0.0f, 1.0f),
+                    dry = 1.0f - humidity;
+        c.severity = 1.0f - smoothstep(-15.0f, 2.0f, climate.temperature);
+        c.nearwater = surface(x, y).bank ? 1.0f : 0.0f;
+        c.wetness = clamp(humidity * 0.65f + c.basin * 0.25f + c.nearwater * 0.10f, 0.0f, 1.0f);
+        c.grassscore = 0.54f;
+        c.dirtscore = dry * 0.28f + c.exposure * 0.14f + patch * 0.52f + c.slope * 0.12f;
+        c.mossscore = c.wetness * 0.42f + (1.0f - patch) * 0.48f - c.slope * 0.18f;
+        c.gravelscore = c.slope * 0.50f + c.exposure * 0.20f + dry * 0.15f + patch * 0.15f;
+        const bool exposed = c.slope > 0.45f || c.exposure > 0.75f || c.nearwater > 0.5f ||
+                             (dry > 0.72f && patch > 0.86f);
+        // The pre-existing retention mask contributes to snow; a separate broad field forms deposition regions.
+        const float snowregion = clamp(0.5f + coldroll.GetNoise(x * 0.833333f - 1921.0f, y * 0.833333f + 7813.0f) * 0.85f +
+                                       detail * 0.08f, 0.0f, 1.0f);
+        c.snowscore = clamp(c.severity * 0.24f + c.basin * 0.16f + altitude * 0.08f + snowregion * 0.46f +
+                            c.snow * 0.16f - c.slope * 0.25f - c.exposure * 0.10f, 0.0f, 1.0f);
+        c.material = WORLD_FROZEN_GRASS;
+        if(c.dirtscore > c.grassscore && patch > 0.55f) c.material = WORLD_FROZEN_DIRT;
+        if(c.mossscore > c.grassscore && c.wetness > 0.42f && c.slope < 0.40f)
+        {
+            const float thaw = -2.0f + detail * 1.5f + (patch - 0.5f) * 3.0f;
+            c.material = climate.temperature > thaw ? WORLD_MOSS : WORLD_FROZEN_MOSS;
+        }
+        if(exposed && c.gravelscore > 0.58f) c.material = WORLD_FROZEN_GRAVEL;
+        c.covered = c.snowscore > 0.55f - c.desert * 0.18f;
+        if(c.covered) c.material = WORLD_SNOW_CRUST;
+        if(c.slope > 0.72f) c.material = WORLD_COLD_ROCK;
+        const float pineRegion = clamp(0.5f + coldroll.GetNoise(float(x) - 5193.0f, float(y) + 2197.0f), 0.0f, 1.0f),
+                    pineLocal = clamp(0.5f + coldmicro.GetNoise(x * 3.0f, y * 3.0f), 0.0f, 1.0f);
+        c.pinemask = smoothstep(0.65f, 0.85f, pineRegion) * smoothstep(0.58f, 0.78f, pineLocal);
+        c.vegetation = clamp(humidity * 0.45f + (1.0f - c.slope) * 0.25f + (1.0f - c.snow) * 0.25f +
+                             c.basin * 0.05f + coldmicro.GetNoise(float(x) * 2.5f, float(y) * 2.5f) * 0.15f, 0.0f, 1.0f);
+        c.vegetation *= (1.0f - c.desert) * (1.0f - c.coldness * 0.5f);
+        if(c.covered || c.slope > 0.72f) c.vegetation = 0;
+        return c;
+    }
+
     bool worldgenerator::snowcovered(int x, int y, float temperature) const
     {
-        if(temperature <= -2.0f) return true;
-        if(temperature >= 5.0f) return false;
-        // Broad connected patches retreat as the surface warms through -2 to +2 C.
-        const float retention = clamp(0.5f + snowpatches.GetNoise(float(x), float(y)), 0.0f, 1.0f);
-        if(temperature < -2.0f + 4.0f * retention) return true;
-
-        // Isolated old drifts: seeded 12-block cells with a jittered center and a 2-3 block radius.
-        // Centers stay inside the cell by at least the radius, so there are no clipped cell/chunk edges.
-        const int cellx = int(floorf(float(x) / 12.0f)), celly = int(floorf(float(y) / 12.0f));
-        uint hash = uint(seed) ^ uint(cellx) * 0x9E3779B9U ^ uint(celly) * 0x85EBCA6BU ^ 0xDA39B517U;
-        hash ^= hash >> 16;
-        hash *= 0x7FEB352DU;
-        hash ^= hash >> 15;
-        hash *= 0x846CA68BU;
-        hash ^= hash >> 16;
-        if((hash & 3U) != 0) return false;
-        const float centerx = cellx * 12.0f + 3.0f + float((hash >> 2) & 255U) * (6.0f / 255.0f),
-                    centery = celly * 12.0f + 3.0f + float((hash >> 10) & 255U) * (6.0f / 255.0f),
-                    radius = 2.0f + float((hash >> 18) & 255U) / 255.0f,
-                    dx = (x - centerx) / radius, dy = (y - centery) / radius,
-                    drift = max(1.0f - dx * dx - dy * dy, 0.0f);
-        // Drifts shrink continuously to nothing at +5 C; at +2 C only these small islands survive.
-        return drift > 0.0f && temperature < 2.0f + 3.0f * drift;
+        const int h = height(x, y);
+        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                           worldclimate::GROUND_UNITS + h * worldclimate::BLOCK_UNITS);
+        BiomeSample climate = sampleBiome(position);
+        climate.temperature = temperature;
+        return samplecold(x, y, h, climate).covered;
     }
 
     static float desertshare(const BiomeSample &soil)
@@ -791,11 +875,32 @@ namespace game
 
     int worldgenerator::surfacematerial(int x, int y, int height) const
     {
-        if(height < settings.sealevel) return WORLD_BIOME_OCEAN;
         const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
         const BiomeSample sample = sampleBiome(position);
-        if(snowcovered(x, y, sample.temperature)) return WORLD_BIOME_SNOW;
+        const worldwatersample water = surface(x, y);
+        if(height < water.water)
+        {
+            const vec waterpos(position.x, position.y, worldclimate::GROUND_UNITS + water.water * worldclimate::BLOCK_UNITS);
+            const float temperature = environmentclimate.gettemperature(waterpos);
+            if(temperature < -2.0f || (water.freshwater && temperature < 0.0f && snowpatches.GetNoise(float(x), float(y)) > 0))
+                return WORLD_FROZEN_WATER;
+            return WORLD_BIOME_OCEAN;
+        }
+        if(sample.temperature <= 2.0f)
+        {
+            const ColdSample cold = samplecold(x, y, height, sample);
+            if(cold.slope > 0.72f) return WORLD_COLD_ROCK;
+            const float palette = clamp(0.5f + snowpatches.GetNoise(float(x), float(y)) * 0.5f, 0.15f, 0.85f);
+            if(cold.covered)
+            {
+                if(cold.desert > palette) return cold.snow > 0.75f ? WORLD_DEEP_SNOW : WORLD_SNOW_CRUST;
+                return WORLD_SNOW_CRUST;
+            }
+            if(cold.desert > palette)
+                return cold.exposure > 0.55f || cold.region < 0.4f ? WORLD_COLD_ROCK : WORLD_ICE;
+            return cold.material;
+        }
         // Desert soil follows the regional hot/dry climate; altitude still controls snow and the surface ecosystem.
         // Cold desert is sparse cold ground, not a synonym for sandy desert.
         const BiomeSample soil = samplesoil(position);
@@ -886,6 +991,17 @@ namespace game
         const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
         const BiomeSample sample = sampleBiome(position);
+        if(sample.temperature <= 2.0f)
+        {
+            const ColdSample cold = samplecold(x, y, height, sample);
+            if(sample.temperature <= -8.0f || sample.humidity <= 35.0f || cold.snow >= 0.45f || cold.covered ||
+               cold.slope >= 0.30f || cold.desert > 0.35f) return 0;
+            const int material = surfacematerial(x, y, height);
+            const float soil = material == WORLD_FROZEN_DIRT ? 1.0f : material == WORLD_FROZEN_GRASS ? 0.70f :
+                               material == WORLD_FROZEN_MOSS ? 0.25f : 0.0f;
+            return 0.035f * cold.pinemask * soil * smoothstep(-8.0f, 1.0f, sample.temperature) *
+                   smoothstep(35.0f, 65.0f, sample.humidity);
+        }
         float ecosystemdensity = 0;
         loopi(climateBiomeCount) ecosystemdensity += sample.weights[climateBiomes[i].type] * climateBiomes[i].treeDensity;
         const BiomeSample soil = samplesoil(position);
@@ -900,7 +1016,8 @@ namespace game
                     variation = plainsvariation + mountainbelt * (mountainvariation - plainsvariation);
         // Forested slopes retain smaller clearings; lowland plains keep their broad open patches.
         // The boost fades in freezing temperatures and still multiplies climate suitability, including dry/cold limits.
-        return clamp(settings.basetreedensity * (1.0f + 1.5f * mountainbelt) * suitability * variation, 0.0f, 1.0f);
+        return clamp(settings.basetreedensity * smoothstep(-2.0f, 4.0f, sample.temperature) *
+                     (1.0f + 1.5f * mountainbelt) * suitability * variation, 0.0f, 1.0f);
     }
 
     static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
@@ -931,6 +1048,13 @@ namespace game
         tree.base = 256 + height;
         tree.pine = worldtreeunit(shape) < pinechance;
         tree.height = tree.pine ? 6 + int((shape >> 24) & 3U) : 4 + int((shape >> 24) % 3U);
+        const vec treepos(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                          worldclimate::GROUND_UNITS + height * worldclimate::BLOCK_UNITS);
+        if(generator.environmentclimate.gettemperature(treepos) <= 2.0f)
+        {
+            tree.pine = true;
+            tree.height = 4 + int((shape >> 24) & 1U);
+        }
         tree.priority = spawn;
         tree.shape = shape;
         return tree.base + tree.height < 512;

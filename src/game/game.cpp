@@ -32,6 +32,11 @@ namespace game
             face.orient = i;
             mpedittex(getworldcubefaceslot(worldindex, i), 0, face, local);
         }
+        if(worldindex == getworldcubeidindex("ice"))
+        {
+            selinfo ice = selection;
+            mpeditmat(MAT_ALPHA, -1, ice, local);
+        }
 #else
         (void)worldindex;
         (void)selection;

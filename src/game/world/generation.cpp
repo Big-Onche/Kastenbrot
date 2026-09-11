@@ -173,6 +173,7 @@ static void setworldcubetexture(cube &c, int texture, int toptexture = -1, int b
 static bool setworldcubetype(cube &c, const worldgencontext &ctx, int index, int material = MAT_AIR)
 {
     if(!ctx.cubetextures.inrange(index)) return false;
+    if(index == ctx.cubetype("ice")) material |= MAT_ALPHA;
 #ifdef STANDALONE
     solidfaces(c);
     c.material = material;
@@ -271,8 +272,7 @@ static void generateworldbeachmap(worldgencontext &ctx, int chunkx, int chunky)
     {
         const int index = y * WORLD_CHUNK_BLOCKS + x,
                   coastdistance = distance[(y + halo) * mapsize + x + halo];
-        ctx.beachmap[index] = coastdistance <= int(floor(ctx.generator.beachtransitionwidth(chunkx * WORLD_CHUNK_BLOCKS + x,
-                                                                                           chunky * WORLD_CHUNK_BLOCKS + y) * 3.0f + 0.5f));
+        ctx.beachmap[index] = coastdistance <= int(floor(ctx.generator.beachtransitionwidth(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y) * 3.0f + 0.5f));
     }
 }
 
@@ -331,13 +331,11 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
             {
                 const int index = y * WORLD_CHUNK_BLOCKS + x;
                 ctx.biomemap[index] = generateworldmaterial(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
-                const float strata = ctx.generator.rockiness.GetNoise(float(chunkx * WORLD_CHUNK_BLOCKS + x),
-                                                                     float(chunky * WORLD_CHUNK_BLOCKS + y));
+
+                const float strata = ctx.generator.rockiness.GetNoise(float(chunkx * WORLD_CHUNK_BLOCKS + x), float(chunky * WORLD_CHUNK_BLOCKS + y));
                 ctx.sandstonedepthmap[index] = clamp(int(floorf(3.5f + 2.0f * strata)), 2, 4);
-                ctx.materialmap[index] = ctx.generator.surfacematerial(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y,
-                                                                     ctx.heightmap[index] / WORLD_BLOCK_SIZE);
-                ctx.cliffmap[index] = (ctx.reliefcliffmap[index] ? WORLD_CLIFF_ROCK : 0) |
-                                     generateworldcliff(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
+                ctx.materialmap[index] = ctx.generator.surfacematerial(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, ctx.heightmap[index] / WORLD_BLOCK_SIZE);
+                ctx.cliffmap[index] = (ctx.reliefcliffmap[index] ? WORLD_CLIFF_ROCK : 0) | generateworldcliff(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
                 ctx.rockmap[index] = generateworldrock(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
             }
         }
@@ -360,20 +358,24 @@ static void markworldgencarvedsection(worldgencontext &ctx, int blockx, int bloc
     };
     uchar &flags = worldgensectionflags(ctx, blockx, blocky, blockz);
     flags = (flags | SECTION_INTERIOR) & ~SECTION_FULLY_SOLID;
+
     if(entrance) flags |= SECTION_CAVE_ENTRANCE;
+
     loopi(6)
     {
         const int coordinate = i < 2 ? blockx : i < 4 ? blocky : blockz,
                   direction = directions[i][i / 2];
-        if((direction < 0 && coordinate % WORLD_SECTION_BLOCKS) ||
-           (direction > 0 && coordinate % WORLD_SECTION_BLOCKS != WORLD_SECTION_BLOCKS - 1))
+        if((direction < 0 && coordinate % WORLD_SECTION_BLOCKS) || (direction > 0 && coordinate % WORLD_SECTION_BLOCKS != WORLD_SECTION_BLOCKS - 1))
             continue;
+
         const int neighborx = blockx + directions[i][0], neighbory = blocky + directions[i][1], neighborz = blockz + directions[i][2];
-        if(neighborx < 0 || neighborx >= WORLD_CHUNK_BLOCKS || neighbory < 0 || neighbory >= WORLD_CHUNK_BLOCKS ||
-           neighborz < 0 || neighborz >= WORLD_HEIGHT_BLOCKS)
+
+        if(neighborx < 0 || neighborx >= WORLD_CHUNK_BLOCKS || neighbory < 0 || neighbory >= WORLD_CHUNK_BLOCKS || neighborz < 0 || neighborz >= WORLD_HEIGHT_BLOCKS)
             continue;
+
         uchar &neighborflags = worldgensectionflags(ctx, neighborx, neighbory, neighborz);
         neighborflags |= SECTION_INTERIOR;
+
         if(entrance) neighborflags |= SECTION_CAVE_ENTRANCE;
     }
 }
@@ -387,8 +389,7 @@ static void markworldgenexteriorshell(worldgencontext &ctx, int chunkx, int chun
     loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
     {
         const int sealevel = clamp(ctx.watermap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
-        const int surface = clamp(ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0,
-                                  int(WORLD_HEIGHT_BLOCKS));
+        const int surface = clamp(ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
         if(surface > 0) worldgensectionflags(ctx, x, y, surface - 1) |= SECTION_EXTERIOR;
 
         const int tile = y / WORLD_SECTION_BLOCKS * WORLD_SECTION_COLUMNS + x / WORLD_SECTION_BLOCKS;
@@ -402,6 +403,7 @@ static void markworldgenexteriorshell(worldgencontext &ctx, int chunkx, int chun
         {
             const int first = surface / WORLD_SECTION_BLOCKS,
                       last = (sealevel - 1) / WORLD_SECTION_BLOCKS;
+
             for(int section = first; section <= last; ++section) ctx.renderdata.flags[section][tile] |= SECTION_WATER;
         }
 
@@ -410,10 +412,15 @@ static void markworldgenexteriorshell(worldgencontext &ctx, int chunkx, int chun
             const int neighborx = x + directions[i][0], neighbory = y + directions[i][1];
             int neighborheight;
             if(neighborx >= 0 && neighborx < WORLD_CHUNK_BLOCKS && neighbory >= 0 && neighbory < WORLD_CHUNK_BLOCKS)
+            {
                 neighborheight = ctx.heightmap[neighbory * WORLD_CHUNK_BLOCKS + neighborx];
+            }
             else neighborheight = generateworldheight(ctx, chunkx, chunky, neighborx, neighbory);
+
             const int neighborsurface = clamp(neighborheight / WORLD_BLOCK_SIZE - WORLD_MIN_HEIGHT, 0, int(WORLD_HEIGHT_BLOCKS));
+
             if(surface <= neighborsurface) continue;
+
             for(int section = neighborsurface / WORLD_SECTION_BLOCKS; section <= (surface - 1) / WORLD_SECTION_BLOCKS; ++section)
                 ctx.renderdata.flags[section][tile] |= SECTION_EXTERIOR;
         }
@@ -450,8 +457,24 @@ static int worldwaterheight(const worldgencontext &ctx, int localx, int localy)
     return ctx.watermap[localy / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + localx / WORLD_BLOCK_SIZE];
 }
 
-static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock,
-                               int waterheight = INT_MIN, int sandstonedepth = 3)
+static const char *coldsurfacename(int material)
+{
+    switch(material)
+    {
+        case game::WORLD_FROZEN_GRASS: return "frozen_grass";
+        case game::WORLD_FROZEN_DIRT: return "frozen_dirt";
+        case game::WORLD_MOSS: return "moss";
+        case game::WORLD_FROZEN_MOSS: return "frozen_moss";
+        case game::WORLD_FROZEN_GRAVEL: return "frozen_gravel";
+        case game::WORLD_COLD_ROCK: return "stone";
+        case game::WORLD_SNOW_CRUST: return "snow_crust";
+        case game::WORLD_DEEP_SNOW: return "deep_snow";
+        case game::WORLD_ICE: return "ice";
+        default: return NULL;
+    }
+}
+
+static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock, int waterheight = INT_MIN, int sandstonedepth = 3)
 {
     const int surface = WORLD_GROUND_HEIGHT + height,
               watertop = WORLD_GROUND_HEIGHT + (waterheight == INT_MIN ? ctx.settings.sealevel * WORLD_BLOCK_SIZE : waterheight),
@@ -459,18 +482,28 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
               grassbottom = surface - WORLD_BLOCK_SIZE,
               beachmin = (ctx.settings.sealevel + min(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
               beachmax = (ctx.settings.sealevel + max(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE;
+
     const bool beach = beachprofile && height >= beachmin && height <= beachmax;
 
     if(z >= max(surface, watertop)) return WORLD_TERRAIN_EMPTY;
-    if(surface < watertop && z >= surface && z + size <= watertop) return WORLD_TERRAIN_WATER;
+    if(surface < watertop && z >= surface && z + size <= watertop)
+    {
+        if(biome == game::WORLD_FROZEN_WATER)
+        {
+            if(z >= watertop - WORLD_BLOCK_SIZE) return ctx.cubetype("ice");
+            if(z + size > watertop - WORLD_BLOCK_SIZE) return WORLD_TERRAIN_MIXED;
+        }
+        return WORLD_TERRAIN_WATER;
+    }
     const bool freshwaterbed = waterheight > ctx.settings.sealevel * WORLD_BLOCK_SIZE && surface < watertop,
-               sandy = !freshwaterbed && !rock && !(cliff & WORLD_CLIFF_ROCK) &&
-                       ((cliff & WORLD_CLIFF_COAST) ? biome == game::WORLD_BIOME_DESERT : beach || biome == game::WORLD_BIOME_DESERT);
+               sandy = !freshwaterbed && !rock && !(cliff & WORLD_CLIFF_ROCK) && ((cliff & WORLD_CLIFF_COAST) ? biome == game::WORLD_BIOME_DESERT : beach || biome == game::WORLD_BIOME_DESERT);
+
     if(sandy)
     {
         // Keep the existing sand thickness and insert sandstone between it and the underlying geology.
         const int sandbottom = cliff & WORLD_CLIFF_COAST ? grassbottom : dirtbottom,
                   stonebottom = sandbottom - clamp(sandstonedepth, 2, 4) * WORLD_BLOCK_SIZE;
+
         if(z + size <= stonebottom) return ctx.cubetype("stone");
         if(z >= stonebottom && z + size <= sandbottom) return ctx.cubetype("sandstone");
         if(z >= sandbottom && z + size <= surface) return ctx.cubetype("sand");
@@ -485,12 +518,13 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     }
     if(cliff & WORLD_CLIFF_ROCK)
     {
-        // Every exposed stair of the cliff belongs to the rock face. Normal
-        // surface rules resume immediately behind this band, producing a grassy
+        // Every exposed stair of the cliff belongs to the rock face. Normal surface rules resume immediately behind this band, producing a grassy
         // plateau without grass caps scattered down the vertical wall.
         if(z >= dirtbottom && z + size <= surface) return ctx.cubetype("stone");
         return WORLD_TERRAIN_MIXED;
     }
+    const char *coldsurface = coldsurfacename(biome);
+    if(coldsurface && z >= grassbottom && z + size <= surface) return ctx.cubetype(coldsurface);
     if(rock)
     {
         if(biome == game::WORLD_BIOME_SNOW && z >= grassbottom && z + size <= surface) return ctx.cubetype("snow");
@@ -501,8 +535,7 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     {
         // Sea cliffs have one surface block over solid stone, never a deep exposed soil layer.
         if(z + size <= grassbottom) return ctx.cubetype("stone");
-        if(z >= grassbottom && z + size <= surface)
-            return ctx.cubetype(biome == game::WORLD_BIOME_SNOW ? "snow" : "grass");
+        if(z >= grassbottom && z + size <= surface) return ctx.cubetype(biome == game::WORLD_BIOME_SNOW ? "snow" : "grass");
         return WORLD_TERRAIN_MIXED;
     }
     if(biome == game::WORLD_BIOME_OCEAN)
@@ -519,6 +552,7 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
 static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int blocky, int height, int biome)
 {
     if(height < worldwaterheight(ctx, blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE)) return false;
+
     const int localx = blockx * WORLD_BLOCK_SIZE,
               localy = blocky * WORLD_BLOCK_SIZE,
               surfacez = WORLD_GROUND_HEIGHT + height - WORLD_BLOCK_SIZE,
@@ -526,7 +560,9 @@ static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int
                                          worldbeach(ctx, localx, localy),
                                          worldcliff(ctx, localx, localy),
                                          worldrock(ctx, localx, localy));
-    return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt");
+
+    return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt") ||
+           type == ctx.cubetype("frozen_grass") || type == ctx.cubetype("frozen_dirt") || type == ctx.cubetype("frozen_moss");
 }
 
 static bool generateworldgeology(worldgencontext &ctx, int chunkx, int chunky)
@@ -541,9 +577,9 @@ static bool generateworldgeology(worldgencontext &ctx, int chunkx, int chunky)
         {
             float warpeddepth = depth;
             if((depth >= 48 && depth <= 112) || (depth >= 144 && depth <= 208))
-                warpeddepth += 32.0f * ctx.generator.deeprock.GetNoise(float(chunkx * WORLD_CHUNK_BLOCKS + x * WORLD_GEOLOGY_STEP),
-                                                                    float(chunky * WORLD_CHUNK_BLOCKS + y * WORLD_GEOLOGY_STEP),
-                                                                    float(elevation));
+            {
+                warpeddepth += 32.0f * ctx.generator.deeprock.GetNoise(float(chunkx * WORLD_CHUNK_BLOCKS + x * WORLD_GEOLOGY_STEP), float(chunky * WORLD_CHUNK_BLOCKS + y * WORLD_GEOLOGY_STEP), float(elevation));
+            }
             ctx.geology[(z * WORLD_GEOLOGY_WIDTH + y) * WORLD_GEOLOGY_WIDTH + x] = warpeddepth;
         }
     }
@@ -556,15 +592,17 @@ static float sampleworldgeology(const worldgencontext &ctx, float x, float y, fl
     x /= scale;
     y /= scale;
     z /= scale;
+
     const int ix = min(int(x), WORLD_GEOLOGY_WIDTH - 2), iy = min(int(y), WORLD_GEOLOGY_WIDTH - 2),
               iz = min(int(z), WORLD_GEOLOGY_HEIGHT - 2);
     x -= ix;
     y -= iy;
     z -= iz;
+
     float depth = 0;
     loop(dz, 2) loop(dy, 2) loop(dx, 2)
-        depth += ctx.geology[((iz + dz) * WORLD_GEOLOGY_WIDTH + iy + dy) * WORLD_GEOLOGY_WIDTH + ix + dx] *
-                 (dx ? x : 1 - x) * (dy ? y : 1 - y) * (dz ? z : 1 - z);
+        depth += ctx.geology[((iz + dz) * WORLD_GEOLOGY_WIDTH + iy + dy) * WORLD_GEOLOGY_WIDTH + ix + dx] * (dx ? x : 1 - x) * (dy ? y : 1 - y) * (dz ? z : 1 - z);
+
     return depth;
 }
 
@@ -577,6 +615,7 @@ static int worldgeologicalcubetype(const worldgencontext &ctx, const ivec &o, in
 {
     const float bottomdepth = ctx.settings.sealevel - WORLD_MIN_HEIGHT - o.z / float(WORLD_BLOCK_SIZE),
                 topdepth = bottomdepth - size / float(WORLD_BLOCK_SIZE);
+
     if(bottomdepth <= 48) return ctx.geologymaterials[0];
     if(topdepth >= 208) return ctx.geologymaterials[2];
     if(topdepth >= 112 && bottomdepth <= 144) return ctx.geologymaterials[1];
@@ -598,18 +637,16 @@ static int worldgeologicalcubetype(const worldgencontext &ctx, const ivec &o, in
 
 static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
 {
-    if(o.x >= WORLD_CHUNK_SIZE || o.y >= WORLD_CHUNK_SIZE || o.z >= WORLD_MAP_SIZE)
-        return WORLD_TERRAIN_EMPTY;
-    if(o.x + size > WORLD_CHUNK_SIZE || o.y + size > WORLD_CHUNK_SIZE || o.z + size > WORLD_MAP_SIZE)
-        return WORLD_TERRAIN_MIXED;
+    if(o.x >= WORLD_CHUNK_SIZE || o.y >= WORLD_CHUNK_SIZE || o.z >= WORLD_MAP_SIZE) return WORLD_TERRAIN_EMPTY;
+    if(o.x + size > WORLD_CHUNK_SIZE || o.y + size > WORLD_CHUNK_SIZE || o.z + size > WORLD_MAP_SIZE)return WORLD_TERRAIN_MIXED;
 
     int type = WORLD_TERRAIN_UNSET;
     for(int y = o.y; y < o.y + size; y += WORLD_BLOCK_SIZE)
     for(int x = o.x; x < o.x + size; x += WORLD_BLOCK_SIZE)
     {
         int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y), worldmaterial(ctx, x, y), worldbeach(ctx, x, y), worldcliff(ctx, x, y),
-                                             worldrock(ctx, x, y), worldwaterheight(ctx, x, y),
-                                             ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
+                                             worldrock(ctx, x, y), worldwaterheight(ctx, x, y), ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
+
         if(columntype == WORLD_TERRAIN_MIXED || (type != WORLD_TERRAIN_UNSET && type != columntype)) return WORLD_TERRAIN_MIXED;
         type = columntype;
     }
@@ -632,12 +669,11 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
     // that top so grass/sand/snow/stone wins over dirt, and water wins for a
     // submerged terrain column. Cubes wholly underground retain the centre
     // sample used for their dominant interior material.
-    if(visibletop > o.z && visibletop <= o.z + size)
-        z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
+    if(visibletop > o.z && visibletop <= o.z + size) z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
 
     const int type = worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y),
-                                         worldwaterheight(ctx, x, y),
-                                         ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
+                                         worldwaterheight(ctx, x, y), ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
+
     return type == ctx.geologymaterials[0] ? worldgeologicalcubetype(ctx, ivec(x, y, z), 1) : type;
 }
 
@@ -670,8 +706,11 @@ static bool generateworldcube(worldgencontext &ctx, cube &c, const ivec &o, int 
 
     c.children = allocworldgenfamily(ctx);
     const int childsize = size >> 1;
-    loopi(8) if(!generateworldcube(ctx, c.children[i], ivec(i, o, childsize), childsize, mingridsize))
-        return false;
+    loopi(8)
+    {
+        if(!generateworldcube(ctx, c.children[i], ivec(i, o, childsize), childsize, mingridsize)) return false;
+    }
+
     return true;
 }
 
@@ -679,6 +718,7 @@ static uint hashworldtree(uint seed, int chunkx, int chunky, int blockx, int blo
 {
     const uint worldx = uint(chunkx) * uint(WORLD_CHUNK_BLOCKS) + uint(blockx),
                worldy = uint(chunky) * uint(WORLD_CHUNK_BLOCKS) + uint(blocky);
+
     uint hash = seed ^ salt;
     hash ^= worldx * 0x9E3779B9U;
     hash ^= worldy * 0x85EBCA6BU;
@@ -687,6 +727,7 @@ static uint hashworldtree(uint seed, int chunkx, int chunky, int blockx, int blo
     hash ^= hash >> 15;
     hash *= 0x846CA68BU;
     hash ^= hash >> 16;
+
     return hash;
 }
 
@@ -705,6 +746,7 @@ static uint hashworldgrass(uint seed, uint worldx, uint worldy, uint salt)
     hash ^= hash >> 15;
     hash *= 0x846CA68BU;
     hash ^= hash >> 16;
+
     return hash;
 }
 
@@ -736,13 +778,14 @@ static void cacheworldscattertransforms(int chunkx, int chunky, float maxoffset,
 struct worldgrasscollectcontext
 {
     FastNoiseLite distribution, flowerdistribution[3];
+    game::worldgenerator generator;
     game::worldsettings settings;
     vector<worldscatterinstance> &scatter;
     int chunkx, chunky;
     uint seed;
 
     worldgrasscollectcontext(int chunkx, int chunky, const game::worldsettings &settings, vector<worldscatterinstance> &scatter)
-        : settings(settings), scatter(scatter), chunkx(chunkx), chunky(chunky), seed(uint(game::getworldseed()))
+        : generator(game::getworldseed(), settings), settings(settings), scatter(scatter), chunkx(chunkx), chunky(chunky), seed(uint(game::getworldseed()))
     {
         distribution.SetSeed(game::getworldseed() ^ 0x6E624EB7);
         distribution.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
@@ -808,6 +851,7 @@ static bool validgeneratedworldscatter(const cube *root, const worldscatterinsta
 
     const cube &support = lookupgeneratedworldcube(root, supportcenter);
     if(isempty(support) || !isentirelysolid(support) || support.material != MAT_AIR) return false;
+
     return true;
 }
 
@@ -882,12 +926,18 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
     if(c.children)
     {
         const int childsize = size >> 1;
-        loopi(8)
-            collectworldgrassnode(ctx, c.children[i], root, ivec(i, o, childsize), childsize, surfacetexture);
+        loopi(8) collectworldgrassnode(ctx, c.children[i], root, ivec(i, o, childsize), childsize, surfacetexture);
         return;
     }
 
-    if(size < WORLD_BLOCK_SIZE || isempty(c) || !isentirelysolid(c) || c.material != MAT_AIR || c.texture[O_TOP] != surfacetexture)
+    if(size < WORLD_BLOCK_SIZE || isempty(c) || !isentirelysolid(c) || c.material != MAT_AIR)
+        return;
+    const worlddefinition *frozen = findworldcube("frozen_grass"),
+                          *moss = findworldcube("frozen_moss"), *thawedmoss = findworldcube("moss"),
+                          *dirt = findworldcube("frozen_dirt"), *gravel = findworldcube("frozen_gravel");
+    if(c.texture[O_TOP] != surfacetexture && (!frozen || c.texture[O_TOP] != frozen->slot) &&
+       (!moss || c.texture[O_TOP] != moss->slot) && (!thawedmoss || c.texture[O_TOP] != thawedmoss->slot) &&
+       (!dirt || c.texture[O_TOP] != dirt->slot) && (!gravel || c.texture[O_TOP] != gravel->slot))
         return;
 
     const int top = o.z + size;
@@ -908,7 +958,30 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
         const uint worldx = uint(blockx), worldy = uint(blocky);
         const float noisex = float(blockx) + 0.5f,
                     noisey = float(blocky) + 0.5f;
-        int type = chooseworldflower(ctx, noisex, noisey, worldx, worldy);
+        const int ground = (top - WORLD_GROUND_HEIGHT) / WORLD_BLOCK_SIZE;
+        const vec position(float(blockx) * WORLD_BLOCK_SIZE, float(blocky) * WORLD_BLOCK_SIZE, float(top));
+        const game::BiomeSample climate = ctx.generator.sampleBiome(position);
+        int coldtype = -1;
+        bool coldprop = false;
+        if(climate.temperature <= 2.0f)
+        {
+            const game::ColdSample cold = ctx.generator.samplecold(blockx, blocky, ground, climate);
+            float vegetation = cold.vegetation * 0.4f;
+            const bool gravelground = gravel && c.texture[O_TOP] == gravel->slot,
+                       dirtground = dirt && c.texture[O_TOP] == dirt->slot;
+            const bool mossground = cold.material == game::WORLD_MOSS || cold.material == game::WORLD_FROZEN_MOSS;
+            const char *id = mossground ? (cold.region > 0.58f ? "moss_clump" : "tundra_tuft") :
+                             cold.region > 0.58f && cold.vegetation > 0.40f ? "dwarf_shrub" : "tundra_tuft";
+            if(gravelground || (dirtground && cold.region > 0.62f))
+            {
+                id = gravelground || cold.exposure > 0.58f ? "tundra_stones" : "tundra_branch";
+                vegetation = cold.region > 0.56f && !cold.covered ? 0.012f : 0.0f;
+                coldprop = true;
+            }
+            coldtype = worldscatterdefinitions.find(findworldscatter(id));
+            if(worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy, 0x517EE731U)) >= vegetation) continue;
+        }
+        int type = coldprop ? coldtype : climate.temperature > -2.0f ? chooseworldflower(ctx, noisex, noisey, worldx, worldy) : -1;
 
         if(type < 0)
         {
@@ -917,11 +990,12 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
                         patch = worldsmoothstep(0.2f, 0.8f, noise),
                         density = clamp(ctx.settings.grassdensity * (0.12f + 1.88f * patch * patch), 0.0f, 1.0f);
             if(worldtreeunit(hashworldgrass(ctx.seed, worldx, worldy, 0xA511E9B3U)) >= density) continue;
-            type = worldgrassscatter;
+            type = coldtype >= 0 ? coldtype : worldgrassscatter;
         }
 
         worldscatterinstance &scatter = ctx.scatter.add(worldscatterinstance(x, y, top, type));
         cacheworldscattertransform(ctx.chunkx, ctx.chunky, ctx.settings.grassmaxoffset, scatter);
+
     }
 }
 
@@ -2542,6 +2616,23 @@ namespace game
         else surface.material = WORLD_SURFACE_GRASS;
         if(cliff && !cliffface && !rock) surface.material |= WORLD_SURFACE_STONE_BASE;
         if(hydro.freshwater) surface.material = WORLD_SURFACE_DIRT;
+        if(!cliffface && !(beach && !cliff)) switch(biome)
+        {
+            case WORLD_FROZEN_GRASS: surface.material = WORLD_SURFACE_FROZEN_GRASS; break;
+            case WORLD_FROZEN_DIRT: surface.material = WORLD_SURFACE_FROZEN_DIRT; break;
+            case WORLD_MOSS: surface.material = WORLD_SURFACE_MOSS; break;
+            case WORLD_FROZEN_MOSS: surface.material = WORLD_SURFACE_FROZEN_MOSS; break;
+            case WORLD_FROZEN_GRAVEL: surface.material = WORLD_SURFACE_FROZEN_GRAVEL; break;
+            case WORLD_SNOW_CRUST: surface.material = WORLD_SURFACE_SNOW_CRUST; break;
+            case WORLD_DEEP_SNOW: surface.material = WORLD_SURFACE_DEEP_SNOW; break;
+        }
+        if(biome == WORLD_COLD_ROCK) surface.material = WORLD_SURFACE_STONE;
+        if((!cliffface && !(beach && !cliff) && biome == WORLD_ICE) || biome == WORLD_FROZEN_WATER)
+        {
+            surface.material = WORLD_SURFACE_ICE;
+            if(biome == WORLD_FROZEN_WATER) surface.height = hydro.water;
+            surface.water = false;
+        }
         return !generation->iscanceled();
     }
 

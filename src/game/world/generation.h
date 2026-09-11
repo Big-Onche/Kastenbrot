@@ -20,7 +20,15 @@ enum worldsurfacematerial
     WORLD_SURFACE_SAND,
     WORLD_SURFACE_SNOW,
     WORLD_SURFACE_DIRT,
-    WORLD_SURFACE_STONE_BASE = 1 << 3
+    WORLD_SURFACE_FROZEN_GRASS,
+    WORLD_SURFACE_FROZEN_DIRT,
+    WORLD_SURFACE_FROZEN_MOSS,
+    WORLD_SURFACE_FROZEN_GRAVEL,
+    WORLD_SURFACE_SNOW_CRUST,
+    WORLD_SURFACE_DEEP_SNOW,
+    WORLD_SURFACE_ICE,
+    WORLD_SURFACE_MOSS,
+    WORLD_SURFACE_STONE_BASE = 1 << 5
 };
 
 struct worldsurfacesample
@@ -45,6 +53,7 @@ namespace game
         FastNoiseLite fracturecorridors, fracturevertical;
         worldclimate environmentclimate;
         FastNoiseLite vegetationvariation, snowpatches;
+        FastNoiseLite coldbroad, coldroll, coldmicro, coldregions;
         FastNoiseLite biomeedgewarp;
         worldsettings settings;
         int seed;
@@ -73,13 +82,14 @@ namespace game
         // Absolute engine coordinates, using the same physical climate as vegetation and F2.
         BiomeSample sampleBiome(const vec &worldpos) const;
         int biome(int x, int y, int height) const;
-        // Legacy material codes only: snow is temperature driven, independent of ecosystem identity.
+        // Surface codes include legacy soil values and coldmaterial; ecosystem identity is sampled separately.
         int surfacematerial(int x, int y, int height) const;
         // Simple bounded noisy soil edge, shared by surface and vegetation queries.
         float sandcoverage(const BiomeSample &soil) const;
         BiomeSample samplesoil(const vec &position) const;
         // Surface snow mask in absolute block coordinates; raw climate is never modified.
         bool snowcovered(int x, int y, float temperature) const;
+        ColdSample samplecold(int x, int y, int height, const BiomeSample &climate) const;
         bool cliff(int x, int y, int height, bool *face = NULL) const;
         bool rock(int x, int y, int height) const;
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;

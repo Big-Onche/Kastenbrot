@@ -34,8 +34,18 @@ enum
     WORLD_LOD_LEAVES,
     WORLD_LOD_NEEDLES,
     WORLD_LOD_WATER,
+    WORLD_LOD_FROZEN_GRASS,
+    WORLD_LOD_FROZEN_DIRT,
+    WORLD_LOD_FROZEN_MOSS,
+    WORLD_LOD_FROZEN_GRAVEL,
+    WORLD_LOD_SNOW_CRUST,
+    WORLD_LOD_DEEP_SNOW,
+    WORLD_LOD_ICE,
+    WORLD_LOD_MOSS,
     WORLD_LOD_MATERIALS
 };
+
+static_assert(WORLD_LOD_FROZEN_GRASS == 13 && WORLD_LOD_DEEP_SNOW == 18 && WORLD_LOD_ICE == 19 && WORLD_LOD_MOSS == 20,"Cold texture array layers must match the worldlod shader");
 
 struct worldlodvertex
 {
@@ -144,6 +154,14 @@ static int worldlodtopmaterial(int material)
         case WORLD_SURFACE_STONE: return WORLD_LOD_STONE;
         case WORLD_SURFACE_SAND: return WORLD_LOD_SAND;
         case WORLD_SURFACE_SNOW: return WORLD_LOD_SNOW;
+        case WORLD_SURFACE_FROZEN_GRASS: return WORLD_LOD_FROZEN_GRASS;
+        case WORLD_SURFACE_FROZEN_DIRT: return WORLD_LOD_FROZEN_DIRT;
+        case WORLD_SURFACE_FROZEN_MOSS: return WORLD_LOD_FROZEN_MOSS;
+        case WORLD_SURFACE_FROZEN_GRAVEL: return WORLD_LOD_FROZEN_GRAVEL;
+        case WORLD_SURFACE_SNOW_CRUST: return WORLD_LOD_SNOW_CRUST;
+        case WORLD_SURFACE_DEEP_SNOW: return WORLD_LOD_DEEP_SNOW;
+        case WORLD_SURFACE_MOSS: return WORLD_LOD_MOSS;
+        case WORLD_SURFACE_ICE: return WORLD_LOD_ICE;
         case WORLD_SURFACE_DIRT: return WORLD_LOD_DIRT;
         default: return WORLD_LOD_GRASS_TOP;
     }
@@ -1032,8 +1050,14 @@ static void deleteworldlodchunk(worldlodchunk &chunk)
     chunk.vbo = chunk.ebo = 0;
 }
 
+static GLuint worldlodcoldtexture = 0;
+static GLuint worldlodcoldsources[7] = {};
+
 static void clearworldlods()
 {
+    if(worldlodcoldtexture) glDeleteTextures(1, &worldlodcoldtexture);
+    worldlodcoldtexture = 0;
+    memset(worldlodcoldsources, 0, sizeof(worldlodcoldsources));
     ZoneScopedN("LOD/Clear");
     loopv(worldchunks)
     {
@@ -1645,6 +1669,56 @@ static GLuint worldlodtexture(const char *id, bool side = false)
     return texture->id;
 }
 
+// Seven ground textures share one sampler. Build from resolved block textures so fallback and asset changes match solid geometry.
+static void bindworldlodcoldtextures()
+{
+    static const char * const ids[] = { "frozen_grass", "frozen_dirt", "frozen_moss", "frozen_gravel", "snow_crust", "deep_snow", "moss" };
+    GLuint sources[7];
+    loopi(7) sources[i] = worldlodtexture(ids[i]);
+    if(!worldlodcoldtexture || memcmp(sources, worldlodcoldsources, sizeof(sources)))
+    {
+        int widths[7], heights[7], width = 1, height = 1;
+        loopi(7)
+        {
+            glBindTexture(GL_TEXTURE_2D, sources[i]);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &widths[i]);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &heights[i]);
+            width = max(width, widths[i]);
+            height = max(height, heights[i]);
+        }
+        if(!worldlodcoldtexture) glGenTextures(1, &worldlodcoldtexture);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, worldlodcoldtexture);
+        glTexImage3D_(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, width, height, 7, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        GLint packalignment, unpackalignment;
+        glGetIntegerv(GL_PACK_ALIGNMENT, &packalignment);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackalignment);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        loopi(7)
+        {
+            vector<uchar> source, layer;
+            // Engine vector::setsize only truncates; pad allocates and advances the used length.
+            source.pad(widths[i] * heights[i] * 4);
+            layer.pad(width * height * 4);
+            glBindTexture(GL_TEXTURE_2D, sources[i]);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, source.getbuf());
+            // Preserve pixel-art texels if source resolutions differ.
+            loop(y, height) loop(x, width)
+                memcpy(&layer[(y * width + x) * 4], &source[((y * heights[i] / height) * widths[i] + x * widths[i] / width) * 4], 4);
+            glTexSubImage3D_(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i, width, height, 1, GL_RGBA, GL_UNSIGNED_BYTE, layer.getbuf());
+        }
+        glPixelStorei(GL_PACK_ALIGNMENT, packalignment);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, unpackalignment);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glGenerateMipmap_(GL_TEXTURE_2D_ARRAY);
+        memcpy(worldlodcoldsources, sources, sizeof(sources));
+    }
+    glBindTexture(GL_TEXTURE_2D_ARRAY, worldlodcoldtexture);
+}
+
 static void bindworldlodtextures()
 {
     static const char * const ids[] =
@@ -1657,6 +1731,10 @@ static void bindworldlodtextures()
         const bool side = i == WORLD_LOD_GRASS_SIDE || i == WORLD_LOD_WOOD_SIDE || i == WORLD_LOD_DARK_WOOD_SIDE;
         glBindTexture(GL_TEXTURE_2D, worldlodtexture(ids[i], side));
     }
+    glActiveTexture_(GL_TEXTURE0 + 12);
+    bindworldlodcoldtextures();
+    glActiveTexture_(GL_TEXTURE0 + 13);
+    glBindTexture(GL_TEXTURE_2D, worldlodtexture("ice"));
     glActiveTexture_(GL_TEXTURE0);
 }
 

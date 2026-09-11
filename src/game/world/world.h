@@ -14,6 +14,7 @@ namespace game
         WORLD_BIOME_COLD_DESERT,
         WORLD_BIOME_SAVANNA,
         WORLD_BIOME_RAINFOREST,
+        WORLD_BIOME_SNOW_DESERT,
         WORLD_BIOME_COUNT,
         WORLD_BIOME_TUNDRA = WORLD_BIOME_SNOW
     };
@@ -38,6 +39,21 @@ namespace game
     };
 
     extern BiomeSample sampleClimateBiome(float temperature, float humidity);
+
+    // Surface codes are independent of ecosystem IDs; old biome-valued soil codes remain compatible.
+    enum coldmaterial
+    {
+        WORLD_FROZEN_GRASS = WORLD_BIOME_COUNT, WORLD_FROZEN_DIRT, WORLD_FROZEN_MOSS, WORLD_FROZEN_GRAVEL,
+        WORLD_COLD_ROCK, WORLD_SNOW_CRUST, WORLD_DEEP_SNOW, WORLD_ICE, WORLD_FROZEN_WATER, WORLD_MOSS
+    };
+
+    struct ColdSample
+    {
+        float coldness, desert, slope, basin, exposure, deposition, snow, vegetation, region;
+        float severity, wetness, nearwater, grassscore, dirtscore, mossscore, gravelscore, snowscore, pinemask;
+        int material;
+        bool covered;
+    };
 
     enum worldtreeblock
     {
