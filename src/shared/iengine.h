@@ -450,10 +450,8 @@ extern void findents(int low, int high, bool notspawned, const vec &pos, const v
 extern void mpeditent(int i, const vec &o, int type, int attr1, int attr2, int attr3, int attr4, int attr5, bool local);
 extern vec getselpos();
 extern int getworldsize();
-extern int getworldlightlevel(const vec &position);
 extern void updateworldchunks(bool force = false);
-extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata,
-                                     int datlength);
+extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata, int datlength);
 extern int getmapversion();
 extern void renderentcone(const extentity &e, const vec &dir, float radius, float angle);
 extern void renderentarrow(const extentity &e, const vec &dir, float radius);

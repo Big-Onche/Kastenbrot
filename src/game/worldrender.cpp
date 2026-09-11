@@ -1016,27 +1016,4 @@ bool getworldchesthit(const vec &origin, const vec &direction, float reach, int 
     return found;
 }
 
-
-
-
-int getworldlightlevel(const vec &position)
-{
-    float level = clamp(game::environment::getambientlightlevel(), 0.0f, 16.0f);
-    loopv(worldchunks)
-    {
-        const worldchunk &chunk = worldchunks[i];
-        if(chunk.loading || !chunk.root || !worldchunkmounted(chunk)) continue;
-        loopvj(chunk.scatter)
-        {
-            const worldscatterinstance &scatter = chunk.scatter[j];
-            if(!isworldtorch(scatter.type) || !worldscattermounted(chunk, scatter)) continue;
-            vec flame;
-            if(!worldtorchflameposition(chunk, scatter, game::getworldscattermaxoffset(), flame)) continue;
-            const float torchlevel = worldscatterdefinitions[scatter.type]->lightradius - flame.dist(position) / WORLD_BLOCK_SIZE;
-            level = max(level, torchlevel);
-        }
-    }
-    return clamp(int(floorf(level + 0.5f)), 0, 16);
-}
-
 #endif

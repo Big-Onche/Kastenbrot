@@ -371,27 +371,6 @@ namespace game
         return npcs.length();
     }
 
-    static int locallightlevel(const vec &position)
-    {
-        int level = getworldlightlevel(position);
-        if(!player1) return level;
-        const float radius = getworlditemlightradius(selectedcreativeblock());
-        if(radius > 0)
-        {
-            vec emitter = player1->o;
-            heldtorchemitterposition(player1, emitter);
-            level = max(level, clamp(int(floorf(radius - emitter.dist(position) / GAMEUNITSPERMETER + 0.5f)), 0, 16));
-        }
-        return level;
-    }
-
-    static int playerlightlevel()
-    {
-        return player1 ? locallightlevel(player1->o) : 16;
-    }
-
-    ICOMMAND(getdebugplayerlight, "", (), intret(playerlightlevel()));
-
     ICOMMAND(getdebugnpcsinrange, "", (),
     {
         if(!player1) { intret(0); return; }
