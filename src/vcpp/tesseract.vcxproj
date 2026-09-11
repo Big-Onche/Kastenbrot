@@ -438,9 +438,12 @@
     <ClInclude Include="..\shared\tools.h" />
     <ClInclude Include="..\game\game.h" />
     <ClInclude Include="..\game\mining.h" />
-    <ClInclude Include="..\game\weather.h" />
-    <ClInclude Include="..\game\world.h" />
-    <ClInclude Include="..\game\worldgen.h" />
+    <ClInclude Include="..\game\world\weather.h" />
+    <ClInclude Include="..\game\world\climate.h" />
+    <ClInclude Include="..\game\world\hydrology.h" />
+    <ClInclude Include="..\game\world\environment.h" />
+    <ClInclude Include="..\game\world\world.h" />
+    <ClInclude Include="..\game\world\generation.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\include\tracy\public\TracyClient.cpp">
@@ -1073,7 +1076,7 @@
       <PrecompiledHeaderOutputFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(IntDir)engine.pch</PrecompiledHeaderOutputFile>
       <PrecompiledHeaderOutputFile Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)engine.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
-    <ClCompile Include="..\game\environment.cpp">
+    <ClCompile Include="..\game\world\environment.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
@@ -1107,7 +1110,7 @@
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
-    <ClCompile Include="..\game\weather.cpp">
+    <ClCompile Include="..\game\world\weather.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <PrecompiledHeaderOutputFile>$(IntDir)game.pch</PrecompiledHeaderOutputFile>
     </ClCompile>
@@ -1157,11 +1160,11 @@
       <ObjectFileName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(IntDir)%(Filename)1.obj</ObjectFileName>
       <ObjectFileName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)%(Filename)1.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="..\game\world.cpp">
+    <ClCompile Include="..\game\world\world.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <ObjectFileName>$(IntDir)game_world.obj</ObjectFileName>
     </ClCompile>
-    <ClCompile Include="..\game\worldgen.cpp">
+    <ClCompile Include="..\game\world\generation.cpp">
       <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
       <ObjectFileName>$(IntDir)game_worldgen.obj</ObjectFileName>
     </ClCompile>
@@ -1172,8 +1175,8 @@
     <None Include="..\engine\worldstream.cpp" />
     <None Include="..\engine\worldlod.cpp" />
     <None Include="..\engine\worldvisibility.cpp" />
-    <None Include="..\game\worldcontent.cpp" />
-    <None Include="..\game\worldrender.cpp" />
+    <None Include="..\game\world\content.cpp" />
+    <None Include="..\game\world\render.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="tesseract.rc" />

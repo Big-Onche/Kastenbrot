@@ -3,6 +3,7 @@
 
 #include "cube.h"
 #include "mining.h"
+#include "world/environment.h"
 
 #define DMF 16.0f
 #define DNF 100.0f
@@ -705,17 +706,6 @@ namespace game
     extern float pendingnetworkfalldistance;
     extern vec pendingnetworkposition, pendingnetworkvelocity, pendingnetworkfalling;
 
-    namespace environment
-    {
-        extern void reset();
-        extern void update();
-        extern void synctime(int millis, bool frozen);
-        extern int gettimemillis();
-        extern float getdayprogress();
-        extern float gethourafter(int millis);
-        extern bool istimefrozen();
-        extern float getambientlightlevel();
-    }
 #endif
 }
 

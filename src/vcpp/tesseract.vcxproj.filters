@@ -34,8 +34,8 @@
     <ClCompile Include="..\game\entities.cpp">
       <Filter>game</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\environment.cpp">
-      <Filter>game</Filter>
+    <ClCompile Include="..\game\world\environment.cpp">
+      <Filter>game\world</Filter>
     </ClCompile>
     <ClCompile Include="..\game\ambient.cpp">
       <Filter>game</Filter>
@@ -52,14 +52,14 @@
     <ClCompile Include="..\game\render.cpp">
       <Filter>game</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\weather.cpp">
-      <Filter>game</Filter>
+    <ClCompile Include="..\game\world\weather.cpp">
+      <Filter>game\world</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\world.cpp">
-      <Filter>game</Filter>
+    <ClCompile Include="..\game\world\world.cpp">
+      <Filter>game\world</Filter>
     </ClCompile>
-    <ClCompile Include="..\game\worldgen.cpp">
-      <Filter>game</Filter>
+    <ClCompile Include="..\game\world\generation.cpp">
+      <Filter>game\world</Filter>
     </ClCompile>
     <ClCompile Include="..\shared\geom.cpp">
       <Filter>shared</Filter>
@@ -222,11 +222,14 @@
     <ClInclude Include="..\game\mining.h">
       <Filter>game</Filter>
     </ClInclude>
-    <ClInclude Include="..\game\weather.h">
-      <Filter>game</Filter>
+    <ClInclude Include="..\game\world\weather.h">
+      <Filter>game\world</Filter>
     </ClInclude>
-    <ClInclude Include="..\game\world.h">
-      <Filter>game</Filter>
+    <ClInclude Include="..\game\world\climate.h"><Filter>game\world</Filter></ClInclude>
+    <ClInclude Include="..\game\world\hydrology.h"><Filter>game\world</Filter></ClInclude>
+    <ClInclude Include="..\game\world\environment.h"><Filter>game\world</Filter></ClInclude>
+    <ClInclude Include="..\game\world\world.h">
+      <Filter>game\world</Filter>
     </ClInclude>
     <ClInclude Include="..\shared\geom.h">
       <Filter>shared</Filter>
@@ -303,8 +306,8 @@
     <ClInclude Include="..\engine\world.h">
       <Filter>engine</Filter>
     </ClInclude>
-    <ClInclude Include="..\game\worldgen.h">
-      <Filter>game</Filter>
+    <ClInclude Include="..\game\world\generation.h">
+      <Filter>game\world</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -313,8 +316,8 @@
     <None Include="..\engine\worldstream.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldlod.cpp"><Filter>engine</Filter></None>
     <None Include="..\engine\worldvisibility.cpp"><Filter>engine</Filter></None>
-    <None Include="..\game\worldcontent.cpp"><Filter>game</Filter></None>
-    <None Include="..\game\worldrender.cpp"><Filter>game</Filter></None>
+    <None Include="..\game\world\content.cpp"><Filter>game\world</Filter></None>
+    <None Include="..\game\world\render.cpp"><Filter>game\world</Filter></None>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="tesseract.rc" />
@@ -325,6 +328,9 @@
     </Filter>
     <Filter Include="engine">
       <UniqueIdentifier>{37ef9828-d87f-413d-93ee-effc029b6a73}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="game\world">
+      <UniqueIdentifier>{425BD90B-42CD-4C72-88B9-B590CF364CBC}</UniqueIdentifier>
     </Filter>
     <Filter Include="game">
       <UniqueIdentifier>{9b7a70df-c8ed-4662-8380-4ffe119eb216}</UniqueIdentifier>

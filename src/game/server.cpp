@@ -1,13 +1,12 @@
 #include "game.h"
 #include <errno.h>
-#include "world.h"
+#include "world/generation.h"
 #include "worldcube.h"
 #include "../engine/world.h"
 #include "worlddef.h"
 #include <SDL.h>
 #include <SDL_atomic.h>
 #include "worldruntime.h"
-#include "worldgen.h"
 #define WORLDIO_MODULE_IMPLEMENTATION
 #define WORLD_SNAPSHOT_SERVER_CODEC
 #include "worldcache.cpp"

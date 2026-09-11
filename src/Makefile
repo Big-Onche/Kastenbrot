@@ -121,16 +121,16 @@ CLIENT_OBJS= \
 	game/client.o \
 	game/ambient.o \
 	game/entities.o \
-	game/environment.o \
+	game/world/environment.o \
 	game/game.o \
 	game/mining.o \
 	game/npc.o \
 	game/recipes.o \
 	game/render.o \
 	game/server.o \
-	game/weather.o \
-	game/world.o \
-	game/worldgen.o
+	game/world/weather.o \
+	game/world/world.o \
+	game/world/generation.o
 
 ifeq ($(TRACY),1)
 CLIENT_OBJS+= include/tracy/public/TracyClient.o
@@ -172,11 +172,11 @@ SERVER_OBJS= \
 	standalone/game/npc.o \
 	standalone/game/recipes.o \
 	standalone/game/server.o \
-	standalone/game/world.o \
-	standalone/game/worldgen.o
+	standalone/game/world/world.o \
+	standalone/game/world/generation.o
 
 SERVER_PCH= standalone/shared/cube.h.gch standalone/engine/engine.h.gch standalone/game/game.h.gch
-STANDALONE_DIRS= standalone/shared standalone/engine standalone/game
+STANDALONE_DIRS= standalone/shared standalone/engine standalone/game standalone/game/world
 
 MASTER_OBJS= \
 	standalone/shared/crypto.o \
@@ -195,7 +195,7 @@ clean:
 	-$(RM) $(CLIENT_PCH) $(CLIENT_OBJS) $(SERVER_PCH) $(SERVER_MASTER_OBJS) tess_client tess_server tess_master
 
 fixspace:
-	sed -i 's/[ \t]*$$//; :rep; s/^\([ ]*\)\t/\1    /g; trep' shared/*.c shared/*.cpp shared/*.h engine/*.cpp engine/*.h game/*.cpp game/*.h
+	sed -i 's/[ \t]*$$//; :rep; s/^\([ ]*\)\t/\1    /g; trep' shared/*.c shared/*.cpp shared/*.h engine/*.cpp engine/*.h game/*.cpp game/*.h game/world/*.cpp game/world/*.h
 
 $(filter-out shared/%,$(CLIENT_PCH)): $(filter shared/%,$(CLIENT_PCH))
 $(CLIENT_PCH): %.h.gch: %.h
@@ -208,7 +208,7 @@ $(filter engine/%,$(CLIENT_OBJS)): $(filter engine/%,$(CLIENT_PCH))
 $(filter game/%,$(CLIENT_OBJS)): $(filter game/%,$(CLIENT_PCH))
 game/game.h.gch standalone/game/game.h.gch: game/npcanimation.h game/npcspawn.h
 game/npc.o standalone/game/npc.o: game/npcsound.h game/npcdef.h game/npcanimation.h game/game.h
-game/world.o standalone/game/world.o: game/worldhydrology.h game/world.h
+game/world/world.o standalone/game/world/world.o: game/world/hydrology.h game/world/world.h
 engine/material.o: engine/watergeometry.h engine/watercache.h
 
 $(filter-out standalone/shared/%,$(SERVER_PCH)): $(filter standalone/shared/%,$(SERVER_PCH))
@@ -319,7 +319,7 @@ engine/cloud.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/cloud.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 engine/cloud.o: shared/iengine.h shared/igame.h engine/world.h engine/octa.h
 engine/cloud.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
-engine/cloud.o: game/weather.h include/FastNoiseLite.h
+engine/cloud.o: game/world/weather.h include/FastNoiseLite.h
 engine/command.o: engine/engine.h shared/cube.h shared/tools.h shared/geom.h
 engine/command.o: shared/ents.h shared/command.h shared/glexts.h
 engine/command.o: shared/glemu.h shared/iengine.h shared/igame.h
@@ -492,12 +492,12 @@ engine/world.o: engine/light.h engine/texture.h engine/bih.h engine/model.h
 engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldcube.h engine/worldruntime.h
 engine/worldio.o: engine/worldcache.cpp engine/worldstream.cpp engine/worldlod.cpp engine/worldvisibility.cpp
 engine/worldio.o: engine/localambientgeometry.h
-engine/worldio.o: engine/worldedit.cpp game/worldcontent.cpp game/worldrender.cpp game/worldgen.h shared/cube.h shared/tools.h shared/geom.h
+engine/worldio.o: engine/worldedit.cpp game/world/content.cpp game/world/render.cpp game/world/generation.h shared/cube.h shared/tools.h shared/geom.h
 engine/worldio.o: shared/ents.h shared/command.h shared/glexts.h
 engine/worldio.o: shared/glemu.h shared/iengine.h shared/igame.h
 engine/worldio.o: engine/world.h engine/octa.h engine/light.h
 engine/worldio.o: engine/texture.h engine/bih.h engine/model.h
-engine/worldio.o: game/worldgen.h
+engine/worldio.o: game/world/generation.h
 engine/worlddef.o: engine/engine.h engine/worlddef.h shared/cube.h shared/tools.h
 game/client.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/client.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
@@ -505,11 +505,11 @@ game/client.o: shared/iengine.h shared/igame.h
 game/entities.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/entities.o: shared/ents.h shared/command.h shared/glexts.h
 game/entities.o: shared/glemu.h shared/iengine.h shared/igame.h
-game/environment.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
-game/environment.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
-game/environment.o: shared/iengine.h shared/igame.h
-game/ambient.o: game/game.h game/ambient.h game/weather.h game/world.h shared/cube.h shared/iengine.h include/FastNoiseLite.h
-game/game.o: game/game.h game/weather.h game/ambient.h shared/cube.h shared/tools.h shared/geom.h
+game/world/environment.o: game/game.h game/world/weather.h shared/cube.h shared/tools.h shared/geom.h
+game/world/environment.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
+game/world/environment.o: shared/iengine.h shared/igame.h
+game/ambient.o: game/game.h game/ambient.h game/world/weather.h game/world/world.h shared/cube.h shared/iengine.h include/FastNoiseLite.h
+game/game.o: game/game.h game/world/weather.h game/ambient.h shared/cube.h shared/tools.h shared/geom.h
 game/game.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/game.o: shared/iengine.h shared/igame.h
 game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h shared/geom.h
@@ -518,17 +518,17 @@ game/mining.o: shared/iengine.h shared/igame.h
 game/render.o: game/game.h shared/cube.h shared/tools.h shared/geom.h
 game/render.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/render.o: shared/iengine.h shared/igame.h
-game/server.o: game/game.h game/world.h shared/cube.h shared/tools.h shared/geom.h
+game/server.o: game/game.h game/world/world.h shared/cube.h shared/tools.h shared/geom.h
 game/server.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
 game/server.o: shared/iengine.h shared/igame.h
-game/weather.o: game/game.h game/weather.h shared/cube.h shared/tools.h shared/geom.h
-game/weather.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
-game/weather.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
-game/world.o: game/game.h game/world.h shared/cube.h shared/tools.h shared/geom.h
-game/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
-game/world.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
-game/worldgen.o: game/game.h game/world.h game/worldgen.h engine/engine.h engine/worlddef.h engine/worldruntime.h
-game/worldgen.o: shared/cube.h shared/tools.h shared/geom.h shared/ents.h shared/command.h include/FastNoiseLite.h
+game/world/weather.o: game/game.h game/world/weather.h shared/cube.h shared/tools.h shared/geom.h
+game/world/weather.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
+game/world/weather.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
+game/world/world.o: game/game.h game/world/world.h shared/cube.h shared/tools.h shared/geom.h
+game/world/world.o: shared/ents.h shared/command.h shared/glexts.h shared/glemu.h
+game/world/world.o: shared/iengine.h shared/igame.h include/FastNoiseLite.h
+game/world/generation.o: game/game.h game/world/world.h game/world/generation.h engine/engine.h engine/worlddef.h engine/worldruntime.h
+game/world/generation.o: shared/cube.h shared/tools.h shared/geom.h shared/ents.h shared/command.h include/FastNoiseLite.h
 
 shared/cube.h.gch: shared/tools.h shared/geom.h shared/ents.h
 shared/cube.h.gch: shared/command.h shared/glexts.h shared/glemu.h
@@ -558,7 +558,7 @@ standalone/engine/server.o: engine/engine.h shared/cube.h shared/tools.h
 standalone/engine/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/engine/server.o: shared/iengine.h shared/igame.h engine/world.h
 standalone/engine/worldio.o: engine/engine.h engine/worlddef.h engine/worldcube.h engine/worldruntime.h
-standalone/engine/worldio.o: game/worldcontent.cpp shared/cube.h shared/tools.h
+standalone/engine/worldio.o: game/world/content.cpp shared/cube.h shared/tools.h
 standalone/engine/worldio.o: shared/geom.h shared/ents.h shared/command.h
 standalone/engine/worldio.o: shared/iengine.h shared/igame.h engine/world.h
 standalone/engine/worlddef.o: engine/engine.h engine/worlddef.h shared/cube.h
@@ -568,11 +568,11 @@ standalone/game/entities.o: shared/iengine.h shared/igame.h
 standalone/game/mining.o: game/game.h game/mining.h shared/cube.h shared/tools.h
 standalone/game/mining.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/mining.o: shared/iengine.h shared/igame.h
-standalone/game/server.o: game/game.h game/world.h shared/cube.h shared/tools.h
+standalone/game/server.o: game/game.h game/world/world.h shared/cube.h shared/tools.h
 standalone/game/server.o: shared/geom.h shared/ents.h shared/command.h
 standalone/game/server.o: shared/iengine.h shared/igame.h
-standalone/game/server.o: engine/worldcube.h engine/worldruntime.h engine/worldcache.cpp game/worldgen.h
-standalone/game/worldgen.o: game/game.h game/world.h game/worldgen.h engine/worldcube.h engine/worldruntime.h
+standalone/game/server.o: engine/worldcube.h engine/worldruntime.h engine/worldcache.cpp game/world/generation.h
+standalone/game/world/generation.o: game/game.h game/world/world.h game/world/generation.h engine/worldcube.h engine/worldruntime.h
 standalone/engine/master.o: shared/cube.h shared/tools.h shared/geom.h
 standalone/engine/master.o: shared/ents.h shared/command.h shared/iengine.h
 standalone/engine/master.o: shared/igame.h
@@ -591,5 +591,10 @@ standalone/game/game.h.gch: shared/igame.h
 engine/physics.o: shared/jump.h
 
 # Climate is shared by procedural generation and the camera debug HUD.
-engine/worldio.o game/world.o game/worldgen.o game/server.o game/ambient.o \
-standalone/game/world.o standalone/game/worldgen.o standalone/game/server.o: game/worldclimate.h game/world.h
+engine/worldio.o game/world/world.o game/world/generation.o game/server.o game/ambient.o \
+standalone/game/world/world.o standalone/game/world/generation.o standalone/game/server.o: game/world/climate.h game/world/world.h
+
+# World interfaces are also dependencies of the game PCH and standalone objects.
+WORLD_HEADERS= $(wildcard game/world/*.h)
+game/game.h.gch standalone/game/game.h.gch: game/world/environment.h
+$(filter game/% standalone/game/%,$(CLIENT_OBJS) $(SERVER_OBJS)) engine/worldio.o standalone/engine/worldio.o: $(WORLD_HEADERS)

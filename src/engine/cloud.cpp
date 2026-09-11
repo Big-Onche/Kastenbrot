@@ -1,7 +1,7 @@
 // Kastenbrot clouds: flat single-layer renderer streamed as deterministic world-space tiles.
 
 #include "engine.h"
-#include "weather.h"
+#include "world/weather.h"
 #ifdef SQRT3
 #pragma push_macro("SQRT3")
 #undef SQRT3

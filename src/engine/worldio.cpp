@@ -3,8 +3,8 @@
 #include "engine.h"
 #include "worlddef.h"
 #ifndef STANDALONE
-#include "../game/worldgen.h"
-#include "../game/weather.h"
+#include "world/generation.h"
+#include "world/weather.h"
 #include "worldruntime.h"
 #include "acoustics.h"
 #endif
@@ -87,11 +87,11 @@ struct worldspawnmetadata
 VARP(maxchunkdist, 2, 3, WORLD_MAX_CHUNK_DIST);
 
 #define WORLDIO_MODULE_IMPLEMENTATION
-#include "../game/worldcontent.cpp"
+#include "world/content.cpp"
 #include "worldcache.cpp"
 #include "worldstream.cpp"
 #include "worldlod.cpp"
-#include "../game/worldrender.cpp"
+#include "world/render.cpp"
 #include "worldvisibility.cpp"
 #include "worldedit.cpp"
 #undef WORLDIO_MODULE_IMPLEMENTATION
@@ -1037,7 +1037,7 @@ COMMAND(writecollideobj, "s");
 
 #else
 #define WORLDIO_STANDALONE_CONTENT_IMPLEMENTATION
-#include "../game/worldcontent.cpp"
+#include "world/content.cpp"
 #undef WORLDIO_STANDALONE_CONTENT_IMPLEMENTATION
 
 #endif

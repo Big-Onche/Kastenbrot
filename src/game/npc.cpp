@@ -1,6 +1,6 @@
 #include "game.h"
 #include "engine.h"
-#include "world.h"
+#include "world/world.h"
 #include "npcsound.h"
 #include "npcdef.h"
 

@@ -71,7 +71,7 @@
 		D1FCB17418832B7500AFC227 /* scoreboard.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13218832B7500AFC227 /* scoreboard.cpp */; };
 		D1FCB17518832B7500AFC227 /* server.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13318832B7500AFC227 /* server.cpp */; };
 		A1B2C3D4E5F60718293A4B5D /* world.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* world.cpp */; };
-		F00000000000000000000001 /* worldgen.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000016 /* worldgen.cpp */; };
+		F00000000000000000000001 /* generation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000016 /* generation.cpp */; };
 		D1FCB17618832B7500AFC227 /* waypoint.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13418832B7500AFC227 /* waypoint.cpp */; };
 		D1FCB17718832B7500AFC227 /* weapon.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB13518832B7500AFC227 /* weapon.cpp */; };
 		D1FCB17B18832BBC00AFC227 /* SDL2_image.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D1FCB17818832BBC00AFC227 /* SDL2_image.framework */; };
@@ -84,6 +84,7 @@
 		D1FCB19418832C7600AFC227 /* stream.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB18B18832C7600AFC227 /* stream.cpp */; };
 		D1FCB19618832C7600AFC227 /* tools.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB18D18832C7600AFC227 /* tools.cpp */; };
 		D1FCB19718832C7600AFC227 /* zip.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB18F18832C7600AFC227 /* zip.cpp */; };
+		B70D000000000000000000F1 /* weather.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B70D00000000000000000001 /* weather.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -199,10 +200,10 @@
 		D1FCB13218832B7500AFC227 /* scoreboard.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = scoreboard.cpp; sourceTree = "<group>"; };
 		D1FCB13318832B7500AFC227 /* server.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = server.cpp; sourceTree = "<group>"; };
 		A1B2C3D4E5F60718293A4B5C /* world.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = world.cpp; sourceTree = "<group>"; };
-		F00000000000000000000015 /* worldcontent.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldcontent.cpp; sourceTree = "<group>"; };
-		F00000000000000000000016 /* worldgen.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldgen.cpp; sourceTree = "<group>"; };
-		F00000000000000000000017 /* worldgen.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = worldgen.h; sourceTree = "<group>"; };
-		F00000000000000000000018 /* worldrender.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = worldrender.cpp; sourceTree = "<group>"; };
+		F00000000000000000000015 /* content.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = content.cpp; sourceTree = "<group>"; };
+		F00000000000000000000016 /* generation.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = generation.cpp; sourceTree = "<group>"; };
+		F00000000000000000000017 /* generation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = generation.h; sourceTree = "<group>"; };
+		F00000000000000000000018 /* render.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = render.cpp; sourceTree = "<group>"; };
 		D1FCB13418832B7500AFC227 /* waypoint.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = waypoint.cpp; sourceTree = "<group>"; };
 		D1FCB13518832B7500AFC227 /* weapon.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = weapon.cpp; sourceTree = "<group>"; };
 		D1FCB17818832BBC00AFC227 /* SDL2_image.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SDL2_image.framework; path = /Library/Frameworks/SDL2_image.framework; sourceTree = "<group>"; };
@@ -224,6 +225,11 @@
 		D1FCB18D18832C7600AFC227 /* tools.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = tools.cpp; sourceTree = "<group>"; };
 		D1FCB18E18832C7600AFC227 /* tools.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = tools.h; sourceTree = "<group>"; };
 		D1FCB18F18832C7600AFC227 /* zip.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = zip.cpp; sourceTree = "<group>"; };
+		B70D00000000000000000001 /* weather.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = weather.cpp; sourceTree = "<group>"; };
+		B70D00000000000000000002 /* weather.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = weather.h; sourceTree = "<group>"; };
+		B70D00000000000000000003 /* climate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = climate.h; sourceTree = "<group>"; };
+		B70D00000000000000000004 /* hydrology.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = hydrology.h; sourceTree = "<group>"; };
+		B70D00000000000000000005 /* environment.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = environment.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -441,20 +447,15 @@
 				E17A000218832B7500AFC227 /* environment.cpp */,
 				A8B1000218832B7500AFC227 /* ambient.cpp */,
 				D1FCB12E18832B7500AFC227 /* game.cpp */,
+				B70D000000000000000000F0 /* world */,
 				D1FCB12F18832B7500AFC227 /* game.h */,
 				E17A000418832B7500AFC227 /* mining.cpp */,
 				E17A000518832B7500AFC227 /* mining.h */,
 				E17A000618832B7500AFC227 /* npc.cpp */,
-				A1B2C3D4E5F60718293A4B5E /* world.h */,
 				D1FCB13018832B7500AFC227 /* pch.cpp */,
 				D1FCB13118832B7500AFC227 /* render.cpp */,
 				D1FCB13218832B7500AFC227 /* scoreboard.cpp */,
 				D1FCB13318832B7500AFC227 /* server.cpp */,
-				A1B2C3D4E5F60718293A4B5C /* world.cpp */,
-				F00000000000000000000015 /* worldcontent.cpp */,
-				F00000000000000000000016 /* worldgen.cpp */,
-				F00000000000000000000017 /* worldgen.h */,
-				F00000000000000000000018 /* worldrender.cpp */,
 				D1FCB13418832B7500AFC227 /* waypoint.cpp */,
 				D1FCB13518832B7500AFC227 /* weapon.cpp */,
 			);
@@ -484,6 +485,25 @@
 			);
 			name = shared;
 			path = ../shared;
+			sourceTree = "<group>";
+		};
+		B70D000000000000000000F0 /* world */ = {
+			isa = PBXGroup;
+			children = (
+				B70D00000000000000000003 /* climate.h */,
+				F00000000000000000000015 /* content.cpp */,
+				E17A000218832B7500AFC227 /* environment.cpp */,
+				B70D00000000000000000005 /* environment.h */,
+				F00000000000000000000016 /* generation.cpp */,
+				F00000000000000000000017 /* generation.h */,
+				B70D00000000000000000004 /* hydrology.h */,
+				F00000000000000000000018 /* render.cpp */,
+				B70D00000000000000000001 /* weather.cpp */,
+				B70D00000000000000000002 /* weather.h */,
+				A1B2C3D4E5F60718293A4B5C /* world.cpp */,
+				A1B2C3D4E5F60718293A4B5E /* world.h */,
+			);
+			path = world;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -609,7 +629,8 @@
 				D1FCB17418832B7500AFC227 /* scoreboard.cpp in Sources */,
 				D1FCB17518832B7500AFC227 /* server.cpp in Sources */,
 				A1B2C3D4E5F60718293A4B5D /* world.cpp in Sources */,
-				F00000000000000000000001 /* worldgen.cpp in Sources */,
+				B70D000000000000000000F1 /* weather.cpp in Sources */,
+				F00000000000000000000001 /* generation.cpp in Sources */,
 				D1FCB17618832B7500AFC227 /* waypoint.cpp in Sources */,
 				D1FCB17718832B7500AFC227 /* weapon.cpp in Sources */,
 				D1FCB19018832C7600AFC227 /* crypto.cpp in Sources */,
@@ -648,7 +669,7 @@
 				FRAMEWORK_SEARCH_PATHS_QUOTED_FOR_TARGET_1 = "\"$(SRCROOT)/Frameworks\"";
 				GCC_PRECOMPILE_PREFIX_HEADER = NO;
 				GCC_PREFIX_HEADER = "";
-				HEADER_SEARCH_PATHS = ../enet/include;
+				HEADER_SEARCH_PATHS = (../enet/include, ../include, ../shared, ../engine, ../game);
 				INFOPLIST_FILE = tesseract.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 10.9;
@@ -670,7 +691,7 @@
 				FRAMEWORK_SEARCH_PATHS_QUOTED_FOR_TARGET_1 = "\"$(SRCROOT)/Frameworks\"";
 				GCC_PRECOMPILE_PREFIX_HEADER = NO;
 				GCC_PREFIX_HEADER = "";
-				HEADER_SEARCH_PATHS = ../enet/include;
+				HEADER_SEARCH_PATHS = (../enet/include, ../include, ../shared, ../engine, ../game);
 				INFOPLIST_FILE = tesseract.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 10.9;
@@ -693,7 +714,7 @@
 				FRAMEWORK_SEARCH_PATHS_QUOTED_FOR_TARGET_1 = "\"$(SRCROOT)/Frameworks\"";
 				GCC_PRECOMPILE_PREFIX_HEADER = NO;
 				GCC_PREFIX_HEADER = "";
-				HEADER_SEARCH_PATHS = ../enet/include;
+				HEADER_SEARCH_PATHS = (../enet/include, ../include, ../shared, ../engine, ../game);
 				INFOPLIST_FILE = tesseract.plist;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 10.9;
