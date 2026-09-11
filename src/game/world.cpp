@@ -65,8 +65,7 @@ VAR(worldbeachmaxheight, -32, 1, 32);
 FVAR(worlddeserttemperature, -1.0f, 0.4f, 1.0f);
 FVAR(worlddesertmoisture, -1.0f, -0.18f, 1.0f);
 FVAR(worldforestmoisture, -1.0f, 0.10f, 1.0f);
-FVAR(worldforesttreedensity, 0.0f, 0.04f, 0.25f);
-FVAR(worldplainstreedensity, 0.0f, 0.0017f, 0.25f);
+FVAR(worldbasetreedensity, 0.0f, 0.025f, 0.25f);
 FVAR(worldgrassfrequency, 0.00001f, 0.02f, 1.0f);
 FVAR(worldgrassdensity, 0.0f, 0.35f, 1.0f);
 FVAR(worldgrassmaxoffset, 0.0f, 0.18f, 0.45f);
@@ -166,7 +165,7 @@ namespace game
           rockfrequency(worldrockfrequency),
           deserttemperature(worlddeserttemperature), desertmoisture(worlddesertmoisture),
           forestmoisture(worldforestmoisture),
-          foresttreedensity(worldforesttreedensity), plainstreedensity(worldplainstreedensity),
+          basetreedensity(worldbasetreedensity),
           grassfrequency(worldgrassfrequency), grassdensity(worldgrassdensity),
           grassmaxoffset(worldgrassmaxoffset),
           flowerchance(worldflowerchance), roseweight(worldroseweight),
@@ -198,8 +197,9 @@ namespace game
     }
 
     worldgenerator::worldgenerator(int seed, const worldsettings &settings)
-        : settings(settings), seed(seed), treeblockcache(1 << 12), hydrology(NULL)
+        : environmentclimate(seed, settings.sealevel, settings.snowheight), settings(settings), seed(seed), treeblockcache(1 << 12), hydrology(NULL)
     {
+        setupnoise(vegetationvariation, seed ^ 0x4C87A219, 0.006f, 2, 0.35f);
         // Isotropic, unwarped mega noise owns the continental topology. Macro
         // noise adds lobes and inland seas without bending the whole landmass.
         setupnoise(geology, seed, settings.megacontinentfrequency, 1);
@@ -645,13 +645,25 @@ namespace game
         return hydrology->sample(x, y);
     }
 
+    float worldgenerator::gethumidity(const vec &worldpos) const
+    {
+        const float x = worldpos.x / worldclimate::BLOCK_UNITS, y = worldpos.y / worldclimate::BLOCK_UNITS,
+                    z = (worldpos.z - worldclimate::GROUND_UNITS) / worldclimate::BLOCK_UNITS,
+                    noisex = x + 10000.5f, noisey = y - 10000.5f,
+                    continental = samplecontinental(*this, noisex, noisey),
+                    coastdistance = samplecoastdistance(*this, noisex, noisey, continental),
+                    coast = 1.0f - smoothstep(0.0f, 160.0f, coastdistance);
+        if(!hydrology) hydrology = new worldhydrology(*this);
+        return environmentclimate.gethumidity(worldpos, coast, hydrology->moisture(x, y, z));
+    }
+
     int worldgenerator::height(int x, int y, worldtectonicsample *tectonics) const
     {
         if(tectonics) *tectonics = this->tectonics(x, y);
         return surface(x, y).height;
     }
 
-    void worldgenerator::climate(int x, int y, float &temperaturevalue, float &moisturevalue) const
+    void worldgenerator::biomefields(int x, int y, float &temperaturevalue, float &moisturevalue) const
     {
         const float noisex = x + 10000.5f, noisey = y - 10000.5f;
         const float variation = biomevariation.GetNoise(noisex, noisey);
@@ -663,7 +675,7 @@ namespace game
     {
         if(height < settings.sealevel) return WORLD_BIOME_OCEAN;
         float temperaturevalue, moisturevalue;
-        climate(x, y, temperaturevalue, moisturevalue);
+        biomefields(x, y, temperaturevalue, moisturevalue);
         const float noisex = x + 10000.5f, noisey = y - 10000.5f;
 
         if(settings.biomeblend <= 0)
@@ -761,12 +773,37 @@ namespace game
         queriedworldtree() : x(0), y(0), base(0), height(0), priority(0), shape(0), pine(false) {}
     };
 
+    float treesuitability(float temperature, float humidity)
+    {
+        return smoothstep(20.0f, 70.0f, humidity) * smoothstep(-10.0f, 5.0f, temperature) *
+               (1.0f - smoothstep(35.0f, 45.0f, temperature));
+    }
+
+    float worldgenerator::treedensity(int x, int y, int height) const
+    {
+        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                           worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
+        const float suitability = treesuitability(environmentclimate.gettemperature(position), gethumidity(position)),
+                    localnoise = vegetationvariation.GetNoise(x + 10000.5f, y - 10000.5f),
+                    snowaltitude = max(float(settings.snowheight - settings.sealevel), 1.0f),
+                    altitude = float(height - settings.sealevel),
+                    mountainbelt = smoothstep(50.0f, 75.0f, altitude) *
+                                   (1.0f - smoothstep(0.85f * snowaltitude, snowaltitude, altitude)),
+                    plainsvariation = smoothstep(-0.10f, 0.50f, localnoise),
+                    mountainvariation = smoothstep(-0.55f, 0.45f, localnoise),
+                    variation = plainsvariation + mountainbelt * (mountainvariation - plainsvariation);
+        // Forested slopes retain smaller clearings; lowland plains keep their broad open patches.
+        // The boost fades at the snow line and still multiplies climate suitability, including dry/cold limits.
+        return clamp(settings.basetreedensity * (1.0f + 1.5f * mountainbelt) * suitability * variation, 0.0f, 1.0f);
+    }
+
     static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
     {
         worldtectonicsample terrain;
         const int height = generator.height(x, y, &terrain), biome = generator.biome(x, y, height);
         if(height < generator.surface(x, y).water) return false;
-        if(biome != WORLD_BIOME_FOREST && biome != WORLD_BIOME_PLAINS) return false;
+        // Preserve the sand/snow surface restriction independently of density.
+        if(biome == WORLD_BIOME_DESERT || biome == WORLD_BIOME_SNOW) return false;
         const int beachmin = generator.settings.sealevel + min(generator.settings.beachminheight, generator.settings.beachmaxheight),
                   beachmax = generator.settings.sealevel + max(generator.settings.beachminheight, generator.settings.beachmaxheight),
                   coasttreemax = generator.settings.sealevel + 2;
@@ -774,7 +811,7 @@ namespace game
         bool cliffface = false;
         generator.cliff(x, y, height, &cliffface);
         if(terrain.rockyledge > 0.22f || cliffface || generator.rock(x, y, height)) return false;
-        const float density = biome == WORLD_BIOME_FOREST ? generator.settings.foresttreedensity : generator.settings.plainstreedensity;
+        const float density = generator.treedensity(x, y, height);
         const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64, chunky = y >= 0 ? y / 64 : (y - 63) / 64,
                   blockx = x - chunkx * 64, blocky = y - chunky * 64;
         const uint spawn = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0xD1B54A35U);
@@ -860,6 +897,26 @@ namespace game
         }
         treeblockcache.access(key, foliage);
         return foliage;
+    }
+
+    worldgenerator &getenvironmentgenerator()
+    {
+        // Main-thread environment queries retain drainage plans as the camera moves.
+        // Generation workers always use their own generator and never touch this cache.
+        static struct cache
+        {
+            worldgenerator *generator;
+            cache() : generator(NULL) {}
+            ~cache() { delete generator; }
+        } state;
+        const worldsettings settings;
+        if(!state.generator || state.generator->seed != getworldseed() ||
+           memcmp(&state.generator->settings, &settings, sizeof(settings)))
+        {
+            delete state.generator;
+            state.generator = new worldgenerator(getworldseed(), settings);
+        }
+        return *state.generator;
     }
 
     int getworldseed()

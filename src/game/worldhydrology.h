@@ -288,14 +288,14 @@ struct worldhydrology
         const int ox = position.first * TILE, oy = position.second * TILE;
         std::map<key, float> flow;
         std::set<key> terminalkeys;
-        const int halo = REACH + 128;
-        for(int ry = divide(oy - 128, REGION); ry <= divide(oy + TILE + 128, REGION); ++ry)
-            for(int rx = divide(ox - 128, REGION); rx <= divide(ox + TILE + 128, REGION); ++rx)
+        const int halo = REACH + 160;
+        for(int ry = divide(oy - 160, REGION); ry <= divide(oy + TILE + 160, REGION); ++ry)
+            for(int rx = divide(ox - 160, REGION); rx <= divide(ox + TILE + 160, REGION); ++rx)
             {
                 const key region(rx, ry);
                 const lake l = regionlake(region);
-                if(l.valid && l.x + l.rx * 1.5f >= ox && l.x - l.rx * 1.5f <= ox + TILE &&
-                   l.y + l.ry * 1.5f >= oy && l.y - l.ry * 1.5f <= oy + TILE) result.lakes.push_back(l);
+                if(l.valid && l.x + l.rx * 1.5f + 32 >= ox && l.x - l.rx * 1.5f - 32 <= ox + TILE &&
+                   l.y + l.ry * 1.5f + 32 >= oy && l.y - l.ry * 1.5f - 32 <= oy + TILE) result.lakes.push_back(l);
             }
         for(int ry = divide(oy - halo, SOURCEREGION); ry <= divide(oy + TILE + halo, SOURCEREGION); ++ry)
             for(int rx = divide(ox - halo, SOURCEREGION); rx <= divide(ox + TILE + halo, SOURCEREGION); ++rx)
@@ -304,13 +304,13 @@ struct worldhydrology
                 if(r.terminal.valid && !r.nodes.empty() && terminalkeys.insert(r.nodes.back()).second)
                 {
                     const lake &l = r.terminal;
-                    if(l.x + l.rx * 1.5f >= ox && l.x - l.rx * 1.5f <= ox + TILE &&
-                       l.y + l.ry * 1.5f >= oy && l.y - l.ry * 1.5f <= oy + TILE) result.lakes.push_back(l);
+                    if(l.x + l.rx * 1.5f + 32 >= ox && l.x - l.rx * 1.5f - 32 <= ox + TILE &&
+                       l.y + l.ry * 1.5f + 32 >= oy && l.y - l.ry * 1.5f - 32 <= oy + TILE) result.lakes.push_back(l);
                 }
                 for(size_t i = 0; i + 1 < r.nodes.size(); ++i)
                 {
                     const node n = getnode(r.nodes[i]);
-                    if(n.x < ox - 48 || n.x > ox + TILE + 48 || n.y < oy - 48 || n.y > oy + TILE + 48) continue;
+                    if(n.x < ox - 96 || n.x > ox + TILE + 96 || n.y < oy - 96 || n.y > oy + TILE + 96) continue;
                     flow[r.nodes[i]] += 1;
                 }
             }
@@ -324,6 +324,39 @@ struct worldhydrology
             result.channels.push_back(c);
         }
         return result;
+    }
+
+    // Reuse the tile's deterministic drainage plans, never search neighbouring terrain columns.
+    // The padded feature lists cover the complete 32-block humidity apron on both sides of a tile boundary.
+    float moisture(float x, float y, float z)
+    {
+        tile &t = gettile(key(divide(int(floorf(x)), TILE), divide(int(floorf(y)), TILE)));
+        float influence = 0;
+        for(size_t i = 0; i < t.lakes.size(); ++i)
+        {
+            const lake &l = t.lakes[i];
+            const float radius = l.radius(x, y), dx = x - l.x, dy = y - l.y,
+                        distance = max(0.0f, sqrtf(dx * dx + dy * dy) * (1.0f - 1.0f / max(radius, 0.0001f))),
+                        horizontal = 1.0f - smoothstep(0.0f, 24.0f, distance),
+                        vertical = 1.0f - smoothstep(8.0f, 64.0f, fabsf(z - l.level));
+            influence = max(influence, horizontal * vertical);
+        }
+        for(size_t i = 0; i < t.channels.size(); ++i)
+        {
+            const channel &c = t.channels[i];
+            const float vx = c.b.x - c.a.x, vy = c.b.y - c.a.y, length = sqrtf(vx * vx + vy * vy);
+            if(length <= 0) continue;
+            const float u = clamp(((x - c.a.x) * vx + (y - c.a.y) * vy) / (length * length), 0.0f, 1.0f),
+                        bend = sinf(u * M_PI) * c.bend,
+                        px = c.a.x + vx * u - vy / length * bend, py = c.a.y + vy * u + vx / length * bend,
+                        distance = sqrtf((x - px) * (x - px) + (y - py) * (y - py)),
+                        width = min(16.0f, 0.75f + sqrtf(c.flow) * 0.9f) * (1 + 0.12f * sinf((x + y - 1) * 0.035f)),
+                        level = c.a.head + (c.b.head - c.a.head) * u,
+                        horizontal = 1.0f - smoothstep(width, width + 24.0f, distance),
+                        vertical = 1.0f - smoothstep(8.0f, 64.0f, fabsf(z - level));
+            influence = max(influence, horizontal * vertical);
+        }
+        return influence;
     }
 
     worldwatersample sample(int x, int y)

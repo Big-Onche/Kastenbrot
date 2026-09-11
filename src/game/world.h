@@ -1,16 +1,7 @@
 #ifndef __GAME_WORLD_H__
 #define __GAME_WORLD_H__
 
-#ifdef SQRT3
-#pragma push_macro("SQRT3")
-#undef SQRT3
-#define RESTORE_WORLD_SQRT3
-#endif
-#include "FastNoiseLite.h"
-#ifdef RESTORE_WORLD_SQRT3
-#pragma pop_macro("SQRT3")
-#undef RESTORE_WORLD_SQRT3
-#endif
+#include "worldclimate.h"
 
 struct stream;
 
@@ -65,7 +56,7 @@ namespace game
         float temperaturefrequency, moisturefrequency, biomevariationfrequency;
         float biomevariationstrength, rockfrequency;
         float deserttemperature, desertmoisture, forestmoisture;
-        float foresttreedensity, plainstreedensity;
+        float basetreedensity;
         float grassfrequency, grassdensity, grassmaxoffset;
         float flowerchance, roseweight, tulipweight, dandelionweight;
         float cavefrequency, cavethreshold, largecavefrequency;
@@ -102,6 +93,8 @@ namespace game
         FastNoiseLite temperature, moisture, biomevariation, biomeblend, rockiness;
         FastNoiseLite caves, largecaves, tunnela, tunnelb, lakeshape;
         FastNoiseLite fracturecorridors, fracturevertical;
+        worldclimate environmentclimate;
+        FastNoiseLite vegetationvariation;
         worldsettings settings;
         int seed;
         float foldcos, foldsin;
@@ -124,14 +117,21 @@ namespace game
         int height(int x, int y, worldtectonicsample *tectonics = NULL) const;
         int baseheight(int x, int y, worldtectonicsample *tectonics = NULL) const;
         worldwatersample surface(int x, int y) const;
+        // Absolute engine coordinates; includes continuous coast and freshwater influence.
+        float gethumidity(const vec &worldpos) const;
         int biome(int x, int y, int height) const;
-        void climate(int x, int y, float &temperaturevalue, float &moisturevalue) const;
+        // Legacy normalized material selectors, independent of the physical environment climate.
+        void biomefields(int x, int y, float &temperaturevalue, float &moisturevalue) const;
         bool cliff(int x, int y, int height, bool *face = NULL) const;
         bool rock(int x, int y, int height) const;
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;
         int treeblock(int x, int y, int z) const;
+        float treedensity(int x, int y, int height) const;
     };
 
+    // Shared main-thread sampler; generation jobs keep their own instances.
+    extern worldgenerator &getenvironmentgenerator();
+    extern float treesuitability(float temperature, float humidity);
     extern int getworldseed();
     extern int getconfiguredworldseed();
     extern void loadworldseed(int seed);

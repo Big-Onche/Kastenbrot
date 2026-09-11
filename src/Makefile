@@ -589,3 +589,7 @@ standalone/game/game.h.gch: shared/ents.h shared/command.h shared/iengine.h
 standalone/game/game.h.gch: shared/igame.h
 
 engine/physics.o: shared/jump.h
+
+# Climate is shared by procedural generation and the camera debug HUD.
+engine/worldio.o game/world.o game/worldgen.o game/server.o game/ambient.o \
+standalone/game/world.o standalone/game/worldgen.o standalone/game/server.o: game/worldclimate.h game/world.h

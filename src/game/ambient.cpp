@@ -179,7 +179,7 @@ namespace game
                     const int x = int(floorf(placement.position.x / blockunits()));
                     const int y = int(floorf(placement.position.y / blockunits()));
                     float moisture;
-                    terrain->climate(x, y, site.temperature, moisture);
+                    terrain->biomefields(x, y, site.temperature, moisture);
                     site.temperature = clamp(0.5f + 0.5f * site.temperature, 0.0f, 1.0f);
                     site.vegetation = smooth(0.5f + 0.5f * moisture);
                     const float height = worldpositionheight(placement.position.z) - (placement.cave ? 0 : 5);

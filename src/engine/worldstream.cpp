@@ -4,6 +4,10 @@
 
 #include "acoustics.h"
 #include "localambientgeometry.h"
+#include "../game/world.h"
+
+static_assert(int(game::worldclimate::BLOCK_UNITS) == int(WORLD_BLOCK_SIZE) &&
+              int(game::worldclimate::GROUND_UNITS) == int(WORLD_GROUND_HEIGHT), "Climate coordinates must match the world grid");
 
 static void invalidateworldsectionvisibility();
 static void addworldsectionvisibilitychunk(int x, int y);
@@ -324,6 +328,7 @@ struct worlddebugstats
     int rendered;
     int loadingqueue, generationqueue;
     float tectonicactivity, tectonicuplift, tectonictrench, tectoniccaveexpansion;
+    float altitude, regionaltemperature, temperature, humidity, treesuitability;
 };
 
 static void getworlddebugstats(const vec &position, worlddebugstats &stats)
@@ -360,6 +365,14 @@ static void getworlddebugstats(const vec &position, worlddebugstats &stats)
         stats.absolutey = position.y;
     }
     stats.absolutez = position.z;
+    const game::worldgenerator &environment = game::getenvironmentgenerator();
+    const game::worldclimate &climate = environment.environmentclimate;
+    const vec absolute(float(stats.absolutex), float(stats.absolutey), position.z);
+    stats.altitude = climate.getaltitude(absolute);
+    stats.regionaltemperature = climate.getregionaltemperature(absolute);
+    stats.temperature = climate.gettemperature(absolute);
+    stats.humidity = environment.gethumidity(absolute);
+    stats.treesuitability = game::treesuitability(stats.temperature, stats.humidity);
     if(!worldchunks.empty())
     {
         const int blockx = int(floor(stats.absolutex / WORLD_BLOCK_SIZE)),
@@ -395,6 +408,11 @@ static void debugworldvalueresult(float value)
     result(formatted);
 }
 
+ICOMMAND(getdebugaltitude, "", (), debugcoordinateresult(currentworlddebugstats().altitude));
+ICOMMAND(getdebugregionaltemperature, "", (), debugcoordinateresult(currentworlddebugstats().regionaltemperature));
+ICOMMAND(getdebugtemperature, "", (), debugcoordinateresult(currentworlddebugstats().temperature));
+ICOMMAND(getdebughumidity, "", (), debugcoordinateresult(currentworlddebugstats().humidity));
+ICOMMAND(getdebugtreesuitability, "", (), debugworldvalueresult(currentworlddebugstats().treesuitability));
 ICOMMAND(getdebugcamx, "", (), debugcoordinateresult(currentworlddebugstats().absolutex));
 ICOMMAND(getdebugcamy, "", (), debugcoordinateresult(currentworlddebugstats().absolutey));
 ICOMMAND(getdebugcamz, "", (), debugcoordinateresult(currentworlddebugstats().absolutez));

@@ -1973,15 +1973,16 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
                       biome = inside ? ctx.biomemap[index] : generateworldbiome(ctx, chunkx, chunky, x, y, height);
             if(!inside && height < ctx.generator.surface(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y).water * WORLD_BLOCK_SIZE)
                 continue;
-            if(biome != game::WORLD_BIOME_FOREST && biome != game::WORLD_BIOME_PLAINS) continue;
             if(ctx.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) continue;
             if(inside)
             {
                 if(!worldtreegrowablesurface(ctx, x, y, height, biome)) continue;
             }
-            else if(terrain.rockyledge > 0.22f || (generateworldcliff(ctx, chunkx, chunky, x, y, height) & WORLD_CLIFF_ROCK) ||
+            else if(biome == game::WORLD_BIOME_DESERT || biome == game::WORLD_BIOME_SNOW || terrain.rockyledge > 0.22f ||
+                    (generateworldcliff(ctx, chunkx, chunky, x, y, height) & WORLD_CLIFF_ROCK) ||
                     generateworldrock(ctx, chunkx, chunky, x, y, height)) continue;
-            const float density = biome == game::WORLD_BIOME_FOREST ? ctx.settings.foresttreedensity : ctx.settings.plainstreedensity;
+            const float density = ctx.generator.treedensity(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y,
+                                                           height / WORLD_BLOCK_SIZE);
             const uint spawn = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0xD1B54A35U);
             if(worldtreeunit(spawn) >= density) continue;
 
@@ -2245,7 +2246,7 @@ namespace game
 
     void sampleworldgenerationdebug(int blockx, int blocky, int logicalz, float &activity, float &uplift, float &trench, float &caveexpansion)
     {
-        worldgenerator generator(getworldseed());
+        worldgenerator &generator = getenvironmentgenerator();
         const int surfaceheight = generator.height(blockx, blocky);
         const worldtectonicsample tectonics = generator.tectonics(blockx, blocky, max(surfaceheight - logicalz, 0));
         activity = tectonics.activity;
