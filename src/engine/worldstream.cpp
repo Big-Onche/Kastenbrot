@@ -2345,8 +2345,7 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
     loopv(worldchunks) if(worldchunkmounted(worldchunks[i])) unmountworldchunk(worldchunks[i]);
     if(worldsectionowners.numelems)
     {
-        conoutf(CON_ERROR, "discarding %d stale runtime section owners during chunk rebase",
-                worldsectionowners.numelems);
+        conoutf(CON_ERROR, "discarding %d stale runtime section owners during chunk rebase", worldsectionowners.numelems);
         worldsectionowners.clear();
     }
 
@@ -2365,6 +2364,9 @@ static void rebaseworldchunks(int chunkx, int chunky, bool translateplayer = tru
     {
         player->o.x -= float(shiftx);
         player->o.y -= float(shifty);
+        // Physics restores o from newpos, so both positions must use the new origin deltapos is a relative interpolation offset and must remain unchanged
+        player->newpos.x -= float(shiftx);
+        player->newpos.y -= float(shifty);
     }
     if(shiftx || shifty) game::rebasenpcs(float(shiftx), float(shifty));
     acoustics::rebaseAcoustics(float(shiftx), float(shifty));
