@@ -6,8 +6,8 @@ VARP(worldlod, 0, 1, 1);
 VARP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS);
 VARP(worldlod2resolution, 4, 16, WORLD_CHUNK_BLOCKS);
 VAR(worldlodneardistance, 16, 192, 4096); // blocks from the chunk AABB
-VAR(worldlodfardistance, 32, 512, 4096);
-VAR(worldlodmaxdistance, 64, 768, 4096);
+VAR(worldlodfardistance, 32, 1024, 4096);
+VAR(worldlodmaxdistance, 64, 2048, 4096);
 VARP(worldlodhysteresis, 0, 16, 512);
 VARP(worldlodditherdistance, 0, 64, 256); // transition width in blocks, centered on worldlodneardistance
 VARP(worldloddither, 0, 1, 1); // cross-fade rigid octree and LOD1 geometry

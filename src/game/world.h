@@ -120,7 +120,7 @@ namespace game
         FastNoiseLite fracturecorridors, fracturevertical;
         worldclimate environmentclimate;
         FastNoiseLite vegetationvariation, snowpatches;
-        FastNoiseLite biomeintrusions, biomedetail, biomeedgewarp;
+        FastNoiseLite biomeedgewarp;
         worldsettings settings;
         int seed;
         float foldcos, foldsin;
@@ -150,9 +150,9 @@ namespace game
         int biome(int x, int y, int height) const;
         // Legacy material codes only: snow is temperature driven, independent of ecosystem identity.
         int surfacematerial(int x, int y, int height) const;
-        // Continuous sand influence and a coherent material threshold, shared by surface and vegetation queries.
-        float sandcoverage(int x, int y, int height, const BiomeSample &soil) const;
-        float sandthreshold(float x, float y) const;
+        // Simple bounded noisy soil edge, shared by surface and vegetation queries.
+        float sandcoverage(const BiomeSample &soil) const;
+        BiomeSample samplesoil(const vec &position) const;
         // Surface snow mask in absolute block coordinates; raw climate is never modified.
         bool snowcovered(int x, int y, float temperature) const;
         bool cliff(int x, int y, int height, bool *face = NULL) const;
