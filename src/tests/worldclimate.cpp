@@ -15,6 +15,27 @@
 #include <cassert>
 int main()
 {
+    // Every definition owns its center. Distances remain normalized and continuous across climate-space boundaries.
+    for(int i = 0; i < game::climateBiomeCount; ++i)
+    {
+        const game::ClimateBiome &definition = game::climateBiomes[i];
+        assert(definition.temperatureRange > 0 && definition.humidityRange > 0);
+        assert(game::sampleClimateBiome(definition.temperatureCenter, definition.humidityCenter).primary == definition.type);
+    }
+    for(int t = -100; t <= 100; ++t) for(int h = 0; h <= 100; ++h)
+    {
+        const game::BiomeSample a = game::sampleClimateBiome(t, h), b = game::sampleClimateBiome(t + 0.001f, h + 0.001f);
+        float total = 0;
+        assert(a.primary != a.secondary && a.secondary != game::WORLD_BIOME_OCEAN);
+        assert(a.primaryWeight >= a.secondaryWeight);
+        for(int i = 0; i < game::WORLD_BIOME_COUNT; ++i)
+        {
+            assert(std::isfinite(a.weights[i]) && a.weights[i] >= 0 && a.weights[i] <= a.primaryWeight);
+            assert(fabsf(a.weights[i] - b.weights[i]) < 0.001f);
+            total += a.weights[i];
+        }
+        assert(fabsf(total - 1) < 0.00001f);
+    }
     game::worldsettings settings;
     settings.sealevel = 23;
     game::worldgenerator generator(1337, settings);
@@ -163,6 +184,23 @@ int main()
     assert(righthumidity == reverse.gethumidity(right));
     assert(lefthumidity == reverse.gethumidity(left));
     assert(fabsf(lefthumidity - righthumidity) < 0.01f);
+    for(int x : {-65, -64, -1, 0, 63, 64, 10000})
+    {
+        const vec position(x * 16, 32 * 16, 4096 + 50 * 16);
+        const game::BiomeSample sample = planned.sampleBiome(position), again = reverse.sampleBiome(position),
+                                adjacent = planned.sampleBiome(vec(position).add(vec(0.001f, 0, 0)));
+        assert(sample.temperature == planned.environmentclimate.gettemperature(position));
+        assert(sample.humidity == planned.gethumidity(position));
+        assert(planned.biome(x, 32, 50) == sample.primary);
+        assert(planned.biome(x, 32, settings.sealevel - 1) == game::WORLD_BIOME_OCEAN);
+        for(int i = 0; i < game::WORLD_BIOME_COUNT; ++i)
+        {
+            assert(sample.weights[i] == again.weights[i]);
+            assert(fabsf(sample.weights[i] - adjacent.weights[i]) < 0.001f);
+        }
+        assert(planned.surfacematerial(x, 32, settings.snowheight + 1) == game::WORLD_BIOME_SNOW);
+    }
+    printf("PASS: climate centers, normalized weights, continuous blending, shared climate and geography override\n");
     printf("PASS: coast/river/altitude boosts, smooth boundaries, density bounds; %d/40000 open samples\n", clear);
     printf("PASS: max adjacent-metre delta: %.6f C, %.6f %%\n", maxdt, maxdh);
 }

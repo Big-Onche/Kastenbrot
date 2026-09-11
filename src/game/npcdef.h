@@ -49,9 +49,8 @@ namespace game
     static int parsebiome(const char *name)
     {
         if(!cubecasecmp(name, "plains")) return WORLD_BIOME_PLAINS;
-        if(!cubecasecmp(name, "forest")) return WORLD_BIOME_FOREST;
-        if(!cubecasecmp(name, "desert")) return WORLD_BIOME_DESERT;
-        if(!cubecasecmp(name, "snow")) return WORLD_BIOME_SNOW;
+        if(!cubecasecmp(name, "snow")) return WORLD_BIOME_TUNDRA;
+        loopi(climateBiomeCount) if(!cubecasecmp(name, climateBiomes[i].identifier)) return climateBiomes[i].type;
         return -1;
     }
 

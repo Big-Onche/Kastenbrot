@@ -29,7 +29,7 @@ namespace game
             regionalhumidity.SetSeed(seed ^ 0x62B4E713);
             regionaltemperature.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
             regionalhumidity.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
-            regionaltemperature.SetFrequency(0.00008f);
+            regionaltemperature.SetFrequency(0.00032f);
             regionalhumidity.SetFrequency(0.00011f);
         }
 
@@ -40,7 +40,7 @@ namespace game
 
         float getregionaltemperature(const vec &worldpos) const
         {
-            return 10.0f + 30.0f * regionaltemperature.GetNoise(worldpos.x / BLOCK_UNITS + 10000.5f,
+            return 10.0f + 35.0f * regionaltemperature.GetNoise(worldpos.x / BLOCK_UNITS + 10000.5f,
                                                               worldpos.y / BLOCK_UNITS - 10000.5f);
         }
 

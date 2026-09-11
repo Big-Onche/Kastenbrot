@@ -178,10 +178,10 @@ namespace game
                     site.seed = placementseed(getworldseed(), placement.key);
                     const int x = int(floorf(placement.position.x / blockunits()));
                     const int y = int(floorf(placement.position.y / blockunits()));
-                    float moisture;
-                    terrain->biomefields(x, y, site.temperature, moisture);
-                    site.temperature = clamp(0.5f + 0.5f * site.temperature, 0.0f, 1.0f);
-                    site.vegetation = smooth(0.5f + 0.5f * moisture);
+                    const float temperature = terrain->environmentclimate.gettemperature(placement.position),
+                                humidity = terrain->gethumidity(placement.position);
+                    site.temperature = clamp((temperature + 20.0f) / 60.0f, 0.0f, 1.0f);
+                    site.vegetation = treesuitability(temperature, humidity);
                     const float height = worldpositionheight(placement.position.z) - (placement.cave ? 0 : 5);
                     const float low = min(terrain->settings.stonelow, terrain->settings.stonehigh);
                     const float high = max(terrain->settings.stonelow, terrain->settings.stonehigh);

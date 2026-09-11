@@ -13,8 +13,35 @@ namespace game
         WORLD_BIOME_SNOW,
         WORLD_BIOME_DESERT,
         WORLD_BIOME_FOREST,
-        WORLD_BIOME_PLAINS
+        WORLD_BIOME_PLAINS,
+        WORLD_BIOME_TAIGA,
+        WORLD_BIOME_COLD_DESERT,
+        WORLD_BIOME_SAVANNA,
+        WORLD_BIOME_RAINFOREST,
+        WORLD_BIOME_COUNT,
+        WORLD_BIOME_TUNDRA = WORLD_BIOME_SNOW
     };
+
+    struct ClimateBiome
+    {
+        worldbiome type;
+        const char *name, *identifier;
+        float temperatureCenter, humidityCenter, temperatureRange, humidityRange, treeDensity;
+    };
+
+    extern const ClimateBiome climateBiomes[];
+    extern const int climateBiomeCount;
+    extern const char *biomeName(int biome);
+
+    struct BiomeSample
+    {
+        worldbiome primary, secondary;
+        float primaryWeight, secondaryWeight, temperature, humidity;
+        // Indexed by worldbiome; normalized over ALL climate candidates, not just the strongest two.
+        float weights[WORLD_BIOME_COUNT];
+    };
+
+    extern BiomeSample sampleClimateBiome(float temperature, float humidity);
 
     enum worldtreeblock
     {
@@ -53,9 +80,7 @@ namespace game
         float tectonicactivitythreshold, maxlanduplift, maxoceansubsidence;
         float tectoniccavestrength, tectonicfracturestrength, coastprotectionwidth;
         float cliffchance, cliffmaxheight;
-        float temperaturefrequency, moisturefrequency, biomevariationfrequency;
-        float biomevariationstrength, rockfrequency;
-        float deserttemperature, desertmoisture, forestmoisture;
+        float rockfrequency;
         float basetreedensity;
         float grassfrequency, grassdensity, grassmaxoffset;
         float flowerchance, roseweight, tulipweight, dandelionweight;
@@ -90,7 +115,7 @@ namespace game
         FastNoiseLite secondarysummita, secondarysummitb, hollowshape, foldnoise, clusenoise;
         FastNoiseLite terrainmicro, terrainmicromask, plainsroll, deeprock;
         FastNoiseLite tectonicnoise, tectonicwarp;
-        FastNoiseLite temperature, moisture, biomevariation, biomeblend, rockiness;
+        FastNoiseLite biomeblend, rockiness;
         FastNoiseLite caves, largecaves, tunnela, tunnelb, lakeshape;
         FastNoiseLite fracturecorridors, fracturevertical;
         worldclimate environmentclimate;
@@ -119,9 +144,11 @@ namespace game
         worldwatersample surface(int x, int y) const;
         // Absolute engine coordinates; includes continuous coast and freshwater influence.
         float gethumidity(const vec &worldpos) const;
+        // Absolute engine coordinates, using the same physical climate as vegetation and F2.
+        BiomeSample sampleBiome(const vec &worldpos) const;
         int biome(int x, int y, int height) const;
-        // Legacy normalized material selectors, independent of the physical environment climate.
-        void biomefields(int x, int y, float &temperaturevalue, float &moisturevalue) const;
+        // Legacy material codes only: snow is temperature driven, independent of ecosystem identity.
+        int surfacematerial(int x, int y, int height) const;
         bool cliff(int x, int y, int height, bool *face = NULL) const;
         bool rock(int x, int y, int height) const;
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;

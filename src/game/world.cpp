@@ -45,10 +45,6 @@ FVAR(worldcoastprotectionwidth, 0.0f, 32.0f, 256.0f);
 FVAR(worldcliffchance, 0.0f, 24.0f, 100.0f);
 FVAR(worldcliffmaxheight, 2.0f, 21.0f, 255.0f);
 
-FVAR(worldtemperaturefrequency, 0.000001f, 0.0004f, 1.0f);
-FVAR(worldmoisturefrequency, 0.000001f, 0.0006f, 1.0f);
-FVAR(worldbiomevariationfrequency, 0.000001f, 0.001f, 1.0f);
-FVAR(worldbiomevariationstrength, 0.0f, 0.15f, 1.0f);
 FVAR(worldrockfrequency, 0.000001f, 0.08f, 1.0f);
 
 VAR(worldsealevel, -255, 0, 255);
@@ -62,9 +58,6 @@ VAR(worldcoastvariation, 0, 3, 16);
 VAR(worldbeachminheight, -32, -2, 32);
 VAR(worldbeachmaxheight, -32, 1, 32);
 
-FVAR(worlddeserttemperature, -1.0f, 0.4f, 1.0f);
-FVAR(worlddesertmoisture, -1.0f, -0.18f, 1.0f);
-FVAR(worldforestmoisture, -1.0f, 0.10f, 1.0f);
 FVAR(worldbasetreedensity, 0.0f, 0.025f, 0.25f);
 FVAR(worldgrassfrequency, 0.00001f, 0.02f, 1.0f);
 FVAR(worldgrassdensity, 0.0f, 0.35f, 1.0f);
@@ -158,13 +151,7 @@ namespace game
           tectonicfracturestrength(worldtectonicfracturestrength),
           coastprotectionwidth(worldcoastprotectionwidth),
           cliffchance(worldcliffchance), cliffmaxheight(worldcliffmaxheight),
-          temperaturefrequency(worldtemperaturefrequency),
-          moisturefrequency(worldmoisturefrequency),
-          biomevariationfrequency(worldbiomevariationfrequency),
-          biomevariationstrength(worldbiomevariationstrength),
           rockfrequency(worldrockfrequency),
-          deserttemperature(worlddeserttemperature), desertmoisture(worlddesertmoisture),
-          forestmoisture(worldforestmoisture),
           basetreedensity(worldbasetreedensity),
           grassfrequency(worldgrassfrequency), grassdensity(worldgrassdensity),
           grassmaxoffset(worldgrassmaxoffset),
@@ -228,9 +215,6 @@ namespace game
         setupnoise(deeprock, seed ^ 0x53B8D291, 0.015f, 1);
         setupnoise(tectonicnoise, seed ^ 0x68E31DA4, settings.mountainchainfrequency, 1);
         setupwarp(tectonicwarp, seed ^ 0x6C8E9CF5, settings.tectonicfrequency * 0.8f, min(settings.tectonicwarpamplitude, 36.0f));
-        setupnoise(temperature, seed ^ 0x51D7348B, settings.temperaturefrequency, 3);
-        setupnoise(moisture, seed ^ 0x2F6E2B1D, settings.moisturefrequency, 3);
-        setupnoise(biomevariation, seed ^ 0x749A7C15, settings.biomevariationfrequency, 3);
         setupnoise(biomeblend, seed ^ 0x13C6E91F, settings.biomeblend > 0 ? 1.0f / settings.biomeblend : 1.0f, 1);
         setupnoise(rockiness, seed ^ 0x5E4A19C3, settings.rockfrequency, 2);
         setupnoise(caves, seed ^ 0x7A84F12D, settings.cavefrequency, 2);
@@ -663,41 +647,89 @@ namespace game
         return surface(x, y).height;
     }
 
-    void worldgenerator::biomefields(int x, int y, float &temperaturevalue, float &moisturevalue) const
+    // Ranges normalize Celsius and percent independently; density scales existing climate suitability.
+    const ClimateBiome climateBiomes[] =
     {
-        const float noisex = x + 10000.5f, noisey = y - 10000.5f;
-        const float variation = biomevariation.GetNoise(noisex, noisey);
-        temperaturevalue = temperature.GetNoise(noisex, noisey) + variation * settings.biomevariationstrength;
-        moisturevalue = clamp(moisture.GetNoise(noisex, noisey) - variation * settings.biomevariationstrength, -1.0f, 1.0f);
+        { WORLD_BIOME_TUNDRA, "Tundra", "tundra", -10, 40, 12, 25, 0.02f },
+        { WORLD_BIOME_TAIGA, "Taiga", "taiga", 3, 60, 12, 25, 0.85f },
+        { WORLD_BIOME_COLD_DESERT, "Cold Desert", "cold_desert", 5, 15, 12, 25, 0.02f },
+        { WORLD_BIOME_PLAINS, "Temperate Grassland", "grassland", 14, 40, 12, 25, 0.20f },
+        { WORLD_BIOME_FOREST, "Temperate Forest", "forest", 15, 70, 12, 25, 1.0f },
+        { WORLD_BIOME_DESERT, "Desert", "desert", 30, 10, 12, 25, 0.0f },
+        { WORLD_BIOME_SAVANNA, "Savanna", "savanna", 27, 40, 12, 25, 0.25f },
+        { WORLD_BIOME_RAINFOREST, "Tropical Rainforest", "rainforest", 27, 85, 12, 25, 1.0f }
+    };
+    const int climateBiomeCount = sizeof(climateBiomes) / sizeof(climateBiomes[0]);
+
+    const char *biomeName(int biome)
+    {
+        loopi(climateBiomeCount) if(climateBiomes[i].type == biome) return climateBiomes[i].name;
+        return biome == WORLD_BIOME_OCEAN ? "Ocean" : "Unknown";
+    }
+
+    BiomeSample sampleClimateBiome(float temperature, float humidity)
+    {
+        BiomeSample sample = {};
+        sample.temperature = temperature;
+        sample.humidity = humidity;
+        float nearest = FLT_MAX;
+        loopi(climateBiomeCount)
+        {
+            const ClimateBiome &biome = climateBiomes[i];
+            const float dt = (temperature - biome.temperatureCenter) / biome.temperatureRange,
+                        dh = (humidity - biome.humidityCenter) / biome.humidityRange,
+                        distance = dt * dt + dh * dh;
+            sample.weights[biome.type] = distance;
+            nearest = min(nearest, distance);
+        }
+        float total = 0;
+        loopi(climateBiomeCount)
+        {
+            float &weight = sample.weights[climateBiomes[i].type];
+            // Subtract the nearest distance before exponentiation to avoid underflow in extreme climates.
+            weight = expf(-2.0f * (weight - nearest));
+            total += weight;
+        }
+        loopi(climateBiomeCount)
+        {
+            const worldbiome type = climateBiomes[i].type;
+            const float weight = sample.weights[type] /= total;
+            if(weight > sample.primaryWeight)
+            {
+                sample.secondary = sample.primary;
+                sample.secondaryWeight = sample.primaryWeight;
+                sample.primary = type;
+                sample.primaryWeight = weight;
+            }
+            else if(weight > sample.secondaryWeight || sample.secondary == WORLD_BIOME_OCEAN)
+            {
+                sample.secondary = type;
+                sample.secondaryWeight = weight;
+            }
+        }
+        return sample;
+    }
+
+    BiomeSample worldgenerator::sampleBiome(const vec &worldpos) const
+    {
+        return sampleClimateBiome(environmentclimate.gettemperature(worldpos), gethumidity(worldpos));
     }
 
     int worldgenerator::biome(int x, int y, int height) const
     {
         if(height < settings.sealevel) return WORLD_BIOME_OCEAN;
-        float temperaturevalue, moisturevalue;
-        biomefields(x, y, temperaturevalue, moisturevalue);
-        const float noisex = x + 10000.5f, noisey = y - 10000.5f;
+        // Rivers, lakes, beaches and rock faces retain their independent generation masks.
+        return sampleBiome(vec(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                               worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS)).primary;
+    }
 
-        if(settings.biomeblend <= 0)
-        {
-            if(height > settings.snowheight) return WORLD_BIOME_SNOW;
-            if(temperaturevalue > settings.deserttemperature && moisturevalue < settings.desertmoisture) return WORLD_BIOME_DESERT;
-            if(moisturevalue > settings.forestmoisture) return WORLD_BIOME_FOREST;
-            return WORLD_BIOME_PLAINS;
-        }
-
-        const float blendblocks = settings.biomeblend;
-        const float temperatureblend = max(blendblocks * settings.temperaturefrequency * 2.0f, 0.001f);
-        const float moistureblend = max(blendblocks * settings.moisturefrequency * 2.0f, 0.001f);
-        const float selector = clamp((biomeblend.GetNoise(noisex, noisey) + 1.0f) * 0.5f, 0.0f, 1.0f);
-        const float snowweight = smoothstep(settings.snowheight - blendblocks * 0.5f, settings.snowheight + blendblocks * 0.5f, height);
-        const float hotweight = smoothstep(settings.deserttemperature - temperatureblend, settings.deserttemperature + temperatureblend, temperaturevalue);
-        const float dryweight = 1.0f - smoothstep(settings.desertmoisture - moistureblend, settings.desertmoisture + moistureblend, moisturevalue);
-        const float forestweight = smoothstep(settings.forestmoisture - moistureblend, settings.forestmoisture + moistureblend, moisturevalue);
-        if(snowweight > selector) return WORLD_BIOME_SNOW;
-        if(hotweight * dryweight > selector) return WORLD_BIOME_DESERT;
-        if(forestweight > selector) return WORLD_BIOME_FOREST;
-        return WORLD_BIOME_PLAINS;
+    int worldgenerator::surfacematerial(int x, int y, int height) const
+    {
+        if(height < settings.sealevel) return WORLD_BIOME_OCEAN;
+        const BiomeSample sample = sampleBiome(vec(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                                                  worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS));
+        if(sample.temperature < 0) return WORLD_BIOME_SNOW;
+        return sample.primary == WORLD_BIOME_DESERT ? WORLD_BIOME_DESERT : WORLD_BIOME_PLAINS;
     }
 
     bool worldgenerator::cliff(int x, int y, int height, bool *face) const
@@ -783,7 +815,10 @@ namespace game
     {
         const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
-        const float suitability = treesuitability(environmentclimate.gettemperature(position), gethumidity(position)),
+        const BiomeSample sample = sampleBiome(position);
+        float ecosystemdensity = 0;
+        loopi(climateBiomeCount) ecosystemdensity += sample.weights[climateBiomes[i].type] * climateBiomes[i].treeDensity;
+        const float suitability = treesuitability(sample.temperature, sample.humidity) * ecosystemdensity,
                     localnoise = vegetationvariation.GetNoise(x + 10000.5f, y - 10000.5f),
                     snowaltitude = max(float(settings.snowheight - settings.sealevel), 1.0f),
                     altitude = float(height - settings.sealevel),
@@ -800,7 +835,7 @@ namespace game
     static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
     {
         worldtectonicsample terrain;
-        const int height = generator.height(x, y, &terrain), biome = generator.biome(x, y, height);
+        const int height = generator.height(x, y, &terrain), biome = generator.surfacematerial(x, y, height);
         if(height < generator.surface(x, y).water) return false;
         // Preserve the sand/snow surface restriction independently of density.
         if(biome == WORLD_BIOME_DESERT || biome == WORLD_BIOME_SNOW) return false;

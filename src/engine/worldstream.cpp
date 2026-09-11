@@ -329,6 +329,7 @@ struct worlddebugstats
     int loadingqueue, generationqueue;
     float tectonicactivity, tectonicuplift, tectonictrench, tectoniccaveexpansion;
     float altitude, regionaltemperature, temperature, humidity, treesuitability;
+    game::BiomeSample biomes;
 };
 
 static void getworlddebugstats(const vec &position, worlddebugstats &stats)
@@ -370,8 +371,9 @@ static void getworlddebugstats(const vec &position, worlddebugstats &stats)
     const vec absolute(float(stats.absolutex), float(stats.absolutey), position.z);
     stats.altitude = climate.getaltitude(absolute);
     stats.regionaltemperature = climate.getregionaltemperature(absolute);
-    stats.temperature = climate.gettemperature(absolute);
-    stats.humidity = environment.gethumidity(absolute);
+    stats.biomes = environment.sampleBiome(absolute);
+    stats.temperature = stats.biomes.temperature;
+    stats.humidity = stats.biomes.humidity;
     stats.treesuitability = game::treesuitability(stats.temperature, stats.humidity);
     if(!worldchunks.empty())
     {
@@ -412,6 +414,10 @@ ICOMMAND(getdebugaltitude, "", (), debugcoordinateresult(currentworlddebugstats(
 ICOMMAND(getdebugregionaltemperature, "", (), debugcoordinateresult(currentworlddebugstats().regionaltemperature));
 ICOMMAND(getdebugtemperature, "", (), debugcoordinateresult(currentworlddebugstats().temperature));
 ICOMMAND(getdebughumidity, "", (), debugcoordinateresult(currentworlddebugstats().humidity));
+ICOMMAND(getdebugbiome, "", (), result(game::biomeName(currentworlddebugstats().biomes.primary)));
+ICOMMAND(getdebugsecondarybiome, "", (), result(game::biomeName(currentworlddebugstats().biomes.secondary)));
+ICOMMAND(getdebugbiomeweight, "", (), debugworldvalueresult(currentworlddebugstats().biomes.primaryWeight));
+ICOMMAND(getdebugsecondarybiomeweight, "", (), debugworldvalueresult(currentworlddebugstats().biomes.secondaryWeight));
 ICOMMAND(getdebugtreesuitability, "", (), debugworldvalueresult(currentworlddebugstats().treesuitability));
 ICOMMAND(getdebugcamx, "", (), debugcoordinateresult(currentworlddebugstats().absolutex));
 ICOMMAND(getdebugcamy, "", (), debugcoordinateresult(currentworlddebugstats().absolutey));
