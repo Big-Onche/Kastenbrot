@@ -42,6 +42,7 @@ worlddefinition::worlddefinition(const char *id)
     footstepsound[0] = '\0';
     miningsound[0] = '\0';
     name[0] = texture[0] = icon[0] = cubetexture[0] = sidetexture[0] = bottom[0] = bottomtexture[0] = model[0] = modelicon[0] = '\0';
+    scattermesh[0] = '\0';
     scattertexture[0] = '\0';
     lightcolor[0] = preferredtool[0] = tooltype[0] = equipmentslots[0] = '\0';
 }
@@ -288,6 +289,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
     {
         if(component == WORLDDEF_SCATTER && !strcmp(command, "texture")) return "worlddef_scattertexture";
         if(!strcmp(command, "model")) return "worlddef_model";
+        if(component == WORLDDEF_PLACEABLE && !strcmp(command, "mesh")) return "worlddef_scattermesh";
         if(component == WORLDDEF_PLACEABLE && !strcmp(command, "blockcollision")) return "worlddef_placeableblockcollision";
         if(component == WORLDDEF_PLACEABLE && !strcmp(command, "light")) return "worlddef_light";
         if(component == WORLDDEF_PLACEABLE && !strcmp(command, "lightcolor")) return "worlddef_lightcolor";
@@ -872,6 +874,7 @@ ICOMMANDS("worlddef_model", "s", (char *value),
 ICOMMANDS("worlddef_light", "f", (float *value), currentworlddefinition->lightradius = *value);
 ICOMMANDS("worlddef_lightcolor", "s", (char *value), copystring(currentworlddefinition->lightcolor, value));
 ICOMMANDS("worlddef_placeableblockcollision", "i", (int *value), currentworlddefinition->placeableblockcollision = *value != 0);
+ICOMMANDS("worlddef_scattermesh", "s", (char *value), copystring(currentworlddefinition->scattermesh, value));
 ICOMMANDS("worlddef_hardness", "f", (float *value),
 {
     currentworlddefinition->hardness = *value;
@@ -1224,9 +1227,14 @@ bool resolveworlddefinitionregistry()
             ++worlddefinitionerrors;
         }
         if((definition.scatter && !definition.scattertexture[0] && (!definition.scattermodelset || !definition.model[0])) ||
-           (definition.placeable && (!definition.placeablemodelset || !definition.model[0])))
+           (definition.placeable && !definition.scattermesh[0] && (!definition.placeablemodelset || !definition.model[0])))
         {
-            conoutf(CON_ERROR, "worlddef \"%s\": scatter requires texture or model; placeable requires model", definition.id);
+            conoutf(CON_ERROR, "worlddef \"%s\": scatter requires texture or model; placeable requires model or mesh", definition.id);
+            ++worlddefinitionerrors;
+        }
+        if(definition.scattermesh[0] && (strcmp(definition.scattermesh, "cactus") || !definition.placeable || definition.model[0]))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": mesh must be cactus on a placeable without a model", definition.id);
             ++worlddefinitionerrors;
         }
         if(definition.hasmining && (!definition.hardnessset || definition.hardness <= 0 || definition.requiredtier < 0 || definition.toolwear < 0))

@@ -713,6 +713,14 @@ static void resolveworldscatterrenderdata(int index, worlddefinition &type)
 {
     while(worldscatterrenderdefinitions.length() <= index) worldscatterrenderdefinitions.add();
     worldscatterrenderdefinition &render = worldscatterrenderdefinitions[index];
+    if(!strcmp(type.scattermesh, "cactus"))
+    {
+        copystring(type.modelicon, "media/texture/terrain/cactus_side.png");
+        copystring(render.texture, type.modelicon);
+        render.center = vec(0, 0, WORLD_BLOCK_SIZE * 0.5f);
+        render.radius = vec(WORLD_BLOCK_SIZE * 0.5f);
+        return;
+    }
     if(type.scattertexture[0])
     {
         formatstring(render.texture, "media/texture/%s", type.scattertexture);
@@ -951,7 +959,7 @@ static bool loadworlddefinitions(bool assets = true)
             resolveworldscatterrenderdata(i, type);
             continue;
         }
-        if(type.scattertexture[0] && !type.placeable)
+        if(type.scattermesh[0] || (type.scattertexture[0] && !type.placeable))
         {
             resolveworldscatterrenderdata(i, type);
             continue;

@@ -41,7 +41,7 @@ struct worlddefinition
     string miningsound;
     int miningvariants;
     string id, name, texture, icon, cubetexture, sidetexture, bottom, bottomtexture, model, modelicon, lightcolor;
-    string scattertexture, preferredtool, tooltype, equipmentslots, variantbase, varianthost;
+    string scattertexture, scattermesh, preferredtool, tooltype, equipmentslots, variantbase, varianthost;
     ullong persistentid;
     float worldsize, heldsize, texsize, lightradius, hardness, toolspeed, tooldamage, foodhealth;
     int maxstack, item, slot, sideslot, bottomslot, mapmodel, furnaceinputslots, furnaceinputlimit, chestslots, foodtime;

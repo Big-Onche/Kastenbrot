@@ -909,9 +909,60 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
     }
 }
 
-static void generateworldscatter(cube *root, int chunkx, int chunky, const game::worldsettings &settings, vector<worldscatterinstance> &scatter)
+static void generateworldcacti(cube *root, int chunkx, int chunky, const game::worldsettings &settings, vector<worldscatterinstance> &scatter, bool indexedtextures)
+{
+    worlddefinition *cactus = findworldscatter("cactus"), *sand = findworldcube("sand");
+    if(!cactus || !sand) return;
+    const int type = worldscatterdefinitions.find(cactus), sandindex = worldcubedefinitions.find(sand);
+    if(!worldgentextures.inrange(sandindex)) return;
+    const int sandtexture = indexedtextures ? sandindex : worldgentextures[sandindex].top;
+    const uint seed = uint(game::getworldseed());
+    game::worldgenerator generator(seed, settings);
+    for(int y = 0; y < WORLD_CHUNK_BLOCKS; ++y) for(int x = 0; x < WORLD_CHUNK_BLOCKS; ++x)
+    {
+        const int wx = chunkx * WORLD_CHUNK_BLOCKS + x, wy = chunky * WORLD_CHUNK_BLOCKS + y;
+        const uint priority = hashworldgrass(seed, uint(wx), uint(wy), 0xCA671351U) & 0x00FFFFFFU;
+        const float patch = clamp(generator.vegetationvariation.GetNoise(float(wx), float(wy)) * 0.5f + 0.5f, 0.0f, 1.0f);
+        if(worldtreeunit(priority) >= 0.0015f + 0.0135f * patch * patch) continue;
+        bool spaced = true;
+        for(int oy = -2; oy <= 2 && spaced; ++oy) for(int ox = -2; ox <= 2; ++ox)
+        {
+            if(!ox && !oy) continue;
+            const uint other = hashworldgrass(seed, uint(wx + ox), uint(wy + oy), 0xCA671351U) & 0x00FFFFFFU;
+            if(other < priority || (other == priority && (oy < 0 || (!oy && ox < 0))))
+            {
+                spaced = false;
+                break;
+            }
+        }
+        if(!spaced) continue;
+        const game::worldwatersample surface = generator.surface(wx, wy);
+        const int top = WORLD_GROUND_HEIGHT + surface.height * WORLD_BLOCK_SIZE;
+        if(surface.height < surface.water || top < WORLD_BLOCK_SIZE || top >= WORLD_MAP_SIZE) continue;
+        if(generator.sampleBiome(vec((wx + 0.5f) * WORLD_BLOCK_SIZE, (wy + 0.5f) * WORLD_BLOCK_SIZE, float(top))).primary != game::WORLD_BIOME_DESERT) continue;
+        const ivec base(x * WORLD_BLOCK_SIZE + WORLD_BLOCK_SIZE / 2, y * WORLD_BLOCK_SIZE + WORLD_BLOCK_SIZE / 2, top - 1);
+        const cube &ground = lookupgeneratedworldcube(root, base);
+        if(isempty(ground) || !isentirelysolid(ground) || ground.material != MAT_AIR || ground.texture[O_TOP] != sandtexture) continue;
+        // 10% one block, 40% two, 40% three, 8% four, 2% five.
+        const uint roll = hashworldgrass(seed, uint(wx), uint(wy), 0x94CA6713U) % 100;
+        const int height = roll < 10 ? 1 : roll < 50 ? 2 : roll < 90 ? 3 : roll < 98 ? 4 : 5;
+        if(top + height * WORLD_BLOCK_SIZE > WORLD_MAP_SIZE) continue;
+        bool clear = true;
+        loopi(height)
+        {
+            const cube &space = lookupgeneratedworldcube(root, ivec(base.x, base.y, top + i * WORLD_BLOCK_SIZE));
+            if(!isempty(space) || space.material != MAT_AIR) clear = false;
+        }
+        if(!clear) continue;
+        loopi(height) scatter.add(worldscatterinstance(x * WORLD_BLOCK_SIZE, y * WORLD_BLOCK_SIZE, top + i * WORLD_BLOCK_SIZE, type));
+    }
+}
+
+static void generateworldscatter(cube *root, int chunkx, int chunky, const game::worldsettings &settings, vector<worldscatterinstance> &scatter, bool indexedtextures = false)
 {
     scatter.setsize(0);
+    if(!root) return;
+    generateworldcacti(root, chunkx, chunky, settings, scatter, indexedtextures);
 
     if(!root || (worldgrassscatter < 0 && worldrosescatter < 0 && worldtulipscatter < 0 && worlddandelionscatter < 0))
         return;
@@ -2495,7 +2546,7 @@ namespace game
             scatter.setsize(0);
             return;
         }
-        ::generateworldscatter(root, chunkx, chunky, generation->settings, scatter);
+        ::generateworldscatter(root, chunkx, chunky, generation->settings, scatter, generation->indexedtextures);
     }
 
     void generateworldscatter(cube *root, int chunkx, int chunky, vector<worldscatterinstance> &scatter)

@@ -28,6 +28,9 @@ wood_plank.png
 Source: https://opengameart.org/content/assorted-minecraft-style-textures
 
 Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed
+cactus_bottom.png
+cactus_side.png
+cacuts_top.png
 crafting_table_side.png
 crafting_table_top.png
 furnace_side.png

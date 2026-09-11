@@ -23,7 +23,7 @@ struct worldgrasscandidate
           pitch(pitch), roll(roll), matched(false) {}
 };
 
-VARP(staticentsmaxdistance, 0, 64, 1024);
+VARP(staticentsmaxdistance, 0, 256, 1024);
 VARP(staticentsmaxamount, 0, 8192, MAXENTS);
 VARP(staticlightmaxdistance, 0, 64, 1024);
 
@@ -77,8 +77,13 @@ struct worldscattermeshbatch
 {
     Texture *texture;
     int offset, length;
+    bool rigid;
+    float alphatest;
 
-    worldscattermeshbatch(Texture *texture = NULL, int offset = 0, int length = 0) : texture(texture), offset(offset), length(length) {}
+    worldscattermeshbatch(Texture *texture = NULL, int offset = 0, int length = 0, bool rigid = false, float alphatest = -1)
+        : texture(texture), offset(offset), length(length), rigid(rigid), alphatest(alphatest)
+    {
+    }
 };
 
 struct worldscattermesh
@@ -87,11 +92,11 @@ struct worldscattermesh
     GLuint vbo, ebo;
     ivec bbmin, bbmax;
     vector<worldscattermeshbatch> batches;
-    bool dirty, boundsvalid;
+    bool dirty, boundsvalid, hascacti;
 
     worldscattermesh(int chunkx, int chunky, int tile, int section)
         : chunkx(chunkx), chunky(chunky), tile(tile), section(section), instances(0), grasses(0), flowers(0), vbo(0), ebo(0), bbmin(0, 0, 0),
-          bbmax(0, 0, 0), dirty(true), boundsvalid(false)
+          bbmax(0, 0, 0), dirty(true), boundsvalid(false), hascacti(false)
     {
     }
 };
@@ -236,14 +241,21 @@ static void worldscattermeshregion(const worldscatterinstance &scatter, int &til
 
 static void dirtyworldscattermesh(worldchunk &chunk, const worldscatterinstance &scatter)
 {
-    if(isworldplaceable(scatter.type))
+    const bool cactus = worldscatterdefinitions.inrange(scatter.type) && !strcmp(worldscatterdefinitions[scatter.type]->scattermesh, "cactus");
+    if(isworldplaceable(scatter.type) && !cactus)
     {
         chunk.placeablesregistered = false;
         return;
     }
     int tile, section;
     worldscattermeshregion(scatter, tile, section);
-    findworldscattermesh(chunk.x, chunk.y, tile, section, true)->dirty = true;
+    worldscattermesh *mesh = findworldscattermesh(chunk.x, chunk.y, tile, section, true);
+    mesh->dirty = true;
+    if(cactus)
+    {
+        mesh->hascacti = true;
+        mesh->boundsvalid = false;
+    }
 }
 
 static void registerworldplaceables(worldchunk &chunk)
@@ -252,7 +264,7 @@ static void registerworldplaceables(worldchunk &chunk)
     for(int i = worldplaceableinstances.length() - 1; i >= 0; --i)
         if(worldplaceableinstances[i].chunkx == chunk.x && worldplaceableinstances[i].chunky == chunk.y)
             worldplaceableinstances.removeunordered(i);
-    loopv(chunk.scatter) if(isworldplaceable(chunk.scatter[i].type))
+    loopv(chunk.scatter) if(isworldplaceable(chunk.scatter[i].type) && !worldscatterdefinitions[chunk.scatter[i].type]->scattermesh[0])
         worldplaceableinstances.add(worldplaceableinstance(chunk.x, chunk.y, chunk.scatter[i]));
     chunk.placeablesregistered = true;
 }
@@ -326,6 +338,45 @@ static void addworldscattergeometry(const worldchunk &chunk, const worldscatteri
     addworldscatterquad(vertices, indices, center, halfwidth, bottom, top, yaw + M_PI / 2.0f, mesh);
 }
 
+static void addworldcactusgeometry(const worldscatterinstance &scatter, int part, vector<worldscattermeshvertex> &vertices,
+                                   vector<uint> &indices, worldscattermesh &mesh)
+{
+    // Side planes retain the one-pixel spine border; their opaque 14-unit core meets the cropped caps.
+    static const vec corners[6][4] =
+    {
+        { vec(-8, -7, 0), vec(8, -7, 0), vec(8, -7, 16), vec(-8, -7, 16) },
+        { vec(8, 7, 0), vec(-8, 7, 0), vec(-8, 7, 16), vec(8, 7, 16) },
+        { vec(7, -8, 0), vec(7, 8, 0), vec(7, 8, 16), vec(7, -8, 16) },
+        { vec(-7, 8, 0), vec(-7, -8, 0), vec(-7, -8, 16), vec(-7, 8, 16) },
+        { vec(-7, -7, 16), vec(7, -7, 16), vec(7, 7, 16), vec(-7, 7, 16) },
+        { vec(-7, 7, 0), vec(7, 7, 0), vec(7, -7, 0), vec(-7, -7, 0) }
+    };
+    static const vec normals[6] = { vec(0, -1, 0), vec(0, 1, 0), vec(1, 0, 0), vec(-1, 0, 0), vec(0, 0, 1), vec(0, 0, -1) };
+    const vec origin(scatter.x + 8.0f, scatter.y + 8.0f, float(scatter.z));
+    const int first = part == 0 ? 0 : part + 3, last = part == 0 ? 4 : first + 1;
+    const float low = part == 0 ? 0.0f : 1.0f / 16, high = 1.0f - low;
+    const vec2 uv[4] = { vec2(low, high), vec2(high, high), vec2(high, low), vec2(low, low) };
+    for(int face = first; face < last; ++face)
+    {
+        const uint base = vertices.length();
+        loopi(4) vertices.add(worldscattermeshvertex(vec(origin).add(corners[face][i]), normals[face], uv[i]));
+        static const uint quad[6] = { 0, 1, 2, 0, 2, 3 };
+        loopi(6) indices.add(base + quad[i]);
+    }
+    const ivec minimum(scatter.x, scatter.y, scatter.z), maximum(scatter.x + 16, scatter.y + 16, scatter.z + 16);
+    if(!mesh.boundsvalid)
+    {
+        mesh.bbmin = minimum;
+        mesh.bbmax = maximum;
+        mesh.boundsvalid = true;
+    }
+    else
+    {
+        mesh.bbmin.min(minimum);
+        mesh.bbmax.max(maximum);
+    }
+}
+
 static void rebuildworldscattermesh(worldscattermesh &mesh, const worldchunk &chunk)
 {
     vector<worldscattermeshvertex> vertices;
@@ -333,10 +384,39 @@ static void rebuildworldscattermesh(worldscattermesh &mesh, const worldchunk &ch
     mesh.batches.setsize(0);
     mesh.instances = mesh.grasses = mesh.flowers = 0;
     mesh.boundsvalid = false;
+    mesh.hascacti = false;
 
     loopv(worldscatterdefinitions)
     {
-        if(isworldplaceable(i) || !worldscatterrenderdefinitions.inrange(i) || !worldscatterrenderdefinitions[i].texture[0]) continue;
+        const bool cactus = !strcmp(worldscatterdefinitions[i]->scattermesh, "cactus");
+        if((isworldplaceable(i) && !cactus) || !worldscatterrenderdefinitions.inrange(i) || !worldscatterrenderdefinitions[i].texture[0]) continue;
+        if(cactus)
+        {
+            static const char *textures[3] =
+            {
+                "media/texture/terrain/cactus_side.png", "media/texture/terrain/cactus_top.png",
+                "media/texture/terrain/cactus_bottom.png"
+            };
+            loop(part, 3)
+            {
+                const int offset = indices.length();
+                loopvj(chunk.scatter)
+                {
+                    const worldscatterinstance &scatter = chunk.scatter[j];
+                    if(scatter.type != i) continue;
+                    int tile, section;
+                    worldscattermeshregion(scatter, tile, section);
+                    if(tile != mesh.tile || section != mesh.section) continue;
+                    addworldcactusgeometry(scatter, part, vertices, indices, mesh);
+                    mesh.hascacti = true;
+                    if(!part) ++mesh.instances;
+                }
+                if(indices.length() == offset) continue;
+                Texture *texture = textureload(textures[part], 3, true, false, true);
+                if(texture != notexture) mesh.batches.add(worldscattermeshbatch(texture, offset, indices.length() - offset, true, part ? 0 : 0.5f));
+            }
+            continue;
+        }
         const int offset = indices.length();
         loopvj(chunk.scatter)
         {
@@ -376,6 +456,7 @@ static void rebuildworldscattermesh(worldscattermesh &mesh, const worldchunk &ch
 static bool worldscattermeshresident(const worldscattermesh &mesh, const worldchunk &chunk)
 {
     const uint tilebit = 1U << mesh.tile;
+    if(mesh.hascacti) return (chunk.mountedtiles[mesh.section] & tilebit) != 0;
     return chunk.mountedtiles[mesh.section] & tilebit && !(chunk.renderdata.flags[mesh.section][mesh.tile] & SECTION_NO_RENDER) &&
            worldsectionvaactive(chunk.varesidency[mesh.section][mesh.tile]);
 }
@@ -392,11 +473,12 @@ static void worldscattermeshbounds(const worldscattermesh &mesh, const worldchun
     const int x = mesh.tile % WORLD_SECTION_COLUMNS, y = mesh.tile / WORLD_SECTION_COLUMNS;
     bbmin = ivec(origin).add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, mesh.section * WORLD_SECTION_SIZE));
     bbmax = ivec(bbmin).add(WORLD_SECTION_SIZE);
+    if(mesh.hascacti) bbmax.z += WORLD_BLOCK_SIZE;
 }
 
 static bool worldscattermeshvisible(const worldscattermesh &mesh, const worldchunk &chunk)
 {
-    if(!worldscattermeshresident(mesh, chunk) || !(chunk.visibletiles[mesh.section] & (1U << mesh.tile))) return false;
+    if(!worldscattermeshresident(mesh, chunk) || (!mesh.hascacti && !(chunk.visibletiles[mesh.section] & (1U << mesh.tile)))) return false;
     ivec bbmin, bbmax;
     worldscattermeshbounds(mesh, chunk, bbmin, bbmax);
     return isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) != VFC_NOT_VISIBLE && !pvsoccluded(bbmin, bbmax);
@@ -459,6 +541,8 @@ static void drawworldscattermeshes(bool shadow)
         loopvj(mesh.batches)
         {
             const worldscattermeshbatch &batch = mesh.batches[j];
+            LOCALPARAMF(scatterparams, float(origin.x), float(origin.y), 0.0f, batch.rigid ? 0.0f : scattermeshwind);
+            LOCALPARAMF(scatteralphatest, batch.alphatest >= 0 ? batch.alphatest : scattermeshalphatest);
             glBindTexture(GL_TEXTURE_2D, batch.texture->id);
             glDrawElements(GL_TRIANGLES, batch.length, GL_UNSIGNED_INT, (uint *)0 + batch.offset);
             glde++;
@@ -873,7 +957,8 @@ bool getworldscatterhit(const vec &origin, const vec &direction, float reach, in
         loopvj(chunk.scatter)
         {
             const worldscatterinstance &scatter = chunk.scatter[j];
-            if(isworldplaceable(scatter.type) || !worldscatterdefinitions.inrange(scatter.type) ||
+            if((isworldplaceable(scatter.type) && strcmp(getworldscattername(scatter.type), "cactus")) ||
+               !worldscatterdefinitions.inrange(scatter.type) ||
                !worldscatterrenderdefinitions.inrange(scatter.type) || !worldscattermounted(chunk, scatter))
                 continue;
             vec scattercenter, scatterradius;

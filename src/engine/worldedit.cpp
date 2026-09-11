@@ -49,6 +49,35 @@ static bool validworldscatter(const worldchunk &chunk, const worldscatterinstanc
        (placeable && scatter.orient == O_BOTTOM))
         return false;
     const cube support = sampleworldblockcube(lookupcube(supportcenter, 0, cubeorigin, cubesize), supportcenter, cubeorigin, cubesize);
+    if(!strcmp(getworldscattername(scatter.type), "cactus"))
+    {
+        if(scatter.orient != O_TOP) return false;
+        // Walk the entire column so floating or malformed stacks cannot support new segments.
+        for(int z = scatter.z - WORLD_BLOCK_SIZE; z >= 0; z -= WORLD_BLOCK_SIZE)
+        {
+            bool cactus = false;
+            loopv(chunk.scatter)
+            {
+                const worldscatterinstance &below = chunk.scatter[i];
+                if(below.x == scatter.x && below.y == scatter.y && below.z == z && below.orient == O_TOP &&
+                   !strcmp(getworldscattername(below.type), "cactus"))
+                {
+                    cactus = true;
+                    break;
+                }
+            }
+            const ivec cell(center.x, center.y, z + WORLD_BLOCK_SIZE / 2);
+            const cube base = sampleworldblockcube(lookupcube(cell, 0, cubeorigin, cubesize), cell, cubeorigin, cubesize);
+            if(cactus)
+            {
+                if(!isempty(base) || base.material != MAT_AIR) return false;
+                continue;
+            }
+            return !isempty(base) && isentirelysolid(base) && base.material == MAT_AIR &&
+                   !strcmp(getworldcubename(getworldcubebytextures(base.texture)), "sand");
+        }
+        return false;
+    }
     if(isempty(support) || !isentirelysolid(support) ||
        support.material != MAT_AIR)
         return false;

@@ -4186,6 +4186,27 @@ namespace server
         }
         if(!validactionitem(action, item))
             return rejectaction(ci, requestid, "invalid placed item type", true, true);
+        if(!strcmp(getinventoryitemid(item), "cactus"))
+        {
+            const cube *space = serverchunkcubeat(occupied);
+            if(orient != WORLD_ORIENT_TOP || !space || !isempty(*space) || space->material != MAT_AIR ||
+               playeroccupies(occupied) || serverfallingblockoccupies(occupied))
+                return rejectaction(ci, requestid, "cactus requires a clear cell above sand or cactus");
+            ivec base = support;
+            while(base.z >= 0)
+            {
+                const serverworldaction below = *findworldaction(base, WORLD_ACTION_PLACE_ITEM);
+                if(below.action != WORLD_ACTION_PLACE_ITEM || strcmp(getinventoryitemid(below.item), "cactus")) break;
+                const cube *segment = serverchunkcubeat(base);
+                if(below.orient != WORLD_ORIENT_TOP || !segment || !isempty(*segment) || segment->material != MAT_AIR)
+                    return rejectaction(ci, requestid, "cactus support is obstructed");
+                base.z -= SERVER_WORLD_BLOCK_SIZE;
+            }
+            const cube *ground = base.z >= 0 ? serverchunkcubeat(base) : NULL;
+            if(!ground || !isentirelysolid(*ground) || ground->material != MAT_AIR ||
+               strcmp(getinventoryitemid(serverblockitem(base)), "sand"))
+                return rejectaction(ci, requestid, "cactus must be rooted on sand");
+        }
         if(!acceptworldaction(ci, requestid, action, support, packed, item))
             return rejectaction(ci, requestid, "server could not persist the placement");
         setworldactionstate(occupied, action, orient, item, true);
@@ -4422,6 +4443,16 @@ namespace server
         removeserverfurnace(occupied, &ci);
         removeserverchest(occupied, &ci);
         if(!servercreative() && ci.breakdropeligible) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
+        // Each dependent segment gets its own persisted/broadcast edit and drop; clients never mint these drops.
+        for(ivec support = occupied; support.z + SERVER_WORLD_BLOCK_SIZE < SERVER_WORLD_MAP_SIZE; support.z += SERVER_WORLD_BLOCK_SIZE)
+        {
+            const ivec above = ivec(support).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE));
+            const serverworldaction cactus = *findworldaction(above, WORLD_ACTION_PLACE_ITEM);
+            if(cactus.action != WORLD_ACTION_PLACE_ITEM || strcmp(getinventoryitemid(cactus.item), "cactus")) break;
+            if(!acceptworldaction(ci, 0, WORLD_ACTION_BREAK_SCATTER_START, support, WORLD_ORIENT_TOP, cactus.item)) break;
+            setworldactionstate(above, WORLD_ACTION_BREAK_SCATTER_START, WORLD_ORIENT_TOP, cactus.item);
+            if(!servercreative()) addworlddrops(NULL, 0, WORLD_ACTION_BREAK_SCATTER_START, support, WORLD_ORIENT_TOP, cactus.item);
+        }
         if(!servercreative() && ci.breaktoolitem >= 0)
         {
             const int type = getworlditemtype(item), index = getworlditemindex(item), wear = getworldbreaktoolwear(type, index, ci.breaktoolitem);

@@ -767,6 +767,18 @@ namespace game
         return clients.inrange(clientnum) ? clients[clientnum] : NULL;
     }
 
+    static void rendercactusitem(gameent *d, const vec &origin, float yaw, float pitch, float roll, int flags, float size, bool hud)
+    {
+        modelskinoverride skins[] =
+        {
+            modelskinoverride("top", "media/texture/terrain/cactus_top.png"),
+            modelskinoverride("side", "media/texture/terrain/cactus_side.png"),
+            modelskinoverride("bottom", "media/texture/terrain/cactus_bottom.png")
+        };
+        rendermodelwithskins(hud ? heldcubemodel : worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP,
+                             origin, yaw, pitch, roll, flags, d, skins, 3, size);
+    }
+
     static void renderworlddrop(const worlddrop &drop)
     {
         if(!drop.geometryready) return;
@@ -803,6 +815,8 @@ namespace game
         {
             renderitemsprite(directtexture, position, yaw, 0, 0, flags, 0.4f * getinventoryitemworldsize(drop.item));
         }
+        else if(type == WORLD_ITEM_PLACEABLE && !strcmp(getworldscattername(worldindex), "cactus"))
+            rendercactusitem(NULL, position, yaw, 0, 0, flags, 0.45f, false);
         else if(type == WORLD_ITEM_CUBE || type == WORLD_ITEM_NONE)
         {
             string toptexture, sidetexture, bottomtexture;
@@ -855,8 +869,7 @@ namespace game
                 modelskinoverride("side", sidetexture),
                 modelskinoverride("bottom", bottomtexture)
             };
-            rendermodelwithskins(worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP, position, 0, 0, 0,
-                                 MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED, NULL, skins, 3, 2.0f);
+            rendermodelwithskins(worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP, position, 0, 0, 0, MDL_CULL_VFC | MDL_CULL_DIST | MDL_CULL_OCCLUDED, NULL, skins, 3, 2.0f);
         }
     }
 
@@ -980,6 +993,9 @@ namespace game
             renderitemsprite(getworldscattericon(worldindex), pose.origin, pose.yaw, pose.pitch, pose.roll, flags,
                              (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize,
                              extrudedspritegriphoffset, extrudedspritegripvoffset);
+        else if(type == WORLD_ITEM_PLACEABLE && !strcmp(getworldscattername(worldindex), "cactus"))
+            rendercactusitem(d, pose.origin, pose.yaw, pose.pitch, pose.roll, flags,
+                             (hud ? HUD_HELD_CUBE_SIZE : WORLD_HELD_CUBE_SIZE) * heldsize, hud);
         else if(type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE)
             renderheldmodel(d, getworldscattermodel(worldindex), pose, flags, (hud ? HUD_HELD_SCATTER_SIZE : WORLD_HELD_SCATTER_SIZE) * heldsize);
         else if(type == WORLD_ITEM_NONE)

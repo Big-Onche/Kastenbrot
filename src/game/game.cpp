@@ -4198,6 +4198,23 @@ namespace game
         const float reach = buildactionreach();
         float dist = raycubepos(origin, camdir, hitpos, reach,
                                 RAY_CLIPMAT | RAY_SKIPFIRST, CREATIVE_GRID);
+        // Cactus models occupy air cells, so the terrain ray alone cannot select their top for stacking.
+        if(!strcmp(getinventoryitemid(selectedcreativeblock()), "cactus"))
+        {
+            int type = -1, mount = WORLD_ORIENT_TOP, face = WORLD_ORIENT_TOP;
+            ivec support;
+            vec center, radius;
+            float modeldist = min(dist, reach), boxdist = 0;
+            if(getworldscatterhit(origin, camdir, modeldist, type, support, mount, center, radius, modeldist) &&
+               !strcmp(getworldscattername(type), "cactus") &&
+               rayboxintersect(vec(center).sub(radius), vec(radius).mul(2), origin, camdir, boxdist, face))
+            {
+                if(face != WORLD_ORIENT_TOP) return false;
+                worldactionselection(hit, worldactionplacecell(support, mount), WORLD_ORIENT_TOP);
+                if(hitpoint) *hitpoint = vec(origin).madd(camdir, modeldist);
+                return hit.validate();
+            }
+        }
         if(dist >= reach) return false;
         if(hitpoint) *hitpoint = hitpos;
 
@@ -4344,7 +4361,7 @@ namespace game
             int actionorient = hit.orient, chestslots = 0;
             const bool chest = type == WORLD_ITEM_PLACEABLE && getworldchestconfig(selected, chestslots);
             if(chest && hit.orient != WORLD_ORIENT_TOP) return;
-            if(chest && creativeplayeroverlap(worldactionplacecell(hit.o, hit.orient))) return;
+            if(getworldplaceableblockcollision(worldindex) && creativeplayeroverlap(worldactionplacecell(hit.o, hit.orient))) return;
             if(chest)
             {
                 const int yaw = player1 ? (int(floor((player1->yaw + 45.0f) / 90.0f)) % 4 + 4) % 4 : 0;
@@ -4407,6 +4424,19 @@ namespace game
         player1->renderplacetoggle = !player1->renderplacetoggle;
     }
 
+    static void breaklocalcactusabove(ivec support)
+    {
+        if(waitforserveredit()) return;
+        for(;; support.z += CREATIVE_GRID)
+        {
+            const int type = getworldscatterindexat(support, WORLD_ORIENT_TOP);
+            if(type < 0 || strcmp(getworldscattername(type), "cactus")) break;
+            if(!scatteredittrigger(type, support, WORLD_ORIENT_TOP, false)) break;
+            if(survivalenabled())
+                addlocalitemdrop(getworldscatteritem(type), 1, vec(support).add(vec(8, 8, 24)), uint(lastmillis) ^ uint(support.z));
+        }
+    }
+
     static void creativeremove()
     {
         creativetarget target;
@@ -4417,7 +4447,10 @@ namespace game
             const ivec support = target.scattersupport;
             if(type >= 0)
             {
-                if(!waitforserveredit()) scatteredittrigger(type, support, mountorient, false);
+                if(!waitforserveredit())
+                {
+                    if(scatteredittrigger(type, support, mountorient, false)) breaklocalcactusabove(worldactionplacecell(support, mountorient));
+                }
                 else
                 {
                     if(!editworldscatter(type, support, mountorient, false)) return;
@@ -4431,6 +4464,7 @@ namespace game
         if(!waitforserveredit())
         {
             mpdelcube(target.cube, true);
+            breaklocalcactusabove(target.cube.o);
             selinfo absolute = target.cube;
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
@@ -4728,6 +4762,7 @@ namespace game
                 }
                 if(removed)
                 {
+                    breaklocalcactusabove(worldactionplacecell(support, mountorient));
                     int chestslots = 0;
                     if(getworldchestconfig(item, chestslots))
                     {
@@ -4758,6 +4793,7 @@ namespace game
                 worldselectiontoabsolute(absolute);
                 removelocalfurnace(absolute.o);
                 mpdelcube(survivalbreaktarget.cube, true);
+                breaklocalcactusabove(survivalbreaktarget.cube.o);
                 waterterrainchanged(absolute.o);
                 queuefallblockcheck(ivec(absolute.o).add(ivec(0, 0, CREATIVE_GRID)));
                 setlocalsupportpersistent(absolute.o, false);
