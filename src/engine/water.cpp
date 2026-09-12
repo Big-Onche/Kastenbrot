@@ -1243,15 +1243,42 @@ void renderwaterfalls()
     }
 }
 
+// LOD water never samples screen depth/color or animated caustics. It renders with
+// terrain, retaining only the material tint, one broad normal layer and sky Fresnel.
+void setupworldlodwater()
+{
+    MatSlot &slot = lookupmaterialslot(MAT_WATER);
+    const vec color = getwatercolour(0).tocolor().mul(0.5f), deep = getwaterdeepcolour(0).tocolor().mul(0.5f);
+    GLOBALPARAM(watercolor, color);
+    if(drawtex == DRAWTEX_MINIMAP)
+    {
+        useshaderbyname("waterminimap")->set();
+        LOCALPARAMF(watermeshparams, 0, 0, 0, 0);
+        return;
+    }
+    Texture *tex = slot.sts.inrange(0) ? slot.sts[0].t : notexture;
+    GLOBALPARAMF(watertexgen, TEX_SCALE / (tex->xs * slot.scale), TEX_SCALE / (tex->ys * slot.scale));
+    GLOBALPARAM(waterdeepcolor, deep);
+    GLOBALPARAMF(waterspec, getwaterspec(0) / 100.0f);
+    glActiveTexture_(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, slot.sts.inrange(1) ? slot.sts[1].t->id : notexture->id);
+    const GLuint envmap = waterreflect || waterenvmap ? lookupenvmap(slot) : 0;
+    if(envmap)
+    {
+        glActiveTexture_(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, envmap);
+        glActiveTexture_(GL_TEXTURE0);
+        useshaderbyname("waterlodenv")->set();
+    }
+    else useshaderbyname("waterlod")->set();
+}
+
 void renderwater()
 {
     ZoneScopedN("Transparency/Water surfaces");
-    const bool lodwater = hasworldlodwater();
-    if(lodwater) preloadwatershaders(true);
     loopk(4)
     {
-        const bool renderlod = k == 0 && lodwater;
-        if(!haswatergeometry(k) && !renderlod) continue;
+        if(!haswatergeometry(k)) continue;
 
         MatSlot &wslot = lookupmaterialslot(MAT_WATER+k);
 
@@ -1322,14 +1349,12 @@ void renderwater()
         aboveshader->set();
         LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
         renderwatergeometry(k, false, 1);
-        if(renderlod) renderworldlodwater(false);
 
         if(belowshader)
         {
             belowshader->set();
             LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
             renderwatergeometry(k, false, -1);
-            if(renderlod) renderworldlodwater(true);
         }
     }
 }

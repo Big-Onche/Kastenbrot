@@ -1756,6 +1756,13 @@ void renderworldlods()
     shader->set();
     bindworldlodtextures();
     LOCALPARAMF(loddebug, float(worldloddebug));
+    struct waterdraw
+    {
+        int cacheindex;
+        ivec origin;
+    };
+    static vector<waterdraw> waterdraws;
+    waterdraws.setsize(0);
     int vertices = 0, triangles = 0, topfaces = 0, sidefaces = 0;
     glDepthFunc(GL_LEQUAL);
     if(worldlodwireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -1769,6 +1776,14 @@ void renderworldlods()
         const ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0),
                    bbmin = ivec(chunk.bbmin).add(origin), bbmax = ivec(chunk.bbmax).add(origin);
         if(isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) >= VFC_FOGGED) continue;
+        // The retained octree owns water during the terrain dither transition.
+        if(chunk.waterindices && !(selection.active == 1 && worldlodselectionrequiresvoxel(selection) &&
+                                   worldlodfullready(selection.x, selection.y)))
+        {
+            waterdraw &draw = waterdraws.add();
+            draw.cacheindex = cacheindex;
+            draw.origin = origin;
+        }
         gle::bindvbo(chunk.vbo);
         gle::bindebo(chunk.ebo);
         const worldlodvertex *pointer = 0;
@@ -1790,6 +1805,30 @@ void renderworldlods()
         sidefaces += chunk.sidefaces;
         glde++;
     }
+    if(!waterdraws.empty())
+    {
+        ZoneScopedN("Render/G-buffer/World LOD water");
+        gle::disablenormal();
+        gle::disabletexcoord0();
+        gle::disablecolor();
+        setupworldlodwater();
+        // Distant water is opaque: no refraction mask, scene copy or liquid lighting pass.
+        glDisable(GL_CULL_FACE);
+        loopv(waterdraws)
+        {
+            const waterdraw &draw = waterdraws[i];
+            const worldlodchunk &chunk = worldlodcache[draw.cacheindex];
+            gle::bindvbo(chunk.vbo);
+            gle::bindebo(chunk.ebo);
+            gle::vertexpointer(sizeof(worldlodvertex), (const void *)offsetof(worldlodvertex, position));
+            LOCALPARAMF(watermeshoffset, float(draw.origin.x), float(draw.origin.y), -WATER_OFFSET);
+            glDrawElements(GL_TRIANGLES, chunk.waterindices, GL_UNSIGNED_INT,
+                           (const void *)(size_t(chunk.terrainindices) * sizeof(uint)));
+            glde++;
+        }
+        glEnable(GL_CULL_FACE);
+    }
+    TracyPlot("LOD/Water draws", int64_t(waterdraws.length()));
     if(worldlodwireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glDepthFunc(GL_LESS);
     gle::disablevertex();
@@ -1806,94 +1845,6 @@ void renderworldlods()
     TracyPlot("LOD/Triangles", int64_t(triangles));
     TracyPlot("LOD/Top faces", int64_t(topfaces));
     TracyPlot("LOD/Side faces", int64_t(sidefaces));
-}
-
-static bool visibleworldlodwater(const worldlodselection &selection, worldlodchunk *&chunk, ivec &origin)
-{
-    if(selection.active < 1) return false;
-    // While the octree is retained for the dither, keep its animated water as the sole liquid surface.
-    if(selection.active == 1 && worldlodselectionrequiresvoxel(selection) && worldlodfullready(selection.x, selection.y)) return false;
-    const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
-    if(cacheindex < 0) return false;
-    chunk = &worldlodcache[cacheindex];
-    if(!chunk->waterindices) return false;
-    origin = ivec((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE,
-                  (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0);
-    const ivec bbmin(origin.x, origin.y, int(chunk->bbmin.z - WATER_OFFSET)),
-               bbmax(origin.x + WORLD_CHUNK_SIZE, origin.y + WORLD_CHUNK_SIZE, int(chunk->waterheight));
-    return isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) < VFC_FOGGED;
-}
-
-bool hasworldlodwater()
-{
-    if(!worldlod || !camera1) return false;
-    loopv(worldlodselections)
-    {
-        worldlodchunk *chunk;
-        ivec origin;
-        if(visibleworldlodwater(worldlodselections[i], chunk, origin)) return true;
-    }
-    return false;
-}
-
-bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2)
-{
-    if(!worldlod || !camera1) return false;
-    bool found = false;
-    loopv(worldlodselections)
-    {
-        worldlodchunk *chunk;
-        ivec origin;
-        if(!visibleworldlodwater(worldlodselections[i], chunk, origin)) continue;
-        float csx1, csy1, csx2, csy2;
-        const ivec bbmin(origin.x, origin.y, int(chunk->bbmin.z - WATER_OFFSET)),
-                   bbmax(origin.x + WORLD_CHUNK_SIZE, origin.y + WORLD_CHUNK_SIZE, int(chunk->waterheight));
-        if(!calcbbscissor(bbmin, bbmax, csx1, csy1, csx2, csy2)) continue;
-        sx1 = min(sx1, csx1); sy1 = min(sy1, csy1);
-        sx2 = max(sx2, csx2); sy2 = max(sy2, csy2);
-        found = true;
-    }
-    return found;
-}
-
-static void drawworldlodwater(bool split, bool below)
-{
-    // Water surfaces stay in the chunk's compact VBO; only their trailing index range is resubmitted here.
-    bool drew = false;
-    loopv(worldlodselections)
-    {
-        worldlodchunk *chunk;
-        ivec origin;
-        if(!visibleworldlodwater(worldlodselections[i], chunk, origin)) continue;
-        if(split && below != (camera1->o.z < chunk->waterheight - WATER_OFFSET)) continue;
-        if(!drew)
-        {
-            gle::enablevertex();
-            drew = true;
-        }
-        gle::bindvbo(chunk->vbo);
-        gle::bindebo(chunk->ebo);
-        const worldlodvertex *pointer = 0;
-        gle::vertexpointer(sizeof(worldlodvertex), pointer->position.v);
-        LOCALPARAMF(watermeshoffset, float(origin.x), float(origin.y), -WATER_OFFSET);
-        glDrawElements(GL_TRIANGLES, chunk->waterindices, GL_UNSIGNED_INT,
-                       (const void *)(size_t(chunk->terrainindices) * sizeof(uint)));
-        glde++;
-    }
-    if(!drew) return;
-    gle::disablevertex();
-    gle::clearebo();
-    gle::clearvbo();
-}
-
-void renderworldlodwater(bool below)
-{
-    drawworldlodwater(true, below);
-}
-
-void renderworldlodwatermask()
-{
-    drawworldlodwater(false, false);
 }
 
 ICOMMAND(getdebuglod1chunks, "", (),

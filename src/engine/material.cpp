@@ -826,20 +826,6 @@ int findmaterials()
             }
         }
     }
-    float sx1 = 1, sy1 = 1, sx2 = -1, sy2 = -1;
-    if(findworldlodwater(sx1, sy1, sx2, sy2))
-    {
-        matliquidsx1 = min(matliquidsx1, sx1);
-        matliquidsy1 = min(matliquidsy1, sy1);
-        matliquidsx2 = max(matliquidsx2, sx2);
-        matliquidsy2 = max(matliquidsy2, sy2);
-        masktiles(matliquidtiles, sx1, sy1, sx2, sy2);
-        matrefractsx1 = min(matrefractsx1, sx1);
-        matrefractsy1 = min(matrefractsy1, sy1);
-        matrefractsx2 = max(matrefractsx2, sx2);
-        matrefractsy2 = max(matrefractsy2, sy2);
-        hasmats |= 4|1;
-    }
     return hasmats;
 }
 
@@ -855,7 +841,6 @@ void rendermaterialmask()
     loopk(4) renderwatergeometry(k, true);
     loopk(4) renderwaterfallgeometry(k, true);
     xtraverts += gle::end();
-    renderworldlodwatermask();
     LOCALPARAMF(liquidmask, 0.0f);
     glEnable(GL_CULL_FACE);
 }
