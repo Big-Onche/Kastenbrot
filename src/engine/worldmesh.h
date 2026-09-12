@@ -86,6 +86,7 @@ extern const vector<worldmeshsection *> &getworldmeshsections();
 extern ullong getworldmeshgeneration();
 extern void beginworldmeshdrawstats();
 extern void endworldmeshdrawstats();
+extern void invalidateworldmeshcsm();
 extern void queueworldmeshworld();
 extern bool worldmeshsectionvisible(const worldmeshsection &section);
 extern void renderworldmeshgeometry(int side = 0, bool shadow = false, bool rsm = false, bool refractmask = false);

@@ -3,7 +3,8 @@
 #include "watermeshpacket.h"
 
 template<class CellAt>
-static void buildwatermeshpacket(watermeshpacket &resource, const materialsurface *surfaces, int count, CellAt cellat)
+static void buildwatermeshpacket(watermeshpacket &resource, const materialsurface *surfaces, int count, CellAt cellat,
+                                 bool staticwater = false)
 {
 
     vector<waterfacepatch> faces[8], pending;
@@ -82,12 +83,44 @@ static void buildwatermeshpacket(watermeshpacket &resource, const materialsurfac
             patch.material = g & 3;
             patch.first = vertices.length();
             const int wavemask = g < 4 ? wavesizes[g][i] - 1 : 0;
+            vec4 heights[4];
+            if(staticwater)
+            {
+                if(face.orient == O_TOP || face.orient == O_BOTTOM)
+                {
+                    const float z = o.z - (face.orient == O_BOTTOM ? 0.1f : 0.0f), weight = face.orient == O_TOP ? 1.0f : 0.0f;
+                    loopj(4) heights[j] = vec4(z, weight, z, weight);
+                }
+                else
+                {
+                    const int dim = dimension(face.orient), sign = dimcoord(face.orient) ? 1 : -1,
+                              width = dim == 0 ? face.rsize : face.csize, height = dim == 0 ? face.csize : face.rsize;
+                    ivec inside(o), outside(o);
+                    inside[1 - dim] += width / 2;
+                    outside[1 - dim] += width / 2;
+                    if(sign > 0) --inside[dim];
+                    else --outside[dim];
+                    inside.z += height;
+                    const float top = inside.z;
+                    const bool upper = cellat(ivec(inside).sub(ivec(0, 0, 1))).water && !cellat(inside).water,
+                               lower = cellat(ivec(outside).sub(ivec(0, 0, 1))).water && !cellat(outside).water;
+                    heights[3] = heights[2] = vec4(top, upper ? 1 : 0, top, upper ? 1 : 0);
+                    heights[0] = heights[1] = vec4(o.z, lower ? 1 : 0, top, upper ? 1 : 0);
+                    if((dim == 0) != (sign > 0)) swap(heights[1], heights[3]);
+                }
+            }
             loopj(4)
             {
                 watermeshvertex &v = vertices.add();
                 v.position = vec4(p[j], float((int(p[j].x) & wavemask) * (int(p[j].y) & wavemask)) * (59.0f / 23.0f / (2 * M_PI)));
                 v.normal = vec(0, 0, 0);
                 v.normal[dimension(face.orient)] = dimcoord(face.orient) ? 1 : -1;
+                if(staticwater)
+                {
+                    watermeshstate &state = resource.states.add();
+                    state.endpoints = heights[j];
+                    state.surface = vec2(face.orient == O_TOP ? 1 : 0, o.z - WATER_OFFSET);
+                }
             }
             static const int order[6] = { 0, 1, 2, 0, 2, 3 };
             loopj(6) indices.add(patch.first + order[j]);

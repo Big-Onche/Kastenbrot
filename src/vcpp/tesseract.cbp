@@ -229,6 +229,7 @@
 		</Unit>
 		<Unit filename="../engine/worldio.cpp" />
 		<Unit filename="../engine/worldlod.cpp" />
+		<Unit filename="../engine/worldmeshdraw.h" />
 		<Unit filename="../engine/worldruntime.h" />
 		<Unit filename="../engine/worldstream.cpp">
 			<Option compile="0" />
@@ -243,7 +244,6 @@
 		<Unit filename="../game/ambient.h" />
 		<Unit filename="../game/client.cpp" />
 		<Unit filename="../game/entities.cpp" />
-		<Unit filename="../game/world/environment.cpp" />
 		<Unit filename="../game/game.cpp" />
 		<Unit filename="../game/game.h">
 			<Option compile="1" />
@@ -260,23 +260,24 @@
 		<Unit filename="../game/recipes.cpp" />
 		<Unit filename="../game/render.cpp" />
 		<Unit filename="../game/server.cpp" />
-		<Unit filename="../game/world/weather.cpp" />
-		<Unit filename="../game/world/weather.h" />
-		<Unit filename="../game/world/world.cpp" />
-		<Unit filename="../game/world/generation.h" />
 		<Unit filename="../game/world/climate.h" />
-		<Unit filename="../game/world/environment.h" />
-		<Unit filename="../game/world/world.h" />
 		<Unit filename="../game/world/content.cpp">
 			<Option compile="0" />
 			<Option link="0" />
 		</Unit>
+		<Unit filename="../game/world/environment.cpp" />
+		<Unit filename="../game/world/environment.h" />
 		<Unit filename="../game/world/generation.cpp" />
+		<Unit filename="../game/world/generation.h" />
 		<Unit filename="../game/world/hydrology.h" />
 		<Unit filename="../game/world/render.cpp">
 			<Option compile="0" />
 			<Option link="0" />
 		</Unit>
+		<Unit filename="../game/world/weather.cpp" />
+		<Unit filename="../game/world/weather.h" />
+		<Unit filename="../game/world/world.cpp" />
+		<Unit filename="../game/world/world.h" />
 		<Unit filename="../include/tracy/public/TracyClient.cpp">
 			<Option target="profile64" />
 		</Unit>

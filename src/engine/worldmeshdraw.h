@@ -57,14 +57,21 @@ static ullong worldmeshcommandgeneration = 0;
 static vector<worldmeshsection *> worldmeshcommandsections;
 static vector<worldmeshcommand> worldmeshopaquecommands, worldmeshalphacommands, worldmeshdepthcommands;
 static vector<uchar> worldmeshcommandvisibility;
+static vector<uchar> worldmeshcsmmasks;
 static vector<GLsizei> worldmeshdrawcounts;
 static vector<const GLvoid *> worldmeshdrawstarts;
+
+void invalidateworldmeshcsm()
+{
+    worldmeshcsmmasks.setsize(0);
+}
 
 static void prepareworldmeshcommands()
 {
     const ullong generation = getworldmeshgeneration();
     if(worldmeshcommandgeneration == generation) return;
     ZoneScopedN("WorldMesh/Rebuild submission catalogue");
+    invalidateworldmeshcsm();
     worldmeshcommandsections.setsize(0);
     worldmeshopaquecommands.setsize(0);
     worldmeshalphacommands.setsize(0);
@@ -214,10 +221,23 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
                          side ? WORLDMESH_ALPHA : WORLDMESH_GBUFFER;
     {
         ZoneScopedN("WorldMesh/Cull sections");
+        const bool cascade = (shadow || rsm) && shadowmapping == SM_CASCADE;
+        if(cascade && worldmeshcsmmasks.length() != worldmeshcommandsections.length())
+        {
+            // calcbbcsmsplits already tests every cascade. Reuse that complete
+            // mask across opaque/alpha draws until the next CSM setup.
+            worldmeshcsmmasks.setsize(0);
+            loopv(worldmeshcommandsections)
+            {
+                const worldmeshsection &section = *worldmeshcommandsections[i];
+                worldmeshcsmmasks.add(calcbbcsmsplits(section.minimum, section.maximum));
+            }
+        }
         loopv(worldmeshcommandsections)
         {
             const worldmeshsection &section = *worldmeshcommandsections[i];
-            const bool visible = shadow || rsm ? worldmeshshadowvisible(section) : worldmeshsectionvisible(section);
+            const bool visible = cascade ? (worldmeshcsmmasks[i] & (1 << shadowside)) != 0 :
+                                 shadow || rsm ? worldmeshshadowvisible(section) : worldmeshsectionvisible(section);
             worldmeshcommandvisibility[i] = visible;
             if(visible && statpass == WORLDMESH_GBUFFER && !drawtex)
             {
@@ -303,8 +323,16 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
             }
             if(batch && !batch->compatible(command, depth)) flush();
             batch = &command;
-            worldmeshdrawcounts.add(command.count);
-            worldmeshdrawstarts.add((const GLvoid *)(size_t)command.first);
+            // Consecutive allocations/ranges with identical state need only one
+            // indexed span, including inside a multi-draw call.
+            if(!worldmeshdrawcounts.empty() &&
+               (size_t)worldmeshdrawstarts.last() + size_t(worldmeshdrawcounts.last()) * sizeof(uint) == command.first)
+                worldmeshdrawcounts.last() += command.count;
+            else
+            {
+                worldmeshdrawcounts.add(command.count);
+                worldmeshdrawstarts.add((const GLvoid *)(size_t)command.first);
+            }
             ++worldmeshstats.commands;
             worldmeshstats.indices += command.count;
             worldmeshstats.passindices[statpass] += command.count;

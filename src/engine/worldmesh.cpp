@@ -9,6 +9,7 @@
 struct worldmeshtexture
 {
     int index;
+    bool directional;
     vec4 sgen[6], tgen[6];
     vec tangent[6], bitangent[6];
 };
@@ -45,6 +46,10 @@ struct worldmeshsnapshot
         VSlot &slot = lookupvslot(index, true);
         worldmeshtexture &copy = textures.add();
         copy.index = index;
+        // Match legacy O_ANY batching, but retain face direction when selecting
+        // a positional environment map at publication time.
+        copy.directional = !slot.scroll.iszero() ||
+                           ((slot.slot->shader->type & SHADER_ENVMAP) && !(slot.slot->texmask & (1 << TEX_ENVMAP)));
         loopi(6)
         {
             calctexgen(slot, i, copy.sgen[i], copy.tgen[i]);
@@ -299,14 +304,15 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
     loopv(job.snapshot.textures) if(job.snapshot.textures[i].index == face.texture) { texture = &job.snapshot.textures[i]; break; }
     if(!texture) return;
     worldmeshpacket &packet = job.packet;
+    const int orient = texture->directional ? face.orient : O_ANY;
     if(packet.ranges.empty() || packet.ranges.last().texture != face.texture || packet.ranges.last().material != face.material ||
-       packet.ranges.last().orient != face.orient)
+       packet.ranges.last().orient != orient)
     {
         worldmeshdrawrange &range = packet.ranges.add();
         range.first = packet.indices.length();
         range.texture = face.texture;
         range.material = face.material;
-        range.orient = face.orient;
+        range.orient = orient;
         range.alpha = (face.material & MAT_ALPHA) != 0;
     }
     const uint base = packet.vertices.length();
@@ -378,6 +384,52 @@ static void groupworldmeshranges(worldmeshpacket &packet)
     packet.indices.move(indices);
 }
 
+static void compactworldmeshvertices(worldmeshpacket &packet)
+{
+    ZoneScopedN("WorldMesh/Compact vertices");
+    TracyPlot("WorldMesh/Packet source vertices", int64_t(packet.vertices.length()));
+    // Index identical corners instead of uploading separate vertices for each
+    // triangle. Keep texture identity because climate attributes are resolved later.
+    const int buckets = 1 << 13;
+    vector<int> heads, chain;
+    heads.pad(buckets);
+    loopi(buckets) heads[i] = -1;
+    vector<vertex> vertices;
+    vector<ushort> textures;
+    vertices.reserve(packet.vertices.length());
+    chain.reserve(packet.vertices.length());
+    textures.reserve(packet.vertices.length());
+    loopv(packet.ranges)
+    {
+        const worldmeshdrawrange &range = packet.ranges[i];
+        loopj(range.count)
+        {
+            uint &index = packet.indices[range.first + j];
+            const vertex &v = packet.vertices[index];
+            const uint bucket = hthash(v.pos) & (buckets - 1);
+            int found = heads[bucket];
+            for(; found >= 0; found = chain[found])
+            {
+                const vertex &other = vertices[found];
+                if(textures[found] == range.texture && other.pos == v.pos && other.tc == v.tc &&
+                   other.norm == v.norm && other.tangent == v.tangent) break;
+            }
+            if(found < 0)
+            {
+                found = vertices.length();
+                vertices.add(v);
+                textures.add(range.texture);
+                chain.add(heads[bucket]);
+                heads[bucket] = found;
+            }
+            index = found;
+        }
+    }
+    packet.vertices.setsize(0);
+    packet.vertices.move(vertices);
+    TracyPlot("WorldMesh/Packet indexed vertices", int64_t(packet.vertices.length()));
+}
+
 static void buildworldmeshpacket(worldmeshjob &job)
 {
     ZoneScopedN("WorldMesh/Build packet");
@@ -438,6 +490,7 @@ static void buildworldmeshpacket(worldmeshjob &job)
     }
     if(SDL_AtomicGet(&job.cancelled)) return;
     groupworldmeshranges(job.packet);
+    compactworldmeshvertices(job.packet);
     job.packet.minimum = job.snapshot.origin;
     job.packet.maximum = ivec(job.snapshot.origin).add(WORLD_SECTION_SIZE);
     if(!SDL_AtomicGet(&job.cancelled))
@@ -449,7 +502,7 @@ static void buildworldmeshpacket(worldmeshjob &job)
                 const cube &c = job.snapshot.at(position, 1, origin, size);
                 return watergeometrycell(origin, size, (c.material & MATF_VOLUME) == MAT_WATER,
                                          isentirelysolid(c) || isclipped(c.material & MATF_VOLUME));
-            });
+            }, true);
 }
 
 static int worldmeshworker(void *)
@@ -590,7 +643,8 @@ int processworldmeshpackets(double budget, int uploadlimit)
         worldmeshjob *job = worldmeshresults.empty() ? NULL : worldmeshresults[0];
         const int bytes = job ? job->packet.vertices.length() * sizeof(vertex) + job->packet.indices.length() * sizeof(uint) +
                                job->packet.water.vertices.length() * sizeof(watermeshvertex) +
-                               job->packet.water.indices.length() * sizeof(uint) : 0;
+                               job->packet.water.indices.length() * sizeof(uint) +
+                               job->packet.water.states.length() * sizeof(watermeshstate) : 0;
         // Allow one oversize packet to make progress; never drain an unbounded queue.
         if(job && (!uploaded || uploaded + bytes <= uploadlimit)) worldmeshresults.remove(0);
         else job = NULL;

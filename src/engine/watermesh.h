@@ -1,20 +1,14 @@
 #include "watermeshbuild.h"
 // Persistent section water attachments. Included by material.cpp after corner sampling.
-struct watermeshstate
-{
-    vec4 endpoints; // min(height0 + wave * weight0, height1 + wave * weight1)
-    vec2 surface; // spatial wave multiplier, undisplaced surface for pass selection
-};
-
 struct waterresource
 {
     worldmeshrange vertices, indices, state;
     vector<watermeshpatch> patches;
     int first[8], count[8];
     uint version;
-    bool topologydirty;
+    bool topologydirty, staticwater;
 
-    waterresource() : version(0), topologydirty(false)
+    waterresource() : version(0), topologydirty(false), staticwater(false)
     {
         memset(first, 0, sizeof(first));
         memset(count, 0, sizeof(count));
@@ -46,7 +40,7 @@ static bool watermeshcell(int x, int y, int z)
 
 static void updatewaterstate(waterresource &resource)
 {
-    if(resource.version == waterstateversion) return;
+    if(resource.staticwater || resource.version == waterstateversion) return;
     ZoneScopedN("Water/Upload simulation state");
     vector<watermeshstate> states;
     loopv(resource.patches)
@@ -129,18 +123,25 @@ void uploadwatermeshpacket(waterresource *&attachment, watermeshpacket &packet)
     if(packet.indices.empty()) return;
     attachment = new waterresource;
     waterresource &resource = *attachment;
-    resource.patches.move(packet.patches);
+    resource.staticwater = !packet.states.empty();
+    if(!resource.staticwater) resource.patches.move(packet.patches);
     memcpy(resource.first, packet.first, sizeof(resource.first));
     memcpy(resource.count, packet.count, sizeof(resource.count));
     uploadworldmesh(resource.vertices, GL_ARRAY_BUFFER, packet.vertices.getbuf(), packet.vertices.length() * sizeof(watermeshvertex));
     uploadworldmesh(resource.indices, GL_ELEMENT_ARRAY_BUFFER, packet.indices.getbuf(), packet.indices.length() * sizeof(uint));
-    updatewaterstate(resource);
+    if(resource.staticwater)
+    {
+        ZoneScopedN("Water/Upload static state");
+        ASSERT(packet.states.length() == packet.vertices.length());
+        uploadworldmesh(resource.state, GL_ARRAY_BUFFER, packet.states.getbuf(), packet.states.length() * sizeof(watermeshstate));
+    }
+    else updatewaterstate(resource);
 }
 
 void buildwaterresource(waterresource *&attachment, const materialsurface *surfaces, int count)
 {
     watermeshpacket packet;
-    buildwatermeshpacket(packet, surfaces, count, lookupwatergeometrycell);
+    buildwatermeshpacket(packet, surfaces, count, lookupwatergeometrycell, getworldsectionsize() > 0);
     uploadwatermeshpacket(attachment, packet);
 }
 void buildwaterresource(vtxarray &va)

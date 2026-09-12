@@ -1708,7 +1708,7 @@ void findtjoints()
     edgegroups.clear();
 }
 
-VARF(vatilesize, 16, 256, WORLD_SECTION_SIZE,
+VARF(vatilesize, 16, 512, WORLD_SECTION_SIZE,
 {
     // Tile origins, merge boundaries and octree lookup all require powers of
     // two. A tile must also fit inside its independently resident section.
@@ -1719,7 +1719,7 @@ VARF(vatilesize, 16, 256, WORLD_SECTION_SIZE,
         conoutf("vatilesize rounded down to %d (octree tiles require a power of two)", size);
         vatilesize = size;
     }
-    static int previous = 256;
+    static int previous = 512;
     if(previous == vatilesize) return;
     previous = vatilesize;
     if(getworldsectionsize())
@@ -1780,64 +1780,209 @@ void octarender()
 void buildstreamingtile(const ivec &origin)
 {
     ZoneScopedN("Geometry/Build mesh tile");
+
+#ifdef TRACY_ENABLE
+    int ancestrylevels = 0;
+    int reparentedvas = 0;
+    const int rootsbefore = varoot.length();
+#endif
+
     const ivec maximum = ivec(origin).add(vatilesize);
     const int sectionsize = getworldsectionsize(), firstroot = varoot.length();
-    // Restore the neighbour/entity ancestry, then enter the mesher directly at
-    // this tile's parent. Existing section groups and other tiles are untouched.
-    ASSERT(neighbourdepth == -1 && entdepth == -1);
+
+    // ------------------------------------------------------------
+    // Resolve octree ancestry
+    // ------------------------------------------------------------
     cube *c = worldroot;
     ivec co(0, 0, 0);
     int size = worldsize / 2, csi = worldscale - 1;
-    while(size > vatilesize)
+
     {
-        neighbourstack[++neighbourdepth] = c;
-        const int child = octastep(origin.x, origin.y, origin.z, csi);
-        if(c[child].ext && c[child].ext->ents) entstack[++entdepth] = c[child].ext->ents;
-        co = ivec(child, co, size);
-        ASSERT(c[child].children);
-        c = c[child].children;
-        size >>= 1;
-        --csi;
+        ZoneScopedN("Geometry/Build mesh tile/Resolve ancestry");
+
+        ASSERT(neighbourdepth == -1 && entdepth == -1);
+
+        while(size > vatilesize)
+        {
+            neighbourstack[++neighbourdepth] = c;
+
+            const int child = octastep(origin.x, origin.y, origin.z, csi);
+
+            if(c[child].ext && c[child].ext->ents)
+                entstack[++entdepth] = c[child].ext->ents;
+
+            co = ivec(child, co, size);
+
+            ASSERT(c[child].children);
+
+            c = c[child].children;
+
+            size >>= 1;
+            --csi;
+
+#ifdef TRACY_ENABLE
+            ++ancestrylevels;
+#endif
+        }
     }
-    recalcprogress = 0;
-    updateva(c, co, size, csi, sectionsize, max(vafacemax, 8192), vatilesize, &origin, &maximum, 1);
-    neighbourdepth = entdepth = -1;
-    // At section size updateva() already created the section's root VA. Trying
-    // to wrap it using section.ext->va would make it its own parent and child.
+
+    // ------------------------------------------------------------
+    // Actual geometry generation
+    // ------------------------------------------------------------
+    {
+        ZoneScopedN("Geometry/Build mesh tile/updateva");
+
+        recalcprogress = 0;
+
+        updateva(
+            c,
+            co,
+            size,
+            csi,
+            sectionsize,
+            max(vafacemax, 8192),
+            vatilesize,
+            &origin,
+            &maximum,
+            1
+        );
+    }
+
+    {
+        ZoneScopedN("Geometry/Build mesh tile/Reset ancestry");
+        neighbourdepth = entdepth = -1;
+    }
+
+    // ------------------------------------------------------------
+    // Section VA grouping
+    // ------------------------------------------------------------
     if(vatilesize < sectionsize && varoot.length() > firstroot)
     {
+        ZoneScopedN("Geometry/Build mesh tile/Section grouping");
+
         const ivec sectionorigin = ivec(origin).mask(~(sectionsize - 1));
-        cube &section = lookupcube(sectionorigin, sectionsize);
+
+        cube *sectionptr = NULL;
+
+        {
+            ZoneScopedN("Geometry/Build mesh tile/Section grouping/Lookup section");
+            sectionptr = &lookupcube(sectionorigin, sectionsize);
+        }
+
+        cube &section = *sectionptr;
+
         vtxarray *group = section.ext ? section.ext->va : NULL;
         const bool newgroup = !group;
+
         if(newgroup)
         {
-            // A geometry-free section VA keeps coarse occlusion/culling without
-            // forcing the section's remaining tiles through the mesher.
+            ZoneScopedN("Geometry/Build mesh tile/Section grouping/Create group");
+
             vc.clear();
-            if(section.ext && section.ext->ents)
+
             {
-                if(!section.ext->ents->mapmodels.empty()) vc.mapmodels.add(section.ext->ents);
-                if(!section.ext->ents->decals.empty()) vc.decals.add(section.ext->ents);
+                ZoneScopedN("Geometry/Build mesh tile/Section grouping/Collect entities");
+
+                if(section.ext && section.ext->ents)
+                {
+                    if(!section.ext->ents->mapmodels.empty())
+                        vc.mapmodels.add(section.ext->ents);
+
+                    if(!section.ext->ents->decals.empty())
+                        vc.decals.add(section.ext->ents);
+                }
             }
-            group = newva(sectionorigin, sectionsize);
-            calcgeombb(sectionorigin, sectionsize, group->geommin, group->geommax);
-            calcmatbb(group, sectionorigin, sectionsize, vc.matsurfs);
+
+            {
+                ZoneScopedN("Geometry/Build mesh tile/Section grouping/newva");
+                group = newva(sectionorigin, sectionsize);
+            }
+
+            {
+                ZoneScopedN("Geometry/Build mesh tile/Section grouping/Geometry BB");
+
+                calcgeombb(
+                    sectionorigin,
+                    sectionsize,
+                    group->geommin,
+                    group->geommax
+                );
+            }
+
+            {
+                ZoneScopedN("Geometry/Build mesh tile/Section grouping/Material BB");
+
+                calcmatbb(
+                    group,
+                    sectionorigin,
+                    sectionsize,
+                    vc.matsurfs
+                );
+            }
+
             vc.clear();
-            ext(section).va = group;
+
+            {
+                ZoneScopedN("Geometry/Build mesh tile/Section grouping/Attach group");
+                ext(section).va = group;
+            }
         }
-        while(varoot.length() > firstroot)
+
         {
-            vtxarray *child = varoot.pop();
-            group->children.add(child);
-            child->parent = group;
+            ZoneScopedN("Geometry/Build mesh tile/Section grouping/Reparent VAs");
+
+            while(varoot.length() > firstroot)
+            {
+                vtxarray *child = varoot.pop();
+
+                group->children.add(child);
+                child->parent = group;
+
+#ifdef TRACY_ENABLE
+                ++reparentedvas;
+#endif
+            }
         }
-        if(newgroup) varoot.add(group);
-        invalidatevabb(group);
+
+        if(newgroup)
+        {
+            ZoneScopedN("Geometry/Build mesh tile/Section grouping/Add root");
+            varoot.add(group);
+        }
+
+        {
+            ZoneScopedN("Geometry/Build mesh tile/Section grouping/Invalidate BB");
+            invalidatevabb(group);
+        }
     }
-    // The streaming slice flushes all completed tiles together before rendering.
-    loadprogress = 0;
-    visibleva = NULL;
+
+    // ------------------------------------------------------------
+    // Final state
+    // ------------------------------------------------------------
+    {
+        ZoneScopedN("Geometry/Build mesh tile/Finalize");
+
+        // The streaming slice flushes all completed tiles together before rendering.
+        loadprogress = 0;
+        visibleva = NULL;
+    }
+
+#ifdef TRACY_ENABLE
+    TracyPlot(
+        "Geometry/Build tile/Ancestry levels",
+        int64_t(ancestrylevels)
+    );
+
+    TracyPlot(
+        "Geometry/Build tile/Reparented VAs",
+        int64_t(reparentedvas)
+    );
+
+    TracyPlot(
+        "Geometry/Build tile/New roots",
+        int64_t(max(varoot.length() - rootsbefore, 0))
+    );
+#endif
 }
 
 void precachetextures()

@@ -741,7 +741,7 @@ static void invalidatewaterresources(const ivec *minimum, const ivec *maximum, b
     loopv(sections)
     {
         worldmeshsection &section = *sections[i];
-        if(!section.water) continue;
+        if(!section.water || section.water->staticwater) continue;
         if(minimum && maximum && (section.minimum.x > maximum->x + 1 || section.minimum.y > maximum->y + 1 ||
            section.minimum.z > maximum->z + 129 || section.maximum.x < minimum->x - 1 ||
            section.maximum.y < minimum->y - 1 || section.maximum.z < minimum->z - 64)) continue;
@@ -754,7 +754,7 @@ static void invalidatewaterresources(const ivec *minimum, const ivec *maximum, b
         if(!va.water) continue;
         if(minimum && maximum && (va.o.x > maximum->x + 1 || va.o.y > maximum->y + 1 || va.o.z > maximum->z + 129 ||
            va.o.x + va.size < minimum->x - 1 || va.o.y + va.size < minimum->y - 1 || va.o.z + va.size < minimum->z - 64)) continue;
-        va.water->version = 0;
+        if(!va.water->staticwater) va.water->version = 0;
         if(topology) va.water->topologydirty = true;
     }
 }
