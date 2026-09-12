@@ -18,9 +18,15 @@ static float grassclimatevertex(const vec &position)
     vec absolute = position;
     worldpositiontoabsolute(absolute);
     // tc.z is unused by opaque world surfaces. A float stores all 24 RGB bits exactly.
-    const vec color = game::getgrassworldcolor(absolute);
+    const vec color = game::getterrainworldclimate(absolute);
     const bvec rgb(uchar(color.x * 255 + 0.5f), uchar(color.y * 255 + 0.5f), uchar(color.z * 255 + 0.5f));
     return float(rgb.tohexcolor());
+}
+
+static bool terrainclimateslot(const VSlot &slot)
+{
+    return grassclimateslot(slot) || (slot.slot->shader &&
+        (!strcmp(slot.slot->shader->name, "sandclimateworld") || !strcmp(slot.slot->shader->name, "dirtclimateworld")));
 }
 
 struct verthash
@@ -636,7 +642,7 @@ void addtris(VSlot &vslot, int orient, const sortkey &key, vertex *verts, int *i
                     vertex vt;
                     vt.pos = vec(d).mul(t.offset/8.0f).add(o);
                     vt.tc.lerp(v1.tc, v2.tc, offset);
-                    if(grassclimateslot(vslot)) vt.tc.z = grassclimatevertex(vt.pos);
+                    if(terrainclimateslot(vslot)) vt.tc.z = grassclimatevertex(vt.pos);
                     vt.norm.lerp(v1.norm, v2.norm, offset);
                     vt.tangent.lerp(v1.tangent, v2.tangent, offset);
                     if(v1.tangent.w != v2.tangent.w)
@@ -842,7 +848,7 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
         vertex &v = verts[k];
         v.pos = pos[k];
         v.tc = vec(sgen.dot(v.pos), tgen.dot(v.pos), 0);
-        if(grassclimateslot(vslot)) v.tc.z = grassclimatevertex(v.pos);
+        if(terrainclimateslot(vslot)) v.tc.z = grassclimatevertex(v.pos);
         if(vinfo && vinfo[k].norm)
         {
             vec n = decodenormal(vinfo[k].norm), t = orientation_tangent[vslot.rotation][orient];

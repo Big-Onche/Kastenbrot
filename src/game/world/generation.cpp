@@ -2585,6 +2585,11 @@ namespace game
         return getgrassclimatecolor(generator.environmentclimate.gettemperature(absolute), generator.gethumidity(absolute));
     }
 
+    vec sampleterraingenerationclimate(worldgencontext *generation, const vec &absolute, bool transition)
+    {
+        return generation->generator.terrainclimate(absolute, transition);
+    }
+
     bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height)
     {
         return sampleterrainheightcached(generation, blockx, blocky, height);

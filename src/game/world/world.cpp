@@ -1152,7 +1152,46 @@ namespace game
         return *state.generator;
     }
 
-    vec getgrassworldcolor(const vec &absolute)
+    vec worldgenerator::terrainclimate(const vec &absolute, bool transition) const
+    {
+        float distance = 64.0f;
+        if(transition)
+        {
+            // Estimate distance to the existing warped desert threshold on the climate lattice, never from voxel neighbours.
+            const float step = 4.0f * worldclimate::BLOCK_UNITS;
+            const float soil = sandcoverage(samplesoil(absolute)) - 0.5f,
+                        dx = (sandcoverage(samplesoil(vec(absolute).add(vec(step, 0, 0)))) -
+                              sandcoverage(samplesoil(vec(absolute).sub(vec(step, 0, 0))))) / 8.0f,
+                        dy = (sandcoverage(samplesoil(vec(absolute).add(vec(0, step, 0)))) -
+                              sandcoverage(samplesoil(vec(absolute).sub(vec(0, step, 0))))) / 8.0f;
+            distance = -soil / max(sqrtf(dx * dx + dy * dy), 0.0001f);
+            const float x = absolute.x / worldclimate::BLOCK_UNITS, y = absolute.y / worldclimate::BLOCK_UNITS;
+            if(settings.coastwidth > 0)
+            {
+                const int bx = int(floorf(x)), by = int(floorf(y));
+                const float continental = samplecontinental(*this, x + 10000.5f, y - 10000.5f),
+                            shore = samplecoastdistance(*this, x + 10000.5f, y - 10000.5f, continental),
+                            width = beachtransitionwidth(bx, by);
+                if(shore - width < 64.0f)
+                {
+                    // The visible beach often ends at its height cap, well before the shoreline-distance cap.
+                    // Sample terrain height, not vertex height: the same edge must extend down exposed block sides.
+                    const int ground = height(bx, by);
+                    const float gx = (height(bx + 4, by) - height(bx - 4, by)) / 8.0f,
+                                gy = (height(bx, by + 4) - height(bx, by - 4)) / 8.0f;
+                    if(!cliff(bx, by, ground))
+                        distance = min(distance, getbeachtintdistance(shore, width, float(ground),
+                            float(settings.sealevel + min(settings.beachminheight, settings.beachmaxheight)),
+                            float(settings.sealevel + max(settings.beachminheight, settings.beachmaxheight)), sqrtf(gx * gx + gy * gy)));
+                }
+            }
+        }
+        // Byte 255 disables blending for LOD2; 0..254 represent -64..64 blocks.
+        return vec(clamp((environmentclimate.gettemperature(absolute) + 10.0f) / 40.0f, 0.0f, 1.0f),
+                   gethumidity(absolute) * 0.01f, transition ? (clamp(distance / 128.0f + 0.5f, 0.0f, 1.0f) * 254.0f / 255.0f) : 1.0f);
+    }
+
+    static vec cachedworldclimate(const vec &absolute, bool terrain)
     {
         // A bounded, disposable cache of the existing climate, independent of terrain residency and LOD.
         // Fixed four-metre nodes give continuous trilinear color and avoid repeated hydrology/noise queries.
@@ -1164,7 +1203,8 @@ namespace game
             uint revision;
             entry() : key(0, 0, 0), color(0, 0, 0), revision(0) {}
         };
-        static entry cache[CACHE_SIZE];
+        static entry caches[2][CACHE_SIZE];
+        entry *cache = caches[terrain ? 1 : 0];
         worldgenerator &generator = getenvironmentgenerator();
         const vec grid = vec(absolute).div(float(STEP));
         const ivec base(int(floorf(grid.x)), int(floorf(grid.y)), int(floorf(grid.z)));
@@ -1181,13 +1221,24 @@ namespace game
             if(sample.revision != grassclimaterevision || sample.key != key)
             {
                 const vec position = vec(key).mul(float(STEP));
-                sample.color = getgrassclimatecolor(generator.environmentclimate.gettemperature(position), generator.gethumidity(position));
+                sample.color = terrain ? generator.terrainclimate(position) :
+                    getgrassclimatecolor(generator.environmentclimate.gettemperature(position), generator.gethumidity(position));
                 sample.key = key;
                 sample.revision = grassclimaterevision;
             }
             result.add(vec(sample.color).mul(weight));
         }
         return result;
+    }
+
+    vec getgrassworldcolor(const vec &absolute)
+    {
+        return cachedworldclimate(absolute, false);
+    }
+
+    vec getterrainworldclimate(const vec &absolute)
+    {
+        return cachedworldclimate(absolute, true);
     }
 
     int getworldseed()

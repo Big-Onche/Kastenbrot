@@ -572,8 +572,8 @@ bool checkquery(occludequery *query, bool nowait)
             glGetQueryObjectiv_(query->id, GL_QUERY_RESULT_AVAILABLE, &avail);
             if(!avail) return false;
         }
-     
-        GLuint fragments;   
+
+        GLuint fragments;
         glGetQueryObjectuiv_(query->id, GL_QUERY_RESULT, &fragments);
         query->fragments = querytarget() == GL_SAMPLES_PASSED || !fragments ? int(fragments) : oqfrags;
     }
@@ -1729,8 +1729,13 @@ static void changetexgen(renderstate &cur, int orient, Slot &slot, VSlot &vslot)
     cur.texgenorient = orient;
 }
 
+VAR(terrainblendwidth, 0, 16, 32);
+VAR(terrainblendstrength, 0, 100, 100);
+
 static inline void changeshader(renderstate &cur, int pass, geombatch &b)
 {
+    GLOBALPARAMF(terrainblendwidth, float(terrainblendwidth));
+    GLOBALPARAMF(terrainblendstrength, terrainblendstrength * 0.01f);
     VSlot &vslot = b.vslot;
     Slot &slot = *vslot.slot;
     if(pass == RENDERPASS_SMALPHA)
@@ -1745,7 +1750,9 @@ static inline void changeshader(renderstate &cur, int pass, geombatch &b)
         if(b.es.layer&LAYER_BOTTOM) rsmworldshader->setvariant(0, 0, slot, vslot);
         else rsmworldshader->set(slot, vslot);
         const bool climate = slot.shader && !strncmp(slot.shader->name, "grassclimateworld", 17);
-        LOCALPARAMF(grassclimateparams, climate ? 1.0f : 0.0f,
+        const float tint = climate ? 1.0f : slot.shader && !strcmp(slot.shader->name, "sandclimateworld") ? 2.0f :
+                           slot.shader && !strcmp(slot.shader->name, "dirtclimateworld") ? 3.0f : 0.0f;
+        LOCALPARAMF(grassclimateparams, tint,
                     climate && !strcmp(slot.shader->name, "grassclimateworldside") ? 1.0f : 0.0f);
     }
     else if(cur.alphaing) slot.shader->setvariant(cur.alphaing > 1 && vslot.refractscale > 0 ? 1 : 0, 1, slot, vslot);
@@ -2767,7 +2774,7 @@ static void renderdecalbatches(decalrenderer &cur, int pass)
         {
             updateshader(cur);
         }
- 
+
         renderdecalbatch(cur, pass, b);
     }
 

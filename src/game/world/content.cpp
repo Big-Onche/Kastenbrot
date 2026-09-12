@@ -637,7 +637,9 @@ static int loadworldtextureslot(const char *path, float texsize, bool alpha)
     else
     {
         const char *shader = !strcmp(path, "terrain/grass.png") ? "grassclimateworld" :
-                             !strcmp(path, "terrain/grass_dirt.png") ? "grassclimateworldside" : "stdworld";
+                             !strcmp(path, "terrain/grass_dirt.png") ? "grassclimateworldside" :
+                             !strcmp(path, "terrain/sand.png") ? "sandclimateworld" :
+                             !strcmp(path, "terrain/dirt.png") ? "dirtclimateworld" : "stdworld";
         formatstring(command, "setshader %s; texture 0 %s; texscale %.9g", shader, texture, texsize);
     }
     execute(command);

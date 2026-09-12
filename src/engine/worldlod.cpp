@@ -712,7 +712,7 @@ static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Ui
 static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
 {
     const vec origin(float(double(job.key.x) * WORLD_CHUNK_SIZE), float(double(job.key.y) * WORLD_CHUNK_SIZE), 0);
-    vec averages[4];
+    vec averages[4], sandaverages[4];
     if(job.key.lod == 2)
     {
         // Four shared regional averages, sixteen climate samples total regardless of mesh resolution.
@@ -720,6 +720,7 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
         loopi(4)
         {
             averages[i] = vec(0, 0, 0);
+            sandaverages[i] = vec(0, 0, 0);
             loopj(4)
             {
                 const int x = (job.key.x + (i & 1)) * WORLD_CHUNK_BLOCKS + (j & 1 ? 1 : -1) * WORLD_CHUNK_BLOCKS / 4,
@@ -728,9 +729,12 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
                 if(!game::sampleterrainheight(generation, x, y, height)) return;
                 const vec absolute(float(x) * WORLD_BLOCK_SIZE, float(y) * WORLD_BLOCK_SIZE,
                                    WORLD_GROUND_HEIGHT + float(height) * WORLD_BLOCK_SIZE);
-                averages[i].add(game::samplegrassgenerationcolor(generation, absolute));
+                const vec climate = game::sampleterraingenerationclimate(generation, absolute, false);
+                averages[i].add(game::getgrassclimatecolor(climate.x * 40.0f - 10.0f, climate.y * 100.0f));
+                sandaverages[i].add(vec().lerp(vec(1.0f, 0.90f, 0.72f), vec(0.76f, 0.66f, 0.51f), climate.y));
             }
             averages[i].mul(0.25f);
+            sandaverages[i].mul(0.25f);
         }
     }
     hashtable<ivec, vec> samples(1024);
@@ -738,13 +742,16 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
     {
         if(SDL_AtomicGet(&job.cancelled)) return;
         worldlodvertex &vertex = job.mesh.vertices[i];
-        if(vertex.material.x != WORLD_LOD_GRASS_TOP && vertex.material.x != WORLD_LOD_GRASS_SIDE) continue;
+        if(vertex.material.x != WORLD_LOD_GRASS_TOP && vertex.material.x != WORLD_LOD_GRASS_SIDE &&
+           vertex.material.x != WORLD_LOD_SAND && vertex.material.x != WORLD_LOD_DIRT) continue;
         vec color(0, 0, 0);
         if(job.key.lod == 2)
         {
             const float x = clamp(vertex.position.x / WORLD_CHUNK_SIZE, 0.0f, 1.0f),
                         y = clamp(vertex.position.y / WORLD_CHUNK_SIZE, 0.0f, 1.0f);
-            color.lerp(vec().lerp(averages[0], averages[1], x), vec().lerp(averages[2], averages[3], x), y);
+            const vec *palette = vertex.material.x == WORLD_LOD_SAND ? sandaverages : averages;
+            color.lerp(vec().lerp(palette[0], palette[1], x), vec().lerp(palette[2], palette[3], x), y);
+            if(vertex.material.x == WORLD_LOD_DIRT) color = vec(1, 1, 1);
         }
         else
         {
@@ -759,11 +766,11 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
                                      (j & 4 ? fraction.z : 1 - fraction.z);
                 if(weight <= 0) continue;
                 vec *sample = samples.access(key);
-                if(!sample) sample = &samples.access(key, game::samplegrassgenerationcolor(generation, vec(key).mul(64.0f)));
+                if(!sample) sample = &samples.access(key, game::sampleterraingenerationclimate(generation, vec(key).mul(64.0f)));
                 color.add(vec(*sample).mul(weight));
             }
         }
-        // Material occupies R; the three spare bytes carry RGB without growing the LOD vertex.
+        // Material occupies R; climate occupies the same three spare bytes without growing the LOD vertex.
         vertex.material.y = uchar(color.x * 255 + 0.5f);
         vertex.material.z = uchar(color.y * 255 + 0.5f);
         vertex.material.w = uchar(color.z * 255 + 0.5f);
@@ -1755,6 +1762,9 @@ void renderworldlods()
     Shader *shader = useshaderbyname("worldlod");
     if(!shader) return;
     ZoneScopedN("Render/G-buffer/World LOD");
+    extern int terrainblendwidth, terrainblendstrength;
+    GLOBALPARAMF(terrainblendwidth, float(terrainblendwidth));
+    GLOBALPARAMF(terrainblendstrength, terrainblendstrength * 0.01f);
     shader->set();
     bindworldlodtextures();
     LOCALPARAMF(loddebug, float(worldloddebug));
@@ -1799,6 +1809,7 @@ void renderworldlods()
         gle::enablecolor();
         LOCALPARAM(lodmeshoffset, vec(origin));
         LOCALPARAMF(lodfade, worldlodrenderfade(selection));
+        LOCALPARAMF(lodclimateaverage, selection.active == 2 ? 1.0f : 0.0f);
         glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
         const int indices = chunk.terrainindices + chunk.waterindices;
         vertices += chunk.vertices;

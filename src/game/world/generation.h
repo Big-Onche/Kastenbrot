@@ -79,6 +79,7 @@ namespace game
         worldwatersample surface(int x, int y) const;
         // Absolute engine coordinates; includes continuous coast and freshwater influence.
         float gethumidity(const vec &worldpos) const;
+        vec terrainclimate(const vec &absolute, bool transition = true) const;
         // Absolute engine coordinates, using the same physical climate as vegetation and F2.
         BiomeSample sampleBiome(const vec &worldpos) const;
         int biome(int x, int y, int height) const;

@@ -14,6 +14,14 @@
 
 namespace game
 {
+    // Beach sand is the intersection of a shoreline band and an inclusive integer height band.
+    // Half-block thresholds put the tint boundary between the last sand terrace and the first grass terrace.
+    inline float getbeachtintdistance(float shore, float width, float height, float low, float high, float slope)
+    {
+        const float elevation = max(low - 0.5f - height, height - high - 0.5f) / max(slope, 0.125f);
+        return max(shore - width, elevation);
+    }
+
     // Albedo of white grass, indexed by Celsius (-10, 10, 30) and humidity percent (0, 50, 100).
     // Only coloration clamps here; the physical climate retains its full range.
     inline vec getgrassclimatecolor(float temperatureC, float humidityPercent)
