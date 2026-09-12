@@ -1205,7 +1205,7 @@ static void processworldlodresults()
                 const int worldchunkindex = findworldchunk(selection.x, selection.y);
                 if(worldchunks.inrange(worldchunkindex) && !worldlodselectionrequiresvoxel(selection) &&
                    worldchunkmounted(worldchunks[worldchunkindex]))
-                    unmountworldchunk(worldchunks[worldchunkindex]);
+                    worldchunks[worldchunkindex].retiregeometry = true;
             }
             worldlodunprunablecache = cachewasunprunable && chunk.active ? worldlodcache.length() : -1;
         }
@@ -1358,7 +1358,9 @@ static bool worldlodfullready(int x, int y)
     const int index = findworldchunk(x, y);
     if(!worldchunks.inrange(index)) return false;
     const worldchunk &chunk = worldchunks[index];
-    if(chunk.loading || !chunk.root || !worldchunkmounted(chunk) || chunk.varesidencylod != 1 || chunk.varesidencydirty)
+    if(chunk.loading || !chunk.root || chunk.retiregeometry || chunk.evictsince >= 0 || !worldchunkmounted(chunk) ||
+       chunk.varesidencylod != 1 || chunk.varesidencydirty || chunk.residencyepoch != worldchunkresidencyepoch ||
+       chunk.residencyviewepoch != worldchunkresidencyviewepoch)
         return false;
 
     // Mounting moves CPU octree sections into the runtime world before their
@@ -1565,7 +1567,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
                 // Surface LODs cannot replace requested cave geometry.
                 if(worldchunks.inrange(chunkindex) && !worldlodselectionrequiresvoxel(selection) &&
                    !worldchunkneedsinterior(worldchunks[chunkindex]) && worldchunkmounted(worldchunks[chunkindex]))
-                    unmountworldchunk(worldchunks[chunkindex]);
+                    worldchunks[chunkindex].retiregeometry = true;
             }
             else missing++;
         }

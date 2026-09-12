@@ -376,11 +376,14 @@ struct worldsectionnode
 
 static vector<worldsectionnode> worldsectionvisibilityqueue;
 static int worldsectionvisibilitycursor = 0;
+static uint worldsectionvisibilityepoch = 1, worldsectionvisibilitypublication = 1;
+static bool worldsectionvisibilitypublishing = false;
 
 static void resetworldsectionvisibilityqueue()
 {
     worldsectionvisibilityqueue.setsize(0);
     worldsectionvisibilitycursor = 0;
+    worldsectionvisibilitypublishing = false;
 }
 
 static bool findworldsectionneighbor(int chunkindex, int tile, int section, int dx, int dy, int dz, int focusx, int focusy, int &neighborindex, int &neighbortile, int &neighborsection)
@@ -413,6 +416,12 @@ static bool worldsectionfacesoverlap(int chunkindex, int tile, int section, int 
 
 static void markworldsectionvisible(worldchunk &chunk, int tile, int section)
 {
+    if(chunk.visibilityepoch != worldsectionvisibilityepoch)
+    {
+        memclear(chunk.reachablefaces);
+        memclear(chunk.traversedtiles);
+        chunk.visibilityepoch = worldsectionvisibilityepoch;
+    }
     const uint tilebit = 1U << tile;
     if(!worldchunksectionhascontent(chunk, tile, section)) return;
     chunk.traversedtiles[section] |= tilebit;
@@ -471,6 +480,9 @@ static void revealworldsectionfromfocus(vector<worldsectionnode> &queue, int chu
 
 static void updateworldsectionvisibility(int chunkx, int chunky)
 {
+    const double visibilitybudget = min(double(chunkvisibilitybudget), worldchunkstreamremaining() * 0.25);
+    static int additioncursor = 0;
+    static ivec additionkey(INT_MIN, INT_MIN, INT_MIN);
     static const int directions[][3] =
     {
         { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }
@@ -494,7 +506,8 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
          rebuild = worldsectionvisibilitydirty || chunkx != worldsectionvisibilitychunkx || chunky != worldsectionvisibilitychunky ||
                    maxchunkdist != worldsectionvisibilitymaxdist || focuschanged;
     const bool seed = rebuild || !worldsectionvisibilityadditions.empty() || focuscell != worldsectionvisibilitycell;
-    if(!seed && worldsectionvisibilitycursor >= worldsectionvisibilityqueue.length()) return;
+    if(!seed && !worldsectionvisibilitypublishing && worldsectionvisibilitycursor >= worldsectionvisibilityqueue.length()) return;
+    if(seed) worldsectionvisibilitypublishing = false;
 
     ZoneScopedN("Chunks/Update dirty section visibility");
     ZoneValue(worldsectionvisibilityadditions.length());
@@ -502,17 +515,12 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     vector<worldsectionnode> &queue = worldsectionvisibilityqueue;
     if(rebuild)
     {
+        additioncursor = 0;
         resetworldsectionvisibilityqueue();
         worldsectionvisibilityfocus = focussection;
-        rebuildworldchunkindices();
-        loopv(worldchunks)
-        {
-            memclear(worldchunks[i].reachablefaces);
-            // Publish additions immediately, but retain the previous visible set
-            // until the budgeted traversal completes. Edits must not cancel
-            // distant pending builds just because their nodes are still queued.
-            memclear(worldchunks[i].traversedtiles);
-        }
+        // Reset lazily when a chunk is reached. Retain its previous visible set
+        // until the traversal and the incremental publication finish.
+        ++worldsectionvisibilityepoch;
 
         // Without a camera (during bootstrap), use outside air as a conservative
         // source. Normal rendering is seeded from the camera below, so a sealed
@@ -527,19 +535,39 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     else if(seed)
     {
         ZoneScopedN("Chunks/Extend section visibility");
-        loopv(worldsectionvisibilityadditions)
+        while(!worldsectionvisibilityadditions.empty())
         {
-            const ivec &added = worldsectionvisibilityadditions[i];
+            if((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= visibilitybudget) break;
+            const ivec added = worldsectionvisibilityadditions.last();
+            if(added != additionkey)
+            {
+                additionkey = added;
+                additioncursor = 0;
+            }
             int index = findworldchunk(added.x, added.y);
-            if(!worldchunks.inrange(index)) continue;
+            if(!worldchunks.inrange(index))
+            {
+                worldsectionvisibilityadditions.pop();
+                additioncursor = 0;
+                continue;
+            }
             worldchunk &chunk = worldchunks[index];
-            if(chunk.loading || chunk.corrupted || !chunk.root || !worldchunkinview(chunk, chunkx, chunky)) continue;
-            if(!focus) loopj(WORLD_SECTION_TILES) revealworldsection(queue, index, j, WORLD_SECTION_LAYERS - 1, 1<<5);
+            if(chunk.loading || chunk.corrupted || !chunk.root || !worldchunkinview(chunk, chunkx, chunky))
+            {
+                worldsectionvisibilityadditions.pop();
+                additioncursor = 0;
+                continue;
+            }
+            if(!focus && !additioncursor)
+                loopj(WORLD_SECTION_TILES) revealworldsection(queue, index, j, WORLD_SECTION_LAYERS - 1, 1<<5);
 
             // A newly published chunk may connect to an already reachable cave
             // through a side face, even when it is sealed from the sky.
-            loopj(WORLD_SECTION_TILES) loopk(WORLD_SECTION_LAYERS)
+            while(additioncursor < WORLD_SECTION_TILES * WORLD_SECTION_LAYERS)
             {
+                if((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= visibilitybudget) break;
+                const int j = additioncursor / WORLD_SECTION_LAYERS, k = additioncursor % WORLD_SECTION_LAYERS;
+                ++additioncursor;
                 loopl(6)
                 {
                     int neighborindex, neighbortile, neighborsection;
@@ -547,10 +575,14 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
                                                  neighborindex, neighbortile, neighborsection))
                         continue;
                     const worldchunk &neighbor = worldchunks[neighborindex];
+                    if(neighbor.visibilityepoch != worldsectionvisibilityepoch) continue;
                     if(!(neighbor.reachablefaces[neighborsection][neighbortile] & (1<<(l^1)))) continue;
                     revealworldsection(queue, index, j, k, worldsectionfacesoverlap(index, j, k, l, neighborindex, neighbortile, neighborsection) ? 1<<l : 0);
                 }
             }
+            if(additioncursor < WORLD_SECTION_TILES * WORLD_SECTION_LAYERS) break;
+            worldsectionvisibilityadditions.pop();
+            additioncursor = 0;
         }
     }
 
@@ -576,7 +608,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     }
 
     worldsectionvisibilitydirty = false;
-    worldsectionvisibilityadditions.setsize(0);
+    if(rebuild) worldsectionvisibilityadditions.setsize(0);
     worldsectionvisibilitychunkx = chunkx;
     worldsectionvisibilitychunky = chunky;
     worldsectionvisibilitymaxdist = maxchunkdist;
@@ -588,7 +620,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     int visited = 0;
     while(worldsectionvisibilitycursor < queue.length())
     {
-        if((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= chunkvisibilitybudget) break;
+        if((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= visibilitybudget) break;
         const worldsectionnode node = queue[worldsectionvisibilitycursor++];
         const int index = findworldchunk(node.chunkx, node.chunky);
         if(!worldchunks.inrange(index) || worldchunks[index].loading || worldchunks[index].corrupted || !worldchunks[index].root ||
@@ -606,19 +638,28 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
                                                         neighborsection) ? 1<<(i^1) : 0);
         }
     }
-    if(worldsectionvisibilitycursor == queue.length())
+    if(worldsectionvisibilitycursor == queue.length() && worldsectionvisibilityadditions.empty())
     {
+        if(!worldsectionvisibilitypublishing)
+        {
+            ++worldsectionvisibilitypublication;
+            worldsectionvisibilitypublishing = true;
+        }
         loopv(worldchunks)
         {
+            if((SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= visibilitybudget) return;
             worldchunk &chunk = worldchunks[i];
+            if(chunk.visibilitypublication == worldsectionvisibilitypublication) continue;
             loopj(WORLD_SECTION_LAYERS)
             {
-                const uint changed = chunk.visibletiles[j] ^ chunk.traversedtiles[j];
+                const uint traversed = chunk.visibilityepoch == worldsectionvisibilityepoch ? chunk.traversedtiles[j] : 0;
+                const uint changed = chunk.visibletiles[j] ^ traversed;
                 if(!changed) continue;
-                chunk.visibletiles[j] = chunk.traversedtiles[j];
+                chunk.visibletiles[j] = traversed;
                 chunk.varesidencydirtytiles[j] |= changed;
                 chunk.varesidencydirty = true;
             }
+            chunk.visibilitypublication = worldsectionvisibilitypublication;
         }
         resetworldsectionvisibilityqueue();
     }
@@ -822,46 +863,46 @@ static void updateworldsectionresidencywanted()
     lastresidentrange = residentrange;
     lastdrawfullchunk = drawfullchunk;
 
-    bool anydirty = false;
-    loopv(worldchunks)
+    // Epochs invalidate lazily: movement does not visit every section before
+    // the timed work starts. Dirty bits survive an interrupted chunk.
+    static int cursor = 0;
+    if(globaldirty) ++worldchunkresidencyepoch;
+    if(viewchanged) ++worldchunkresidencyviewepoch;
+    const Uint64 deadline = SDL_GetPerformanceCounter() + Uint64(worldchunkstreamremaining() * 0.3 *
+                                                               SDL_GetPerformanceFrequency() / 1000.0);
+    ZoneScopedN("Chunks/Update wanted VA residency");
+    int updatedchunks = 0, updatedsections = 0;
+    loop(scanned, worldchunks.length())
     {
-        worldchunk &chunk = worldchunks[i];
-        if(chunk.loading || chunk.corrupted || !chunk.root) continue;
+        if(SDL_GetPerformanceCounter() >= deadline) break;
+        if(cursor >= worldchunks.length()) cursor = 0;
+        worldchunk &chunk = worldchunks[cursor];
+        if(chunk.loading || chunk.corrupted || !chunk.root) { ++cursor; continue; }
         if(chunk.varesidencylod < 0)
         {
             chunk.varesidencylod = worldlodrequiresvoxel(chunk) ? 1 : 0;
             dirtyallworldchunkvaresidency(chunk);
         }
-        if(globaldirty) dirtyallworldchunkvaresidency(chunk);
-        else if(viewchanged) loopj(WORLD_SECTION_LAYERS) if(chunk.visibletiles[j])
+        if(chunk.residencyepoch != worldchunkresidencyepoch)
         {
-            // Re-evaluate reachable candidates on turns, FOV/fog changes and
-            // movement within a section. Do not restart the portal traversal.
-            chunk.varesidencydirtytiles[j] |= chunk.visibletiles[j];
-            chunk.varesidencydirty = true;
+            dirtyallworldchunkvaresidency(chunk);
+            chunk.residencyepoch = worldchunkresidencyepoch;
         }
-        if(chunk.varesidencydirty) anydirty = true;
-    }
-    TracyPlot("Chunks/Residency update required", int64_t(anydirty ? 1 : 0));
-    if(!anydirty)
-    {
-        TracyPlot("Chunks/Residency chunks updated", int64_t(0));
-        TracyPlot("Chunks/Residency sections updated", int64_t(0));
-        return;
-    }
-
-    ZoneScopedN("Chunks/Update wanted VA residency");
-    int updatedchunks = 0, updatedsections = 0;
-    loopv(worldchunks)
-    {
-        worldchunk &chunk = worldchunks[i];
-        if(chunk.loading || chunk.corrupted || !chunk.root || !chunk.varesidencydirty) continue;
-        loop(section, WORLD_SECTION_LAYERS)
+        if(chunk.residencyviewepoch != worldchunkresidencyviewepoch)
         {
-            const uint dirtytiles = chunk.varesidencydirtytiles[section];
-            if(!dirtytiles) continue;
-            loop(tile, WORLD_SECTION_TILES) if(dirtytiles & (1U << tile))
+            loopj(WORLD_SECTION_LAYERS) chunk.varesidencydirtytiles[j] |= chunk.visibletiles[j];
+            chunk.varesidencydirty = true;
+            chunk.residencyviewepoch = worldchunkresidencyviewepoch;
+        }
+        if(!chunk.varesidencydirty) { ++cursor; continue; }
+        loop(visited, WORLD_SECTION_LAYERS * WORLD_SECTION_TILES)
+        {
+            if(SDL_GetPerformanceCounter() >= deadline) { ++cursor; return; }
+            const int section = chunk.residencycursor / WORLD_SECTION_TILES, tile = chunk.residencycursor % WORLD_SECTION_TILES;
+            chunk.residencycursor = (chunk.residencycursor + 1) % (WORLD_SECTION_LAYERS * WORLD_SECTION_TILES);
+            if(chunk.varesidencydirtytiles[section] & (1U << tile))
             {
+                chunk.varesidencydirtytiles[section] &= ~(1U << tile);
                 worldsectionvaresidency &residency = chunk.varesidency[section][tile];
                 const uchar flags = chunk.renderdata.flags[section][tile];
                 bool waspending = false;
@@ -896,9 +937,9 @@ static void updateworldsectionresidencywanted()
                 else if(!pending && waspending) removeworldchunkvapendingbuild(chunk, tile, section);
                 updatedsections++;
             }
-            chunk.varesidencydirtytiles[section] = 0;
         }
         chunk.varesidencydirty = false;
+        ++cursor;
         updatedchunks++;
     }
     ZoneValue(updatedsections);
@@ -938,8 +979,14 @@ static int findworldchunkmountsections(int chunkx, int chunky, worldsectioncandi
     ZoneScopedN("Chunks/Select render sections");
     if(maxcandidates <= 0) return 0;
     int numcandidates = 0;
-    for(int i = worldchunkvapendingbuilds.length() - 1; i >= 0; --i)
+    static int cursor = 0;
+    const Uint64 deadline = SDL_GetPerformanceCounter() + Uint64(worldchunkstreamremaining() * 0.25 *
+                                                               SDL_GetPerformanceFrequency() / 1000.0);
+    int scanned = 0, count = worldchunkvapendingbuilds.length();
+    while(scanned++ < count && !worldchunkvapendingbuilds.empty() && SDL_GetPerformanceCounter() < deadline)
     {
+        if(cursor >= worldchunkvapendingbuilds.length()) cursor = 0;
+        const int i = cursor++;
         const ivec pending = worldchunkvapendingbuilds[i];
         const int section = pending.z / WORLD_SECTION_TILES, tile = pending.z % WORLD_SECTION_TILES,
                   chunkindex = findworldchunk(pending.x, pending.y);
@@ -954,6 +1001,7 @@ static int findworldchunkmountsections(int chunkx, int chunky, worldsectioncandi
         {
             worldchunkvapendingbuildset.remove(worldchunksectionvakey(pending.x, pending.y, tile, section));
             worldchunkvapendingbuilds.removeunordered(i);
+            cursor = i;
             continue;
         }
         worldchunk &chunk = worldchunks[chunkindex];
@@ -976,25 +1024,34 @@ static int findworldchunkmountsections(int chunkx, int chunky, worldsectioncandi
 
 static bool findworldchunkunloadcolumn(int chunkx, int chunky, int &chunkindex, int &tile)
 {
-    int bestdist = -1;
+    static int cursor = 0;
     chunkindex = tile = -1;
-    loopv(worldchunks)
+    const Uint64 deadline = SDL_GetPerformanceCounter() + min(worldchunkcleanupremaining,
+        Uint64(worldchunkstreamremaining() * SDL_GetPerformanceFrequency() / 1000.0));
+    loop(scanned, worldchunks.length())
     {
-        const worldchunk &chunk = worldchunks[i];
-        if(!worldchunkmounted(chunk) || worldchunkinview(chunk, chunkx, chunky)) continue;
-        int dist = worldchunkdistance(chunk.x, chunk.y, chunkx, chunky);
-        if(chunkindex >= 0 && dist <= bestdist) continue;
-        loopj(WORLD_SECTION_TILES)
+        if(SDL_GetPerformanceCounter() >= deadline) break;
+        if(cursor >= worldchunks.length()) cursor = 0;
+        const int i = cursor++;
+        worldchunk &chunk = worldchunks[i];
+        if(worldchunkinview(chunk, chunkx, chunky) && !chunk.retiregeometry)
         {
-            uint tilebit = 1U << j;
-            loopk(WORLD_SECTION_LAYERS) if(chunk.mountedtiles[k] & tilebit)
-            {
-                bestdist = dist;
-                chunkindex = i;
-                tile = j;
-                break;
-            }
-            if(chunkindex == i) break;
+            chunk.evictsince = -1;
+            continue;
+        }
+        if(chunk.retiregeometry && (worldlodrequiresvoxel(chunk) || worldchunkneedsinterior(chunk)))
+        {
+            chunk.retiregeometry = false;
+            chunk.evictsince = -1;
+            continue;
+        }
+        if(chunk.evictsince < 0) chunk.evictsince = totalmillis;
+        if(totalmillis - chunk.evictsince < chunkevictgrace || !worldchunkmounted(chunk)) continue;
+        loopj(WORLD_SECTION_TILES) loopk(WORLD_SECTION_LAYERS) if(chunk.mountedtiles[k] & (1U << j))
+        {
+            chunkindex = i;
+            tile = j;
+            return true;
         }
     }
     return chunkindex >= 0;
@@ -1006,8 +1063,12 @@ static int processworldchunkvaupdates()
     if(pending <= 0) return 0;
 
     int completed = 0;
-    for(int i = worldchunkvaupdates.length() - 1; i >= 0; --i)
+    static int cursor = 0;
+    int scanned = 0;
+    while(scanned++ < pending && !worldchunkvaupdates.empty() && worldchunkstreamremaining() > 0)
     {
+        if(cursor >= worldchunkvaupdates.length()) cursor = 0;
+        const int i = cursor++;
         const int key = worldchunkvaupdates[i], rowsize = WORLD_RUNTIME_SIZE / WORLD_SECTION_SIZE;
         const ivec origin((key % rowsize) * WORLD_SECTION_SIZE, ((key / rowsize) % rowsize) * WORLD_SECTION_SIZE,
                           (key / (rowsize * rowsize)) * WORLD_SECTION_SIZE);
@@ -1022,6 +1083,7 @@ static int processworldchunkvaupdates()
         }
         worldchunkvaupdateset.remove(key);
         worldchunkvaupdates.removeunordered(i);
+        cursor = i;
         ++completed;
     }
     TracyPlot("Chunks/Pending VA sections", int64_t(worldchunkvaupdates.length()));
@@ -1034,8 +1096,8 @@ static int processworldchunkchanges(int chunkx, int chunky)
     ZoneTextF("focus %d_%d", chunkx, chunky);
     resetworldvauploadstats();
     worldvaevictionsframe = worldvanorenderskipsframe = 0;
-    updateworldsectionvisibility(chunkx, chunky);
-    updateworldsectionresidencywanted();
+    if(worldchunkstreamremaining() > 0) updateworldsectionvisibility(chunkx, chunky);
+    if(worldchunkstreamremaining() > 0) updateworldsectionresidencywanted();
     Uint64 phasestart = SDL_GetPerformanceCounter();
     const Uint64 frequency = SDL_GetPerformanceFrequency();
     int changedcolumns = 0, unloaded = 0, unloadedsections = 0,
@@ -1048,7 +1110,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
         ZoneScopedN("Chunks/Unload columns");
         while(unloaded < unloadtarget && unloadedsections < cleanupstagelimit)
         {
-            if(SDL_GetPerformanceCounter() - phasestart >= worldchunkcleanupremaining) break;
+            if(SDL_GetPerformanceCounter() - phasestart >= worldchunkcleanupremaining || worldchunkstreamremaining() <= 0) break;
             int chunkindex, tile;
             if(!findworldchunkunloadcolumn(chunkx, chunky, chunkindex, tile)) break;
             worldchunk &chunk = worldchunks[chunkindex];
@@ -1080,7 +1142,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
             double elapsed = (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency;
             int bytes = 0, vertices = 0;
             getworldvauploadstats(bytes, vertices);
-            if(elapsed >= chunkpublishbudget || bytes >= chunkvauploadkb * 1024) break;
+            if(elapsed >= chunkpublishbudget || worldchunkstreamremaining() <= 0 || bytes >= chunkvauploadkb * 1024) break;
             worldsectioncandidate &candidate = candidates[i];
             worldchunk &chunk = worldchunks[candidate.chunkindex];
             mountworldchunktile(chunk, candidate.section, candidate.tile);
@@ -1107,7 +1169,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
     // slice. Admission is bounded separately so deferred work cannot grow
     // without limit when the renderer is slower than section selection.
     const double remainingbudget = max(chunkpublishbudget - (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency, 0.0);
-    processstreaminggeometry(remainingbudget, chunkvauploadkb * 1024);
+    processstreaminggeometry(min(remainingbudget, worldchunkstreamremaining() * 0.9), chunkvauploadkb * 1024);
     processworldchunkvaupdates();
     int uploadedbytes = 0, uploadedvertices = 0;
     getworldvauploadstats(uploadedbytes, uploadedvertices);

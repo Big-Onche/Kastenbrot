@@ -149,11 +149,16 @@ struct worldchunk
     worldsectionrenderdata renderdata;
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request, revision, savedrevision, savingrevision;
-    int varesidencylod;
+    int varesidencylod, evictsince, residencycursor;
+    uint residencyepoch, residencyviewepoch;
+    uint visibilityepoch, visibilitypublication;
+    bool retiregeometry;
     bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted, playeredited, npcdirty;
 
     worldchunk(int x, int y, cube *root, bool loading = false)
         : x(x), y(y), root(root), request(0), revision(root ? 1 : 0), savedrevision(0), savingrevision(0), varesidencylod(-1),
+          evictsince(-1), residencycursor(0), residencyepoch(0), residencyviewepoch(0), visibilityepoch(0), visibilitypublication(0),
+          retiregeometry(false),
           varesidencydirty(true), scattermeshesregistered(false), placeablesregistered(false), loading(loading), generating(false), saving(false),
           corrupted(false), playeredited(false), npcdirty(false)
     {
