@@ -11,6 +11,7 @@ VAR(worldlodmaxdistance, 64, 2048, 4096);
 VARP(worldlodhysteresis, 0, 16, 512);
 VARP(worldlodditherdistance, 0, 64, 256); // transition width in blocks, centered on worldlodneardistance
 VARP(worldloddither, 0, 1, 1); // cross-fade rigid octree and LOD1 geometry
+VARP(worldlodfadetime, 1, 250, 2000); // milliseconds for LOD1 dither fade-in and fade-out
 VARP(worldlodskirtdepth, 1, 4, 64);
 VARP(worldlodthreads, 1, 2, 4);
 VARP(worldlodpendinglimit, 4, 32, 512);
@@ -119,14 +120,15 @@ struct worldlodjob
 
 struct worldlodselection
 {
-    int x, y, desired, active, lastseen;
-    float distance, dither;
+    int x, y, desired, active, lastseen, fadestart;
+    float distance, dither, fadeprogress;
 
     worldlodselection(int x = 0, int y = 0)
-        : x(x), y(y), desired(0), active(-1), lastseen(0), distance(0), dither(0) {}
+        : x(x), y(y), desired(0), active(-1), lastseen(0), fadestart(-1), distance(0), dither(0), fadeprogress(0) {}
 };
 
 static bool worldlodselectionrequiresvoxel(const worldlodselection &selection);
+static float worldlodrenderfade(worldlodselection &selection);
 
 static vector<worldlodchunk> worldlodcache;
 static vector<worldlodselection> worldlodselections;
@@ -1207,6 +1209,8 @@ static void processworldlodresults()
             if(worldlodselections.inrange(selectionindex) && worldlodselections[selectionindex].desired == job->key.lod)
             {
                 worldlodselection &selection = worldlodselections[selectionindex];
+                selection.fadestart = -1;
+                selection.fadeprogress = 0;
                 selection.active = job->key.lod;
                 chunk.active = true;
                 const int worldchunkindex = findworldchunk(selection.x, selection.y);
@@ -1438,6 +1442,7 @@ static void activateworldlodfullchunks()
         if(!worldlodselections.inrange(selectionindex)) continue;
         worldlodselection &selection = worldlodselections[selectionindex];
         if(selection.desired != 0 || selection.active == 0 || !worldlodfullready(selection.x, selection.y)) continue;
+        if(selection.active == 1 && worldloddither && worldlodrenderfade(selection) > 0.0f) continue;
         if(selection.active > 0)
         {
             const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
@@ -1558,7 +1563,9 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         }
         if(selection.desired == 0)
         {
-            if(worldlodfullready(selection.x, selection.y)) selection.active = 0;
+            if(worldlodfullready(selection.x, selection.y) &&
+               (selection.active != 1 || !worldloddither || worldlodrenderfade(selection) <= 0.0f))
+                selection.active = 0;
         }
         else
         {
@@ -1566,7 +1573,12 @@ static void updateworldlods(int chunkx, int chunky, bool force)
             const int cacheindex = findworldlodcache(key);
             if(cacheindex >= 0)
             {
-                if(selection.active != selection.desired) worldlodcachehits++;
+                if(selection.active != selection.desired)
+                {
+                    worldlodcachehits++;
+                    selection.fadestart = -1;
+                    selection.fadeprogress = 0;
+                }
                 selection.active = selection.desired;
                 worldlodcache[cacheindex].lastused = totalmillis;
                 worldlodcache[cacheindex].active = true;
@@ -1747,12 +1759,47 @@ static void bindworldlodtextures()
     glActiveTexture_(GL_TEXTURE0);
 }
 
-static float worldlodrenderfade(const worldlodselection &selection)
+static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int tile, int section, const vec *focus, float residentrange);
+
+static bool worldlodsurfaceready(int x, int y)
 {
-    if(selection.active != 1 || !worldloddither || !worldlodditherdistance) return 1.0f;
-    float fade = smoothworldloddither(worldlodditherfactor(worldloddistance(selection.x, selection.y, camera1->o)));
-    if(fade < 1.0f && !worldlodfullready(selection.x, selection.y)) fade = 1.0f;
-    return fade;
+    const int index = findworldchunk(x, y);
+    if(!worldchunks.inrange(index)) return false;
+    const worldchunk &chunk = worldchunks[index];
+    if(chunk.loading || !chunk.root || chunk.retiregeometry || chunk.evictsince >= 0 || !worldchunkmounted(chunk)) return false;
+
+    // Fading depends on uploaded surface geometry, not the budgeted residency
+    // bookkeeping catching up with the camera or unrelated cave builds finishing.
+    extern int csmfarplane;
+    const float residentrange = ceilf(max(calcfogcull(), float(csmfarplane)));
+    loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)
+    {
+        const uchar flags = chunk.renderdata.flags[section][tile];
+        if(flags&SECTION_NO_RENDER || !(flags&(SECTION_EXTERIOR | SECTION_WATER))) continue;
+        if(!drawfullchunk)
+        {
+            if(!worldchunksectionwithinresidentrange(chunk, tile, section, camera1 ? &camera1->o : NULL, residentrange)) return false;
+            if(!(chunk.visibletiles[section] & (1U << tile))) continue;
+        }
+        if(!worldsectionvaphysicalresident(chunk.varesidency[section][tile])) return false;
+    }
+    return true;
+}
+
+static float worldlodrenderfade(worldlodselection &selection)
+{
+    if(selection.active != 1 || !worldloddither)
+    {
+        selection.fadestart = -1;
+        selection.fadeprogress = 1;
+        return 1.0f;
+    }
+    const bool fadeout = worldlodselectionrequiresvoxel(selection) && worldlodsurfaceready(selection.x, selection.y);
+    const float step = selection.fadestart < 0 ? 0.0f : max(totalmillis - selection.fadestart, 0) / float(worldlodfadetime);
+    selection.fadestart = totalmillis;
+    // Keep the current coverage when reversing direction during a transition.
+    selection.fadeprogress = clamp(selection.fadeprogress + (fadeout ? -step : step), 0.0f, 1.0f);
+    return smoothworldloddither(selection.fadeprogress);
 }
 
 void renderworldlods()
@@ -1780,8 +1827,9 @@ void renderworldlods()
     if(worldlodwireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     loopv(worldlodselections)
     {
-        const worldlodselection &selection = worldlodselections[i];
+        worldlodselection &selection = worldlodselections[i];
         if(selection.active < 1) continue;
+        const float fade = worldlodrenderfade(selection);
         const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
         if(cacheindex < 0) continue;
         worldlodchunk &chunk = worldlodcache[cacheindex];
@@ -1790,7 +1838,7 @@ void renderworldlods()
         if(isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) >= VFC_FOGGED) continue;
         // The retained octree owns water during the terrain dither transition.
         if(chunk.waterindices && !(selection.active == 1 && worldlodselectionrequiresvoxel(selection) &&
-                                   worldlodfullready(selection.x, selection.y)))
+                                   worldlodsurfaceready(selection.x, selection.y)))
         {
             waterdraw &draw = waterdraws.add();
             draw.cacheindex = cacheindex;
@@ -1808,7 +1856,7 @@ void renderworldlods()
         gle::enabletexcoord0();
         gle::enablecolor();
         LOCALPARAM(lodmeshoffset, vec(origin));
-        LOCALPARAMF(lodfade, worldlodrenderfade(selection));
+        LOCALPARAMF(lodfade, fade);
         LOCALPARAMF(lodclimateaverage, selection.active == 2 ? 1.0f : 0.0f);
         glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
         const int indices = chunk.terrainindices + chunk.waterindices;
