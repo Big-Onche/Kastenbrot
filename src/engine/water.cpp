@@ -1243,9 +1243,9 @@ void renderwaterfalls()
     }
 }
 
-// LOD water never samples screen depth/color or animated caustics. It renders with
-// terrain, retaining only the material tint, one broad normal layer and sky Fresnel.
-void setupworldlodwater()
+// LOD1 shares the liquid reflection/refraction pass without caustics. Coarser
+// tiers remain opaque, with one broad normal layer and sky Fresnel.
+void setupworldlodwater(bool detailed, bool below)
 {
     MatSlot &slot = lookupmaterialslot(MAT_WATER);
     const vec color = getwatercolour(0).tocolor().mul(0.5f), deep = getwaterdeepcolour(0).tocolor().mul(0.5f);
@@ -1260,6 +1260,31 @@ void setupworldlodwater()
     GLOBALPARAMF(watertexgen, TEX_SCALE / (tex->xs * slot.scale), TEX_SCALE / (tex->ys * slot.scale));
     GLOBALPARAM(waterdeepcolor, deep);
     GLOBALPARAMF(waterspec, getwaterspec(0) / 100.0f);
+    if(detailed)
+    {
+        glActiveTexture_(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex->id);
+        glActiveTexture_(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, slot.sts.inrange(1) ? slot.sts[1].t->id : notexture->id);
+        if(waterenvmap && !waterreflect)
+        {
+            glActiveTexture_(GL_TEXTURE4);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, lookupenvmap(slot));
+        }
+        glActiveTexture_(GL_TEXTURE0);
+        const int fog = getwaterfog(0), depth = getwaterdeep(0);
+        const vec deepfade = getwaterdeepfade(0).tocolor().mul(depth);
+        const vec refractcolor = getwaterrefractcolour(0).tocolor().mul(0.5f / ldrscale);
+        GLOBALPARAMF(waterfog, fog ? calcfogdensity(fog) : -1e4f);
+        GLOBALPARAMF(waterdeepfade, deepfade.x ? calcfogdensity(deepfade.x) : -1e4f,
+                     deepfade.y ? calcfogdensity(deepfade.y) : -1e4f, deepfade.z ? calcfogdensity(deepfade.z) : -1e4f,
+                     depth ? calcfogdensity(depth) : -1e4f);
+        GLOBALPARAMF(waterreflect, 0.5f / ldrscale, 0.5f / ldrscale, 0.5f / ldrscale, waterreflectstep);
+        GLOBALPARAMF(waterrefract, refractcolor.x, refractcolor.y, refractcolor.z, getwaterrefract(0) * viewh);
+        useshaderbyname(below ? "underwater" : waterreflect ? "waterreflect" : waterenvmap ? "waterenv" : "water")->set();
+        LOCALPARAMF(watermeshparams, 0, 0, 0, 0);
+        return;
+    }
     glActiveTexture_(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, slot.sts.inrange(1) ? slot.sts[1].t->id : notexture->id);
     const GLuint envmap = waterreflect || waterenvmap ? lookupenvmap(slot) : 0;

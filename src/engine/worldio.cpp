@@ -85,7 +85,14 @@ struct worldspawnmetadata
     worldspawnmetadata() : valid(false), x(0), y(0), z(0), yaw(0), pitch(0) {}
 };
 
-VARP(maxchunkdist, 2, 3, WORLD_MAX_CHUNK_DIST);
+VARFP(worldrenderdistance, WORLD_SECTION_BLOCKS * 2, 256, (WORLD_MAX_CHUNK_DIST - 1) * WORLD_CHUNK_BLOCKS,
+      worldrenderdistance = (worldrenderdistance + WORLD_SECTION_BLOCKS / 2) / WORLD_SECTION_BLOCKS * WORLD_SECTION_BLOCKS);
+
+static int worldchunkradius()
+{
+    // Include partial edge chunks; section residency applies the exact cube range.
+    return (worldrenderdistance + WORLD_CHUNK_BLOCKS - 1) / WORLD_CHUNK_BLOCKS + 1;
+}
 
 #define WORLDIO_MODULE_IMPLEMENTATION
 #include "world/content.cpp"

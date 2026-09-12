@@ -13,6 +13,13 @@
 #undef WORLD_SNAPSHOT_SERVER_CODEC
 #undef WORLDIO_MODULE_IMPLEMENTATION
 
+#ifdef STANDALONE
+VARFP(worldrenderdistance, WORLD_SECTION_BLOCKS * 2, 256, (WORLD_MAX_CHUNK_DIST - 1) * WORLD_CHUNK_BLOCKS,
+      worldrenderdistance = (worldrenderdistance + WORLD_SECTION_BLOCKS / 2) / WORLD_SECTION_BLOCKS * WORLD_SECTION_BLOCKS);
+#else
+extern int worldrenderdistance;
+#endif
+
 namespace server
 {
     static void decodedirection(int yaw, int pitch, vec &direction)
@@ -94,7 +101,11 @@ namespace server
     VAR(servernpcdeathtimeout, 1000, 20000, 120000);
     VAR(servernpcspawnmillis, 100, 500, 60000);
     VAR(serversupportdecaymillis, 10, 3000, 60000);
-    VAR(maxchunkdist, 1, 3, WORLD_MAX_CHUNK_DIST);
+    static int worldchunkradius()
+    {
+        // Match the client's partial edge chunks when delivering authoritative data.
+        return (worldrenderdistance + WORLD_CHUNK_BLOCKS - 1) / WORLD_CHUNK_BLOCKS + 1;
+    }
 #ifdef STANDALONE
     VAR(personaldrops, 0, 0, 1);
     VAR(droptimeout, 1, 300, 86400);
@@ -998,7 +1009,7 @@ namespace server
     {
         const int focusx = ci.hasposition ? serverfloordiv(int(floorf(ci.o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
                   focusy = ci.hasposition ? serverfloordiv(int(floorf(ci.o.y)), SERVER_WORLD_CHUNK_SIZE) : 0;
-        return max(abs(chunkx - focusx), abs(chunky - focusy)) <= maxchunkdist;
+        return max(abs(chunkx - focusx), abs(chunky - focusy)) <= worldchunkradius();
     }
 
     static uint serverchunkdeliveredrevision(int clientnum, int chunkx, int chunky)
@@ -1045,7 +1056,7 @@ namespace server
             if(!ci || !ci->connected || !ci->worldready) continue;
             const int focusx = ci->hasposition ? serverfloordiv(int(floorf(ci->o.x)), SERVER_WORLD_CHUNK_SIZE) : 0,
                       focusy = ci->hasposition ? serverfloordiv(int(floorf(ci->o.y)), SERVER_WORLD_CHUNK_SIZE) : 0;
-            for(int distance = 0; distance <= maxchunkdist; ++distance)
+            for(int distance = 0; distance <= worldchunkradius(); ++distance)
                 for(int y = focusy - distance; y <= focusy + distance; ++y)
                     for(int x = focusx - distance; x <= focusx + distance; ++x)
                         if(max(abs(x - focusx), abs(y - focusy)) == distance) queueserverchunk(x, y);

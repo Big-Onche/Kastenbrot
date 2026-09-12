@@ -295,15 +295,15 @@ VARP(chunkthreads, 0, 0, 16);
 VAR(chunkcachedist, 0, 0, 0);
 VAR(chunkpendinglimit, 4, 8, 16);
 VAR(chunklookahead, 0, 2, 8);
-VAR(chunkpublishbudget, 1, 2, 33);
+VAR(chunkpublishbudget, 1, 3, 33);
 VAR(chunkresultbudget, 1, 1, 33);
 VAR(chunkvisibilitybudget, 1, 1, 33);
-VAR(chunkcleanupbudget, 1, 3, 33);
-FVAR(chunkstreambudget, 0.1f, 1.0f, 33.0f);
+VAR(chunkcleanupbudget, 1, 2, 33);
+FVAR(chunkstreambudget, 0.1f, 4.0f, 33.0f);
 VAR(chunkevictgrace, 0, 750, 10000);
 VAR(chunksectionbatch, 1, 1, WORLD_MAX_SECTION_BATCH);
-VAR(chunkvastagelimit, 1, 3, 16);
-VAR(chunkvauploadkb, 64, 2048, 65536);
+VAR(chunkvastagelimit, 1, 8, 16);
+VAR(chunkvauploadkb, 64, 4096, 65536);
 VAR(chunkinteriorradius, 1, 2, 8);
 VAR(drawfullchunk, 0, 0, 1);
 
@@ -527,7 +527,7 @@ ICOMMAND(getdebugcamz, "", (), debugcoordinateresult(currentworlddebugstats().ab
 ICOMMAND(getdebugchunkx, "", (), intret(currentworlddebugstats().chunkx));
 ICOMMAND(getdebugchunky, "", (), intret(currentworlddebugstats().chunky));
 ICOMMAND(getdebugrenderedfull, "", (), intret(currentworlddebugstats().rendered));
-ICOMMAND(getdebugtargetchunks, "", (), intret((2 * maxchunkdist + 1) * (2 * maxchunkdist + 1)));
+ICOMMAND(getdebugtargetchunks, "", (), intret((2 * worldchunkradius() + 1) * (2 * worldchunkradius() + 1)));
 ICOMMAND(getdebugloadingqueue, "", (), intret(currentworlddebugstats().loadingqueue));
 ICOMMAND(getdebuggenerationqueue, "", (), intret(currentworlddebugstats().generationqueue));
 ICOMMAND(getdebugtectonicactivity, "", (), debugworldvalueresult(currentworlddebugstats().tectonicactivity));
@@ -1563,14 +1563,14 @@ static int worldchunkdistance(int x, int y, int focusx, int focusy)
 
 static bool worldchunkinview(const worldchunk &chunk, int chunkx, int chunky)
 {
-    return worldchunkdistance(chunk.x, chunk.y, chunkx, chunky) <= maxchunkdist;
+    return worldchunkdistance(chunk.x, chunk.y, chunkx, chunky) <= worldchunkradius();
 }
 
 static bool worldchunkjobwanted(int x, int y, int chunkx, int chunky, int aheadx, int aheady)
 {
     (void)aheadx;
     (void)aheady;
-    return worldchunkdistance(x, y, chunkx, chunky) <= maxchunkdist;
+    return worldchunkdistance(x, y, chunkx, chunky) <= worldchunkradius();
 }
 
 static void worldchunkviewfocus(int chunkx, int chunky, int &viewx, int &viewy)
@@ -1582,7 +1582,7 @@ static void worldchunkviewfocus(int chunkx, int chunky, int &viewx, int &viewy)
         viewy = chunky;
         return;
     }
-    int reach = min(maxchunkdist, 6);
+    int reach = min(worldchunkradius(), 6);
     viewx = chunkx + int(roundf(camdir.x / dominant * reach));
     viewy = chunky + int(roundf(camdir.y / dominant * reach));
 }
@@ -1964,7 +1964,7 @@ static void loadinitialworldchunks(int chunkx, int chunky)
     {
         if(ready >= target) break;
         int x = chunkx + offsets[i][0], y = chunky + offsets[i][1];
-        if(abs(offsets[i][0]) > maxchunkdist || abs(offsets[i][1]) > maxchunkdist ||
+        if(abs(offsets[i][0]) > worldchunkradius() || abs(offsets[i][1]) > worldchunkradius() ||
            findworldchunk(x, y) >= 0)
             continue;
         acquireworldchunkblocking(x, y, generated);
@@ -2054,10 +2054,10 @@ static int queueworldchunkview(int chunkx, int chunky, int aheadx, int aheady)
     // Complete an interrupted delta before deriving the next one. Every entry
     // is validated against the latest focus, including during fast travel.
     if(worldchunkwantedrects.empty() && (chunkx != worldchunkwantedx || chunky != worldchunkwantedy ||
-                                       maxchunkdist != worldchunkwanteddist))
+                                       worldchunkradius() != worldchunkwanteddist))
     {
-        int minx = chunkx - maxchunkdist, maxx = chunkx + maxchunkdist,
-            miny = chunky - maxchunkdist, maxy = chunky + maxchunkdist;
+        int minx = chunkx - worldchunkradius(), maxx = chunkx + worldchunkradius(),
+            miny = chunky - worldchunkradius(), maxy = chunky + worldchunkradius();
         int left = max(minx, worldchunkwantedx - worldchunkwanteddist),
             right = min(maxx, worldchunkwantedx + worldchunkwanteddist),
             bottom = max(miny, worldchunkwantedy - worldchunkwanteddist),
@@ -2073,7 +2073,7 @@ static int queueworldchunkview(int chunkx, int chunky, int aheadx, int aheady)
         }
         worldchunkwantedx = chunkx;
         worldchunkwantedy = chunky;
-        worldchunkwanteddist = maxchunkdist;
+        worldchunkwanteddist = worldchunkradius();
     }
     while(!worldchunkwantedrects.empty() && SDL_GetPerformanceCounter() < deadline)
     {
@@ -2093,7 +2093,7 @@ static int queueworldchunkview(int chunkx, int chunky, int aheadx, int aheady)
             const ivec key = worldchunkwantedpending[i];
             const bool wanted = worldchunkjobwanted(key.x, key.y, chunkx, chunky, aheadx, aheady);
             if((!wanted && worldchunkwantedrects.empty() && chunkx == worldchunkwantedx && chunky == worldchunkwantedy &&
-                maxchunkdist == worldchunkwanteddist) || findworldchunk(key.x, key.y) >= 0)
+                worldchunkradius() == worldchunkwanteddist) || findworldchunk(key.x, key.y) >= 0)
             {
                 worldchunkwantedset.remove(key);
                 if(worldchunkwantedbest == worldchunkwantedpending.length() - 1) worldchunkwantedbest = i;
@@ -2397,7 +2397,7 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
     const Uint64 frequency = SDL_GetPerformanceFrequency(), start = SDL_GetPerformanceCounter();
     worldchunkstreamdeadline = start + Uint64(chunkstreambudget * frequency / 1000.0);
     processworldchunksaveresults(min(chunkresultbudget * 0.5, worldchunkstreamremaining() * 0.1));
-    const bool refresh = chunkx != worldchunkpriorityx || chunky != worldchunkpriorityy || maxchunkdist != worldchunkprioritydist ||
+    const bool refresh = chunkx != worldchunkpriorityx || chunky != worldchunkpriorityy || worldchunkradius() != worldchunkprioritydist ||
                          aheadx != worldchunkpriorityaheadx || aheady != worldchunkpriorityaheady;
     const bool low = worldchunkoutstandingjobs() <= max(chunkpendinglimit / 2, 1);
     if(refresh || (low && !worldchunkqueuelow))
@@ -2407,7 +2407,7 @@ static void processworldchunkupdates(int chunkx, int chunky, int aheadx, int ahe
         worldchunkpriorityy = chunky;
         worldchunkpriorityaheadx = aheadx;
         worldchunkpriorityaheady = aheady;
-        worldchunkprioritydist = maxchunkdist;
+        worldchunkprioritydist = worldchunkradius();
         // Partial candidate selection is invalid after a priority change.
         if(refresh)
         {
@@ -2525,7 +2525,7 @@ static int pruneworldchunkresidency(int chunkx, int chunky, int limit)
     ZoneScopedN("Chunks/Prune cache");
     ZoneTextF("focus %d_%d limit %d", chunkx, chunky, limit);
     Uint64 start = SDL_GetPerformanceCounter();
-    int released = 0, cachedist = maxchunkdist + chunkcachedist;
+    int released = 0, cachedist = worldchunkradius() + chunkcachedist;
     int scanned = 0, count = worldchunks.length();
     // Bound the detached backlog and retain the scan cursor across frames so
     // retained/saving chunks cannot starve others.
@@ -2583,7 +2583,7 @@ static void rebuildworldchunks(int chunkx, int chunky, int aheadx, int aheady, b
 
     lastplayerchunkx = chunkx;
     lastplayerchunky = chunky;
-    lastchunkdist = maxchunkdist;
+    lastchunkdist = worldchunkradius();
     if(load)
     {
         // Bootstrap collision only. Surface and camera-visible sections are
@@ -2699,13 +2699,13 @@ void updateworldchunks(bool force)
     if(!force) processworldchunkupdates(chunkx, chunky, worldchunkaheadx, worldchunkaheady);
     updateworldlods(chunkx, chunky, force);
     if(!force && chunkx == lastplayerchunkx && chunky == lastplayerchunky &&
-       maxchunkdist == lastchunkdist)
+       worldchunkradius() == lastchunkdist)
     {
         updateworldscatterers();
         return;
     }
 
-    int viewdist = maxchunkdist;
+    int viewdist = worldchunkradius();
     bool rebase = localchunkx - viewdist <= 0 || localchunkx + viewdist >= WORLD_RUNTIME_CHUNKS - 1 ||
                   localchunky - viewdist <= 0 || localchunky + viewdist >= WORLD_RUNTIME_CHUNKS - 1;
     if(rebase)
@@ -2793,7 +2793,7 @@ static void teleportplayer(char *xtext, char *ytext, char *ztext)
 
     double chunkxd = floor(x / WORLD_CHUNK_SIZE),
            chunkyd = floor(y / WORLD_CHUNK_SIZE);
-    const int chunkmargin = max(int(WORLD_RUNTIME_CENTER), maxchunkdist) + 1,
+    const int chunkmargin = max(int(WORLD_RUNTIME_CENTER), worldchunkradius()) + 1,
               minchunk = INT_MIN + chunkmargin,
               maxchunk = INT_MAX - chunkmargin;
     if(chunkxd < minchunk || chunkxd > maxchunk ||
@@ -3173,7 +3173,7 @@ int scanambientsection(int cursor, ambientplacement &placement)
     worldpositiontoabsolute(listener);
     if(chunk.loading || chunk.corrupted || !chunk.root ||
        max(abs(chunk.x - int(floorf(listener.x / WORLD_CHUNK_SIZE))),
-           abs(chunk.y - int(floorf(listener.y / WORLD_CHUNK_SIZE)))) > maxchunkdist) return cursor;
+           abs(chunk.y - int(floorf(listener.y / WORLD_CHUNK_SIZE)))) > worldchunkradius()) return cursor;
     ivec local((tile % WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE,
                (tile / WORLD_SECTION_COLUMNS) * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE);
     const cube &c = chunk.mountedtiles[section] & (1U << tile) ?

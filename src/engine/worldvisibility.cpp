@@ -504,7 +504,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     }
     bool focuschanged = focussection != worldsectionvisibilityfocus,
          rebuild = worldsectionvisibilitydirty || chunkx != worldsectionvisibilitychunkx || chunky != worldsectionvisibilitychunky ||
-                   maxchunkdist != worldsectionvisibilitymaxdist || focuschanged;
+                   worldrenderdistance != worldsectionvisibilitymaxdist || focuschanged;
     const bool seed = rebuild || !worldsectionvisibilityadditions.empty() || focuscell != worldsectionvisibilitycell;
     if(!seed && !worldsectionvisibilitypublishing && worldsectionvisibilitycursor >= worldsectionvisibilityqueue.length()) return;
     if(seed) worldsectionvisibilitypublishing = false;
@@ -611,7 +611,7 @@ static void updateworldsectionvisibility(int chunkx, int chunky)
     if(rebuild) worldsectionvisibilityadditions.setsize(0);
     worldsectionvisibilitychunkx = chunkx;
     worldsectionvisibilitychunky = chunky;
-    worldsectionvisibilitymaxdist = maxchunkdist;
+    worldsectionvisibilitymaxdist = worldrenderdistance;
     worldsectionvisibilityfocus = focussection;
     worldsectionvisibilitycell = focuscell;
 
@@ -716,9 +716,20 @@ static bool worldchunksectioninteriorvisible(const worldchunk &chunk, int tile, 
     return (chunk.visibletiles[section] & (1U << tile)) && worldchunksectionviewclass(chunk, tile, section) > 0;
 }
 
+static bool worldsectionwithinrenderdistance(const ivec &origin, const vec *focus)
+{
+    if(!focus) return true;
+    const int x = int(floorf(focus->x / WORLD_SECTION_SIZE)) * WORLD_SECTION_SIZE,
+              y = int(floorf(focus->y / WORLD_SECTION_SIZE)) * WORLD_SECTION_SIZE,
+              range = worldrenderdistance * WORLD_BLOCK_SIZE;
+    return origin.x < x + WORLD_SECTION_SIZE + range && origin.x + WORLD_SECTION_SIZE > x - range &&
+           origin.y < y + WORLD_SECTION_SIZE + range && origin.y + WORLD_SECTION_SIZE > y - range;
+}
+
 bool worldsectionvavisible(const ivec &origin, int size)
 {
     if(size != WORLD_SECTION_SIZE || worldchunks.empty() || drawfullchunk) return true;
+    if(!worldsectionwithinrenderdistance(origin, camera1 ? &camera1->o : player ? &player->o : NULL)) return false;
     const worldsectionowner *owner = worldsectionowners.access(worldchunkvaupdatekey(origin));
     if(!owner) return false;
     const int index = findworldchunk(owner->chunkx, owner->chunky);
@@ -740,6 +751,7 @@ static bool worldchunksectionwithinresidentrange(const worldchunk &chunk, int ti
     int x = tile % WORLD_SECTION_COLUMNS, y = tile / WORLD_SECTION_COLUMNS;
     ivec bbmin = ivec(worldchunkorigin(chunk)).add(ivec(x * WORLD_SECTION_SIZE, y * WORLD_SECTION_SIZE, section * WORLD_SECTION_SIZE)),
          bbmax = ivec(bbmin).add(WORLD_SECTION_SIZE);
+    if(!worldsectionwithinrenderdistance(bbmin, focus)) return false;
     // Residency is invalidated at section crossings. Measure from the entire
     // focus section so movement within it cannot expose an unrequested border.
     const ivec focusmin(int(floorf(focus->x / WORLD_SECTION_SIZE)) * WORLD_SECTION_SIZE,
@@ -832,7 +844,7 @@ static int worldchunksectionwantedmask(worldchunk &chunk, int tile, int section,
 static void updateworldsectionresidencywanted()
 {
     static ivec lastviewsection(INT_MIN, INT_MIN, INT_MIN), lastplayersection(INT_MIN, INT_MIN, INT_MIN);
-    static int lastmaxchunkdist = -1, lastinteriorradius = -1, lastresidentrange = -1, lastdrawfullchunk = -1;
+    static int lastworldrenderdistance = -1, lastinteriorradius = -1, lastresidentrange = -1, lastdrawfullchunk = -1;
     static bool lastcavemode = false, lastentrancemode = false, initialized = false;
 
     const vec *viewfocus = camera1 ? &camera1->o : player ? &player->o : NULL,
@@ -851,14 +863,14 @@ static void updateworldsectionresidencywanted()
     const int residentrange = int(ceilf(max(calcfogcull(), float(csmfarplane))));
     const bool viewchanged = worldsectionviewchanged();
     const bool globaldirty = !initialized || viewsection != lastviewsection || playersection != lastplayersection || cavemode != lastcavemode ||
-                             entrancemode != lastentrancemode || maxchunkdist != lastmaxchunkdist ||
+                             entrancemode != lastentrancemode || worldrenderdistance != lastworldrenderdistance ||
                              chunkinteriorradius != lastinteriorradius || residentrange != lastresidentrange || drawfullchunk != lastdrawfullchunk;
     initialized = true;
     lastviewsection = viewsection;
     lastplayersection = playersection;
     lastcavemode = cavemode;
     lastentrancemode = entrancemode;
-    lastmaxchunkdist = maxchunkdist;
+    lastworldrenderdistance = worldrenderdistance;
     lastinteriorradius = chunkinteriorradius;
     lastresidentrange = residentrange;
     lastdrawfullchunk = drawfullchunk;
@@ -1104,7 +1116,7 @@ static int processworldchunkchanges(int chunkx, int chunky)
         unloadtarget = WORLD_MAX_COLUMN_CHANGES,
         cleanupstagelimit = chunkvastagelimit;
 
-    // Cleanup only unmounts chunks outside maxchunkdist. Section VAs inside
+    // Cleanup only unmounts chunks outside worldrenderdistance. Section VAs inside
     // that radius remain cached across cave/exterior mode changes.
     {
         ZoneScopedN("Chunks/Unload columns");

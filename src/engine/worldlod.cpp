@@ -3,19 +3,19 @@
 #ifdef WORLDIO_MODULE_IMPLEMENTATION
 
 VARP(worldlod, 0, 1, 1);
-VARP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS);
-VARP(worldlod2resolution, 4, 16, WORLD_CHUNK_BLOCKS);
-VAR(worldlodneardistance, 16, 192, 4096); // blocks from the chunk AABB
-VAR(worldlodfardistance, 32, 1024, 4096);
-VAR(worldlodmaxdistance, 64, 2048, 4096);
+VARFP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS,
+      worldlod1resolution = (worldlod1resolution + 2) / 4 * 4);
+VARP(worldlod2distance, 32, 768, 4096);
+VARP(worldlod3distance, 64, 1536, 8192);
+VARP(worldloddistance, 128, 3072, 16384); // outer LOD3 cutoff in cubes
 VARP(worldlodhysteresis, 0, 16, 512);
-VARP(worldlodditherdistance, 0, 64, 256); // transition width in blocks, centered on worldlodneardistance
 VARP(worldloddither, 0, 1, 1); // cross-fade rigid octree and LOD1 geometry
 VARP(worldlodfadetime, 1, 250, 2000); // milliseconds for LOD1 dither fade-in and fade-out
 VARP(worldlodskirtdepth, 1, 4, 64);
 VARP(worldlodthreads, 1, 2, 4);
 VARP(worldlodpendinglimit, 4, 32, 512);
 VARP(worldlodcachelimit, 16, 384, 4096);
+VARP(worldloddiskcache, 0, 1, 1); // reuse generated meshes in the local world's chunks directory
 VARP(worldloduploadlimit, 1, 4, 16);
 VARP(worldloddebug, 0, 0, 3);
 VARP(worldlodwireframe, 0, 0, 1);
@@ -66,8 +66,10 @@ struct worldlodcpumesh
     int terrainindices, waterindices, topfaces, sidefaces;
     vec bbmin, bbmax;
     float waterheight;
+    bool detailed;
 
-    worldlodcpumesh() : terrainindices(0), waterindices(0), topfaces(0), sidefaces(0), bbmin(0, 0, 0), bbmax(0, 0, 0), waterheight(0) {}
+    worldlodcpumesh()
+        : terrainindices(0), waterindices(0), topfaces(0), sidefaces(0), bbmin(0, 0, 0), bbmax(0, 0, 0), waterheight(0), detailed(true) {}
 };
 
 struct worldlodkey
@@ -109,11 +111,14 @@ struct worldlodjob
     worldlodcpumesh mesh;
     double generationmillis, samplingmillis, buildmillis;
     bool succeeded;
+    string cachefile;
+    bool cachehit, cachewritten, cachewritefailed;
 
     worldlodjob(const worldlodkey &key, int priority, float distance, float alignment, uint epoch)
         : key(key), priority(priority), distance(distance), alignment(alignment), epoch(epoch), generationmillis(0), samplingmillis(0),
-          buildmillis(0), succeeded(false)
+          buildmillis(0), succeeded(false), cachehit(false), cachewritten(false), cachewritefailed(false)
     {
+        cachefile[0] = '\0';
         SDL_AtomicSet(&cancelled, 0);
     }
 };
@@ -141,6 +146,7 @@ static bool stopworldlodthreads = false;
 static uint worldlodepoch = 1;
 static ullong worldlodsettings = 0;
 static int worldlodcachehits = 0, worldlodcachemisses = 0;
+static int worldloddiskhits = 0, worldloddiskwrites = 0, worldloddiskerrors = 0;
 static int worldlodrendervertices = 0, worldlodrendertriangles = 0, worldlodrendertopfaces = 0, worldlodrendersidefaces = 0;
 static int worldlodmissingchunks = 0;
 static int worldlodlastupdate = -1;
@@ -205,7 +211,9 @@ static int findworldlodcache(const worldlodkey &key)
 
 static worldlodkey currentworldlodkey(int x, int y, int lod)
 {
-    return worldlodkey(x, y, lod, lod == 1 ? worldlod1resolution : worldlod2resolution, worldlodskirtdepth, game::getworldseed(),
+    const int resolution = max(worldlod1resolution >> (lod - 1), 1),
+              skirtdepth = lod == 1 ? worldlodskirtdepth : max(worldlodskirtdepth, WORLD_CHUNK_BLOCKS / resolution);
+    return worldlodkey(x, y, lod, resolution, skirtdepth, game::getworldseed(),
                        game::worldgenerationparameterhash());
 }
 
@@ -237,7 +245,7 @@ static void addworldlodquad(worldlodcpumesh &mesh, const vec &a, const vec &b, c
                             int orient)
 {
     // Match near terrain's color spacing even when LOD1 merges a large flat grass surface.
-    if(material == WORLD_LOD_GRASS_TOP || material == WORLD_LOD_GRASS_SIDE)
+    if(mesh.detailed && (material == WORLD_LOD_GRASS_TOP || material == WORLD_LOD_GRASS_SIDE))
     {
         const vec ab = vec(b).sub(a), ad = vec(d).sub(a);
         const float width = max(max(fabsf(ab.x), fabsf(ab.y)), fabsf(ab.z)),
@@ -518,44 +526,6 @@ static bool addworldlod2trees(worldlodjob &job, worldgencontext *generation, flo
     return !SDL_AtomicGet(&job.cancelled);
 }
 
-static void addworldlodskirt(worldlodcpumesh &mesh, const vector<int> &heights, const vector<uchar> &materials, int resolution, int edge,
-                             float skirtdepth)
-{
-    const int stride = resolution + 1;
-    loopi(resolution)
-    {
-        int a, b;
-        vec normal;
-        bool reverse;
-        switch(edge)
-        {
-            case 0: a = i; b = i + 1; normal = vec(0, -1, 0); reverse = true; break;
-            case 1: a = resolution * stride + i; b = a + 1; normal = vec(0, 1, 0); reverse = false; break;
-            case 2: a = i * stride; b = (i + 1) * stride; normal = vec(-1, 0, 0); reverse = false; break;
-            default: a = i * stride + resolution; b = (i + 1) * stride + resolution; normal = vec(1, 0, 0); reverse = true; break;
-        }
-        const worldlodvertex &va = mesh.vertices[a], &vb = mesh.vertices[b];
-        const uint first = mesh.vertices.length();
-        const int material = worldlodsidematerial(materials[a]), orient = edge == 0 ? O_BACK : edge == 1 ? O_FRONT : edge == 2 ? O_LEFT : O_RIGHT;
-        mesh.vertices.add(worldlodvertex(va.position, normal, worldlodtexcoord(va.position, orient), material));
-        mesh.vertices.add(worldlodvertex(vb.position, normal, worldlodtexcoord(vb.position, orient), material));
-        const vec lowerb = vec(vb.position).sub(vec(0, 0, skirtdepth)), lowera = vec(va.position).sub(vec(0, 0, skirtdepth));
-        mesh.vertices.add(worldlodvertex(lowerb, normal, worldlodtexcoord(lowerb, orient), material));
-        mesh.vertices.add(worldlodvertex(lowera, normal, worldlodtexcoord(lowera, orient), material));
-        if(reverse)
-        {
-            mesh.indices.add(first); mesh.indices.add(first + 3); mesh.indices.add(first + 2);
-            mesh.indices.add(first); mesh.indices.add(first + 2); mesh.indices.add(first + 1);
-        }
-        else
-        {
-            mesh.indices.add(first); mesh.indices.add(first + 1); mesh.indices.add(first + 2);
-            mesh.indices.add(first); mesh.indices.add(first + 2); mesh.indices.add(first + 3);
-        }
-        mesh.sidefaces++;
-    }
-}
-
 struct worldlodcolumn
 {
     int height, waterheight, material;
@@ -570,7 +540,12 @@ static bool sampleworldlodcolumn(worldgencontext *generation, const worldlodkey 
               beginy = int(floor(double(celly) * WORLD_CHUNK_BLOCKS / key.resolution)),
               endy = int(ceil(double(celly + 1) * WORLD_CHUNK_BLOCKS / key.resolution)) - 1;
     int selectedx = beginx, selectedy = beginy, selectedheight = INT_MIN;
-    for(int y = beginy; y <= endy; ++y) for(int x = beginx; x <= endx; ++x)
+    // Coarse tiers use one sample per voxel, so halving resolution also cuts generation work.
+    const int samplex = key.lod == 1 ? beginx : beginx + (endx - beginx) / 2,
+              sampley = key.lod == 1 ? beginy : beginy + (endy - beginy) / 2,
+              stepx = key.lod == 1 ? 1 : endx - beginx + 1,
+              stepy = key.lod == 1 ? 1 : endy - beginy + 1;
+    for(int y = sampley; y <= endy; y += stepy) for(int x = samplex; x <= endx; x += stepx)
     {
         int height;
         if(!game::sampleterrainheight(generation, key.x * WORLD_CHUNK_BLOCKS + x, key.y * WORLD_CHUNK_BLOCKS + y, height)) return false;
@@ -584,12 +559,17 @@ static bool sampleworldlodcolumn(worldgencontext *generation, const worldlodkey 
     worldsurfacesample surface;
     if(!game::sampleterrainsurface(generation, key.x * WORLD_CHUNK_BLOCKS + selectedx, key.y * WORLD_CHUNK_BLOCKS + selectedy, surface)) return false;
     column.height = surface.height;
+    if(key.lod > 1)
+    {
+        const int voxelsize = max(WORLD_CHUNK_BLOCKS / key.resolution, 1);
+        column.height = int(floor(double(column.height) / voxelsize)) * voxelsize;
+    }
     column.waterheight = surface.waterheight;
     column.material = surface.material;
     return true;
 }
 
-static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Uint64 frequency)
+static bool buildworldlodvoxelmesh(worldlodjob &job, worldgencontext *generation, Uint64 frequency)
 {
     const int resolution = job.key.resolution, stride = resolution + 2, columns = stride * stride;
     vector<worldlodcolumn> samples;
@@ -609,6 +589,7 @@ static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Ui
     {
         ZoneScopedN("LOD/Mesh build");
         worldlodcpumesh &mesh = job.mesh;
+        mesh.detailed = job.key.lod == 1;
         mesh.vertices.growbuf(resolution * resolution * 20);
         mesh.indices.growbuf(resolution * resolution * 30);
         int minimumheight = INT_MAX, maximumheight = INT_MIN, waterheight = INT_MIN;
@@ -669,7 +650,16 @@ static bool buildworldlod1mesh(worldlodjob &job, worldgencontext *generation, Ui
             maximumheight = max(maximumheight, column.height);
             waterheight = max(waterheight, column.waterheight);
         }
-        if(!addworldlodtrees(job, generation, maximumheight)) return false;
+        if(job.key.lod == 1)
+        {
+            if(!addworldlodtrees(job, generation, maximumheight)) return false;
+        }
+        else
+        {
+            float maximumz = WORLD_GROUND_HEIGHT + maximumheight * WORLD_BLOCK_SIZE;
+            if(!addworldlod2trees(job, generation, maximumz)) return false;
+            maximumheight = max(maximumheight, int(ceilf((maximumz - WORLD_GROUND_HEIGHT) / WORLD_BLOCK_SIZE)));
+        }
         mesh.terrainindices = mesh.indices.length();
         loopv(merged) merged[i] = 0;
         loop(y, resolution) loop(x, resolution)
@@ -715,7 +705,7 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
 {
     const vec origin(float(double(job.key.x) * WORLD_CHUNK_SIZE), float(double(job.key.y) * WORLD_CHUNK_SIZE), 0);
     vec averages[4], sandaverages[4];
-    if(job.key.lod == 2)
+    if(job.key.lod >= 2)
     {
         // Four shared regional averages, sixteen climate samples total regardless of mesh resolution.
         // Neighbouring chunks compute identical corner averages, so the cheap far color has no hard zone border.
@@ -747,7 +737,7 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
         if(vertex.material.x != WORLD_LOD_GRASS_TOP && vertex.material.x != WORLD_LOD_GRASS_SIDE &&
            vertex.material.x != WORLD_LOD_SAND && vertex.material.x != WORLD_LOD_DIRT) continue;
         vec color(0, 0, 0);
-        if(job.key.lod == 2)
+        if(job.key.lod >= 2)
         {
             const float x = clamp(vertex.position.x / WORLD_CHUNK_SIZE, 0.0f, 1.0f),
                         y = clamp(vertex.position.y / WORLD_CHUNK_SIZE, 0.0f, 1.0f);
@@ -779,187 +769,32 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
     }
 }
 
+#include "worldlodcache.cpp"
+
 static bool buildworldlodmesh(worldlodjob &job)
 {
     const Uint64 frequency = SDL_GetPerformanceFrequency(), generationstart = SDL_GetPerformanceCounter();
+    if(SDL_AtomicGet(&job.cancelled)) return false;
+    if(job.cachefile[0] && loadworldlodmesh(job))
+    {
+        job.cachehit = true;
+        job.generationmillis = (SDL_GetPerformanceCounter() - generationstart) * 1000.0 / frequency;
+        return !SDL_AtomicGet(&job.cancelled);
+    }
+    if(SDL_AtomicGet(&job.cancelled)) return false;
     worldgencontext *generation = game::createworldgeneration(false, false, &job.cancelled);
     if(!generation) return false;
-    if(job.key.lod == 1)
-    {
-        const bool succeeded = buildworldlod1mesh(job, generation, frequency);
-        if(succeeded) colorworldlodgrass(job, generation);
-        job.generationmillis = (SDL_GetPerformanceCounter() - generationstart) * 1000.0 / frequency;
-        game::destroyworldgeneration(generation);
-        return succeeded && !SDL_AtomicGet(&job.cancelled);
-    }
-
-    const int resolution = job.key.resolution, stride = resolution + 1, samples = stride * stride;
-    vector<int> heights, waterheights;
-    vector<uchar> materials, waters;
-    heights.pad(samples);
-    waterheights.pad(samples);
-    materials.pad(samples);
-    waters.pad(samples);
-    int waterheight = INT_MIN;
-
-    const Uint64 samplingstart = SDL_GetPerformanceCounter();
-    {
-        ZoneScopedN("LOD/Surface sampling");
-        loop(y, stride) loop(x, stride)
-        {
-            if(SDL_AtomicGet(&job.cancelled)) { game::destroyworldgeneration(generation); return false; }
-            const int centerx = int(floorf(x * WORLD_CHUNK_BLOCKS / float(resolution) + 0.5f)),
-                      centery = int(floorf(y * WORLD_CHUNK_BLOCKS / float(resolution) + 0.5f));
-            int selectedx = centerx, selectedy = centery, selectedheight = 0;
-            if(x == 0 || y == 0 || x == resolution || y == resolution)
-            {
-                if(!game::sampleterrainheight(generation, job.key.x * WORLD_CHUNK_BLOCKS + centerx,
-                                              job.key.y * WORLD_CHUNK_BLOCKS + centery, selectedheight))
-                {
-                    game::destroyworldgeneration(generation);
-                    return false;
-                }
-            }
-            else
-            {
-                const int beginx = max(int(floorf((x - 0.5f) * WORLD_CHUNK_BLOCKS / resolution)), 0),
-                          endx = min(int(ceilf((x + 0.5f) * WORLD_CHUNK_BLOCKS / resolution)), int(WORLD_CHUNK_BLOCKS)),
-                          beginy = max(int(floorf((y - 0.5f) * WORLD_CHUNK_BLOCKS / resolution)), 0),
-                          endy = min(int(ceilf((y + 0.5f) * WORLD_CHUNK_BLOCKS / resolution)), int(WORLD_CHUNK_BLOCKS));
-                int minimum = INT_MAX, maximum = INT_MIN, minimumx = centerx, minimumy = centery, maximumx = centerx, maximumy = centery;
-                long long total = 0;
-                int count = 0;
-                for(int sy = beginy; sy <= endy; ++sy) for(int sx = beginx; sx <= endx; ++sx)
-                {
-                    int height;
-                    if(!game::sampleterrainheight(generation, job.key.x * WORLD_CHUNK_BLOCKS + sx,
-                                                  job.key.y * WORLD_CHUNK_BLOCKS + sy, height))
-                    {
-                        game::destroyworldgeneration(generation);
-                        return false;
-                    }
-                    if(height < minimum) { minimum = height; minimumx = sx; minimumy = sy; }
-                    if(height > maximum) { maximum = height; maximumx = sx; maximumy = sy; }
-                    total += height;
-                    count++;
-                }
-                const float average = count ? total / float(count) : 0.0f;
-                if(maximum - minimum <= 2)
-                    selectedheight = int(floorf(average + 0.5f));
-                else if(maximum - average >= average - minimum)
-                {
-                    selectedheight = maximum;
-                    selectedx = maximumx;
-                    selectedy = maximumy;
-                }
-                else
-                {
-                    selectedheight = minimum;
-                    selectedx = minimumx;
-                    selectedy = minimumy;
-                }
-            }
-
-            worldsurfacesample surface;
-            if(!game::sampleterrainsurface(generation, job.key.x * WORLD_CHUNK_BLOCKS + selectedx,
-                                          job.key.y * WORLD_CHUNK_BLOCKS + selectedy, surface))
-            {
-                game::destroyworldgeneration(generation);
-                return false;
-            }
-            const int index = y * stride + x;
-            heights[index] = selectedheight;
-            materials[index] = uchar(surface.material);
-            waters[index] = selectedheight < surface.waterheight;
-            waterheights[index] = surface.waterheight;
-            waterheight = max(waterheight, surface.waterheight);
-        }
-    }
-    loop(y, stride) loop(x, stride)
-    {
-        const int index = y * stride + x;
-        if(materials[index] != WORLD_SURFACE_GRASS) continue;
-        bool flat = true;
-        for(int oy = -1; oy <= 1 && flat; ++oy) for(int ox = -1; ox <= 1; ++ox)
-        {
-            const int neighbor = clamp(y + oy, 0, resolution) * stride + clamp(x + ox, 0, resolution);
-            if(heights[index] != heights[neighbor]) { flat = false; break; }
-        }
-        if(!flat) materials[index] = WORLD_SURFACE_DIRT;
-    }
-    job.samplingmillis = (SDL_GetPerformanceCounter() - samplingstart) * 1000.0 / frequency;
-
-    const Uint64 buildstart = SDL_GetPerformanceCounter();
-    {
-        ZoneScopedN("LOD/Mesh build");
-        worldlodcpumesh &mesh = job.mesh;
-        mesh.vertices.growbuf(samples + resolution * 16 + samples);
-        mesh.indices.growbuf(resolution * resolution * 12 + resolution * 24);
-        float minimumz = FLT_MAX, maximumz = -FLT_MAX;
-        loop(y, stride) loop(x, stride)
-        {
-            const int index = y * stride + x, left = y * stride + max(x - 1, 0), right = y * stride + min(x + 1, resolution),
-                      down = max(y - 1, 0) * stride + x, up = min(y + 1, resolution) * stride + x;
-            const float stepx = max((min(x + 1, resolution) - max(x - 1, 0)) * WORLD_CHUNK_SIZE / float(resolution), 1.0f),
-                        stepy = max((min(y + 1, resolution) - max(y - 1, 0)) * WORLD_CHUNK_SIZE / float(resolution), 1.0f),
-                        dzdx = (heights[right] - heights[left]) * WORLD_BLOCK_SIZE / stepx,
-                        dzdy = (heights[up] - heights[down]) * WORLD_BLOCK_SIZE / stepy,
-                        z = WORLD_GROUND_HEIGHT + heights[index] * WORLD_BLOCK_SIZE;
-            vec normal(-dzdx, -dzdy, 1.0f);
-            normal.normalize();
-            const vec position(x * WORLD_CHUNK_SIZE / float(resolution), y * WORLD_CHUNK_SIZE / float(resolution), z);
-            mesh.vertices.add(worldlodvertex(position, normal, worldlodtexcoord(position, O_TOP), worldlodtopmaterial(materials[index])));
-            minimumz = min(minimumz, z);
-            maximumz = max(maximumz, z);
-        }
-        loop(y, resolution) loop(x, resolution)
-        {
-            const uint a = y * stride + x, b = a + 1, d = (y + 1) * stride + x, c = d + 1;
-            mesh.indices.add(a); mesh.indices.add(b); mesh.indices.add(c);
-            mesh.indices.add(a); mesh.indices.add(c); mesh.indices.add(d);
-            mesh.topfaces++;
-        }
-        const float skirtdepth = job.key.skirtdepth * WORLD_BLOCK_SIZE;
-        loopi(4) addworldlodskirt(mesh, heights, materials, resolution, i, skirtdepth);
-        if(!addworldlod2trees(job, generation, maximumz))
-        {
-            game::destroyworldgeneration(generation);
-            return false;
-        }
-        mesh.terrainindices = mesh.indices.length();
-
-        const uint waterbase = mesh.vertices.length();
-        const float waterz = WORLD_GROUND_HEIGHT + waterheight * WORLD_BLOCK_SIZE;
-        loop(y, stride) loop(x, stride)
-        {
-            const vec position(x * WORLD_CHUNK_SIZE / float(resolution), y * WORLD_CHUNK_SIZE / float(resolution),
-                               WORLD_GROUND_HEIGHT + waterheights[y * stride + x] * WORLD_BLOCK_SIZE);
-            mesh.vertices.add(worldlodvertex(position, vec(0, 0, 1), worldlodtexcoord(position, O_TOP), WORLD_LOD_WATER));
-        }
-        loop(y, resolution) loop(x, resolution)
-        {
-            const uint a = y * stride + x, b = a + 1, d = (y + 1) * stride + x, c = d + 1;
-            if(waters[a] && waters[b] && waters[c])
-            {
-                mesh.indices.add(waterbase + a); mesh.indices.add(waterbase + b); mesh.indices.add(waterbase + c);
-            }
-            if(waters[a] && waters[c] && waters[d])
-            {
-                mesh.indices.add(waterbase + a); mesh.indices.add(waterbase + c); mesh.indices.add(waterbase + d);
-            }
-        }
-        mesh.waterindices = mesh.indices.length() - mesh.terrainindices;
-        mesh.waterheight = waterz;
-        mesh.bbmin = vec(0, 0, minimumz - skirtdepth);
-        mesh.bbmax = vec(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, max(maximumz, waterz));
-    }
-    job.buildmillis = (SDL_GetPerformanceCounter() - buildstart) * 1000.0 / frequency;
-    colorworldlodgrass(job, generation);
+    const bool succeeded = buildworldlodvoxelmesh(job, generation, frequency);
+    if(succeeded) colorworldlodgrass(job, generation);
     job.generationmillis = (SDL_GetPerformanceCounter() - generationstart) * 1000.0 / frequency;
     game::destroyworldgeneration(generation);
-    return !SDL_AtomicGet(&job.cancelled);
+    if(succeeded && !SDL_AtomicGet(&job.cancelled) && job.cachefile[0])
+    {
+        job.cachewritten = saveworldlodmesh(job);
+        job.cachewritefailed = !job.cachewritten && !SDL_AtomicGet(&job.cancelled);
+    }
+    return succeeded && !SDL_AtomicGet(&job.cancelled);
 }
-
 static int worldlodworker(void *)
 {
 #ifdef TRACY_ENABLE
@@ -988,7 +823,7 @@ static int worldlodworker(void *)
         }
         else
         {
-            ZoneScopedN("LOD/LOD2 generation");
+            ZoneScopedN("LOD/Coarse voxel generation");
             job->succeeded = buildworldlodmesh(*job);
         }
 
@@ -1100,8 +935,8 @@ void cleanupworldlods()
 static ullong currentworldlodsettings()
 {
     ullong hash = game::worldgenerationparameterhash() ^ ullong(uint(game::getworldseed())) ^ ullong(WORLDGEN_VERSION) << 32;
-    const int values[] = { worldlod1resolution, worldlod2resolution, worldlodneardistance, worldlodfardistance, worldlodmaxdistance,
-                           worldlodhysteresis, worldlodditherdistance, worldloddither, worldlodskirtdepth, worldlodthreads };
+    const int values[] = { worldlod1resolution, worldrenderdistance, worldlod2distance, worldlod3distance, worldloddistance,
+                           worldlodhysteresis, worldloddither, worldlodskirtdepth, worldlodthreads };
     loopi(sizeof(values) / sizeof(values[0]))
     {
         hash ^= uint(values[i]);
@@ -1128,7 +963,13 @@ static bool queueworldlodjob(const worldlodkey &key, int priority, float distanc
     const int outstanding = worldlodjobs.length() + worldlodactivejobs.length() + worldlodresults.length();
     if(outstanding < worldlodpendinglimit)
     {
-        worldlodjobs.add(new worldlodjob(key, priority, distance, alignment, worldlodepoch));
+        worldlodjob *job = new worldlodjob(key, priority, distance, alignment, worldlodepoch);
+        if(worldloddiskcache && worldfolder[0] && game::islocalworld())
+        {
+            defformatstring(extension, "lod%d", key.lod);
+            worldchunksnapshotfilename(job->cachefile, sizeof(job->cachefile), worldfolder, key.x, key.y, extension);
+        }
+        worldlodjobs.add(job);
         worldlodcachemisses++;
         queued = true;
         SDL_CondSignal(worldlodcond);
@@ -1174,6 +1015,9 @@ static void processworldlodresults()
         if(!worldlodresults.empty()) job = worldlodresults.remove(0);
         SDL_UnlockMutex(worldlodmutex);
         if(!job) break;
+        if(job->cachehit) worldloddiskhits++;
+        if(job->cachewritten) worldloddiskwrites++;
+        if(job->cachewritefailed) worldloddiskerrors++;
         if(job->epoch != worldlodepoch || !job->succeeded || SDL_AtomicGet(&job->cancelled) || job->key.seed != game::getworldseed() ||
            job->key.generation != game::worldgenerationparameterhash())
         {
@@ -1231,13 +1075,13 @@ static void processworldlodresults()
     }
 }
 
-static float worldloddistance(int x, int y, const vec &focus)
+static float worldlodchunkdistance(int x, int y, const vec &focus)
 {
     const float minx = (x - worldfirstchunkx) * WORLD_CHUNK_SIZE, miny = (y - worldfirstchunky) * WORLD_CHUNK_SIZE,
                 maxx = minx + WORLD_CHUNK_SIZE, maxy = miny + WORLD_CHUNK_SIZE,
                 dx = focus.x < minx ? minx - focus.x : focus.x > maxx ? focus.x - maxx : 0.0f,
                 dy = focus.y < miny ? miny - focus.y : focus.y > maxy ? focus.y - maxy : 0.0f;
-    return sqrtf(dx * dx + dy * dy);
+    return max(dx, dy); // Match the square horizontal section render range.
 }
 
 struct worldlodcandidate
@@ -1323,22 +1167,29 @@ static void reprioritizeworldlodjobs()
     SDL_UnlockMutex(worldlodmutex);
 }
 
+static int worldlod2start()
+{
+    return max(worldlod2distance, worldrenderdistance + WORLD_CHUNK_BLOCKS);
+}
+
+static int worldlod3start()
+{
+    return max(worldlod3distance, worldlod2start() + WORLD_CHUNK_BLOCKS);
+}
+
 static void worldlodditherrange(float &start, float &end)
 {
-    const float center = worldlodneardistance * WORLD_BLOCK_SIZE,
-                half = worldlodditherdistance * WORLD_BLOCK_SIZE * 0.5f;
-    start = max(center - half, 0.0f);
-    end = max(center + half, start + 1.0f);
+    // Keep LOD1 across partial edge chunks, with a section of motion margin.
+    end = worldrenderdistance * WORLD_BLOCK_SIZE;
+    start = max(worldrenderdistance - WORLD_CHUNK_BLOCKS - WORLD_SECTION_BLOCKS, 0) * WORLD_BLOCK_SIZE;
 }
 
 static float worldlodditherfactor(float distance)
 {
-    if(!worldlodditherdistance) return distance >= worldlodneardistance * WORLD_BLOCK_SIZE ? 1.0f : 0.0f;
     float start, end;
     worldlodditherrange(start, end);
-    return clamp((distance - start) / (end - start), 0.0f, 1.0f);
+    return clamp((distance - start) / max(end - start, 1.0f), 0.0f, 1.0f);
 }
-
 static float smoothworldloddither(float dither)
 {
     dither = clamp(dither, 0.0f, 1.0f);
@@ -1347,23 +1198,15 @@ static float smoothworldloddither(float dither)
 
 static int desiredworldlod(int previous, float distance)
 {
-    float ditherstart, ditherend;
-    worldlodditherrange(ditherstart, ditherend);
-    const float hysteresis = worldlodhysteresis * WORLD_BLOCK_SIZE,
-                nearthreshold = worldloddither && worldlodditherdistance ? max(min(ditherstart, ditherend) - hysteresis, 0.0f)
-                                                                         : worldlodneardistance * WORLD_BLOCK_SIZE,
-                farthreshold = max(worldlodfardistance, worldlodneardistance + 1) * WORLD_BLOCK_SIZE;
-    switch(previous)
-    {
-        case 0: return distance > nearthreshold + hysteresis ? 1 : 0;
-        case 2: return distance < farthreshold - hysteresis ? 1 : 2;
-        default:
-            if(distance < nearthreshold - hysteresis) return 0;
-            if(distance > farthreshold + hysteresis) return 2;
-            return 1;
-    }
+    float nearstart, nearend;
+    worldlodditherrange(nearstart, nearend);
+    const float thresholds[] = { nearstart, float(worldlod2start() * WORLD_BLOCK_SIZE), float(worldlod3start() * WORLD_BLOCK_SIZE) };
+    const float hysteresis = worldlodhysteresis * WORLD_BLOCK_SIZE;
+    int lod = clamp(previous, 0, 3);
+    while(lod < 3 && distance > thresholds[lod] + hysteresis) ++lod;
+    while(lod > 0 && distance < max(thresholds[lod - 1] - hysteresis, 0.0f)) --lod;
+    return lod;
 }
-
 static bool worldlodfullready(int x, int y)
 {
     const int index = findworldchunk(x, y);
@@ -1390,7 +1233,7 @@ static bool worldlodfullready(int x, int y)
 static bool worldlodselectionrequiresvoxel(const worldlodselection &selection)
 {
     if(selection.desired == 0 || selection.active <= 0) return true;
-    return selection.desired == 1 && worldloddither && selection.dither < 1.0f;
+    return selection.distance < worldrenderdistance * WORLD_BLOCK_SIZE;
 }
 
 static bool worldlodrequiresvoxel(const worldchunk &chunk)
@@ -1495,12 +1338,12 @@ static void updateworldlods(int chunkx, int chunky, bool force)
     worldlodlastdirx = directionx;
     worldlodlastdiry = directiony;
 
-    const float maxdistance = worldlodmaxdistance * WORLD_BLOCK_SIZE;
+    const float maxdistance = max(worldloddistance, worldlod3start() + WORLD_CHUNK_BLOCKS) * WORLD_BLOCK_SIZE;
     const int radius = int(ceilf(maxdistance / WORLD_CHUNK_SIZE)) + 1;
 
     for(int y = chunky - radius; y <= chunky + radius; ++y) for(int x = chunkx - radius; x <= chunkx + radius; ++x)
     {
-        const float distance = worldloddistance(x, y, focus);
+        const float distance = worldlodchunkdistance(x, y, focus);
         if(distance > maxdistance) continue;
         int selectionindex = findworldlodselection(x, y);
         if(selectionindex < 0)
@@ -1518,11 +1361,11 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         selection.desired = desiredworldlod(selection.desired, distance);
     }
 
-    // A one-chunk LOD1 collar prevents direct LOD0/LOD2 neighbors even if users configure very narrow distance bands.
+    // A one-chunk LOD1 collar prevents detailed terrain from touching a coarse tier.
     loopv(worldlodselections)
     {
         worldlodselection &selection = worldlodselections[i];
-        if(selection.lastseen != totalmillis || selection.desired != 2) continue;
+        if(selection.lastseen != totalmillis || selection.desired < 2) continue;
         bool toucheslod0 = false;
         for(int oy = -1; oy <= 1 && !toucheslod0; ++oy) for(int ox = -1; ox <= 1; ++ox)
         {
@@ -1551,7 +1394,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
 
     loopv(worldlodcache) worldlodcache[i].active = false;
     worldlodunprunablecache = -1;
-    int active1 = 0, active2 = 0, missing = 0, centerjobs = 0, visiblejobs = 0, surroundingjobs = 0;
+    int active1 = 0, active2 = 0, active3 = 0, missing = 0, centerjobs = 0, visiblejobs = 0, surroundingjobs = 0;
     loopv(worldlodselections)
     {
         worldlodselection &selection = worldlodselections[i];
@@ -1592,6 +1435,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         }
         if(selection.active == 1) active1++;
         else if(selection.active == 2) active2++;
+        else if(selection.active == 3) active3++;
     }
     worldlodmissingchunks = missing;
 
@@ -1628,8 +1472,10 @@ static void updateworldlods(int chunkx, int chunky, bool force)
             const worldlodselection &selection = worldlodselections[i];
             if(selection.lastseen != totalmillis || selection.desired <= 0) continue;
             int lod = 0;
-            if(selection.desired == 1 && selection.distance > (worldlodfardistance - 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 2;
-            else if(selection.desired == 2 && selection.distance < (worldlodfardistance + 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 1;
+            if(selection.desired == 1 && selection.distance > (worldlod2start() - 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 2;
+            else if(selection.desired == 2 && selection.distance < (worldlod2start() + 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 1;
+            if(selection.desired == 2 && selection.distance > (worldlod3start() - 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 3;
+            else if(selection.desired == 3 && selection.distance < (worldlod3start() + 2 * worldlodhysteresis) * WORLD_BLOCK_SIZE) lod = 2;
             if(lod && queueworldlodjob(currentworldlodkey(selection.x, selection.y, lod), 3, selection.distance)) prefetchbudget--;
         }
     }
@@ -1662,6 +1508,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
     }
     TracyPlot("LOD/Active LOD1 chunks", int64_t(active1));
     TracyPlot("LOD/Active LOD2 chunks", int64_t(active2));
+    TracyPlot("LOD/Active LOD3 chunks", int64_t(active3));
     TracyPlot("LOD/Missing required chunks", int64_t(missing));
     TracyPlot("LOD/Center-priority jobs", int64_t(centerjobs));
     TracyPlot("LOD/Frustum-priority jobs", int64_t(visiblejobs));
@@ -1802,6 +1649,80 @@ static float worldlodrenderfade(worldlodselection &selection)
     return smoothworldloddither(selection.fadeprogress);
 }
 
+struct worldlodwaterdraw
+{
+    int cacheindex;
+    ivec origin;
+};
+
+static vector<worldlodwaterdraw> worldlodwaterdraws;
+
+bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2)
+{
+    worldlodwaterdraws.setsize(0);
+    sx1 = sy1 = 1;
+    sx2 = sy2 = -1;
+    if(!worldlod || !camera1 || drawtex == DRAWTEX_MINIMAP) return false;
+    loopv(worldlodselections)
+    {
+        const worldlodselection &selection = worldlodselections[i];
+        if(selection.active != 1) continue;
+        const int index = findworldlodcache(currentworldlodkey(selection.x, selection.y, 1));
+        if(index < 0 || !worldlodcache[index].waterindices ||
+           (worldlodselectionrequiresvoxel(selection) && worldlodsurfaceready(selection.x, selection.y))) continue;
+        const worldlodchunk &chunk = worldlodcache[index];
+        const ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0),
+                   bbmin = ivec(chunk.bbmin).add(origin).sub(2), bbmax = ivec(chunk.bbmax).add(origin);
+        float x1, y1, x2, y2;
+        if(isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) >= VFC_FOGGED || !calcbbscissor(bbmin, bbmax, x1, y1, x2, y2)) continue;
+        worldlodwaterdraw &draw = worldlodwaterdraws.add();
+        draw.cacheindex = index;
+        draw.origin = origin;
+        sx1 = min(sx1, x1); sy1 = min(sy1, y1);
+        sx2 = max(sx2, x2); sy2 = max(sy2, y2);
+    }
+    return !worldlodwaterdraws.empty();
+}
+
+void renderworldlodwater(bool mask)
+{
+    if(worldlodwaterdraws.empty()) return;
+    ZoneScopedN("Transparency/LOD1 water");
+    gle::disable();
+    if(!mask) glEnable(GL_CULL_FACE);
+    loop(pass, mask ? 1 : 2)
+    {
+        if(!mask)
+        {
+            setupworldlodwater(true, pass != 0);
+            glCullFace(pass ? GL_FRONT : GL_BACK);
+        }
+        LOCALPARAMF(watermeshparams, 0, 0, 0, 0);
+        loopv(worldlodwaterdraws)
+        {
+            const worldlodwaterdraw &draw = worldlodwaterdraws[i];
+            const worldlodchunk &chunk = worldlodcache[draw.cacheindex];
+            gle::bindvbo(chunk.vbo);
+            gle::bindebo(chunk.ebo);
+            gle::vertexpointer(sizeof(worldlodvertex), (const void *)offsetof(worldlodvertex, position));
+            gle::enablevertex();
+            LOCALPARAMF(watermeshoffset, float(draw.origin.x), float(draw.origin.y), -WATER_OFFSET);
+            glDrawElements(GL_TRIANGLES, chunk.waterindices, GL_UNSIGNED_INT,
+                           (const void *)(size_t(chunk.terrainindices) * sizeof(uint)));
+            glde++;
+        }
+    }
+    LOCALPARAMF(watermeshoffset, 0, 0, 0);
+    gle::disablevertex();
+    gle::clearebo();
+    gle::clearvbo();
+    if(!mask)
+    {
+        glCullFace(GL_BACK);
+        glDisable(GL_CULL_FACE);
+    }
+}
+
 void renderworldlods()
 {
     worldlodrendervertices = worldlodrendertriangles = worldlodrendertopfaces = worldlodrendersidefaces = 0;
@@ -1837,7 +1758,8 @@ void renderworldlods()
                    bbmin = ivec(chunk.bbmin).add(origin), bbmax = ivec(chunk.bbmax).add(origin);
         if(isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) >= VFC_FOGGED) continue;
         // The retained octree owns water during the terrain dither transition.
-        if(chunk.waterindices && !(selection.active == 1 && worldlodselectionrequiresvoxel(selection) &&
+        if(chunk.waterindices && (selection.active != 1 || drawtex == DRAWTEX_MINIMAP) &&
+           !(selection.active == 1 && worldlodselectionrequiresvoxel(selection) &&
                                    worldlodsurfaceready(selection.x, selection.y)))
         {
             waterdraw &draw = waterdraws.add();
@@ -1857,7 +1779,7 @@ void renderworldlods()
         gle::enablecolor();
         LOCALPARAM(lodmeshoffset, vec(origin));
         LOCALPARAMF(lodfade, fade);
-        LOCALPARAMF(lodclimateaverage, selection.active == 2 ? 1.0f : 0.0f);
+        LOCALPARAMF(lodclimateaverage, selection.active >= 2 ? 1.0f : 0.0f);
         glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
         const int indices = chunk.terrainindices + chunk.waterindices;
         vertices += chunk.vertices;
@@ -1920,6 +1842,12 @@ ICOMMAND(getdebuglod2chunks, "", (),
     loopv(worldlodselections) if(worldlodselections[i].active == 2) count++;
     intret(count);
 });
+ICOMMAND(getdebuglod3chunks, "", (),
+{
+    int count = 0;
+    loopv(worldlodselections) if(worldlodselections[i].active == 3) count++;
+    intret(count);
+});
 ICOMMAND(getdebuglodqueued, "", (),
 {
     int count = 0;
@@ -1933,6 +1861,9 @@ ICOMMAND(getdebuglodqueued, "", (),
 });
 ICOMMAND(getdebuglodmissing, "", (), intret(worldlodmissingchunks));
 ICOMMAND(getdebuglodcachehits, "", (), intret(worldlodcachehits));
+ICOMMAND(getdebugloddiskhits, "", (), intret(worldloddiskhits));
+ICOMMAND(getdebugloddiskwrites, "", (), intret(worldloddiskwrites));
+ICOMMAND(getdebugloddiskerrors, "", (), intret(worldloddiskerrors));
 ICOMMAND(getdebuglodcachemisses, "", (), intret(worldlodcachemisses));
 ICOMMAND(getdebuglodvertices, "", (), intret(worldlodrendervertices));
 ICOMMAND(getdebuglodtriangles, "", (), intret(worldlodrendertriangles));
