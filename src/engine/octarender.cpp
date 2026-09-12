@@ -1112,6 +1112,7 @@ vector<vtxarray *> valist, varoot;
 vtxarray *newva(const ivec &o, int size)
 {
     vtxarray *va = new vtxarray;
+    va->water = NULL;
     va->parent = NULL;
     va->o = o;
     va->size = size;
@@ -1126,6 +1127,7 @@ vtxarray *newva(const ivec &o, int size)
     va->mergelevel = -1;
 
     vc.setupdata(va);
+    buildwaterresource(*va);
     va->oqcontent = va->alphatris || va->matmask || !va->mapmodels.empty() || !va->decals.empty();
 
     if(va->alphatris)
@@ -1170,6 +1172,7 @@ void invalidatevabb(vtxarray *va)
 
 void destroyva(vtxarray *va, bool reparent)
 {
+    releasewaterresource(*va);
     vtxarray *parent = va->parent;
     wverts -= va->verts;
     wtris -= va->tris + va->blends + va->alphatris + va->decaltris;

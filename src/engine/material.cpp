@@ -16,21 +16,34 @@ static inline uint hthash(const watercornerkey &position)
 }
 
 static hashtable<watercornerkey, float> watercornerdrops(1 << 14);
-static int watercornermillis = -1;
+static void invalidatewaterresources(const ivec *minimum = NULL, const ivec *maximum = NULL, bool topology = false);
 
 void invalidatewatercorners()
 {
+    invalidatewaterresources();
     watercornerdrops.recycle();
+}
+
+void invalidatewatercorners(const ivec &absolute)
+{
+    selinfo local;
+    local.o = absolute;
+    worldselectiontolocal(local);
+    const ivec maximum = ivec(local.o).add(16);
+    watercornerdrops.recycle();
+    invalidatewaterresources(&local.o, &maximum, false);
 }
 
 void invalidatewatergeometry()
 {
+    invalidatewaterresources(NULL, NULL, true);
     naturalwaterheights.clear();
     watercornerdrops.recycle();
 }
 
 void invalidatewatergeometry(const ivec &minimum, const ivec &maximum)
 {
+    invalidatewaterresources(&minimum, &maximum, true);
     naturalwaterheights.invalidate(minimum, maximum);
     watercornerdrops.recycle();
 }
@@ -107,7 +120,7 @@ struct QuadNode
     }
 };
 
-static void drawmaterial(const materialsurface &m, float offset, const bvec4 &color = bvec4(0, 0, 0, 0), bool watermask = false)
+static void drawmaterial(const materialsurface &m, float offset, const bvec4 &color = bvec4(0, 0, 0, 0))
 {
     if(gle::attribbuf.empty())
     {
@@ -116,46 +129,6 @@ static void drawmaterial(const materialsurface &m, float offset, const bvec4 &co
         gle::begin(GL_QUADS);
     }
     float x = m.o.x, y = m.o.y, z = m.o.z, csize = m.csize, rsize = m.rsize;
-    const float waterdrop = getwatermaterialdrop(m);
-    bool falling = false;
-    const bool flowingtop = m.orient == O_TOP && getwatermateriallevel(m, falling) >= 0 && !falling;
-    if(flowingtop)
-    {
-        const float surfaceoffset = watermask ? getwatergeometryoffset() : -offset;
-        for(int sy = m.o.y; sy < m.o.y + m.csize; sy += 16) for(int sx = m.o.x; sx < m.o.x + m.rsize; sx += 16)
-        {
-            if(gle::attribbuf.length() >= (1 << 16) * int(sizeof(vec) + sizeof(bvec4)))
-            {
-                xtraverts += gle::end();
-                gle::begin(GL_QUADS);
-            }
-            const int x1 = min(sx + 16, m.o.x + m.rsize), y1 = min(sy + 16, m.o.y + m.csize);
-            gle::attribf(sx, sy, z - getwatercornerdrop(sx, sy, z) + surfaceoffset); gle::attrib(color);
-            gle::attribf(x1, sy, z - getwatercornerdrop(x1, sy, z) + surfaceoffset); gle::attrib(color);
-            gle::attribf(x1, y1, z - getwatercornerdrop(x1, y1, z) + surfaceoffset); gle::attrib(color);
-            gle::attribf(sx, y1, z - getwatercornerdrop(sx, y1, z) + surfaceoffset); gle::attrib(color);
-        }
-        return;
-    }
-    if(m.orient == O_TOP) z -= waterdrop;
-    if(waterdrop > 0 && (m.material&MATF_VOLUME) == MAT_WATER && m.orient != O_BOTTOM && m.orient != O_TOP)
-    {
-        const float zmax = z - waterdrop;
-        switch(m.orient)
-        {
-        #define GENFACEORIENT(orient, v0, v1, v2, v3) \
-            case orient: v0 v1 v2 v3 break;
-        #define GENFACEVERT(orient, vert, mx,my,mz, sx,sy,sz) \
-            { \
-                gle::attribf(mx sx, my sy, mz sz); \
-                gle::attrib(color); \
-            }
-            GENFACEVERTSXY(x, x, y, y, z, zmax, /**/, + csize, /**/, + rsize, + offset, - offset)
-        #undef GENFACEORIENT
-        #undef GENFACEVERT
-        }
-        return;
-    }
     switch(m.orient)
     {
     #define GENFACEORIENT(orient, v0, v1, v2, v3) \
@@ -225,12 +198,6 @@ float getwatermaterialdrop(const materialsurface &m)
 
 float getwatercornerdrop(int x, int y, int z)
 {
-    // Simulation can change heights without changing voxel material. Share resolved corners only within this frame.
-    if(watercornermillis != totalmillis)
-    {
-        watercornerdrops.recycle();
-        watercornermillis = totalmillis;
-    }
     const watercornerkey position(x, y, z);
     if(float *cached = watercornerdrops.access(position)) return *cached;
     float drop = 16.0f;
@@ -744,15 +711,7 @@ static void drawglass(const materialsurface &m, float offset)
     }
 }
 
-vector<materialsurface> editsurfs, glasssurfs[4], watersurfs[4], waterfallsurfs[4], lavasurfs[4], lavafallsurfs[4];
-
-struct waterfallquad
-{
-    vec vertices[4];
-    int orient;
-};
-
-static vector<waterfallquad> waterfallgeometry[4];
+vector<materialsurface> editsurfs, glasssurfs[4], lavasurfs[4], lavafallsurfs[4];
 
 static watergeometrycell lookupwatergeometrycell(const ivec &position)
 {
@@ -766,97 +725,19 @@ static watergeometrycell lookupwatergeometrycell(const ivec &position)
                              isentirelysolid(c) || isclipped(c.material & MATF_VOLUME));
 }
 
-static void preparewaterfallgeometry()
-{
-    ZoneScopedN("Transparency/Prepare exposed waterfalls");
-    static vector<waterfacepatch> pending, exposed;
-    const float wave = getwatergeometryoffset();
-    loopk(4)
-    {
-        vector<waterfallquad> &quads = waterfallgeometry[k];
-        quads.setsize(0);
-        if(drawtex == DRAWTEX_MINIMAP) continue;
-        exposed.setsize(0);
-        const vector<materialsurface> &surfs = waterfallsurfs[k];
-        loopv(surfs)
-        {
-            const materialsurface &m = surfs[i];
-            exposedwaterpatches(waterfacepatch(m.o, m.orient, m.rsize, m.csize), lookupwatergeometrycell, [&](const waterfacepatch &patch)
-            {
-                if(patch.orient == O_BOTTOM)
-                {
-                    exposed.add(patch);
-                    return;
-                }
-                const int dim = dimension(patch.orient), width = dim == 0 ? patch.rsize : patch.csize,
-                          height = dim == 0 ? patch.csize : patch.rsize;
-                for(int along = 0; along < width;)
-                {
-                    ivec origin(patch.origin);
-                    origin[1 - dim] += along;
-                    const int length = min(width - along, 16 - (origin[1 - dim] & 15));
-                    exposed.add(waterfacepatch(origin, patch.orient, dim == 0 ? length : height, dim == 0 ? height : length));
-                    along += length;
-                }
-            }, pending);
-        }
-        mergewaterfallpatches(exposed);
-        loopv(exposed)
-        {
-            const waterfacepatch &patch = exposed[i];
-            const ivec &o = patch.origin;
-            if(patch.orient == O_BOTTOM)
-            {
-                waterfallquad &quad = quads.add();
-                quad.orient = O_BOTTOM;
-                quad.vertices[0] = vec(o.x, o.y, o.z - 0.1f);
-                quad.vertices[1] = vec(o.x, o.y + patch.csize, o.z - 0.1f);
-                quad.vertices[2] = vec(o.x + patch.rsize, o.y + patch.csize, o.z - 0.1f);
-                quad.vertices[3] = vec(o.x + patch.rsize, o.y, o.z - 0.1f);
-                continue;
-            }
-            const int dim = dimension(patch.orient), width = dim == 0 ? patch.rsize : patch.csize,
-                      height = dim == 0 ? patch.csize : patch.rsize;
-            waterfallquad quad;
-            quad.orient = patch.orient;
-            // Fit only exposed intervals, once for both render passes. Simulated and natural water share corner heights.
-            if(naturalwaterfallquad(o.x, o.y, o.z, patch.orient, width, height, 0.1f,
-                [](int x, int y, int z) { return (lookupmaterial(vec(x, y, z)) & MATF_VOLUME) == MAT_WATER; },
-                [&](int x, int y, int z) { return z - getwatercornerdrop(x, y, z) + wave; }, quad.vertices))
-                quads.add(quad);
-        }
-    }
-}
+#include "watermesh.h"
 
-bool haswaterfallgeometry(int material)
+static void invalidatewaterresources(const ivec *minimum, const ivec *maximum, bool topology)
 {
-    return !waterfallgeometry[material].empty();
-}
-
-void renderwaterfallgeometry(int material, bool mask)
-{
-    const vector<waterfallquad> &quads = waterfallgeometry[material];
-    if(quads.empty()) return;
-    xtraverts += gle::end();
-    gle::defvertex();
-    if(mask) gle::defcolor(4, GL_UNSIGNED_BYTE);
-    else gle::defnormal(4, GL_BYTE);
-    gle::begin(GL_QUADS);
-    loopv(quads)
+    loopv(valist)
     {
-        if(gle::attribbuf.length() >= (1 << 16) * int(sizeof(vec) + sizeof(bvec4)))
-        {
-            xtraverts += gle::end();
-            gle::begin(GL_QUADS);
-        }
-        const waterfallquad &quad = quads[i];
-        loopj(4)
-        {
-            gle::attrib(quad.vertices[j]);
-            gle::attrib(mask ? bvec4(0, 0, 0, 0) : matnormals[quad.orient]);
-        }
+        vtxarray &va = *valist[i];
+        if(!va.water) continue;
+        if(minimum && maximum && (va.o.x > maximum->x + 1 || va.o.y > maximum->y + 1 || va.o.z > maximum->z + 129 ||
+           va.o.x + va.size < minimum->x - 1 || va.o.y + va.size < minimum->y - 1 || va.o.z + va.size < minimum->z - 64)) continue;
+        va.water->version = 0;
+        if(topology) va.water->topologydirty = true;
     }
-    xtraverts += gle::end();
 }
 
 float matliquidsx1 = -1, matliquidsy1 = -1, matliquidsx2 = 1, matliquidsy2 = 1;
@@ -868,11 +749,10 @@ int findmaterials()
 {
     ZoneScopedN("Transparency/Find materials");
     editsurfs.setsize(0);
+    visiblewater.setsize(0);
     loopi(4)
     {
         glasssurfs[i].setsize(0);
-        watersurfs[i].setsize(0);
-        waterfallsurfs[i].setsize(0);
         lavasurfs[i].setsize(0);
         lavafallsurfs[i].setsize(0);
     }
@@ -918,14 +798,11 @@ int findmaterials()
             matrefractsy1 = min(matrefractsy1, sy1);
             matrefractsx2 = max(matrefractsx2, sx2);
             matrefractsy2 = max(matrefractsy2, sy2);
-            loopi(va->matsurfs)
+            if(va->water && va->water->topologydirty) buildwaterresource(*va);
+            if(va->water)
             {
-                materialsurface &m = va->matbuf[i];
-                if((m.material&MATF_VOLUME) != MAT_WATER || m.visible == MATSURF_EDIT_ONLY) { i += m.skip; continue; }
                 hasmats |= 4|1;
-                if(m.orient == O_TOP) watersurfs[m.material&MATF_INDEX].put(&m, 1+int(m.skip));
-                else waterfallsurfs[m.material&MATF_INDEX].put(&m, 1+int(m.skip));
-                i += m.skip;
+                visiblewater.add(va);
             }
         }
         if(drawtex != DRAWTEX_ENVMAP && va->glassmin.x <= va->glassmax.x && calcbbscissor(va->glassmin, va->glassmax, sx1, sy1, sx2, sy2))
@@ -949,7 +826,6 @@ int findmaterials()
             }
         }
     }
-    preparewaterfallgeometry();
     float sx1 = 1, sy1 = 1, sx2 = -1, sy2 = -1;
     if(findworldlodwater(sx1, sy1, sx2, sy2))
     {
@@ -976,7 +852,7 @@ void rendermaterialmask()
     loopk(4) { vector<materialsurface> &surfs = glasssurfs[k]; loopv(surfs) drawmaterial(surfs[i], 0.1f); }
     xtraverts += gle::end();
     LOCALPARAMF(liquidmask, 1.0f);
-    loopk(4) { vector<materialsurface> &surfs = watersurfs[k]; loopv(surfs) drawmaterial(surfs[i], WATER_OFFSET, bvec4(0, 0, 0, 0), true); }
+    loopk(4) renderwatergeometry(k, true);
     loopk(4) renderwaterfallgeometry(k, true);
     xtraverts += gle::end();
     renderworldlodwatermask();

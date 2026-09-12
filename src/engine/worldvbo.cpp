@@ -50,6 +50,8 @@ static PFNGLFENCESYNCPROC worldfencesync = NULL;
 static PFNGLCLIENTWAITSYNCPROC worldclientwaitsync = NULL;
 static PFNGLDELETESYNCPROC worlddeletesync = NULL;
 static bool worldsyncinitialized = false;
+static GLuint worldmeshpages[2] = { 0, 0 };
+static int worldmeshused[2] = { 0, 0 };
 VARP(chunkvbocachemb, 0, 32, 256);
 
 static bool initworldvbosync()
@@ -78,6 +80,12 @@ static void discardretiredworldvbo(int index)
 
 void cleanupstreamingvbos()
 {
+    loopi(2)
+    {
+        if(worldmeshpages[i]) destroyvbo(worldmeshpages[i]);
+        worldmeshpages[i] = 0;
+        worldmeshused[i] = 0;
+    }
     releaseworldvbopage();
     while(!retiredworldvbos.empty()) discardretiredworldvbo(retiredworldvbos.length() - 1);
     worldsyncinitialized = false;
@@ -147,6 +155,48 @@ void destroyvbo(GLuint vbo)
         if(vbi.data) delete[] vbi.data;
         vbos.remove(vbo);
     }
+}
+
+// Byte-addressed ranges for section attachments. Use the world's reference counting,
+// page ownership and fence retirement; published mesh ranges are never overwritten.
+void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes)
+{
+    if(range.buffer) destroyvbo(range.buffer);
+    range = worldmeshrange();
+    if(!bytes) return;
+    const int stream = target == GL_ARRAY_BUFFER ? 0 : 1, type = NUMVBO + stream;
+    const int capacity = max(1 << 20, (bytes + 4095) & ~4095);
+    int offset = (worldmeshused[stream] + 15) & ~15;
+    if(worldmeshpages[stream] && offset + bytes > vbos[worldmeshpages[stream]].capacity)
+    {
+        destroyvbo(worldmeshpages[stream]);
+        worldmeshpages[stream] = 0;
+    }
+    gle::disable();
+    if(!worldmeshpages[stream])
+    {
+        GLuint buffer = initworldvbosync() ? acquireworldvbo(type, capacity) : 0;
+        const bool reused = buffer != 0;
+        if(!reused) glGenBuffers_(1, &buffer);
+        glBindBuffer_(target, buffer);
+        if(!reused) glBufferData_(target, capacity, NULL, GL_DYNAMIC_DRAW);
+        vboinfo &info = vbos[buffer];
+        info.uses = 1;
+        info.capacity = capacity;
+        info.type = type;
+        info.streaming = true;
+        info.data = NULL;
+        worldmeshpages[stream] = buffer;
+        offset = 0;
+    }
+    range.buffer = worldmeshpages[stream];
+    range.offset = offset;
+    ++vbos[range.buffer].uses;
+    glBindBuffer_(target, range.buffer);
+    glBufferSubData_(target, offset, bytes, data);
+    glBindBuffer_(target, 0);
+    worldmeshused[stream] = offset + bytes;
+    worldvauploadbytes += bytes;
 }
 
 static void releaseworldvbopage()

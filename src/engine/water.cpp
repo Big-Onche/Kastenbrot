@@ -123,7 +123,8 @@ int getwatercelllevel(const ivec &position, bool &falling)
             return -1;
         }
         cell = &fluidcells.access(absolute.o, fluidcell(0, sourcekind, false, absolute.o));
-        schedulewater(absolute.o);
+        invalidatewatercorners(absolute.o);
+    schedulewater(absolute.o);
     }
     falling = cell->falling;
     return watercelllevel(*cell);
@@ -241,7 +242,11 @@ static bool addwatercell(const ivec &position, int level, int sourcekind, bool f
             existing->origin = origin;
             changed = true;
         }
-        if(changed) schedulewater(position, delay);
+        if(changed)
+        {
+            invalidatewatercorners(position);
+            schedulewater(position, delay);
+        }
         return changed;
     }
     if(!wateraccepts(position)) return false;
@@ -254,7 +259,7 @@ static bool addwatercell(const ivec &position, int level, int sourcekind, bool f
         fluidcells.remove(position);
         return false;
     }
-    if(materialexists && refresh) worldwaterchanged(position, ivec(position).add(WATER_BLOCK_SIZE));
+    invalidatewatercorners(position);
     schedulewater(position, delay);
     return true;
 }
@@ -293,6 +298,7 @@ static void removewatercell(const ivec &position)
     if(!cell) return;
     const bool persist = cell->source();
     fluidcells.remove(position);
+    invalidatewatercorners(position);
     setwatermaterial(position, false, persist);
     schedulewaterneighbors(position);
 }
@@ -364,7 +370,7 @@ void watermaterialchanged(const selinfo &selection, int material)
             activated |= addwatercell(position, 0, WATER_SOURCE_MANUAL, false, 0, false);
         else waterterrainchanged(position);
     }
-    if(activated) worldwaterchanged(absolute.o, end);
+    if(activated) invalidatewatercorners();
 }
 
 static bool watercanflowinto(const ivec &position)
@@ -555,6 +561,7 @@ static void updatewatercell(const ivec &position)
         }
         if(cell->level != desiredlevel || cell->falling != desiredfalling || cell->origin != desiredorigin)
         {
+            invalidatewatercorners(position);
             cell->level = uchar(desiredlevel);
             cell->falling = desiredfalling;
             cell->origin = desiredorigin;
@@ -581,6 +588,7 @@ static void updatewatercell(const ivec &position)
         }
         if(sources >= 2)
         {
+            invalidatewatercorners(position);
             cell->sourcekind = WATER_SOURCE_NATURAL_ACTIVE;
             cell->falling = false;
             cell->level = 0;
@@ -621,7 +629,6 @@ void updatewatersimulation()
 {
     ZoneScopedN("World/Water simulation");
     if(fluidupdates.empty()) return;
-    invalidatewatercorners();
     const Uint64 start = SDL_GetPerformanceCounter(),
                  allowance = Uint64(fluidupdatebudget * SDL_GetPerformanceFrequency() / 1000.0);
     const int updatebudget = authoritativewatersettings ? authoritativewaterupdates : fluidupdatespertick;
@@ -786,7 +793,7 @@ void renderwaterfog(int mat, float surface)
     glDepthRange(0, 1);
 }
 
-/* vertex water */
+/* Lava tessellation. Water meshes are owned by section VAs in watermesh.h. */
 VARP(watersubdiv, 0, 2, 3);
 VARP(waterlod, 0, 1, 3);
 
@@ -831,7 +838,7 @@ static inline void vertwn(float v1, float v2, float v3)
     gle::attribf(v1, v2, v3+h);
 }
 
-struct waterstrip
+struct lavastrip
 {
     int x1, y1, x2, y2, z;
     ushort size, subdiv;
@@ -860,18 +867,18 @@ struct waterstrip
         wsubdiv = subdiv;
     }
 };
-vector<waterstrip> waterstrips;
+vector<lavastrip> lavastrips;
 
-void flushwaterstrips()
+void flushlavastrips()
 {
     if(gle::attribbuf.length()) xtraverts += gle::end();
     gle::defvertex();
     int numverts = 0;
-    loopv(waterstrips) numverts += waterstrips[i].numverts();
+    loopv(lavastrips) numverts += lavastrips[i].numverts();
     gle::begin(GL_TRIANGLE_STRIP, numverts);
-    loopv(waterstrips)
+    loopv(lavastrips)
     {
-        waterstrips[i].restore();
+        lavastrips[i].restore();
         for(int x = wx1; x < wx2; x += wsubdiv)
         {
             for(int y = wy1; y <= wy2; y += wsubdiv)
@@ -889,12 +896,12 @@ void flushwaterstrips()
         }
         gle::multidraw();
     }
-    waterstrips.setsize(0);
+    lavastrips.setsize(0);
     wsize = 0;
     xtraverts += gle::end();
 }
 
-void flushwater(int mat = MAT_WATER, bool force = true)
+void flushlava(int mat = MAT_LAVA, bool force = true)
 {
     if(wsize)
     {
@@ -906,18 +913,18 @@ void flushwater(int mat = MAT_WATER, bool force = true)
             vertwq(wx2, wy2, wz);
             vertwq(wx1, wy2, wz);
         }
-        else waterstrips.add().save();
+        else lavastrips.add().save();
         wsize = 0;
     }
 
     if(force)
     {
         if(gle::attribbuf.length()) xtraverts += gle::end();
-        if(waterstrips.length()) flushwaterstrips();
+        if(lavastrips.length()) flushlavastrips();
     }
 }
 
-void rendervertwater(int subdiv, int xo, int yo, int z, int size, int mat)
+void rendervertlava(int subdiv, int xo, int yo, int z, int size, int mat)
 {
     if(wsize == size && wsubdiv == subdiv && wz == z)
     {
@@ -928,7 +935,7 @@ void rendervertwater(int subdiv, int xo, int yo, int z, int size, int mat)
         else if(wy2 == yo && wx1 == xo && wx2 == xo + size) { wy2 += size; return; }
     }
 
-    flushwater(mat, false);
+    flushlava(mat, false);
 
     wx1 = xo;
     wy1 = yo;
@@ -942,7 +949,7 @@ void rendervertwater(int subdiv, int xo, int yo, int z, int size, int mat)
     ASSERT((wy1 & (subdiv - 1)) == 0);
 }
 
-int calcwatersubdiv(int x, int y, int z, int size)
+int calclavasubdiv(int x, int y, int z, int size)
 {
     float dist;
     if(camera1->o.x >= x && camera1->o.x < x + size &&
@@ -954,47 +961,47 @@ int calcwatersubdiv(int x, int y, int z, int size)
     return subdiv >= 31 ? INT_MAX : 1<<subdiv;
 }
 
-int renderwaterlod(int x, int y, int z, int size, int mat)
+int renderlavalod(int x, int y, int z, int size, int mat)
 {
     if(size <= (32 << waterlod))
     {
-        int subdiv = calcwatersubdiv(x, y, z, size);
-        if(subdiv < size * 2) rendervertwater(min(subdiv, size), x, y, z, size, mat);
+        int subdiv = calclavasubdiv(x, y, z, size);
+        if(subdiv < size * 2) rendervertlava(min(subdiv, size), x, y, z, size, mat);
         return subdiv;
     }
     else
     {
-        int subdiv = calcwatersubdiv(x, y, z, size);
+        int subdiv = calclavasubdiv(x, y, z, size);
         if(subdiv >= size)
         {
-            if(subdiv < size * 2) rendervertwater(size, x, y, z, size, mat);
+            if(subdiv < size * 2) rendervertlava(size, x, y, z, size, mat);
             return subdiv;
         }
         int childsize = size / 2,
-            subdiv1 = renderwaterlod(x, y, z, childsize, mat),
-            subdiv2 = renderwaterlod(x + childsize, y, z, childsize, mat),
-            subdiv3 = renderwaterlod(x + childsize, y + childsize, z, childsize, mat),
-            subdiv4 = renderwaterlod(x, y + childsize, z, childsize, mat),
+            subdiv1 = renderlavalod(x, y, z, childsize, mat),
+            subdiv2 = renderlavalod(x + childsize, y, z, childsize, mat),
+            subdiv3 = renderlavalod(x + childsize, y + childsize, z, childsize, mat),
+            subdiv4 = renderlavalod(x, y + childsize, z, childsize, mat),
             minsubdiv = subdiv1;
         minsubdiv = min(minsubdiv, subdiv2);
         minsubdiv = min(minsubdiv, subdiv3);
         minsubdiv = min(minsubdiv, subdiv4);
         if(minsubdiv < size * 2)
         {
-            if(minsubdiv >= size) rendervertwater(size, x, y, z, size, mat);
+            if(minsubdiv >= size) rendervertlava(size, x, y, z, size, mat);
             else
             {
-                if(subdiv1 >= size) rendervertwater(childsize, x, y, z, childsize, mat);
-                if(subdiv2 >= size) rendervertwater(childsize, x + childsize, y, z, childsize, mat);
-                if(subdiv3 >= size) rendervertwater(childsize, x + childsize, y + childsize, z, childsize, mat);
-                if(subdiv4 >= size) rendervertwater(childsize, x, y + childsize, z, childsize, mat);
+                if(subdiv1 >= size) rendervertlava(childsize, x, y, z, childsize, mat);
+                if(subdiv2 >= size) rendervertlava(childsize, x + childsize, y, z, childsize, mat);
+                if(subdiv3 >= size) rendervertlava(childsize, x + childsize, y + childsize, z, childsize, mat);
+                if(subdiv4 >= size) rendervertlava(childsize, x, y + childsize, z, childsize, mat);
             }
         }
         return minsubdiv;
     }
 }
 
-void renderflatwater(int x, int y, int z, int rsize, int csize, int mat)
+void renderflatlava(int x, int y, int z, int rsize, int csize, int mat)
 {
     if(gle::attribbuf.empty()) { gle::defvertex(); gle::begin(GL_QUADS); }
     vertwn(x,       y,       z);
@@ -1003,38 +1010,13 @@ void renderflatwater(int x, int y, int z, int rsize, int csize, int mat)
     vertwn(x,       y+csize, z);
 }
 
-VARFP(vertwater, 0, 1, 1, allchanged());
+VARP(vertwater, 0, 1, 1);
 
-static inline void renderwater(const materialsurface &m, int mat = MAT_WATER)
+static inline void renderlava(const materialsurface &m)
 {
-    bool falling = false;
-    if(getwatermateriallevel(m, falling) >= 0 && !falling)
-    {
-        // Sloped river patches use the same quad format as flat water. Keep them in the current material batch.
-        flushwater(mat, false);
-        if(gle::attribbuf.empty()) { gle::defvertex(); gle::begin(GL_QUADS); }
-        const float offset = getwatergeometryoffset();
-        const int z = m.o.z;
-        for(int y = m.o.y; y < m.o.y + m.csize; y += WATER_BLOCK_SIZE)
-            for(int x = m.o.x; x < m.o.x + m.rsize; x += WATER_BLOCK_SIZE)
-            {
-                if(gle::attribbuf.length() >= (1 << 16) * int(sizeof(vec)))
-                {
-                    xtraverts += gle::end();
-                    gle::begin(GL_QUADS);
-                }
-                const int x1 = min(x + WATER_BLOCK_SIZE, m.o.x + m.rsize), y1 = min(y + WATER_BLOCK_SIZE, m.o.y + m.csize);
-                gle::attribf(x,  y,  z - getwatercornerdrop(x,  y,  z) + offset);
-                gle::attribf(x1, y,  z - getwatercornerdrop(x1, y,  z) + offset);
-                gle::attribf(x1, y1, z - getwatercornerdrop(x1, y1, z) + offset);
-                gle::attribf(x,  y1, z - getwatercornerdrop(x,  y1, z) + offset);
-            }
-        return;
-    }
-    const int z = m.o.z - int(getwatermaterialdrop(m));
-    if(!vertwater || drawtex == DRAWTEX_MINIMAP) renderflatwater(m.o.x, m.o.y, z, m.rsize, m.csize, mat);
-    else if(renderwaterlod(m.o.x, m.o.y, z, m.csize, mat) >= int(m.csize) * 2)
-        rendervertwater(m.csize, m.o.x, m.o.y, z, m.csize, mat);
+    if(!vertwater || drawtex == DRAWTEX_MINIMAP) renderflatlava(m.o.x, m.o.y, m.o.z, m.rsize, m.csize, MAT_LAVA);
+    else if(renderlavalod(m.o.x, m.o.y, m.o.z, m.csize, MAT_LAVA) >= int(m.csize) * 2)
+        rendervertlava(m.csize, m.o.x, m.o.y, m.o.z, m.csize, MAT_LAVA);
 }
 
 #define WATERVARS(name) \
@@ -1187,8 +1169,8 @@ void renderlava()
             gle::normal(vec(0, 0, 1));
 
             vector<materialsurface> &surfs = lavasurfs[k];
-            loopv(surfs) renderwater(surfs[i], MAT_LAVA);
-            flushwater(MAT_LAVA);
+            loopv(surfs) renderlava(surfs[i]);
+            flushlava(MAT_LAVA);
         }
 
         if(drawtex != DRAWTEX_MINIMAP && lavafallsurfs[k].length())
@@ -1268,9 +1250,8 @@ void renderwater()
     if(lodwater) preloadwatershaders(true);
     loopk(4)
     {
-        vector<materialsurface> &surfs = watersurfs[k];
         const bool renderlod = k == 0 && lodwater;
-        if(surfs.empty() && !renderlod) continue;
+        if(!haswatergeometry(k) && !renderlod) continue;
 
         MatSlot &wslot = lookupmaterialslot(MAT_WATER+k);
 
@@ -1340,26 +1321,14 @@ void renderwater()
 
         aboveshader->set();
         LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
-        loopv(surfs)
-        {
-            materialsurface &m = surfs[i];
-            if(camera1->o.z < m.o.z - WATER_OFFSET - getwatermaterialdrop(m)) continue;
-            renderwater(m);
-        }
-        flushwater();
+        renderwatergeometry(k, false, 1);
         if(renderlod) renderworldlodwater(false);
 
         if(belowshader)
         {
             belowshader->set();
             LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
-            loopv(surfs)
-            {
-                materialsurface &m = surfs[i];
-                if(camera1->o.z >= m.o.z - WATER_OFFSET - getwatermaterialdrop(m)) continue;
-                renderwater(m);
-            }
-            flushwater();
+            renderwatergeometry(k, false, -1);
             if(renderlod) renderworldlodwater(true);
         }
     }

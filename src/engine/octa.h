@@ -119,6 +119,16 @@ enum
     MERGE_USE    = 1<<2
 };
 
+struct waterresource;
+
+struct worldmeshrange
+{
+    GLuint buffer;
+    int offset;
+
+    worldmeshrange() : buffer(0), offset(0) {}
+};
+
 struct vtxarray
 {
     int listindex;
@@ -132,6 +142,7 @@ struct vtxarray
     ushort minvert, maxvert; // DRE info
     elementset *texelems, *decalelems;   // List of element indices sets (range) per texture
     materialsurface *matbuf; // buffer of material surfaces
+    waterresource *water; // Owned by the section VA, including detached streamed VAs.
     int verts, tris, texs, blendtris, blends, alphabacktris, alphaback, alphafronttris, alphafront, refracttris, refract, alphatris, texmask,
         sky, matsurfs, matmask, distance, rdistance, dyntexs, dynalphatexs, decaltris, decaltexs;
     int oqcontent;           // own or descendant content rendered outside the opaque Z pass
