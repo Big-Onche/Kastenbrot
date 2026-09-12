@@ -2995,6 +2995,7 @@ void gl_setupframe(bool force)
 
 void gl_drawframe()
 {
+    beginworldmeshdrawstats();
     synctimers();
     xtravertsva = xtraverts = glde = gbatches = vtris = vverts = 0;
     flipqueries();
@@ -3006,6 +3007,7 @@ void gl_drawframe()
     else gl_drawview();
     UI::render();
     gl_drawhud();
+    endworldmeshdrawstats();
 }
 
 void cleanupgl()

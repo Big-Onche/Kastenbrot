@@ -1272,6 +1272,11 @@ void findshadowvas(bool transparent)
         case SM_SPOT: findspotshadowvas(varoot, transparent); break;
     }
     sortshadowvas();
+    if(transparent && worldmeshpackets)
+    {
+        const vector<worldmeshsection *> &sections = getworldmeshsections();
+        loopv(sections) loopvj(sections[i]->ranges) if(sections[i]->ranges[j].alpha) { shadowtransparent |= 0x3F; break; }
+    }
 }
 
 void rendershadowmapworld()
@@ -1307,6 +1312,7 @@ void rendershadowmapworld()
     {
         renderworldsolidshadows();
         renderworldscattershadows();
+        renderworldmeshgeometry(0, true);
     }
 }
 
@@ -1732,7 +1738,8 @@ static void changetexgen(renderstate &cur, int orient, Slot &slot, VSlot &vslot)
 VAR(terrainblendwidth, 0, 16, 32);
 VAR(terrainblendstrength, 0, 100, 100);
 
-static inline void changeshader(renderstate &cur, int pass, geombatch &b)
+template<class Batch>
+static inline void changeshader(renderstate &cur, int pass, Batch &b)
 {
     GLOBALPARAMF(terrainblendwidth, float(terrainblendwidth));
     GLOBALPARAMF(terrainblendstrength, terrainblendstrength * 0.01f);
@@ -1944,6 +1951,7 @@ void renderva(renderstate &cur, vtxarray *va, int pass = RENDERPASS_GBUFFER, boo
 
 void cleanupva()
 {
+    clearworldmeshpackets();
     cleanupworldlods();
     clearvas(worldroot);
     cleanupstreamingvbos();
@@ -1978,10 +1986,13 @@ void rendergeom()
     if(doOQ)
     {
         static vector<vtxarray *> proxyqueries, groupqueries, leafqueries, depthvas;
-        proxyqueries.setsize(0);
-        groupqueries.setsize(0);
-        leafqueries.setsize(0);
-        depthvas.setsize(0);
+        {
+            ZoneScopedN("Render/G-buffer/World/OQ container reset");
+            proxyqueries.setsize(0);
+            groupqueries.setsize(0);
+            leafqueries.setsize(0);
+            depthvas.setsize(0);
+        }
 
         {
             ZoneScopedN("Render/G-buffer/World/Query preparation");
@@ -1989,17 +2000,22 @@ void rendergeom()
             // Keep already hidden groups resident in the query pool first. If the
             // pool is exhausted, dropping ownership makes the section visible on
             // the next traversal instead of leaving stale geometry hidden.
-            loopv(livecullqueries)
             {
-                vtxarray *va = livecullqueries[i];
-                if(va->query && va->query->owner == va) proxyqueries.add(va);
-                else clearvaocclusion(*va);
+                ZoneScopedN("Render/G-buffer/World/Query preparation/Proxy pool");
+                loopv(livecullqueries)
+                {
+                    vtxarray *va = livecullqueries[i];
+                    if(va->query && va->query->owner == va) proxyqueries.add(va);
+                    else clearvaocclusion(*va);
+                }
             }
 
             // Reserve queries for coarse section groups before leaf geometry can
             // consume the finite query pool.
-            for(vtxarray *va = visibleva; va; va = va->next) if(!va->texs && va->children.length())
             {
+                ZoneScopedN("Render/G-buffer/World/Query preparation/Group allocation");
+                for(vtxarray *va = visibleva; va; va = va->next) if(!va->texs && va->children.length())
+                {
                 if(va->oqcontent)
                 {
                     va->query = NULL;
@@ -2014,16 +2030,19 @@ void rendergeom()
                 }
                 applyvaquery(*va, vaqueryresult(*va));
                 va->query = newvaquery(*va);
-                if(va->query) groupqueries.add(va);
-                else clearvaocclusion(*va);
+                    if(va->query) groupqueries.add(va);
+                    else clearvaocclusion(*va);
+                }
             }
         }
 
         {
             ZoneScopedN("Render/G-buffer/World/Z and leaf queries");
 
-            for(vtxarray *va = visibleva; va; va = va->next) if(va->texs)
             {
+                ZoneScopedN("Render/G-buffer/World/Z and leaf queries/Traversal");
+                for(vtxarray *va = visibleva; va; va = va->next) if(va->texs)
+                {
                 if(va->oqcontent || (!oqgeomtiles && va->parent && va->size < getworldsectionsize()))
                 {
                     va->query = NULL;
@@ -2076,11 +2095,13 @@ void rendergeom()
                     if(va->occluded >= OCCLUDE_GEOM) continue;
                 }
 
-                renderva(cur, va, RENDERPASS_Z, true);
-                if(va->query) leafqueries.add(va);
+                    renderva(cur, va, RENDERPASS_Z, true);
+                    if(va->query) leafqueries.add(va);
+                }
             }
             if(!depthvas.empty())
             {
+                ZoneScopedN("Render/G-buffer/World/Z and leaf queries/Depth batch");
                 if(cur.vquery) disablevquery(cur);
                 if(!cur.vattribs) enablevattribs(cur, false);
                 if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
@@ -2125,30 +2146,42 @@ void rendergeom()
             }
         }
 
-        TracyPlot("Render/OQ group queries", int64_t(groupqueries.length()));
-        TracyPlot("Render/OQ leaf queries", int64_t(leafqueries.length()));
-        TracyPlot("Render/OQ hidden proxies", int64_t(proxyqueries.length()));
-        TracyPlot("Render/OQ allocated queries", int64_t(geomqueries));
+        {
+            ZoneScopedN("Render/G-buffer/World/OQ stats");
+            TracyPlot("Render/OQ group queries", int64_t(groupqueries.length()));
+            TracyPlot("Render/OQ leaf queries", int64_t(leafqueries.length()));
+            TracyPlot("Render/OQ hidden proxies", int64_t(proxyqueries.length()));
+            TracyPlot("Render/OQ allocated queries", int64_t(geomqueries));
+        }
 
         {
             ZoneScopedN("Render/G-buffer/World/Query resolve");
 
-            if(cur.vquery) disablevquery(cur);
-            if(cur.vattribs) disablevattribs(cur, false);
-            if(cur.vbuf) disablevbuf(cur);
+            {
+                ZoneScopedN("Render/G-buffer/World/Query resolve/State cleanup");
+                if(cur.vquery) disablevquery(cur);
+                if(cur.vattribs) disablevattribs(cur, false);
+                if(cur.vbuf) disablevbuf(cur);
+            }
 
-            glFlush();
-            if(cur.colormask) { cur.colormask = false; glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
-            if(cur.depthmask) { cur.depthmask = false; glDepthMask(GL_FALSE); }
-            workinoq();
-            if(!cur.colormask) { cur.colormask = true; glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); }
-            if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
+            {
+                ZoneScopedN("Render/G-buffer/World/Query resolve/OQ sync");
+                glFlush();
+                if(cur.colormask) { cur.colormask = false; glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
+                if(cur.depthmask) { cur.depthmask = false; glDepthMask(GL_FALSE); }
+                workinoq();
+                if(!cur.colormask) { cur.colormask = true; glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); }
+                if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
+            }
 
             // Parent results used during the Z pass came from the preceding view.
             // Resolve the replacement queries before those parents may suppress
             // child color rendering. Pending results fail open for this frame.
-            loopv(groupqueries) applyvaquery(*groupqueries[i], vaqueryresult(*groupqueries[i]));
-            loopv(leafqueries) applyvaquery(*leafqueries[i], vaqueryresult(*leafqueries[i]));
+            {
+                ZoneScopedN("Render/G-buffer/World/Query resolve/Apply results");
+                loopv(groupqueries) applyvaquery(*groupqueries[i], vaqueryresult(*groupqueries[i]));
+                loopv(leafqueries) applyvaquery(*leafqueries[i], vaqueryresult(*leafqueries[i]));
+            }
         }
 
         {
@@ -2160,22 +2193,31 @@ void rendergeom()
             {
                 ZoneScopedN("Render/G-buffer/World/Opaque color/Batch construction");
 
-                if(!multipassing) { multipassing = true; glDepthFunc(GL_LEQUAL); }
-                cur.texgenorient = -1;
-                setupgeom(cur);
-                resetbatches();
-
-                for(vtxarray *va = visibleva; va; va = va->next) if(va->texs && va->occluded < OCCLUDE_GEOM)
                 {
+                    ZoneScopedN("Render/G-buffer/World/Opaque color/Batch construction/Setup");
+                    if(!multipassing) { multipassing = true; glDepthFunc(GL_LEQUAL); }
+                    cur.texgenorient = -1;
+                    setupgeom(cur);
+                    resetbatches();
+                }
+
+                {
+                    ZoneScopedN("Render/G-buffer/World/Opaque color/Batch construction/VA collection");
+                    for(vtxarray *va = visibleva; va; va = va->next) if(va->texs && va->occluded < OCCLUDE_GEOM)
+                    {
 #ifdef TRACY_ENABLE
                     opaquevas++;
                     opaquetexs += va->texs;
 #endif
-                    blends += va->blends;
-                    renderva(cur, va, RENDERPASS_GBUFFER);
+                        blends += va->blends;
+                        renderva(cur, va, RENDERPASS_GBUFFER);
+                    }
                 }
                 // Include sorting in construction, not in the draw-time zone.
-                geomorder.sort(geombatches);
+                {
+                    ZoneScopedN("Render/G-buffer/World/Opaque color/Batch construction/Sort");
+                    geomorder.sort(geombatches);
+                }
 #ifdef TRACY_ENABLE
                 collectedbatches = geombatches.length();
                 uniquebatches = geomorder.count;
@@ -2194,18 +2236,23 @@ void rendergeom()
             }
 
 #ifdef TRACY_ENABLE
-            TracyPlot("Render/Opaque VAs", int64_t(opaquevas));
-            TracyPlot("Render/Opaque texture elements", int64_t(opaquetexs));
-            TracyPlot("Render/Opaque collected batches", int64_t(collectedbatches));
-            TracyPlot("Render/Opaque unique batches", int64_t(uniquebatches));
+            {
+                ZoneScopedN("Render/G-buffer/World/Opaque color/Stats");
+                TracyPlot("Render/Opaque VAs", int64_t(opaquevas));
+                TracyPlot("Render/Opaque texture elements", int64_t(opaquetexs));
+                TracyPlot("Render/Opaque collected batches", int64_t(collectedbatches));
+                TracyPlot("Render/Opaque unique batches", int64_t(uniquebatches));
+            }
 #endif
         }
 
         {
             ZoneScopedN("Render/G-buffer/World/Recovered color");
 
-            for(vtxarray *va = visibleva; va; va = va->next) if(va->texs && va->occluded >= OCCLUDE_GEOM)
             {
+                ZoneScopedN("Render/G-buffer/World/Recovered color/Traversal");
+                for(vtxarray *va = visibleva; va; va = va->next) if(va->texs && va->occluded >= OCCLUDE_GEOM)
+                {
                 bool parenthidden = va->parent && va->parent->occluded >= OCCLUDE_BB &&
                                     va->parent->occludedframe == occlusionframe;
                 if(parenthidden)
@@ -2219,10 +2266,15 @@ void rendergeom()
                 va->occludedframe = 0;
                 if(va->occluded >= OCCLUDE_GEOM) continue;
 
-                blends += va->blends;
-                renderva(cur, va, RENDERPASS_GBUFFER);
+                    blends += va->blends;
+                    renderva(cur, va, RENDERPASS_GBUFFER);
+                }
             }
-            if(geombatches.length()) renderbatches(cur, RENDERPASS_GBUFFER);
+            if(geombatches.length())
+            {
+                ZoneScopedN("Render/G-buffer/World/Recovered color/Batch draw");
+                renderbatches(cur, RENDERPASS_GBUFFER);
+            }
         }
     }
     else
@@ -2230,18 +2282,28 @@ void rendergeom()
         {
             ZoneScopedN("Render/G-buffer/World/Opaque no OQ");
 
-            setupgeom(cur);
-            resetbatches();
-            for(vtxarray *va = visibleva; va; va = va->next) if(va->texs)
             {
+                ZoneScopedN("Render/G-buffer/World/Opaque no OQ/Setup");
+                setupgeom(cur);
+                resetbatches();
+            }
+            {
+                ZoneScopedN("Render/G-buffer/World/Opaque no OQ/VA collection");
+                for(vtxarray *va = visibleva; va; va = va->next) if(va->texs)
+                {
                 va->query = NULL;
                 va->occluded = pvsoccluded(va->geommin, va->geommax) ? OCCLUDE_GEOM : OCCLUDE_NOTHING;
                 va->occludedframe = 0;
                 if(va->occluded >= OCCLUDE_GEOM) continue;
-                blends += va->blends;
-                renderva(cur, va, RENDERPASS_GBUFFER);
+                    blends += va->blends;
+                    renderva(cur, va, RENDERPASS_GBUFFER);
+                }
             }
-            if(geombatches.length()) renderbatches(cur, RENDERPASS_GBUFFER);
+            if(geombatches.length())
+            {
+                ZoneScopedN("Render/G-buffer/World/Opaque no OQ/Batch draw");
+                renderbatches(cur, RENDERPASS_GBUFFER);
+            }
         }
     }
 
@@ -2249,43 +2311,75 @@ void rendergeom()
     {
         ZoneScopedN("Render/G-buffer/World/Blend layer");
 
-        if(cur.vbuf) disablevbuf(cur);
-
-        if(!multipassing) { multipassing = true; glDepthFunc(GL_LEQUAL); }
-        glDepthMask(GL_FALSE);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-        maskgbuffer("cn");
-
-        GLOBALPARAMF(blendlayer, 0.0f);
-        cur.texgenorient = -1;
-        for(vtxarray *va = visibleva; va; va = va->next) if(va->blends && va->occluded < OCCLUDE_GEOM && va->curvfc != VFC_FOGGED)
         {
-            renderva(cur, va, RENDERPASS_GBUFFER_BLEND);
+            ZoneScopedN("Render/G-buffer/World/Blend layer/Setup");
+            if(cur.vbuf) disablevbuf(cur);
+            if(!multipassing) { multipassing = true; glDepthFunc(GL_LEQUAL); }
+            glDepthMask(GL_FALSE);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            maskgbuffer("cn");
+            GLOBALPARAMF(blendlayer, 0.0f);
+            cur.texgenorient = -1;
         }
-        if(geombatches.length()) renderbatches(cur, RENDERPASS_GBUFFER);
-
-        maskgbuffer("cnd");
-        glDisable(GL_BLEND);
-        glDepthMask(GL_TRUE);
+        {
+            ZoneScopedN("Render/G-buffer/World/Blend layer/VA collection");
+            for(vtxarray *va = visibleva; va; va = va->next) if(va->blends && va->occluded < OCCLUDE_GEOM && va->curvfc != VFC_FOGGED)
+            {
+                renderva(cur, va, RENDERPASS_GBUFFER_BLEND);
+            }
+        }
+        if(geombatches.length())
+        {
+            ZoneScopedN("Render/G-buffer/World/Blend layer/Batch draw");
+            renderbatches(cur, RENDERPASS_GBUFFER);
+        }
+        {
+            ZoneScopedN("Render/G-buffer/World/Blend layer/Restore state");
+            maskgbuffer("cnd");
+            glDisable(GL_BLEND);
+            glDepthMask(GL_TRUE);
+        }
     }
 
-    if(multipassing) glDepthFunc(GL_LESS);
+    {
+        ZoneScopedN("Render/G-buffer/World/Restore depth func");
+        if(multipassing) glDepthFunc(GL_LESS);
+    }
 
-    cleanupgeom(cur);
-    renderworldscattermeshes();
-    renderworldlods();
+    {
+        ZoneScopedN("Render/G-buffer/World/Cleanup geometry state");
+        cleanupgeom(cur);
+    }
+    {
+        ZoneScopedN("Render/G-buffer/World/Scatter meshes");
+        renderworldscattermeshes();
+    }
+    {
+        ZoneScopedN("Render/G-buffer/World/LODs");
+        renderworldlods();
+    }
+    {
+        ZoneScopedN("Render/G-buffer/World/Mesh geometry");
+        renderworldmeshgeometry();
+    }
 
     if(!doOQ)
     {
         ZoneScopedN("Render/G-buffer/World/Deferred OQ work");
 
-        glFlush();
-        if(cur.colormask) { cur.colormask = false; glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
-        if(cur.depthmask) { cur.depthmask = false; glDepthMask(GL_FALSE); }
-        workinoq();
-        if(!cur.colormask) { cur.colormask = true; glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); }
-        if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
+        {
+            ZoneScopedN("Render/G-buffer/World/Deferred OQ work/Flush");
+            glFlush();
+        }
+        {
+            ZoneScopedN("Render/G-buffer/World/Deferred OQ work/Resolve");
+            if(cur.colormask) { cur.colormask = false; glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
+            if(cur.depthmask) { cur.depthmask = false; glDepthMask(GL_FALSE); }
+            workinoq();
+            if(!cur.colormask) { cur.colormask = true; glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); }
+            if(!cur.depthmask) { cur.depthmask = true; glDepthMask(GL_TRUE); }
+        }
     }
 }
 
@@ -2375,6 +2469,7 @@ void renderrsmgeom(bool dyntex)
     if(multipassing) glDepthFunc(GL_LESS);
 
     cleanupgeom(cur);
+    renderworldmeshgeometry(0, false, true);
 }
 
 static vector<vtxarray *> alphavas;
@@ -2422,7 +2517,37 @@ int findalphavas()
             alpharefractsy2 = max(alpharefractsy2, sy2);
         }
     }
-    return (alpharefractvas ? 4 : 0) | (alphavas.length() ? 2 : 0) | (alphabackvas ? 1 : 0);
+    int meshmask = 0;
+    const vector<worldmeshsection *> &sections = getworldmeshsections();
+    loopv(sections)
+    {
+        const worldmeshsection &section = *sections[i];
+        if(!worldmeshsectionvisible(section)) continue;
+        int flags = 0;
+        loopvj(section.ranges) if(section.ranges[j].alpha)
+        {
+            VSlot &slot = lookupvslot(section.ranges[j].texture);
+            flags |= 2 | (slot.alphaback ? 1 : 0) | (slot.refractscale > 0 ? 4 : 0);
+        }
+        if(!flags) continue;
+        float sx1, sy1, sx2, sy2;
+        if(!calcbbscissor(section.minimum, section.maximum, sx1, sy1, sx2, sy2)) continue;
+        meshmask |= flags;
+        masktiles(alphatiles, sx1, sy1, sx2, sy2);
+        alphafrontsx1 = min(alphafrontsx1, sx1); alphafrontsy1 = min(alphafrontsy1, sy1);
+        alphafrontsx2 = max(alphafrontsx2, sx2); alphafrontsy2 = max(alphafrontsy2, sy2);
+        if(flags & 1)
+        {
+            alphabacksx1 = min(alphabacksx1, sx1); alphabacksy1 = min(alphabacksy1, sy1);
+            alphabacksx2 = max(alphabacksx2, sx2); alphabacksy2 = max(alphabacksy2, sy2);
+        }
+        if(flags & 4)
+        {
+            alpharefractsx1 = min(alpharefractsx1, sx1); alpharefractsy1 = min(alpharefractsy1, sy1);
+            alpharefractsx2 = max(alpharefractsx2, sx2); alpharefractsy2 = max(alpharefractsy2, sy2);
+        }
+    }
+    return meshmask | (alpharefractvas ? 4 : 0) | (alphavas.length() ? 2 : 0) | (alphabackvas ? 1 : 0);
 }
 
 void renderrefractmask()
@@ -2452,6 +2577,7 @@ void renderrefractmask()
     gle::clearvbo();
     gle::clearebo();
     gle::disablevertex();
+    renderworldmeshgeometry(2, false, false, true);
 }
 
 void renderalphageom(int side)
@@ -2478,6 +2604,7 @@ void renderalphageom(int side)
     }
 
     cleanupgeom(cur);
+    renderworldmeshgeometry(side);
 }
 
 void renderalphashadow(bool cullside)
@@ -2505,9 +2632,9 @@ void renderalphashadow(bool cullside)
             renderva(cur, va, RENDERPASS_SMALPHA);
     if(geombatches.length()) renderbatches(cur, RENDERPASS_SMALPHA);
 
-    glCullFace(GL_BACK);
-
     cleanupgeom(cur);
+    renderworldmeshgeometry(2, true);
+    glCullFace(GL_BACK);
 }
 
 CVARP(explicitskycolour, 0x800080);
@@ -3152,3 +3279,5 @@ void rendershadowmesh(shadowmesh *m)
     gle::clearebo();
     gle::clearvbo();
 }
+
+#include "worldmeshdraw.h"

@@ -32,7 +32,7 @@ static inline bool waterfallpatchless(const waterfacepatch &a, const waterfacepa
 }
 
 // Cell boundaries determine visibility, not tessellation. Rejoin exposed vertical runs before fitting their endpoints.
-static void mergewaterfallpatches(vector<waterfacepatch> &patches)
+static inline void mergewaterfallpatches(vector<waterfacepatch> &patches)
 {
     patches.sort(waterfallpatchless);
     int count = 0;

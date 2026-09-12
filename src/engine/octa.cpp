@@ -1149,6 +1149,17 @@ int classifyface(const cube &c, int orient, const ivec &co, int size)
 // more expensive version that checks both triangles of a face independently
 int visibletris(const cube &c, int orient, const ivec &co, int size, ushort vmat, ushort nmat, ushort matmask)
 {
+    ivec no;
+    int nsize;
+    const cube &o = neighbourcube(c, orient, co, size, no, nsize);
+    return visibletrisagainst(c, orient, co, size, o, no, nsize, sharedleafface(c, o, size, nsize), vmat, nmat, matmask);
+}
+
+// Snapshot workers supply their own neighbour and foliage classification. This
+// routine must not consult worldroot, neighbourstack, or the texture registry.
+int visibletrisagainst(const cube &c, int orient, const ivec &co, int size, const cube &o, const ivec &neighbororigin, int nsize,
+                       bool sharedleaf, ushort vmat, ushort nmat, ushort matmask)
+{
     int vis = 3, touching = 0xF;
     ivec v[4], e1, e2, e3, n;
     genfaceverts(c, orient, v);
@@ -1175,17 +1186,13 @@ int visibletris(const cube &c, int orient, const ivec &co, int size, ushort vmat
     int order = convex < 0 ? 1 : 0, notouch = notouchmasks[order][touching];
     if((vis&notouch)==vis) return vis;
 
-    ivec no;
-    int nsize;
-    const cube &o = neighbourcube(c, orient, co, size, no, nsize);
-
     if((c.material&matmask) == nmat) nmat = MAT_AIR;
 
     ivec vo = ivec(co).mask(0xFFF);
-    no.mask(0xFFF);
+    ivec no = ivec(neighbororigin).mask(0xFFF);
     ivec2 cf[4], of[4];
     int opp = opposite(orient), numo = 0, numc;
-    if(vmat == MAT_AIR && sharedleafface(c, o, size, nsize))
+    if(vmat == MAT_AIR && sharedleaf)
         return orient&1 ? vis : vis&notouch;
     if(nsize > size || (nsize == size && !o.children))
     {

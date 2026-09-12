@@ -571,6 +571,7 @@ static streaminggeometryqueue streaminggeometry, editinggeometry;
 
 void resetgeometrychanges()
 {
+    clearworldmeshpackets();
     haschanged = false;
     streaminggeometry.clear();
     editinggeometry.clear();
@@ -633,11 +634,13 @@ static void readystreamingtile(cube &c)
 
 bool streaminggeometrypending(const ivec &sectionorigin)
 {
+    if(worldmeshpackets && getworldsectionsize()) return worldmeshpacketpending(sectionorigin);
     return editinggeometry.pending(sectionorigin) || streaminggeometry.pending(sectionorigin);
 }
 
 int processstreaminggeometry(double budget, int uploadlimit, bool editsonly)
 {
+    if(worldmeshpackets && getworldsectionsize()) return processworldmeshpackets(budget, uploadlimit);
     if((!editinggeometry.length() && (editsonly || !streaminggeometry.length())) || budget == 0) return 0;
     ZoneScopedN("Geometry/Stream mesh tiles");
     const Uint64 start = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
@@ -802,6 +805,14 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
     if(sectionsize)
     {
         ZoneScopedN("Geometry/Queue edited mesh tiles");
+        dirtyworldmeshpackets(bbmin, bbmax, true);
+        if(worldmeshpackets)
+        {
+            invalidatelocalambient(bbmin, bbmax);
+            readyeditcollision(dirtymin, dirtymax, worldroot, ivec(0, 0, 0), worldsize / 2);
+            resetclipplanes();
+            return;
+        }
         editinggeometry.changed(bbmin, bbmax, sectionsize, worldsize);
         // An interrupted background preparation must not publish surfaces from
         // before the edit after the priority replacement has been displayed.
@@ -837,11 +848,12 @@ void changedstreaming(const ivec *bbmins, const ivec *bbmaxs, int numregions, bo
     if(numregions <= 0 || !sectionsize) return;
     loopi(numregions)
     {
+        dirtyworldmeshpackets(bbmins[i], bbmaxs[i]);
         markworldchunksdirty(bbmins[i], bbmaxs[i]);
         editinggeometry.invalidate(bbmins[i], bbmaxs[i]);
         invalidatewatergeometry(bbmins[i], bbmaxs[i]);
         invalidatelocalambient(bbmins[i], bbmaxs[i]);
-        streaminggeometry.changed(bbmins[i], bbmaxs[i], sectionsize, worldsize);
+        if(!worldmeshpackets) streaminggeometry.changed(bbmins[i], bbmaxs[i], sectionsize, worldsize);
     }
     if(commit) processstreaminggeometry(2, INT_MAX);
 }

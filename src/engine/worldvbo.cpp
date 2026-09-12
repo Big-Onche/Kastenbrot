@@ -159,14 +159,15 @@ void destroyvbo(GLuint vbo)
 
 // Byte-addressed ranges for section attachments. Use the world's reference counting,
 // page ownership and fence retirement; published mesh ranges are never overwritten.
-void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes)
+void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes, int alignment)
 {
     if(range.buffer) destroyvbo(range.buffer);
     range = worldmeshrange();
     if(!bytes) return;
     const int stream = target == GL_ARRAY_BUFFER ? 0 : 1, type = NUMVBO + stream;
     const int capacity = max(1 << 20, (bytes + 4095) & ~4095);
-    int offset = (worldmeshused[stream] + 15) & ~15;
+    ASSERT(alignment > 0);
+    int offset = ((worldmeshused[stream] + alignment - 1) / alignment) * alignment;
     if(worldmeshpages[stream] && offset + bytes > vbos[worldmeshpages[stream]].capacity)
     {
         destroyvbo(worldmeshpages[stream]);

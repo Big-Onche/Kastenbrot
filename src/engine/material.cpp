@@ -519,61 +519,69 @@ void preloadglassshaders(bool force = false)
     if(glassenv) useshaderbyname("glassenv");
 }
 
+static int setupmaterialsurfaces(materialsurface *surfaces, int count)
+{
+    int hasmat = 0;
+    materialsurface *skip = NULL;
+    loopj(count)
+    {
+        materialsurface &m = surfaces[j];
+        int matvol = m.material&MATF_VOLUME;
+        if(matvol == MAT_LAVA && m.orient!=O_BOTTOM && m.orient!=O_TOP)
+        {
+            m.ends = 0;
+            int dim = dimension(m.orient), coord = dimcoord(m.orient);
+            ivec o(m.o);
+            o.z -= 1;
+            o[dim] += coord ? 1 : -1;
+            int minc = o[dim^1], maxc = minc + (C[dim]==2 ? m.rsize : m.csize);
+            ivec co;
+            int csize;
+            while(o[dim^1] < maxc)
+            {
+                cube &c = lookupcube(o, 0, co, csize);
+                if(isliquid(c.material&MATF_VOLUME)) { m.ends |= 1; break; }
+                o[dim^1] += csize;
+            }
+            o[dim^1] = minc;
+            o.z += R[dim]==2 ? m.rsize : m.csize;
+            o[dim] -= coord ? 2 : -2;
+            while(o[dim^1] < maxc)
+            {
+                cube &c = lookupcube(o, 0, co, csize);
+                if(visiblematerial(c, O_TOP, co, csize)) { m.ends |= 2; break; }
+                o[dim^1] += csize;
+            }
+        }
+        else if(matvol==MAT_GLASS)
+        {
+            int dim = dimension(m.orient);
+            vec center(m.o);
+            center[R[dim]] += m.rsize/2;
+            center[C[dim]] += m.csize/2;
+            m.envmap = closestenvmap(center);
+        }
+        if(matvol) hasmat |= 1<<m.material;
+        m.skip = 0;
+        if(skip && m.material == skip->material && m.orient == skip->orient && skip->skip < 0xFFFF)
+            skip->skip++;
+        else
+            skip = &m;
+    }
+    return hasmat;
+}
+
+void setupworldmeshmaterials(materialsurface *surfaces, int count)
+{
+    preloadmaterials(setupmaterialsurfaces(surfaces, count));
+}
+
 void setupmaterials(int start, int len)
 {
     ZoneScopedN("Geometry/Setup materials");
     int hasmat = 0;
     if(!len) len = valist.length();
-    for(int i = start; i < len; i++)
-    {
-        vtxarray *va = valist[i];
-        materialsurface *skip = NULL;
-        loopj(va->matsurfs)
-        {
-            materialsurface &m = va->matbuf[j];
-            int matvol = m.material&MATF_VOLUME;
-            if(matvol == MAT_LAVA && m.orient!=O_BOTTOM && m.orient!=O_TOP)
-            {
-                m.ends = 0;
-                int dim = dimension(m.orient), coord = dimcoord(m.orient);
-                ivec o(m.o);
-                o.z -= 1;
-                o[dim] += coord ? 1 : -1;
-                int minc = o[dim^1], maxc = minc + (C[dim]==2 ? m.rsize : m.csize);
-                ivec co;
-                int csize;
-                while(o[dim^1] < maxc)
-                {
-                    cube &c = lookupcube(o, 0, co, csize);
-                    if(isliquid(c.material&MATF_VOLUME)) { m.ends |= 1; break; }
-                    o[dim^1] += csize;
-                }
-                o[dim^1] = minc;
-                o.z += R[dim]==2 ? m.rsize : m.csize;
-                o[dim] -= coord ? 2 : -2;
-                while(o[dim^1] < maxc)
-                {
-                    cube &c = lookupcube(o, 0, co, csize);
-                    if(visiblematerial(c, O_TOP, co, csize)) { m.ends |= 2; break; }
-                    o[dim^1] += csize;
-                }
-            }
-            else if(matvol==MAT_GLASS)
-            {
-                int dim = dimension(m.orient);
-                vec center(m.o);
-                center[R[dim]] += m.rsize/2;
-                center[C[dim]] += m.csize/2;
-                m.envmap = closestenvmap(center);
-            }
-            if(matvol) hasmat |= 1<<m.material;
-            m.skip = 0;
-            if(skip && m.material == skip->material && m.orient == skip->orient && skip->skip < 0xFFFF)
-                skip->skip++;
-            else
-                skip = &m;
-        }
-    }
+    for(int i = start; i < len; ++i) hasmat |= setupmaterialsurfaces(valist[i]->matbuf, valist[i]->matsurfs);
     preloadmaterials(hasmat);
 }
 
@@ -729,6 +737,17 @@ static watergeometrycell lookupwatergeometrycell(const ivec &position)
 
 static void invalidatewaterresources(const ivec *minimum, const ivec *maximum, bool topology)
 {
+    const vector<worldmeshsection *> &sections = getworldmeshsections();
+    loopv(sections)
+    {
+        worldmeshsection &section = *sections[i];
+        if(!section.water) continue;
+        if(minimum && maximum && (section.minimum.x > maximum->x + 1 || section.minimum.y > maximum->y + 1 ||
+           section.minimum.z > maximum->z + 129 || section.maximum.x < minimum->x - 1 ||
+           section.maximum.y < minimum->y - 1 || section.maximum.z < minimum->z - 64)) continue;
+        section.water->version = 0;
+        // Topology is replaced by the section queue, never regenerated by drawing.
+    }
     loopv(valist)
     {
         vtxarray &va = *valist[i];
@@ -802,7 +821,7 @@ int findmaterials()
             if(va->water)
             {
                 hasmats |= 4|1;
-                visiblewater.add(va);
+                visiblewater.add(va->water);
             }
         }
         if(drawtex != DRAWTEX_ENVMAP && va->glassmin.x <= va->glassmax.x && calcbbscissor(va->glassmin, va->glassmax, sx1, sy1, sx2, sy2))
@@ -824,6 +843,56 @@ int findmaterials()
                 glasssurfs[m.material&MATF_INDEX].put(&m, 1+int(m.skip));
                 i += m.skip;
             }
+        }
+    }
+    const vector<worldmeshsection *> &sections = getworldmeshsections();
+    loopv(sections)
+    {
+        worldmeshsection &section = *sections[i];
+        if(!worldmeshsectionvisible(section) || section.materials.empty()) continue;
+        if(editmode && showmat && !drawtex)
+        {
+            editsurfs.put(section.materials.getbuf(), section.materials.length());
+            continue;
+        }
+        const ivec minimum = ivec(section.minimum).sub(ivec(2, 2, 128)), maximum = ivec(section.maximum).add(ivec(2, 2, 64));
+        float sx1, sy1, sx2, sy2;
+        if(!calcbbscissor(minimum, maximum, sx1, sy1, sx2, sy2)) continue;
+        int flags = section.water ? 5 : 0;
+        if(section.water) visiblewater.add(section.water);
+        loopvj(section.materials)
+        {
+            const materialsurface &m = section.materials[j];
+            if(m.visible == MATSURF_EDIT_ONLY) continue;
+            switch(m.material & MATF_VOLUME)
+            {
+                case MAT_LAVA:
+                    flags |= 1;
+                    if(m.orient == O_TOP) lavasurfs[m.material & MATF_INDEX].add(m);
+                    else lavafallsurfs[m.material & MATF_INDEX].add(m);
+                    break;
+                case MAT_GLASS:
+                    if(drawtex != DRAWTEX_ENVMAP) { flags |= 6; glasssurfs[m.material & MATF_INDEX].add(m); }
+                    break;
+            }
+        }
+        hasmats |= flags;
+        if(flags & 1)
+        {
+            matliquidsx1 = min(matliquidsx1, sx1); matliquidsy1 = min(matliquidsy1, sy1);
+            matliquidsx2 = max(matliquidsx2, sx2); matliquidsy2 = max(matliquidsy2, sy2);
+            masktiles(matliquidtiles, sx1, sy1, sx2, sy2);
+        }
+        if(flags & 2)
+        {
+            matsolidsx1 = min(matsolidsx1, sx1); matsolidsy1 = min(matsolidsy1, sy1);
+            matsolidsx2 = max(matsolidsx2, sx2); matsolidsy2 = max(matsolidsy2, sy2);
+            masktiles(matsolidtiles, sx1, sy1, sx2, sy2);
+        }
+        if(flags & 4)
+        {
+            matrefractsx1 = min(matrefractsx1, sx1); matrefractsy1 = min(matrefractsy1, sy1);
+            matrefractsx2 = max(matrefractsx2, sx2); matrefractsy2 = max(matrefractsy2, sy2);
         }
     }
     float sx1, sy1, sx2, sy2;

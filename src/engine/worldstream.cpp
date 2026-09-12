@@ -1197,6 +1197,7 @@ static bool unmountworldchunktile(worldchunk &chunk, int section, int tile)
     setworldchunksectioncontent(chunk, tile, section, (sectionstate&WORLD_SECTION_CONTENT) != 0);
     setworldchunksectionopaque(chunk, tile, section, (sectionstate&WORLD_SECTION_OPAQUE) != 0);
     chunk.portalsknown[section] &= ~tilebit;
+    discardworldmeshsection(runtimepos);
     detachworldcubegeometry(c);
     moveworldcube(c, lookupworldchunkcube(chunk, pos, WORLD_SECTION_SIZE));
     invalidatewatergeometry(runtimepos, ivec(runtimepos).add(WORLD_SECTION_SIZE));

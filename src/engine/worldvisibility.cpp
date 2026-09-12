@@ -347,7 +347,13 @@ static void queueworldchunksectionupdates(const worldchunk &chunk, int tile, con
         // tiles remain drawable until their replacements can be built.
         bool oldsuppress = suppressworldchunkdirty;
         suppressworldchunkdirty = true;
-        changedstreaming(bbmins, bbmaxs, numregions, false);
+        if(worldmeshpackets) loopi(numregions)
+        {
+            dirtyworldmeshpackets(bbmins[i], bbmaxs[i]);
+            invalidatewatergeometry(bbmins[i], bbmaxs[i]);
+            invalidatelocalambient(bbmins[i], bbmaxs[i]);
+        }
+        else changedstreaming(bbmins, bbmaxs, numregions, false);
         suppressworldchunkdirty = oldsuppress;
     }
     ZoneValue(numsections);

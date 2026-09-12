@@ -1733,6 +1733,12 @@ VARF(vatilesize, 16, 256, WORLD_SECTION_SIZE,
 
 void octarender()
 {
+    if(worldmeshpackets && getworldsectionsize())
+    {
+        queueworldmeshworld();
+        visibleva = NULL;
+        return;
+    }
     ZoneScopedN("Geometry/Update octree render");
     int csi = 0;
     while(1<<csi < worldsize) csi++;
@@ -1875,7 +1881,7 @@ void allchanged(bool load)
     if(load) initenvmaps();
     entitiesinoctanodes();
     tjoints.setsize(0);
-    if(filltjoints) findtjoints();
+    if(filltjoints && !(worldmeshpackets && getworldsectionsize())) findtjoints();
     octarender();
     if(load) precachetextures();
     setupmaterials();
@@ -1897,3 +1903,7 @@ void recalc()
 }
 
 COMMAND(recalc, "");
+
+#define WORLDMESH_MODULE_IMPLEMENTATION
+#include "worldmesh.cpp"
+#undef WORLDMESH_MODULE_IMPLEMENTATION

@@ -7,6 +7,7 @@
 #ifndef STANDALONE
 
 #include "octa.h"
+#include "worldmesh.h"
 #include "light.h"
 #include "texture.h"
 #include "bih.h"
@@ -251,6 +252,8 @@ extern bool visiblefaceagainst(const cube &c, int orient, const ivec &co, int si
                                ushort mat = MAT_AIR, ushort nmat = MAT_AIR, ushort matmask = MATF_VOLUME);
 extern int classifyface(const cube &c, int orient, const ivec &co, int size);
 extern int visibletris(const cube &c, int orient, const ivec &co, int size, ushort vmat = MAT_AIR, ushort nmat = MAT_ALPHA, ushort matmask = MAT_ALPHA);
+extern int visibletrisagainst(const cube &c, int orient, const ivec &co, int size, const cube &neighbor, const ivec &neighbororigin,
+                              int neighborsize, bool sharedleaf, ushort vmat = MAT_AIR, ushort nmat = MAT_ALPHA, ushort matmask = MAT_ALPHA);
 extern int visibleorient(const cube &c, int orient);
 extern void genfaceverts(const cube &c, int orient, ivec v[4]);
 extern int calcmergedsize(int orient, const ivec &co, int size, const vertinfo *verts, int numverts);
@@ -555,7 +558,7 @@ extern float matsolidsx1, matsolidsy1, matsolidsx2, matsolidsy2;
 extern float matrefractsx1, matrefractsy1, matrefractsx2, matrefractsy2;
 extern uint matliquidtiles[LIGHTTILE_MAXH], matsolidtiles[LIGHTTILE_MAXH];
 extern vector<materialsurface> editsurfs, glasssurfs[4], lavasurfs[4], lavafallsurfs[4];
-extern void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes);
+extern void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes, int alignment = 16);
 extern void destroyvbo(GLuint vbo);
 extern void releasewaterresource(vtxarray &va);
 extern void buildwaterresource(vtxarray &va);

@@ -1,20 +1,9 @@
+#include "watermeshbuild.h"
 // Persistent section water attachments. Included by material.cpp after corner sampling.
-struct watermeshvertex
-{
-    vec4 position;
-    vec normal;
-};
-
 struct watermeshstate
 {
     vec4 endpoints; // min(height0 + wave * weight0, height1 + wave * weight1)
     vec2 surface; // spatial wave multiplier, undisplaced surface for pass selection
-};
-
-struct watermeshpatch
-{
-    waterfacepatch face;
-    int material, first;
 };
 
 struct waterresource
@@ -33,15 +22,21 @@ struct waterresource
 };
 
 static uint waterstateversion = 1;
-static vector<vtxarray *> visiblewater;
+static vector<waterresource *> visiblewater;
+
+void releasewaterresource(waterresource *&resource)
+{
+    if(!resource) return;
+    visiblewater.removeobj(resource);
+    if(resource->vertices.buffer) destroyvbo(resource->vertices.buffer);
+    if(resource->indices.buffer) destroyvbo(resource->indices.buffer);
+    if(resource->state.buffer) destroyvbo(resource->state.buffer);
+    DELETEP(resource);
+}
 
 void releasewaterresource(vtxarray &va)
 {
-    if(!va.water) return;
-    if(va.water->vertices.buffer) destroyvbo(va.water->vertices.buffer);
-    if(va.water->indices.buffer) destroyvbo(va.water->indices.buffer);
-    if(va.water->state.buffer) destroyvbo(va.water->state.buffer);
-    DELETEP(va.water);
+    releasewaterresource(va.water);
 }
 
 static bool watermeshcell(int x, int y, int z)
@@ -128,100 +123,29 @@ static void updatewaterstate(waterresource &resource)
     resource.version = waterstateversion;
 }
 
+void uploadwatermeshpacket(waterresource *&attachment, watermeshpacket &packet)
+{
+    releasewaterresource(attachment);
+    if(packet.indices.empty()) return;
+    attachment = new waterresource;
+    waterresource &resource = *attachment;
+    resource.patches.move(packet.patches);
+    memcpy(resource.first, packet.first, sizeof(resource.first));
+    memcpy(resource.count, packet.count, sizeof(resource.count));
+    uploadworldmesh(resource.vertices, GL_ARRAY_BUFFER, packet.vertices.getbuf(), packet.vertices.length() * sizeof(watermeshvertex));
+    uploadworldmesh(resource.indices, GL_ELEMENT_ARRAY_BUFFER, packet.indices.getbuf(), packet.indices.length() * sizeof(uint));
+    updatewaterstate(resource);
+}
+
+void buildwaterresource(waterresource *&attachment, const materialsurface *surfaces, int count)
+{
+    watermeshpacket packet;
+    buildwatermeshpacket(packet, surfaces, count, lookupwatergeometrycell);
+    uploadwatermeshpacket(attachment, packet);
+}
 void buildwaterresource(vtxarray &va)
 {
-    releasewaterresource(va);
-    vector<waterfacepatch> faces[8], pending;
-    vector<int> wavesizes[4];
-    loopi(va.matsurfs)
-    {
-        const materialsurface &m = va.matbuf[i];
-        if((m.material & MATF_VOLUME) != MAT_WATER || m.visible == MATSURF_EDIT_ONLY) continue;
-        const int group = (m.material & MATF_INDEX) + (m.orient == O_TOP ? 0 : 4);
-        exposedwaterpatches(waterfacepatch(m.o, m.orient, m.rsize, m.csize), lookupwatergeometrycell,
-            [&](const waterfacepatch &face)
-            {
-                if(face.orient == O_TOP)
-                {
-                    // Fixed tessellation: camera and waves never change the index/vertex buffers.
-                    for(int y = 0; y < face.csize; y += 4) for(int x = 0; x < face.rsize; x += 4)
-                    {
-                        faces[group].add(waterfacepatch(ivec(face.origin).add(ivec(x, y, 0)), O_TOP,
-                                                       min(4, face.rsize - x), min(4, face.csize - y)));
-                        wavesizes[group].add(m.csize);
-                    }
-                }
-                else if(face.orient == O_BOTTOM) faces[group].add(face);
-                else
-                {
-                    const int dim = dimension(face.orient), width = dim == 0 ? face.rsize : face.csize;
-                    for(int along = 0; along < width;)
-                    {
-                        ivec origin(face.origin);
-                        origin[1 - dim] += along;
-                        const int length = min(width - along, 16 - (origin[1 - dim] & 15));
-                        faces[group].add(waterfacepatch(origin, face.orient, dim == 0 ? length : face.rsize,
-                                                       dim == 0 ? face.csize : length));
-                        along += length;
-                    }
-                }
-            }, pending);
-    }
-    bool any = false;
-    loopi(8) if(!faces[i].empty()) any = true;
-    if(!any) return;
-    ZoneScopedN("Water/Build section topology");
-    va.water = new waterresource;
-    waterresource &resource = *va.water;
-    vector<watermeshvertex> vertices;
-    vector<uint> indices;
-    loop(g, 8)
-    {
-        if(g >= 4) mergewaterfallpatches(faces[g]);
-        resource.first[g] = indices.length();
-        loopv(faces[g])
-        {
-            const waterfacepatch &face = faces[g][i];
-            const ivec &o = face.origin;
-            vec p[4];
-            if(dimension(face.orient) == 2)
-            {
-                p[0] = vec(o);
-                p[1] = vec(o).add(vec(face.rsize, 0, 0));
-                p[2] = vec(o).add(vec(face.rsize, face.csize, 0));
-                p[3] = vec(o).add(vec(0, face.csize, 0));
-                if(face.orient == O_BOTTOM) swap(p[1], p[3]);
-            }
-            else
-            {
-                const int dim = dimension(face.orient), sign = dimcoord(face.orient) ? 1 : -1;
-                p[0] = p[3] = vec(o);
-                p[1] = p[2] = vec(o);
-                p[1][1 - dim] += dim == 0 ? face.rsize : face.csize;
-                p[2][1 - dim] = p[1][1 - dim];
-                loopj(4) p[j][dim] += sign * 0.1f;
-                if((dim == 0) != (sign > 0)) swap(p[1], p[3]);
-            }
-            watermeshpatch &patch = resource.patches.add();
-            patch.face = face;
-            patch.material = g & 3;
-            patch.first = vertices.length();
-            const int wavemask = g < 4 ? wavesizes[g][i] - 1 : 0;
-            loopj(4)
-            {
-                watermeshvertex &v = vertices.add();
-                v.position = vec4(p[j], float((int(p[j].x) & wavemask) * (int(p[j].y) & wavemask)) * (59.0f / 23.0f / (2 * M_PI)));
-                v.normal = vec(0, 0, 0);
-                v.normal[dimension(face.orient)] = dimcoord(face.orient) ? 1 : -1;
-            }
-            static const int order[6] = { 0, 1, 2, 0, 2, 3 };
-            loopj(6) indices.add(patch.first + order[j]);
-        }
-        resource.count[g] = indices.length() - resource.first[g];
-    }
-    uploadworldmesh(resource.vertices, GL_ARRAY_BUFFER, vertices.getbuf(), vertices.length() * sizeof(watermeshvertex));
-    uploadworldmesh(resource.indices, GL_ELEMENT_ARRAY_BUFFER, indices.getbuf(), indices.length() * sizeof(uint));
-    updatewaterstate(resource);
+    buildwaterresource(va.water, va.matbuf, va.matsurfs);
 }
 
 static void drawwaterresource(waterresource &resource, int group, int side)
@@ -256,24 +180,24 @@ static void drawwaterresource(waterresource &resource, int group, int side)
 
 bool haswatergeometry(int material)
 {
-    loopv(visiblewater) if(visiblewater[i]->water->count[material]) return true;
+    loopv(visiblewater) if(visiblewater[i]->count[material]) return true;
     return false;
 }
 
 bool haswaterfallgeometry(int material)
 {
     if(drawtex == DRAWTEX_MINIMAP) return false;
-    loopv(visiblewater) if(visiblewater[i]->water->count[material + 4]) return true;
+    loopv(visiblewater) if(visiblewater[i]->count[material + 4]) return true;
     return false;
 }
 
 void renderwatergeometry(int material, bool mask, int side)
 {
-    loopv(visiblewater) drawwaterresource(*visiblewater[i]->water, material, mask ? 0 : side);
+    loopv(visiblewater) drawwaterresource(*visiblewater[i], material, mask ? 0 : side);
 }
 
 void renderwaterfallgeometry(int material, bool mask)
 {
     if(drawtex == DRAWTEX_MINIMAP) return;
-    loopv(visiblewater) drawwaterresource(*visiblewater[i]->water, material + 4, 0);
+    loopv(visiblewater) drawwaterresource(*visiblewater[i], material + 4, 0);
 }
