@@ -738,26 +738,26 @@ namespace game
             renderpart(d, PART_HEAD, partorigins[PART_HEAD], headyaw, clamp(d->pitch, -80.0f, 80.0f) + sinf(phase * 2.0f) * 1.5f * movement, 0, flags);
 
         const int selected = heldcreativeitem(d);
-        const float rightarmyaw = bodyyaw + WORLD_EAT_ARM_YAW * eatamount,
-                    rightarmpitch = armpitch + (selected >= 0 ? HELD_ARM_PITCH : 0) + WORLD_EAT_ARM_PITCH * eatamount +
-                                    (actionactive ? actionpitch : forwardstride * ARM_SWING),
-                    rightarmroll = WORLD_EAT_ARM_ROLL * eatamount + (actionactive ? 0 : strafestride * ARM_STRAFE_SWING);
+        const float leftarmyaw = bodyyaw - WORLD_EAT_ARM_YAW * eatamount,
+                    leftarmpitch = armpitch + (selected >= 0 ? HELD_ARM_PITCH : 0) + WORLD_EAT_ARM_PITCH * eatamount +
+                                    (actionactive ? actionpitch : -forwardstride * ARM_SWING),
+                    leftarmroll = -WORLD_EAT_ARM_ROLL * eatamount + (actionactive ? 0 : -strafestride * ARM_STRAFE_SWING);
 
-        if(parttagged[PART_LEFT_ARM])
-            renderpart(d, PART_LEFT_ARM, partorigins[PART_LEFT_ARM], bodyyaw, armpitch - forwardstride * ARM_SWING, -strafestride * ARM_STRAFE_SWING, flags);
         if(parttagged[PART_RIGHT_ARM])
-            renderpart(d, PART_RIGHT_ARM, partorigins[PART_RIGHT_ARM], rightarmyaw, rightarmpitch, rightarmroll, flags);
+            renderpart(d, PART_RIGHT_ARM, partorigins[PART_RIGHT_ARM], bodyyaw, armpitch + forwardstride * ARM_SWING, strafestride * ARM_STRAFE_SWING, flags);
+        if(parttagged[PART_LEFT_ARM])
+            renderpart(d, PART_LEFT_ARM, partorigins[PART_LEFT_ARM], leftarmyaw, leftarmpitch, leftarmroll, flags);
         if(parttagged[PART_LEFT_LEG])
             renderpart(d, PART_LEFT_LEG, partorigins[PART_LEFT_LEG], bodyyaw, legpitch + forwardstride * LEG_SWING, strafestride * LEG_STRAFE_SWING, flags);
         if(parttagged[PART_RIGHT_LEG])
             renderpart(d, PART_RIGHT_LEG, partorigins[PART_RIGHT_LEG], bodyyaw, legpitch - forwardstride * LEG_SWING, -strafestride * LEG_STRAFE_SWING, flags);
 
-        if(selected >= 0 && parttagged[PART_RIGHT_ARM])
+        if(selected >= 0 && parttagged[PART_LEFT_ARM])
         {
             vec hand;
-            if(modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", hand, partorigins[PART_RIGHT_ARM],
-                                rightarmyaw, rightarmpitch, rightarmroll))
-                renderhelditem(d, selected, hand, rightarmyaw, rightarmpitch + 270.0f, rightarmroll, flags, false);
+            if(modeltagposition(playermodels[PART_LEFT_ARM], "tag_hand", hand, partorigins[PART_LEFT_ARM],
+                                leftarmyaw, leftarmpitch, leftarmroll))
+                renderhelditem(d, selected, hand, leftarmyaw, leftarmpitch + 270.0f, leftarmroll, flags, false);
         }
     }
 
@@ -944,13 +944,13 @@ namespace game
 
         const vec torsoorigin = d->feetpos(bob).addz(HIP_HEIGHT - CROUCH_HIP_DROP * crouch);
         vec shoulder;
-        if(!playerpartorigin(PART_RIGHT_ARM, shoulder, torsoorigin, bodyyaw, torsopitch)) return false;
+        if(!playerpartorigin(PART_LEFT_ARM, shoulder, torsoorigin, bodyyaw, torsopitch)) return false;
 
-        const float armyaw = bodyyaw + WORLD_EAT_ARM_YAW * eatamount,
+        const float armyaw = bodyyaw - WORLD_EAT_ARM_YAW * eatamount,
                     armpitch = CROUCH_ARM_PITCH * crouch + HELD_ARM_PITCH + WORLD_EAT_ARM_PITCH * eatamount +
-                               (actionpitch >= 0 ? actionpitch : forwardstride * ARM_SWING),
-                    armroll = WORLD_EAT_ARM_ROLL * eatamount + (actionpitch >= 0 ? 0 : strafestride * ARM_STRAFE_SWING);
-        const bool tagged = modeltagposition(playermodels[PART_RIGHT_ARM], "tag_hand", item.origin, shoulder, armyaw, armpitch, armroll);
+                               (actionpitch >= 0 ? actionpitch : -forwardstride * ARM_SWING),
+                    armroll = -WORLD_EAT_ARM_ROLL * eatamount + (actionpitch >= 0 ? 0 : -strafestride * ARM_STRAFE_SWING);
+        const bool tagged = modeltagposition(playermodels[PART_LEFT_ARM], "tag_hand", item.origin, shoulder, armyaw, armpitch, armroll);
         item.yaw = armyaw;
         item.pitch = armpitch + 270.0f;
         item.roll = armroll;
