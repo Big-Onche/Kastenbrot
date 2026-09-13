@@ -9,8 +9,8 @@ VARP(worldlod2distance, 32, 768, 4096);
 VARP(worldlod3distance, 64, 1536, 8192);
 VARP(worldloddistance, 128, 3072, 16384); // outer LOD3 cutoff in cubes
 VARP(worldlodhysteresis, 0, 16, 512);
-VARP(worldloddither, 0, 1, 1); // cross-fade rigid octree and LOD1 geometry
-VARP(worldlodfadetime, 1, 250, 2000); // milliseconds for LOD1 dither fade-in and fade-out
+VARP(worldloddither, 0, 1, 1); // cross-fade detailed terrain and surface LOD tiers
+VARP(worldlodfadetime, 1, 250, 2000); // milliseconds for terrain dither transitions
 VARP(worldlodskirtdepth, 1, 4, 64);
 VARP(worldlodthreads, 1, 2, 4);
 VARP(worldlodpendinglimit, 4, 32, 512);
@@ -125,11 +125,12 @@ struct worldlodjob
 
 struct worldlodselection
 {
-    int x, y, desired, active, lastseen, fadestart;
-    float distance, dither, fadeprogress;
+    int x, y, desired, active, lastseen, fadestart, previous, meshfademillis;
+    float distance, dither, fadeprogress, meshfadeprogress;
 
     worldlodselection(int x = 0, int y = 0)
-        : x(x), y(y), desired(0), active(-1), lastseen(0), fadestart(-1), distance(0), dither(0), fadeprogress(0) {}
+        : x(x), y(y), desired(0), active(-1), lastseen(0), fadestart(-1), previous(0), meshfademillis(0),
+          distance(0), dither(0), fadeprogress(0), meshfadeprogress(1) {}
 };
 
 static bool worldlodselectionrequiresvoxel(const worldlodselection &selection);
@@ -218,6 +219,56 @@ static worldlodkey currentworldlodkey(int x, int y, int lod)
     key.x = x;
     key.y = y;
     return key;
+}
+
+static void advanceworldlodmeshfade(worldlodselection &selection)
+{
+    if(selection.previous <= 0) return;
+    const float step = max(totalmillis - selection.meshfademillis, 0) / float(worldlodfadetime);
+    selection.meshfademillis = totalmillis;
+    selection.meshfadeprogress = worldloddither ? min(selection.meshfadeprogress + step, 1.0f) : 1.0f;
+    if(selection.meshfadeprogress < 1) return;
+    const int previousindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.previous));
+    if(previousindex >= 0) worldlodcache[previousindex].active = false;
+    selection.previous = 0;
+    // The completed incoming mesh is fully visible. Only now may LOD1 start
+    // its separate transition to uploaded detailed terrain.
+    selection.fadeprogress = 1;
+    selection.fadestart = totalmillis;
+    worldlodunprunablecache = -1;
+}
+
+static void activateworldlodmesh(worldlodselection &selection, int lod)
+{
+    advanceworldlodmeshfade(selection);
+    if(selection.active == lod) return;
+    if(selection.previous > 0)
+    {
+        // Keep at most two terrain meshes in flight. A third requested tier
+        // waits for this pair; reversing the pair preserves pixel coverage.
+        if(selection.previous != lod) return;
+        swap(selection.active, selection.previous);
+        selection.meshfadeprogress = 1.0f - selection.meshfadeprogress;
+        selection.meshfademillis = totalmillis;
+        return;
+    }
+    const int previousindex = selection.active > 0 ?
+        findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active)) : -1;
+    selection.previous = worldloddither && previousindex >= 0 ? selection.active : 0;
+    if(selection.previous > 0) worldlodcache[previousindex].active = true;
+    selection.meshfadeprogress = selection.previous > 0 ? 0.0f : 1.0f;
+    selection.meshfademillis = totalmillis;
+    selection.fadeprogress = selection.active > 0 ? 1.0f : 0.0f;
+    selection.fadestart = -1;
+    selection.active = lod;
+    worldlodunprunablecache = -1;
+}
+
+static int worldlodwaterlevel(const worldlodselection &selection)
+{
+    // Use one water surface throughout a terrain cross-fade. Prefer the finer
+    // mesh so LOD1 water keeps its refraction and liquid lighting passes.
+    return selection.previous > 0 ? min(selection.active, selection.previous) : selection.active;
 }
 
 static bool worldlodpriorityless(int apriority, float adistance, float aalignment, int bpriority, float bdistance, float balignment)
@@ -1033,7 +1084,6 @@ static void processworldlodresults()
         {
             ZoneScopedN("LOD/GPU upload");
             const int cacheindex = worldlodcache.length();
-            const bool cachewasunprunable = worldlodunprunablecache == cacheindex;
             worldlodchunk &chunk = worldlodcache.add(worldlodchunk(job->key));
             worldlodcacheindices[ivec(job->key.x, job->key.y, job->key.lod)] = cacheindex;
             glGenBuffers_(1, &chunk.vbo);
@@ -1057,16 +1107,14 @@ static void processworldlodresults()
             if(worldlodselections.inrange(selectionindex) && worldlodselections[selectionindex].desired == job->key.lod)
             {
                 worldlodselection &selection = worldlodselections[selectionindex];
-                selection.fadestart = -1;
-                selection.fadeprogress = 0;
-                selection.active = job->key.lod;
+                activateworldlodmesh(selection, job->key.lod);
                 chunk.active = true;
                 const int worldchunkindex = findworldchunk(selection.x, selection.y);
                 if(worldchunks.inrange(worldchunkindex) && !worldlodselectionrequiresvoxel(selection) &&
                    worldchunkmounted(worldchunks[worldchunkindex]))
                     worldchunks[worldchunkindex].retiregeometry = true;
             }
-            worldlodunprunablecache = cachewasunprunable && chunk.active ? worldlodcache.length() : -1;
+            worldlodunprunablecache = -1;
         }
         worldlodlastupload = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
         worldlodlastgeneration = job->generationmillis;
@@ -1290,6 +1338,8 @@ static void activateworldlodfullchunks()
         const int selectionindex = findworldlodselection(chunk.x, chunk.y);
         if(!worldlodselections.inrange(selectionindex)) continue;
         worldlodselection &selection = worldlodselections[selectionindex];
+        advanceworldlodmeshfade(selection);
+        if(selection.previous > 0) continue;
         if(selection.desired != 0 || selection.active == 0 || !worldlodfullready(selection.x, selection.y)) continue;
         if(selection.active == 1 && worldloddither && worldlodrenderfade(selection) > 0.0f) continue;
         if(selection.active > 0)
@@ -1422,6 +1472,12 @@ static void updateworldlods(int chunkx, int chunky, bool force)
     {
         worldlodselection &selection = worldlodselections[i];
         if(selection.lastseen != totalmillis) continue;
+        advanceworldlodmeshfade(selection);
+        if(selection.previous > 0)
+        {
+            const int previousindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.previous));
+            if(previousindex >= 0) worldlodcache[previousindex].active = true;
+        }
         if(selection.active > 0)
         {
             const int activeindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
@@ -1429,7 +1485,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         }
         if(selection.desired == 0)
         {
-            if(selection.active != 0 && worldlodfullready(selection.x, selection.y) &&
+            if(selection.previous <= 0 && selection.active != 0 && worldlodfullready(selection.x, selection.y) &&
                (selection.active != 1 || !worldloddither || worldlodrenderfade(selection) <= 0.0f))
                 selection.active = 0;
         }
@@ -1442,10 +1498,8 @@ static void updateworldlods(int chunkx, int chunky, bool force)
                 if(selection.active != selection.desired)
                 {
                     worldlodcachehits++;
-                    selection.fadestart = -1;
-                    selection.fadeprogress = 0;
+                    activateworldlodmesh(selection, selection.desired);
                 }
-                selection.active = selection.desired;
                 worldlodcache[cacheindex].lastused = totalmillis;
                 worldlodcache[cacheindex].active = true;
                 const int chunkindex = findworldchunk(selection.x, selection.y);
@@ -1659,6 +1713,7 @@ static bool worldlodsurfaceready(int x, int y)
 
 static float worldlodrenderfade(worldlodselection &selection)
 {
+    if(selection.previous > 0) return 1.0f;
     if(selection.active != 1 || !worldloddither)
     {
         selection.fadestart = -1;
@@ -1690,7 +1745,7 @@ bool findworldlodwater(float &sx1, float &sy1, float &sx2, float &sy2)
     loopv(worldlodselections)
     {
         const worldlodselection &selection = worldlodselections[i];
-        if(selection.active != 1) continue;
+        if(worldlodwaterlevel(selection) != 1) continue;
         const int index = findworldlodcache(currentworldlodkey(selection.x, selection.y, 1));
         if(index < 0 || !worldlodcache[index].waterindices ||
            (worldlodselectionrequiresvoxel(selection) && worldlodsurfaceready(selection.x, selection.y))) continue;
@@ -1774,43 +1829,61 @@ void renderworldlods()
     {
         worldlodselection &selection = worldlodselections[i];
         if(selection.active < 1) continue;
-        const float fade = worldlodrenderfade(selection);
-        const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.active));
-        if(cacheindex < 0) continue;
-        worldlodchunk &chunk = worldlodcache[cacheindex];
-        const ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0),
-                   bbmin = ivec(chunk.bbmin).add(origin), bbmax = ivec(chunk.bbmax).add(origin);
-        if(isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) >= VFC_FOGGED) continue;
-        // The retained octree owns water during the terrain dither transition.
-        if(chunk.waterindices && (selection.active != 1 || drawtex == DRAWTEX_MINIMAP) &&
-           !(selection.active == 1 && worldlodselectionrequiresvoxel(selection) &&
-                                   worldlodsurfaceready(selection.x, selection.y)))
+        advanceworldlodmeshfade(selection);
+        // A third tier may have arrived during a previous pair's fade. Start it
+        // once that pair finishes, including when the camera has stopped moving.
+        if(selection.desired > 0 && selection.desired != selection.active)
         {
-            waterdraw &draw = waterdraws.add();
-            draw.cacheindex = cacheindex;
-            draw.origin = origin;
+            const int desiredindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, selection.desired));
+            if(desiredindex >= 0)
+            {
+                activateworldlodmesh(selection, selection.desired);
+                worldlodcache[desiredindex].active = true;
+            }
         }
-        gle::bindvbo(chunk.vbo);
-        gle::bindebo(chunk.ebo);
-        const worldlodvertex *pointer = 0;
-        gle::vertexpointer(sizeof(worldlodvertex), pointer->position.v);
-        gle::normalpointer(sizeof(worldlodvertex), pointer->normal.v);
-        gle::texcoord0pointer(sizeof(worldlodvertex), pointer->texcoord.v);
-        gle::colorpointer(sizeof(worldlodvertex), pointer->material.v);
-        gle::enablevertex();
-        gle::enablenormal();
-        gle::enabletexcoord0();
-        gle::enablecolor();
-        LOCALPARAM(lodmeshoffset, vec(origin));
-        LOCALPARAMF(lodfade, fade);
-        LOCALPARAMF(lodclimateaverage, selection.active >= 2 ? 1.0f : 0.0f);
-        glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
-        const int indices = chunk.terrainindices + chunk.waterindices;
-        vertices += chunk.vertices;
-        triangles += indices / 3;
-        topfaces += chunk.topfaces;
-        sidefaces += chunk.sidefaces;
-        glde++;
+        const float fade = worldlodrenderfade(selection), meshfade = smoothworldloddither(selection.meshfadeprogress),
+                    split = selection.active < selection.previous ? meshfade : 1.0f - meshfade;
+        loop(pass, selection.previous > 0 ? 2 : 1)
+        {
+            const int lod = pass ? selection.previous : selection.active;
+            const int cacheindex = findworldlodcache(currentworldlodkey(selection.x, selection.y, lod));
+            if(cacheindex < 0) continue;
+            worldlodchunk &chunk = worldlodcache[cacheindex];
+            const ivec origin((selection.x - worldfirstchunkx) * WORLD_CHUNK_SIZE, (selection.y - worldfirstchunky) * WORLD_CHUNK_SIZE, 0),
+                       bbmin = ivec(chunk.bbmin).add(origin), bbmax = ivec(chunk.bbmax).add(origin);
+            if(isvisiblebb(bbmin, ivec(bbmax).sub(bbmin)) >= VFC_FOGGED) continue;
+            // The retained octree owns water during the terrain dither transition.
+            if(chunk.waterindices && lod == worldlodwaterlevel(selection) && (lod != 1 || drawtex == DRAWTEX_MINIMAP) &&
+               !(lod == 1 && worldlodselectionrequiresvoxel(selection) && worldlodsurfaceready(selection.x, selection.y)))
+            {
+                waterdraw &draw = waterdraws.add();
+                draw.cacheindex = cacheindex;
+                draw.origin = origin;
+            }
+            gle::bindvbo(chunk.vbo);
+            gle::bindebo(chunk.ebo);
+            const worldlodvertex *pointer = 0;
+            gle::vertexpointer(sizeof(worldlodvertex), pointer->position.v);
+            gle::normalpointer(sizeof(worldlodvertex), pointer->normal.v);
+            gle::texcoord0pointer(sizeof(worldlodvertex), pointer->texcoord.v);
+            gle::colorpointer(sizeof(worldlodvertex), pointer->material.v);
+            gle::enablevertex();
+            gle::enablenormal();
+            gle::enabletexcoord0();
+            gle::enablecolor();
+            LOCALPARAM(lodmeshoffset, vec(origin));
+            const bool lower = selection.previous > 0 && lod == min(selection.active, selection.previous);
+            LOCALPARAMF(lodfade, selection.previous > 0 && !lower ? split : 0.0f,
+                        selection.previous > 0 ? (lower ? split : 1.0f) : fade);
+            LOCALPARAMF(lodclimateaverage, lod >= 2 ? 1.0f : 0.0f);
+            glDrawElements(GL_TRIANGLES, chunk.terrainindices, GL_UNSIGNED_INT, 0);
+            const int indices = chunk.terrainindices + chunk.waterindices;
+            vertices += chunk.vertices;
+            triangles += indices / 3;
+            topfaces += chunk.topfaces;
+            sidefaces += chunk.sidefaces;
+            glde++;
+        }
     }
     if(!waterdraws.empty())
     {
