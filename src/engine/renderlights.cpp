@@ -2071,8 +2071,8 @@ VARP(csmfarplane, 64, 2048, 16384);
 FVAR(csmtransition, 0, 0.1f, 0.3f);
 FVAR(csmcastermargin, 0, 1024, 16384);
 FVAR(csmconstantbias, 0, 2, 4);
-FVAR(csmslopebias, 0, 1, 4);
-FVAR(csmnormalbias, 0, 0.4f, 4);
+FVAR(csmslopebias, 0, 2, 4);
+FVAR(csmnormalbias, 0, 1, 4);
 VAR(csmcull, 0, 1, 1);
 VAR(csmpcf, 0, 1, 2);
 VAR(debugcsm, 0, 0, 3);
@@ -4542,6 +4542,7 @@ void rendercsmshadowmaps()
     shadoworigin = camera1->o;
     GLOBALPARAM(shadoworigin, shadoworigin);
     csm.setup();
+    invalidateworldmeshcsm();
     csm.rendered = 1;
 
     glBindFramebuffer_(GL_FRAMEBUFFER, csm.fbo);
@@ -5454,6 +5455,7 @@ void shadesky()
 void shadegbuffer()
 {
     updatelocalambient();
+    ZoneScopedN("Render/Deferred lighting/Draw");
     if(msaasamples && !msaalight && !drawtex) resolvemsaadepth();
     GLERROR;
 

@@ -6,8 +6,8 @@ VARP(worldlod, 0, 1, 1);
 VARFP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS,
       worldlod1resolution = (worldlod1resolution + 2) / 4 * 4);
 VARP(worldlod2distance, 32, 768, 4096);
-VARP(worldlod3distance, 64, 1536, 8192);
-VARP(worldloddistance, 128, 3072, 16384); // outer LOD3 cutoff in cubes
+VARP(worldlod3distance, 64, 1280, 8192);
+VARP(worldloddistance, 128, 1536, 16384); // outer LOD3 cutoff in cubes
 VARP(worldlodhysteresis, 0, 16, 512);
 VARP(worldloddither, 0, 1, 1); // cross-fade detailed terrain and surface LOD tiers
 VARP(worldlodfadetime, 1, 250, 2000); // milliseconds for terrain dither transitions
