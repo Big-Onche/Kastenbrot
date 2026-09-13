@@ -1121,17 +1121,21 @@ namespace game
         bottom = top = height;
         const worldwatersample water = surface(x, y);
         const bool ocean = height < settings.sealevel && !water.freshwater;
+
         if(!ocean && height < water.water) return false;
-        const int spacing = ocean ? 96 : 112,
+
+        const int spacing = ocean ? 56 : 112,
                   cellx = int(floorf(float(x) / spacing)), celly = int(floorf(float(y) / spacing));
         const uint salt = ocean ? 0x71C8B249U : 0x3E9D5A17U;
         const float occurrence = treespatialunit(uint(seed), cellx, celly, salt);
-        if(occurrence > (ocean ? 0.30f : 0.52f)) return false;
 
-        // Centres stay inside their cells, with enough margin for the whole footprint.
-        const int margin = ocean ? 28 : 20,
+        if(occurrence > (ocean ? 0.82f : 0.52f)) return false;
+
+        // centres stay inside their cells, with enough margin for the whole footprint
+        const int margin = ocean ? 14 : 20,
                   cx = cellx * spacing + margin + int(treespatialunit(uint(seed), cellx, celly, salt ^ 0x2917U) * (spacing - 2 * margin)),
                   cy = celly * spacing + margin + int(treespatialunit(uint(seed), cellx, celly, salt ^ 0x8913U) * (spacing - 2 * margin));
+
         const float shape = treespatialunit(uint(seed), cellx, celly, salt ^ 0xD71FU),
                     radius = ocean ? 8.0f + 5.0f * shape : 5.0f + 4.0f * shape,
                     angle = treespatialunit(uint(seed), cellx, celly, salt ^ 0xE3A9U) * 2.0f * M_PI,
@@ -1139,42 +1143,68 @@ namespace game
                     u = (dx * cosf(angle) + dy * sinf(angle)) / radius,
                     v = (-dx * sinf(angle) + dy * cosf(angle)) / (radius * 0.72f),
                     edge = max(fabsf(u), max(fabsf(v), fabsf(u + v) * 0.65f));
+
         if(edge >= 1.75f) return false;
 
         const worldwatersample center = surface(cx, cy);
         const int base = ocean ? settings.sealevel : center.height;
-        const vec position(float(cx) * worldclimate::BLOCK_UNITS, float(cy) * worldclimate::BLOCK_UNITS,
-                           worldclimate::GROUND_UNITS + base * worldclimate::BLOCK_UNITS);
+        const vec position(float(cx) * worldclimate::BLOCK_UNITS, float(cy) * worldclimate::BLOCK_UNITS, worldclimate::GROUND_UNITS + base * worldclimate::BLOCK_UNITS);
         const BiomeSample climate = sampleBiome(position);
         float bergscale = 1.0f;
+        int coastmaxrise = 255;
+
         if(ocean)
         {
-            if(center.freshwater || center.height >= settings.sealevel - 3 || climate.temperature >= 5.0f) return false;
-            const float width = icecoastwidth(*this, cx, cy, climate.temperature),
-                        offshore = icecoastdistance(cx, cy) - width,
-                        outer = smoothstep(35.0f, 210.0f, offshore),
-                        chance = (0.30f - 0.24f * outer) * smoothstep(-16.0f, 4.0f, offshore) *
-                                 (1.0f - smoothstep(210.0f, 250.0f, offshore));
+            if(center.freshwater || center.height >= settings.sealevel || climate.temperature >= 3.0f) return false;
+
+            const float shore = icecoastdistance(cx, cy),
+                        width = icecoastwidth(*this, cx, cy, climate.temperature),
+                        offshore = shore - width,
+                        outer = smoothstep(35.0f, 210.0f, offshore), // beyond the frozen shelf
+                        coldcoast = 1.0f - smoothstep(-18.0f, -3.0f, climate.temperature),
+                        beach = 1.0f - smoothstep(24.0f, 120.0f, shore), // strong boost in the first ~100 blocks of ocean from the beach
+                        shoregate = smoothstep(2.0f, 10.0f, shore), // avoid centers literally touching the shoreline
+                        nearshore = 0.42f + 0.38f * coldcoast + 0.18f * beach, // high density along frozen coast, progressively lower offshore
+
+                        chance = clamp(
+                            nearshore *
+                            shoregate *
+                            (1.0f - 0.90f * outer) *
+                            (1.0f - smoothstep(210.0f, 250.0f, offshore)),
+                            0.0f,
+                            0.95f
+                        );
+
             if(occurrence >= chance) return false;
-            // Offshore bergs survive beyond the shelf and do not collapse with its narrow onset width.
-            bergscale = 1.0f - 0.50f * outer;
+
+            bergscale = 1.0f - 0.50f * outer; // offshore bergs survive beyond the shelf and do not collapse with its narrow onset width
+            coastmaxrise = int(floorf(4.0f + 44.0f * smoothstep(24.0f, 220.0f, shore))); // keep coastal bergs low. Height progressively returns to normal farther offshore
+
+            if(edge >= 1.75f * bergscale) return false;
+
+            bergscale = 1.0f - 0.50f * outer; // offshore bergs survive beyond the shelf and do not collapse with its narrow onset width
+            coastmaxrise = int(floorf(4.0f + 44.0f * smoothstep(24.0f, 220.0f, shore)));
+
             if(edge >= 1.75f * bergscale) return false;
         }
         else
         {
             if(center.height < center.water || climate.weights[WORLD_BIOME_SNOW_DESERT] < 0.5f) return false;
-            // Ice spires belong on snowfields, not perched across steep slopes or cliffs.
-            if(abs(height - base) > 5) return false;
+            if(abs(height - base) > 5) return false; // Ice spires belong on snowfields, not perched across steep slopes or cliffs
         }
 
         const vec localposition(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                                 worldclimate::GROUND_UNITS + max(height, base) * worldclimate::BLOCK_UNITS);
+
         const float temperature = environmentclimate.gettemperature(localposition),
                     cold = 1.0f - smoothstep(ocean ? -16.0f : -18.0f, ocean ? 5.0f : -8.0f, temperature),
                     summit = ocean ? (18.0f + 25.0f * shape) * bergscale : 14.0f + 23.0f * shape,
                     ridge = 0.85f + 0.15f * snowpatches.GetNoise(float(x) * (ocean ? 0.8f : 9.0f), float(y) * (ocean ? 0.8f : 9.0f));
-        if(ocean && temperature >= 5.0f) return false;
+
+        if(ocean && temperature >= 3.5f) return false;
+
         float profile = powf(max(1.0f - edge / bergscale, 0.0f), 1.05f);
+
         loopi(3)
         {
             // Rotated companion spires share the main mass but keep distinct, lower summits.
@@ -1184,12 +1214,14 @@ namespace game
                         sv = (v / bergscale - sinf(phase) * offset) / 0.55f,
                         subedge = max(fabsf(su), max(fabsf(sv), fabsf(su + sv) * 0.65f)),
                         subprofile = (0.38f + 0.18f * shape) * powf(max(1.0f - subedge, 0.0f), 1.10f);
+
             profile = max(profile, subprofile);
         }
-        const int rise = int(floorf(summit * profile * ridge * cold));
+        int rise = int(floorf(summit * profile * ridge * cold));
+        if(ocean) rise = min(rise, coastmaxrise);
         if(rise < 1) return false;
         top = min(255, base + rise);
-        // Most of a berg is submerged. Stop above the seabed, preserving water underneath.
+        // Most of a berg is submerged. Stop above the seabed, preserving water underneath
         bottom = ocean ? max(height + 1, base - max(2, rise * 3)) : height - 1;
         return top > bottom && top > height;
     }
