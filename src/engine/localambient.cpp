@@ -54,12 +54,13 @@ struct localambientjob
         : serial(serial), origin(origin), dimensions(dimensions), regionorigin(regionorigin), regiondimensions(regiondimensions),
           resolution(resolution), attenuation(attenuation), downwardattenuation(downwardattenuation), full(full), scroll(scroll), capturerow(0)
     {
+        ZoneScopedN("LocalAmbient/Allocate capture");
         const int cells = regiondimensions.x * regiondimensions.y * regiondimensions.z;
         solid.pad(cells);
         sky.pad(regiondimensions.x * regiondimensions.y);
         albedo.pad(cells);
-        memset(solid.getbuf(), 0, cells);
-        loopi(cells) albedo[i] = bvec4(0, 0, 0, 0);
+        // Capture writes every cell before submission; do not touch the whole
+        // allocation on the render thread before the budgeted row capture.
     }
 
     int index(int x, int y, int z) const
@@ -80,36 +81,43 @@ struct localambientregion
 
 static localambientregion localambientscrollregions[LOCALAMBIENT_SCROLL_REGIONS];
 static int localambientscrollregioncount = 0, localambientscrollregionindex = 0;
-static vector<uchar> localambientscrollscratch;
-static vector<uchar> localambientsolidfield;
-static vector<bvec4> localambientalbedofield, localambientalbedoscrollscratch;
+static vector<localambientjob *> localambientpendingcaptures;
 static ivec localambientfieldorigin(0, 0, 0), localambientfielddimensions(0, 0, 0);
 static int localambientfieldresolution = 0;
 static bool localambientfieldready = false, localambientbootstrap = false;
 static GLuint localambientwhitetexture = 0;
 static GLuint localambienttexture = 0;
-static vector<uchar> localambientskyfield, localambientskyscratch;
 
 struct localambientsolve
 {
     uint serial;
-    ivec origin, dimensions;
+    ivec origin, dimensions, shift;
     int resolution;
     ambientfield::field field;
+    vector<localambientjob *> captures;
+    std::vector<uchar> solidscratch, skyscratch;
+    std::vector<ambientfield::color> albedoscratch;
     SDL_Thread *thread;
     SDL_atomic_t done, cancelled;
     double milliseconds;
 
     localambientsolve(uint serial, const ivec &origin, const ivec &dimensions, int resolution)
-        : serial(serial), origin(origin), dimensions(dimensions), resolution(resolution),
+        : serial(serial), origin(origin), dimensions(dimensions), shift(0, 0, 0), resolution(resolution),
           field(dimensions.x, dimensions.y, dimensions.z), thread(NULL), milliseconds(0)
     {
         SDL_AtomicSet(&done, 0);
         SDL_AtomicSet(&cancelled, 0);
     }
+
+    ~localambientsolve()
+    {
+        captures.deletecontents();
+    }
 };
 
-static localambientsolve *localambientworker = NULL;
+// Only the worker touches a submitted snapshot. Retain its storage after
+// publication so the next solve neither allocates nor copies a volume here.
+static localambientsolve *localambientworker = NULL, *localambientcachedsolve = NULL;
 static double localambientlastsolvems = 0;
 
 static uint localambientserial = 1;
@@ -177,6 +185,7 @@ static void marklocalambientfull()
     nextlocalambientserial();
     if(localambientworker) SDL_AtomicSet(&localambientworker->cancelled, 1);
     discardlocalambientcapture();
+    localambientpendingcaptures.deletecontents();
     clearlocalambientscrollregions();
     localambientdirty = localambientdirtyfull = true;
     localambientdirtyboundsvalid = false;
@@ -217,12 +226,8 @@ void invalidatelocalambient(const ivec &minimum, const ivec &maximum)
 void resetlocalambient()
 {
     marklocalambientfull();
-    localambientsolidfield.setsize(0);
-    localambientalbedofield.setsize(0);
-    localambientscrollscratch.setsize(0);
-    localambientalbedoscrollscratch.setsize(0);
-    localambientskyfield.setsize(0);
-    localambientskyscratch.setsize(0);
+    delete localambientcachedsolve;
+    localambientcachedsolve = NULL;
     localambientfieldready = false;
     localambientbootstrap = false;
     localambientdesiredvalid = false;
@@ -429,11 +434,79 @@ static void bootstraplocalambient(const ivec &origin, const ivec &dimensions, in
     localambientfieldready = localambientbootstrap = true;
 }
 
+template<class T>
+static void shiftlocalambientsnapshot(std::vector<T> &field, std::vector<T> &scratch, const ivec &dimensions, const ivec &shift)
+{
+    scratch.resize(field.size());
+    const int first = max(-shift.x, 0), last = min(dimensions.x - shift.x, dimensions.x), count = last - first;
+    loop(z, dimensions.z) loop(y, dimensions.y)
+    {
+        const int sourcey = clamp(y + shift.y, 0, dimensions.y - 1), sourcez = clamp(z + shift.z, 0, dimensions.z - 1);
+        const T *source = field.data() + localambientindex(dimensions, 0, sourcey, sourcez);
+        T *destination = scratch.data() + localambientindex(dimensions, 0, y, z);
+        memcpy(destination + first, source + first + shift.x, count * sizeof(T));
+        loop(x, first) destination[x] = source[0];
+        for(int x = last; x < dimensions.x; x++) destination[x] = source[dimensions.x - 1];
+    }
+    field.swap(scratch);
+}
+
+static bool preparelocalambientsolve(localambientsolve &job)
+{
+    ZoneScopedN("LocalAmbient/Worker snapshot");
+    if(SDL_AtomicGet(&job.cancelled)) return false;
+    ambientfield::field &field = job.field;
+    if(job.shift.x || job.shift.y || job.shift.z)
+    {
+        ZoneScopedN("LocalAmbient/Worker scroll");
+        shiftlocalambientsnapshot(field.solid, job.solidscratch, job.dimensions, job.shift);
+        shiftlocalambientsnapshot(field.albedo, job.albedoscratch, job.dimensions, job.shift);
+        shiftlocalambientsnapshot(field.sky, job.skyscratch, ivec(job.dimensions.x, job.dimensions.y, 1), ivec(job.shift.x, job.shift.y, 0));
+    }
+    field.x = job.dimensions.x;
+    field.y = job.dimensions.y;
+    field.z = job.dimensions.z;
+    const int cells = field.x * field.y * field.z;
+    field.solid.resize(cells);
+    field.albedo.resize(cells);
+    field.sky.resize(field.x * field.y);
+    loopv(job.captures)
+    {
+        const localambientjob &capture = *job.captures[i];
+        loop(z, capture.regiondimensions.z) loop(y, capture.regiondimensions.y)
+        {
+            if(SDL_AtomicGet(&job.cancelled)) return false;
+            const int destination = localambientindex(job.dimensions, capture.regionorigin.x, capture.regionorigin.y + y,
+                                                       capture.regionorigin.z + z),
+                      source = capture.index(0, y, z);
+            memcpy(field.solid.data() + destination, capture.solid.getbuf() + source, capture.regiondimensions.x);
+            loop(x, capture.regiondimensions.x)
+            {
+                const bvec4 &albedo = capture.albedo[source + x];
+                ambientfield::color &color = field.albedo[destination + x];
+                color.r = albedo.r;
+                color.g = albedo.g;
+                color.b = albedo.b;
+            }
+        }
+        loop(y, capture.regiondimensions.y)
+            memcpy(field.sky.data() + (capture.regionorigin.y + y) * field.x + capture.regionorigin.x,
+                   capture.sky.getbuf() + y * capture.regiondimensions.x, capture.regiondimensions.x);
+    }
+    return !SDL_AtomicGet(&job.cancelled);
+}
+
 static int runlocalambientsolve(void *data)
 {
+    ZoneScopedN("LocalAmbient/Worker");
     localambientsolve &job = *static_cast<localambientsolve *>(data);
     const Uint64 start = SDL_GetPerformanceCounter();
-    job.field.solve([&job]() { return SDL_AtomicGet(&job.cancelled) != 0; });
+    if(preparelocalambientsolve(job))
+    {
+        ZoneScopedN("LocalAmbient/Worker propagation");
+        job.field.solve([&job]() { return SDL_AtomicGet(&job.cancelled) != 0; });
+    }
+    job.captures.deletecontents();
     job.milliseconds = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
     SDL_AtomicSet(&job.done, 1);
     return 0;
@@ -470,59 +543,33 @@ static void finishlocalambientsolve()
         localambientbootstrap = false;
         localambientlastsolvems = job->milliseconds;
         TracyPlot("LocalAmbient/Worker milliseconds", job->milliseconds);
+        delete localambientcachedsolve;
+        localambientcachedsolve = job;
+        return;
     }
     delete job;
 }
 
-static void alloclocalambientcpufields(const ivec &dimensions)
-{
-    const int cells = dimensions.x * dimensions.y * dimensions.z;
-    localambientsolidfield.setsize(0);
-    localambientalbedofield.setsize(0);
-    localambientskyfield.setsize(0);
-    memset(localambientskyfield.pad(dimensions.x * dimensions.y), 255, dimensions.x * dimensions.y);
-    uchar *solid = localambientsolidfield.pad(cells);
-    localambientalbedofield.pad(cells);
-    memset(solid, 0, cells);
-    loopi(cells) localambientalbedofield[i] = bvec4(0, 0, 0, 0);
-}
-
-static bool copylocalambientjobfields(const localambientjob &job)
-{
-    const int cells = job.dimensions.x * job.dimensions.y * job.dimensions.z;
-    if(job.full || localambientsolidfield.length() != cells || localambientalbedofield.length() != cells)
-        alloclocalambientcpufields(job.dimensions);
-    if(localambientsolidfield.length() != cells || localambientalbedofield.length() != cells) return false;
-
-    loop(z, job.regiondimensions.z) loop(y, job.regiondimensions.y)
-    {
-        const int destination = localambientindex(job.dimensions, job.regionorigin.x, job.regionorigin.y + y, job.regionorigin.z + z),
-                  source = job.index(0, y, z);
-        memcpy(localambientsolidfield.getbuf() + destination, job.solid.getbuf() + source, job.regiondimensions.x);
-        memcpy(localambientalbedofield.getbuf() + destination, job.albedo.getbuf() + source, job.regiondimensions.x * sizeof(bvec4));
-    }
-    loop(y, job.regiondimensions.y)
-        memcpy(localambientskyfield.getbuf() + (job.regionorigin.y + y) * job.dimensions.x + job.regionorigin.x,
-               job.sky.getbuf() + y * job.regiondimensions.x, job.regiondimensions.x);
-    return true;
-}
-
 static bool queuelocalambientsolve(const ivec &origin, const ivec &dimensions, int resolution, int attenuation, int downwardattenuation)
 {
-    const int cells = dimensions.x * dimensions.y * dimensions.z;
-    if(localambientworker || localambientsolidfield.length() != cells || localambientalbedofield.length() != cells) return false;
-    localambientsolve *job = new localambientsolve(localambientserial, origin, dimensions, resolution);
-    job->field.solid.assign(localambientsolidfield.getbuf(), localambientsolidfield.getbuf() + cells);
-    job->field.sky.assign(localambientskyfield.getbuf(), localambientskyfield.getbuf() + dimensions.x * dimensions.y);
-    job->field.albedo.resize(cells);
-    loopi(cells)
-    {
-        ambientfield::color &color = job->field.albedo[i];
-        color.r = localambientalbedofield[i].r;
-        color.g = localambientalbedofield[i].g;
-        color.b = localambientalbedofield[i].b;
-    }
+    ZoneScopedN("LocalAmbient/Submit snapshot");
+    if(localambientworker) return false;
+    const bool full = !localambientpendingcaptures.empty() && localambientpendingcaptures[0]->full;
+    if(!full && (!localambientcachedsolve || !sameivec(localambientcachedsolve->dimensions, dimensions) ||
+                 localambientcachedsolve->resolution != resolution)) return false;
+    localambientsolve *job = localambientcachedsolve;
+    if(!job) job = new localambientsolve(localambientserial, origin, dimensions, resolution);
+    localambientcachedsolve = NULL;
+    job->shift = full ? ivec(0, 0, 0) : ivec(origin).sub(job->origin).div(resolution);
+    job->serial = localambientserial;
+    job->origin = origin;
+    job->dimensions = dimensions;
+    job->resolution = resolution;
+    SDL_AtomicSet(&job->done, 0);
+    SDL_AtomicSet(&job->cancelled, 0);
+    job->captures.move(localambientpendingcaptures);
     // Keep attenuation measured in world units as larger ranges coarsen the grid.
+    // Copy settings before starting the thread; the worker only reads its job.
     job->field.loss = clamp((attenuation * resolution + localambientresolution / 2) / localambientresolution, 1, 255);
     job->field.downloss = clamp((downwardattenuation * resolution + localambientresolution / 2) / localambientresolution, 1, 255);
     job->field.gipasses = localambientgi ? (localambientgipasses * localambientresolution + resolution - 1) / resolution : -1;
@@ -539,43 +586,20 @@ static bool queuelocalambientsolve(const ivec &origin, const ivec &dimensions, i
     return true;
 }
 
-static bool submitlocalambientcapture(localambientjob &job)
+static void submitlocalambientcapture(localambientjob *job)
 {
-    if(!copylocalambientjobfields(job)) return false;
-    if(job.scroll)
+    // Transfer completed slabs without copying their cells. The worker applies
+    // all slabs to its snapshot together, preserving the old rendered origin.
+    const ivec origin = job->origin, dimensions = job->dimensions;
+    const int resolution = job->resolution, attenuation = job->attenuation, downwardattenuation = job->downwardattenuation;
+    const bool scroll = job->scroll;
+    localambientpendingcaptures.add(job);
+    if(scroll)
     {
-        // The CPU field has moved, but the rendered volume still uses its old
-        // origin. Publish the entire shifted field only after every slab is real.
-        if(localambientscrollregionindex + 1 < localambientscrollregioncount) return true;
-        return queuelocalambientsolve(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation);
+        finishlocalambientscrollregion();
+        if(haslocalambientscrollregions()) return;
     }
-    return queuelocalambientsolve(job.origin, job.dimensions, job.resolution, job.attenuation, job.downwardattenuation);
-}
-
-template<class T>
-static bool shiftlocalambientcpufield(vector<T> &field, vector<T> &scratch, const ivec &dimensions, const ivec &shift)
-{
-    const int cells = dimensions.x * dimensions.y * dimensions.z;
-    if(field.length() != cells) return false;
-    scratch.setsize(0);
-    T *shifted = scratch.pad(cells);
-    const int first = max(-shift.x, 0), last = min(dimensions.x - shift.x, dimensions.x), count = last - first;
-    // Copy the overlapping part of each row in bulk, extending the boundary cells
-    // into newly exposed columns exactly as the previous per-cell clamp did.
-    loop(z, dimensions.z) loop(y, dimensions.y)
-    {
-        const int sourcey = clamp(y + shift.y, 0, dimensions.y - 1), sourcez = clamp(z + shift.z, 0, dimensions.z - 1);
-        const T *source = field.getbuf() + localambientindex(dimensions, 0, sourcey, sourcez);
-        T *destination = shifted + localambientindex(dimensions, 0, y, z);
-        memcpy(destination + first, source + first + shift.x, count * sizeof(T));
-        loop(x, first) destination[x] = source[0];
-        for(int x = last; x < dimensions.x; x++) destination[x] = source[dimensions.x - 1];
-    }
-    // vector::move swaps storage when the destination is empty, retaining both
-    // allocations for the next scroll without copying the entire volume back.
-    field.setsize(0);
-    field.move(scratch);
-    return true;
+    if(!queuelocalambientsolve(origin, dimensions, resolution, attenuation, downwardattenuation)) marklocalambientfull();
 }
 
 static void buildlocalambientscrollregions(const ivec &shift, const ivec &dimensions)
@@ -609,14 +633,6 @@ static bool scrolllocalambientfield(const ivec &origin)
        abs(shift.z) >= localambientfielddimensions.z) return false;
 
     ZoneScopedN("LocalAmbient/Scroll");
-    {
-        ZoneScopedN("LocalAmbient/CPU scroll");
-        if(!shiftlocalambientcpufield(localambientsolidfield, localambientscrollscratch, localambientfielddimensions, shift)) return false;
-        if(!shiftlocalambientcpufield(localambientalbedofield, localambientalbedoscrollscratch, localambientfielddimensions, shift)) return false;
-        if(!shiftlocalambientcpufield(localambientskyfield, localambientskyscratch,
-                                     ivec(localambientfielddimensions.x, localambientfielddimensions.y, 1), ivec(shift.x, shift.y, 0))) return false;
-    }
-
     nextlocalambientserial();
     buildlocalambientscrollregions(shift, localambientfielddimensions);
     // Keep rendering the previous complete volume while the exposed slabs are
@@ -637,6 +653,7 @@ static bool scrolllocalambientfield(const ivec &origin)
 void updatelocalambient()
 {
     if(!localambient || !camera1 || !worldroot || drawtex) return;
+    ZoneScopedN("LocalAmbient/Update");
     finishlocalambientsolve();
 
     ivec origin, dimensions;
@@ -695,15 +712,8 @@ void updatelocalambient()
     {
         localambientjob *job = localambientcapturejob;
         localambientcapturejob = NULL;
-        if(job->serial == localambientserial)
-        {
-            if(submitlocalambientcapture(*job))
-            {
-                if(job->scroll) finishlocalambientscrollregion();
-            }
-            else marklocalambientfull();
-        }
-        delete job;
+        if(job->serial == localambientserial) submitlocalambientcapture(job);
+        else delete job;
     }
 }
 
