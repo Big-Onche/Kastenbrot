@@ -1392,15 +1392,26 @@ void renderwater()
         Shader *belowshader = NULL;
         if(drawtex != DRAWTEX_MINIMAP) SETWATERSHADER(below, underwater);
 
+        // Persistent meshes contain every surface in both passes. Select the
+        // visible side before rasterization, as for LOD water; the shaders do
+        // not reject the opposite side. Keep minimap rendering two-sided.
+        if(belowshader)
+        {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
         aboveshader->set();
         LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
         renderwatergeometry(k, false, 1);
 
         if(belowshader)
         {
+            glCullFace(GL_FRONT);
             belowshader->set();
             LOCALPARAMF(watermeshoffset, 0.0f, 0.0f, 0.0f);
             renderwatergeometry(k, false, -1);
+            glCullFace(GL_BACK);
+            glDisable(GL_CULL_FACE);
         }
     }
 }

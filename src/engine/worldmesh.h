@@ -7,24 +7,30 @@
 // VSlot identity includes shader, textures, uniforms, scroll, alpha and refraction
 // settings. Orientation and environment selection remain explicit. Clip/volume
 // material bits are gameplay metadata and do not change the surface draw state.
+enum { WORLDMESH_OPAQUE, WORLDMESH_CUTOUT, WORLDMESH_TRANSLUCENT, WORLDMESH_REFRACTIVE };
+
 struct worldmeshbatchkey
 {
     ushort texture, envmap;
     uchar orient, layer;
     bool alpha;
+    uchar renderclass;
+    bool twosided;
 
-    worldmeshbatchkey() : texture(0), envmap(EMID_NONE), orient(0), layer(LAYER_TOP), alpha(false)
+    worldmeshbatchkey() : texture(0), envmap(EMID_NONE), orient(0), layer(LAYER_TOP), alpha(false), renderclass(WORLDMESH_OPAQUE), twosided(false)
     {
     }
 
     bool operator==(const worldmeshbatchkey &b) const
     {
-        return texture == b.texture && envmap == b.envmap && orient == b.orient && layer == b.layer && alpha == b.alpha;
+        return texture == b.texture && envmap == b.envmap && orient == b.orient && layer == b.layer &&
+               renderclass == b.renderclass && twosided == b.twosided;
     }
 
     bool operator<(const worldmeshbatchkey &b) const
     {
-        if(alpha != b.alpha) return alpha < b.alpha;
+        if(renderclass != b.renderclass) return renderclass < b.renderclass;
+        if(twosided != b.twosided) return twosided < b.twosided;
         if(texture != b.texture) return texture < b.texture;
         if(envmap != b.envmap) return envmap < b.envmap;
         if(layer != b.layer) return layer < b.layer;
@@ -71,11 +77,11 @@ struct worldmeshsection
     ullong request;
     waterresource *water;
     bool dirty, pending, edited;
-    int sourceranges;
+    int sourceranges, alphapasses;
 
     worldmeshsection(const ivec &origin)
         : origin(origin), minimum(origin), maximum(origin), revision(1), published(0), request(0), water(NULL),
-          dirty(true), pending(false), edited(false), sourceranges(0)
+          dirty(true), pending(false), edited(false), sourceranges(0), alphapasses(0)
     {
     }
 };

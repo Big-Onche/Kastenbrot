@@ -1275,7 +1275,7 @@ void findshadowvas(bool transparent)
     if(transparent && worldmeshpackets)
     {
         const vector<worldmeshsection *> &sections = getworldmeshsections();
-        loopv(sections) loopvj(sections[i]->ranges) if(sections[i]->ranges[j].alpha) { shadowtransparent |= 0x3F; break; }
+        loopv(sections) if(sections[i]->alphapasses) { shadowtransparent |= 0x3F; break; }
     }
 }
 
@@ -2523,12 +2523,7 @@ int findalphavas()
     {
         const worldmeshsection &section = *sections[i];
         if(!worldmeshsectionvisible(section)) continue;
-        int flags = 0;
-        loopvj(section.ranges) if(section.ranges[j].alpha)
-        {
-            VSlot &slot = lookupvslot(section.ranges[j].texture);
-            flags |= 2 | (slot.alphaback ? 1 : 0) | (slot.refractscale > 0 ? 4 : 0);
-        }
+        const int flags = section.alphapasses;
         if(!flags) continue;
         float sx1, sy1, sx2, sy2;
         if(!calcbbscissor(section.minimum, section.maximum, sx1, sy1, sx2, sy2)) continue;

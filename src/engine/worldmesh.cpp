@@ -10,6 +10,7 @@ struct worldmeshtexture
 {
     int index;
     bool directional;
+    bool cutout, refractive, leaf;
     vec4 sgen[6], tgen[6];
     vec tangent[6], bitangent[6];
 };
@@ -45,6 +46,10 @@ struct worldmeshsnapshot
         VSlot &slot = lookupvslot(index, true);
         worldmeshtexture &copy = textures.add();
         copy.index = index;
+        const char *shader = slot.slot->shader->name;
+        copy.leaf = !strcmp(shader, "leafworld") || !strcmp(shader, "leafclimateworld");
+        copy.cutout = copy.leaf || !strcmp(shader, "scatterworld");
+        copy.refractive = slot.refractscale > 0;
         // Match legacy O_ANY batching, but retain face direction when selecting
         // a positional environment map at publication time.
         copy.directional = !slot.scroll.iszero() ||
@@ -189,6 +194,9 @@ static void collectworldmeshsolidface(worldmeshjob &job, const cube &c, const iv
         return;
     }
     const bool sharedleaf = size == nsize && !neighbor.children && c.visible && neighbor.visible;
+    // visibletrisagainst gives shared leaf planes to positive orientations only.
+    // With leavesalpha disabled, snapshot leaf flags are clear and normal solid
+    // occlusion removes both internal faces instead.
     const int visible = visibletrisagainst(c, orient, co, size, neighbor, no, nsize, sharedleaf);
     if(!visible) return;
     ivec corners[4];
@@ -320,7 +328,11 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
         range.texture = face.texture;
         range.material = face.material;
         range.orient = orient;
-        range.alpha = (face.material & MAT_ALPHA) != 0;
+        range.renderclass = texture->refractive && (face.material & MAT_ALPHA) ? WORLDMESH_REFRACTIVE :
+                            texture->cutout && (!texture->leaf || (face.material & MAT_ALPHA)) ? WORLDMESH_CUTOUT :
+                            (face.material & MAT_ALPHA) ? WORLDMESH_TRANSLUCENT : WORLDMESH_OPAQUE;
+        range.alpha = range.renderclass >= WORLDMESH_TRANSLUCENT;
+        range.twosided = texture->leaf && range.renderclass == WORLDMESH_CUTOUT;
     }
     const uint base = packet.vertices.length();
     vec tangent(texture->tangent[face.orient]);
@@ -732,10 +744,12 @@ int processworldmeshpackets(double budget, int uploadlimit)
                 vector<uchar> resolved;
                 const int numvertices = job->packet.vertices.length();
                 if(numvertices > 0) memset(resolved.pad(numvertices), 0, numvertices);
+                section.alphapasses = 0;
                 loopv(job->packet.ranges)
                 {
                     worldmeshdrawrange &range = job->packet.ranges[i];
                     VSlot &slot = lookupvslot(range.texture);
+                    if(range.alpha) section.alphapasses |= 2 | (slot.alphaback ? 1 : 0) | (slot.refractscale > 0 ? 4 : 0);
                     range.envmap = slot.slot->shader->type & SHADER_ENVMAP ?
                                    (slot.slot->texmask & (1 << TEX_ENVMAP) ? EMID_CUSTOM :
                                     closestenvmap(range.orient, section.origin, WORLD_SECTION_SIZE)) : EMID_NONE;

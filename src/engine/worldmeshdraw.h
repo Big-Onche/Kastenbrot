@@ -32,7 +32,8 @@ struct worldmeshcommand
 
     bool compatible(const worldmeshcommand &b, bool depth) const
     {
-        return vbo == b.vbo && ebo == b.ebo && (depth || key == b.key);
+        return vbo == b.vbo && ebo == b.ebo &&
+               ((depth && key.renderclass != WORLDMESH_CUTOUT && b.key.renderclass != WORLDMESH_CUTOUT) || key == b.key);
     }
 };
 
@@ -48,6 +49,8 @@ static bool worldmeshdepthorder(const worldmeshcommand &a, const worldmeshcomman
 {
     if(a.vbo != b.vbo) return a.vbo < b.vbo;
     if(a.ebo != b.ebo) return a.ebo < b.ebo;
+    if(a.key.renderclass != b.key.renderclass) return a.key.renderclass < b.key.renderclass;
+    if(a.key.renderclass == WORLDMESH_CUTOUT && !(a.key == b.key)) return a.key < b.key;
     return a.first < b.first;
 }
 
@@ -56,6 +59,8 @@ static bool worldmeshdepthorder(const worldmeshcommand &a, const worldmeshcomman
 static ullong worldmeshcommandgeneration = 0;
 static vector<worldmeshsection *> worldmeshcommandsections;
 static vector<worldmeshcommand> worldmeshopaquecommands, worldmeshalphacommands, worldmeshdepthcommands;
+static vector<worldmeshcommand> worldmeshbackcommands, worldmeshrefractcommands;
+static int worldmeshcutoutcommands = 0;
 static vector<uchar> worldmeshcommandvisibility;
 static vector<uchar> worldmeshcsmmasks;
 static vector<GLsizei> worldmeshdrawcounts;
@@ -76,6 +81,9 @@ static void prepareworldmeshcommands()
     worldmeshopaquecommands.setsize(0);
     worldmeshalphacommands.setsize(0);
     worldmeshdepthcommands.setsize(0);
+    worldmeshbackcommands.setsize(0);
+    worldmeshrefractcommands.setsize(0);
+    worldmeshcutoutcommands = 0;
     hashset<GLuint> vertexpages, indexpages;
     int numvertexpages = 0, numindexpages = 0;
     const vector<worldmeshsection *> &sections = getworldmeshsections();
@@ -92,13 +100,21 @@ static void prepareworldmeshcommands()
             const worldmeshdrawrange &range = section.ranges[j];
             if(!range.count || range.texture == DEFAULT_SKY) continue;
             worldmeshcommand command(section, range, sectionindex);
-            if(range.alpha) worldmeshalphacommands.add(command);
+            if(range.alpha)
+            {
+                worldmeshalphacommands.add(command);
+                const VSlot &slot = lookupvslot(range.texture);
+                if(slot.alphaback) worldmeshbackcommands.add(command);
+                if(slot.refractscale > 0) worldmeshrefractcommands.add(command);
+            }
             else
             {
+                if(range.renderclass == WORLDMESH_CUTOUT) ++worldmeshcutoutcommands;
                 worldmeshopaquecommands.add(command);
                 // smworld is depth-only for opaque geometry. Texture, texgen,
                 // material and environment do not affect that shader.
                 if(!worldmeshdepthcommands.empty() && worldmeshdepthcommands.last().section == sectionindex &&
+                   worldmeshdepthcommands.last().compatible(command, true) &&
                    worldmeshdepthcommands.last().first + worldmeshdepthcommands.last().count * sizeof(uint) == command.first)
                     worldmeshdepthcommands.last().count += command.count;
                 else worldmeshdepthcommands.add(command);
@@ -128,7 +144,7 @@ enum
 struct worldmeshframestats
 {
     ullong draws[WORLDMESH_PASSES], passindices[WORLDMESH_PASSES], indices, commands, cascade[4], cascadedepth[4],
-           sections, ranges, sourceranges, maxranges, bindings, states;
+           sections, ranges, sourceranges, maxranges, bindings, states, flushes, spans, merged, cutoutsubmitted;
     double millis[WORLDMESH_PASSES], cascademillis[4];
 };
 
@@ -150,6 +166,11 @@ void endworldmeshdrawstats()
     TracyPlot("WorldMesh/Source ranges visible", int64_t(worldmeshstats.sourceranges));
     TracyPlot("WorldMesh/Draw calls", int64_t(draws));
     TracyPlot("WorldMesh/Submitted ranges", int64_t(worldmeshstats.commands));
+    TracyPlot("WorldMesh/Cutout commands generated", int64_t(worldmeshcutoutcommands));
+    TracyPlot("WorldMesh/Cutout commands submitted", int64_t(worldmeshstats.cutoutsubmitted));
+    TracyPlot("WorldMesh/Flush count", int64_t(worldmeshstats.flushes));
+    TracyPlot("WorldMesh/Draw spans", int64_t(worldmeshstats.spans));
+    TracyPlot("WorldMesh/Merged contiguous spans", int64_t(worldmeshstats.merged));
     TracyPlot("WorldMesh/Indices", int64_t(worldmeshstats.indices));
     TracyPlot("WorldMesh/Avg ranges per visible section", worldmeshstats.sections ? double(worldmeshstats.ranges) / worldmeshstats.sections : 0.0);
     TracyPlot("WorldMesh/Max ranges per visible section", int64_t(worldmeshstats.maxranges));
@@ -184,8 +205,12 @@ void endworldmeshdrawstats()
 
 static void setworldmeshbatchstate(renderstate &cur, int pass, const worldmeshbatchkey &key)
 {
+    GLOBALPARAMF(worldmeshcutout, key.renderclass == WORLDMESH_CUTOUT ? 1.0f : 0.0f);
+    GLOBALPARAMF(worldmeshfoliage, key.twosided ? 1.0f : 0.0f);
     VSlot &vslot = lookupvslot(key.texture);
     Slot &slot = *vslot.slot;
+    Texture *diffuse = slot.sts.empty() ? notexture : slot.sts[0].t;
+    GLOBALPARAMF(worldmeshtexsize, float(diffuse->w), float(diffuse->h));
     changeslottmus(cur, pass, slot, vslot);
     if(slot.shader->type & SHADER_ENVMAP && !(slot.texmask & (1 << TEX_ENVMAP)))
     {
@@ -214,6 +239,7 @@ static void setworldmeshbatchstate(renderstate &cur, int pass, const worldmeshba
 
 // Toggle submission only for A/B measurements; packet layout and culling stay identical.
 VAR(worldmeshmultidraw, 0, 1, 1);
+VAR(worldmeshdebug, 0, 0, 1);
 
 void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
 {
@@ -226,6 +252,10 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
     const int statpass = refractmask ? WORLDMESH_REFRACT : rsm ? WORLDMESH_RSM :
                          shadow ? (shadowmapping == SM_CASCADE ? WORLDMESH_CSM : WORLDMESH_SHADOW) :
                          side ? WORLDMESH_ALPHA : WORLDMESH_GBUFFER;
+    const vector<worldmeshcommand> &commands = refractmask ? worldmeshrefractcommands : side == 1 ? worldmeshbackcommands :
+                                               side ? worldmeshalphacommands : depth ? worldmeshdepthcommands : worldmeshopaquecommands;
+    if(commands.empty()) return;
+    const bool attributes = !refractmask;
     {
         ZoneScopedN("WorldMesh/Cull sections");
         const bool cascade = (shadow || rsm) && shadowmapping == SM_CASCADE;
@@ -263,26 +293,34 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
         if(!refractmask) setupgeom(cur);
         if(depth && !refractmask) SETSHADER(smworld);
         if(side == 1 && !shadow) glCullFace(GL_FRONT);
-        enablevattribs(cur, !depth);
+        enablevattribs(cur, attributes);
     }
     GLuint vbo = 0, ebo = 0;
     worldmeshbatchkey previouskey;
     bool materialset = false;
+    const bool initialcull = glIsEnabled(GL_CULL_FACE) != 0;
+    bool cullenabled = initialcull;
     ullong draws = 0;
-    const vector<worldmeshcommand> &commands = side ? worldmeshalphacommands : depth ? worldmeshdepthcommands : worldmeshopaquecommands;
     const worldmeshcommand *batch = NULL;
     worldmeshdrawcounts.setsize(0);
     worldmeshdrawstarts.setsize(0);
     auto flush = [&]()
     {
         if(!batch || worldmeshdrawcounts.empty()) return;
+        const bool cull = initialcull && !batch->key.twosided;
+        if(cullenabled != cull)
+        {
+            if(cull) glEnable(GL_CULL_FACE);
+            else glDisable(GL_CULL_FACE);
+            cullenabled = cull;
+        }
         if(vbo != batch->vbo)
         {
             gle::bindvbo(vbo = batch->vbo);
             cur.vbuf = vbo;
             ++worldmeshstats.bindings;
             gle::vertexpointer(sizeof(vertex), (void *)offsetof(vertex, pos));
-            if(!depth)
+            if(attributes)
             {
                 gle::normalpointer(sizeof(vertex), (void *)offsetof(vertex, norm), GL_BYTE);
                 gle::texcoord0pointer(sizeof(vertex), (void *)offsetof(vertex, tc), GL_FLOAT, 3);
@@ -301,7 +339,22 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
             materialset = true;
             ++worldmeshstats.states;
         }
+        if(depth && !refractmask)
+        {
+            if(batch->key.renderclass == WORLDMESH_CUTOUT)
+            {
+                VSlot &vslot = lookupvslot(batch->key.texture);
+                Texture *diffuse = vslot.slot->sts.empty() ? notexture : vslot.slot->sts[0].t;
+                GLOBALPARAMF(worldmeshtexsize, float(diffuse->w), float(diffuse->h));
+                changeslottmus(cur, RENDERPASS_GBUFFER, *vslot.slot, vslot);
+                changetexgen(cur, batch->key.orient, *vslot.slot, vslot);
+                SETSHADER(smcutoutworld);
+            }
+            else SETSHADER(smworld);
+        }
         const int count = worldmeshdrawcounts.length();
+        ++worldmeshstats.flushes;
+        worldmeshstats.spans += count;
         if(count > 1 && worldmeshmultidraw && glMultiDrawElements_)
         {
             glMultiDrawElements_(GL_TRIANGLES, worldmeshdrawcounts.getbuf(), GL_UNSIGNED_INT, worldmeshdrawstarts.getbuf(), count);
@@ -319,40 +372,68 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
     };
     {
         ZoneScopedN("WorldMesh/Submit batches");
+
+        int submittedcommands = 0;
+
         loopv(commands)
         {
             const worldmeshcommand &command = commands[i];
+
             if(!worldmeshcommandvisibility[command.section]) continue;
-            if(side == 1 || refractmask)
-            {
-                const VSlot &slot = lookupvslot(command.key.texture);
-                if((side == 1 && !slot.alphaback) || (refractmask && slot.refractscale <= 0)) continue;
-            }
-            if(batch && !batch->compatible(command, depth)) flush();
+
+            ++submittedcommands;
+            if(command.key.renderclass == WORLDMESH_CUTOUT) ++worldmeshstats.cutoutsubmitted;
+
+            if(batch && !batch->compatible(command, depth))
+                flush();
+
             batch = &command;
+
             // Consecutive allocations/ranges with identical state need only one
             // indexed span, including inside a multi-draw call.
             if(!worldmeshdrawcounts.empty() &&
-               (size_t)worldmeshdrawstarts.last() + size_t(worldmeshdrawcounts.last()) * sizeof(uint) == command.first)
+               (size_t)worldmeshdrawstarts.last() +
+               size_t(worldmeshdrawcounts.last()) * sizeof(uint) == command.first)
+            {
                 worldmeshdrawcounts.last() += command.count;
+                ++worldmeshstats.merged;
+            }
             else
             {
                 worldmeshdrawcounts.add(command.count);
                 worldmeshdrawstarts.add((const GLvoid *)(size_t)command.first);
             }
+
             ++worldmeshstats.commands;
             worldmeshstats.indices += command.count;
             worldmeshstats.passindices[statpass] += command.count;
             xtravertsva += command.count;
         }
+
         flush();
+
+        if(worldmeshdebug && statpass == WORLDMESH_GBUFFER && !drawtex)
+        {
+            static int lastreport = 0;
+            if(totalmillis - lastreport >= 1000)
+            {
+                conoutf(CON_DEBUG, "WorldMesh: %d/%d commands, %d cutout generated, %d submitted; %d flushes, %d spans, %d merged",
+                        submittedcommands, commands.length(), worldmeshcutoutcommands, int(worldmeshstats.cutoutsubmitted),
+                        int(worldmeshstats.flushes), int(worldmeshstats.spans), int(worldmeshstats.merged));
+                lastreport = totalmillis;
+            }
+        }
+
     }
     {
         ZoneScopedN("WorldMesh/Cleanup");
-        disablevattribs(cur, !depth);
+        disablevattribs(cur, attributes);
         disablevbuf(cur);
         if(side == 1 && !shadow) glCullFace(GL_BACK);
         if(!refractmask) cleanupgeom(cur);
+        GLOBALPARAMF(worldmeshcutout, 0.0f);
+        GLOBALPARAMF(worldmeshfoliage, 0.0f);
+        if(cullenabled != initialcull) glEnable(GL_CULL_FACE);
     }
     const double millis = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
     worldmeshstats.draws[statpass] += draws;

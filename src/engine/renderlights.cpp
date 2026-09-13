@@ -4992,247 +4992,743 @@ int transparentlayer = 0;
 
 void rendertransparent(int fogmat, float fogbelow, int abovemat, bool cloudsbeforeliquid)
 {
+    ZoneScopedN("Render/Transparent");
+
     const bool liquidlast = fogmat != MAT_AIR;
 
-    int hasalphavas = findalphavas();
-    int hasmats = findmaterials();
-    bool hasmodels = transmdlsx1 < transmdlsx2 && transmdlsy1 < transmdlsy2;
-    const bool usewaterfogmask = (hasmats & 4) && (fogmat & MATF_VOLUME) == MAT_WATER;
+    int hasalphavas, hasmats;
+    bool hasmodels;
+
+    {
+        ZoneScopedN("Render/Transparent/Find alpha VAs");
+        hasalphavas = findalphavas();
+    }
+
+    {
+        ZoneScopedN("Render/Transparent/Find materials");
+        hasmats = findmaterials();
+    }
+
+    {
+        ZoneScopedN("Render/Transparent/Find models");
+        hasmodels = transmdlsx1 < transmdlsx2 && transmdlsy1 < transmdlsy2;
+    }
+
+    const bool usewaterfogmask =
+        (hasmats & 4) && (fogmat & MATF_VOLUME) == MAT_WATER;
+
     if(!fogmat && !hasalphavas && !hasmats && !hasmodels)
     {
-        if(!editmode) renderparticles();
-        if(cloudsbeforeliquid) renderclouds();
+        ZoneScopedN("Render/Transparent/Early out");
+
+        if(!editmode)
+        {
+            ZoneScopedN("Render/Transparent/Particles early");
+            renderparticles();
+        }
+
+        if(cloudsbeforeliquid)
+        {
+            ZoneScopedN("Render/Transparent/Clouds early");
+            renderclouds();
+        }
+
         return;
     }
+
     timer *transtimer = begintimer("transparent");
+
+    // -------------------------------------------------------------------------
+    // Refraction mask
+    // -------------------------------------------------------------------------
 
     if(hasalphavas&4 || hasmats&4)
     {
-        glBindFramebuffer_(GL_FRAMEBUFFER, msaalight ? msrefractfbo : refractfbo);
+        ZoneScopedN("Render/Transparent/Refraction mask");
+
+        glBindFramebuffer_(
+            GL_FRAMEBUFFER,
+            msaalight ? msrefractfbo : refractfbo
+        );
+
         glDepthMask(GL_FALSE);
-        if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msdepthtex);
-        else glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
-        float sx1 = min(alpharefractsx1, matrefractsx1), sy1 = min(alpharefractsy1, matrefractsy1),
-              sx2 = max(alpharefractsx2, matrefractsx2), sy2 = max(alpharefractsy2, matrefractsy2);
-        // Fog reads coverage over the whole view; pixels outside today's refraction bounds must not retain old exits.
-        bool scissor = !usewaterfogmask && (sx1 > -1 || sy1 > -1 || sx2 < 1 || sy2 < 1);
+
+        if(msaalight)
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msdepthtex);
+        else
+            glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
+
+        float sx1 = min(alpharefractsx1, matrefractsx1),
+              sy1 = min(alpharefractsy1, matrefractsy1),
+              sx2 = max(alpharefractsx2, matrefractsx2),
+              sy2 = max(alpharefractsy2, matrefractsy2);
+
+        // Fog reads coverage over the whole view; pixels outside today's
+        // refraction bounds must not retain old exits.
+        bool scissor =
+            !usewaterfogmask &&
+            (sx1 > -1 || sy1 > -1 || sx2 < 1 || sy2 < 1);
+
         if(scissor)
         {
-            int x1 = int(floor(max(sx1*0.5f+0.5f-refractmargin*viewh/vieww, 0.0f)*vieww)),
-                y1 = int(floor(max(sy1*0.5f+0.5f-refractmargin, 0.0f)*viewh)),
-                x2 = int(ceil(min(sx2*0.5f+0.5f+refractmargin*viewh/vieww, 1.0f)*vieww)),
-                y2 = int(ceil(min(sy2*0.5f+0.5f+refractmargin, 1.0f)*viewh));
+            ZoneScopedN("Render/Transparent/Refraction scissor");
+
+            int x1 = int(floor(
+                    max(sx1*0.5f + 0.5f - refractmargin*viewh/vieww, 0.0f)
+                    * vieww)),
+                y1 = int(floor(
+                    max(sy1*0.5f + 0.5f - refractmargin, 0.0f)
+                    * viewh)),
+                x2 = int(ceil(
+                    min(sx2*0.5f + 0.5f + refractmargin*viewh/vieww, 1.0f)
+                    * vieww)),
+                y2 = int(ceil(
+                    min(sy2*0.5f + 0.5f + refractmargin, 1.0f)
+                    * viewh));
+
             glEnable(GL_SCISSOR_TEST);
             glScissor(x1, y1, x2 - x1, y2 - y1);
         }
-        glClearColor(0, 0, 0, 0);
-        glClear(GL_COLOR_BUFFER_BIT);
-        if(scissor) glDisable(GL_SCISSOR_TEST);
+
+        {
+            ZoneScopedN("Render/Transparent/Refraction clear");
+
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+
+        if(scissor)
+            glDisable(GL_SCISSOR_TEST);
+
         GLOBALPARAMF(refractdepth, 1.0f/refractdepth);
         SETSHADER(refractmask);
         LOCALPARAMF(liquidmask, 0.0f);
-        if(hasalphavas&4) renderrefractmask();
-        if(hasmats&4) rendermaterialmask();
+
+        if(hasalphavas&4)
+        {
+            ZoneScopedN("Render/Transparent/Alpha refract mask");
+            renderrefractmask();
+        }
+
+        if(hasmats&4)
+        {
+            ZoneScopedN("Render/Transparent/Material refract mask");
+            rendermaterialmask();
+        }
 
         glDepthMask(GL_TRUE);
     }
 
-    glActiveTexture_(GL_TEXTURE7);
-    if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
-    else glBindTexture(GL_TEXTURE_RECTANGLE, refracttex);
-    glActiveTexture_(GL_TEXTURE0);
+    {
+        ZoneScopedN("Render/Transparent/Bind refraction texture");
+
+        glActiveTexture_(GL_TEXTURE7);
+
+        if(msaalight)
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
+        else
+            glBindTexture(GL_TEXTURE_RECTANGLE, refracttex);
+
+        glActiveTexture_(GL_TEXTURE0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Underwater fog
+    // -------------------------------------------------------------------------
 
     if(fogmat)
     {
-        ZoneScopedN("Render/Underwater fog");
-        glBindFramebuffer_(GL_FRAMEBUFFER, msaalight ? mshdrfbo : hdrfbo);
+        ZoneScopedN("Render/Transparent/Underwater fog");
+
+        glBindFramebuffer_(
+            GL_FRAMEBUFFER,
+            msaalight ? mshdrfbo : hdrfbo
+        );
+
         setfog(fogmat, fogbelow, 1, abovemat);
-        GLOBALPARAMF(waterfogmask, usewaterfogmask ? 1.0f : 0.0f);
-        renderwaterfog(fogmat, fogbelow);
-        setfog(fogmat, fogbelow, clamp(fogbelow, 0.0f, 1.0f), abovemat);
+
+        GLOBALPARAMF(
+            waterfogmask,
+            usewaterfogmask ? 1.0f : 0.0f
+        );
+
+        {
+            ZoneScopedN("Render/Transparent/Water fog render");
+            renderwaterfog(fogmat, fogbelow);
+        }
+
+        setfog(
+            fogmat,
+            fogbelow,
+            clamp(fogbelow, 0.0f, 1.0f),
+            abovemat
+        );
     }
 
     if(!hasalphavas && !hasmats && !hasmodels)
     {
+        ZoneScopedN("Render/Transparent/Post fog early out");
+
         endtimer(transtimer);
-        if(!editmode) renderparticles();
-        if(cloudsbeforeliquid) renderclouds();
+
+        if(!editmode)
+        {
+            ZoneScopedN("Render/Transparent/Particles post fog");
+            renderparticles();
+        }
+
+        if(cloudsbeforeliquid)
+        {
+            ZoneScopedN("Render/Transparent/Clouds post fog");
+            renderclouds();
+        }
+
         return;
     }
 
-    // Underwater fog needs the exit mask first, but particles still composite over the fogged opaque scene.
-    glBindFramebuffer_(GL_FRAMEBUFFER, msaalight ? mshdrfbo : hdrfbo);
-    if(!editmode && particlelayers && ghasstencil) renderparticles(PL_UNDER);
+    // -------------------------------------------------------------------------
+    // Transparent pipeline setup
+    // -------------------------------------------------------------------------
 
-    glActiveTexture_(GL_TEXTURE7);
-    if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
-    else glBindTexture(GL_TEXTURE_RECTANGLE, refracttex);
-    glActiveTexture_(GL_TEXTURE8);
-    if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, mshdrtex);
-    else glBindTexture(GL_TEXTURE_RECTANGLE, hdrtex);
-    glActiveTexture_(GL_TEXTURE9);
-    if(msaalight) glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msdepthtex);
-    else glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
-    glActiveTexture_(GL_TEXTURE0);
+    {
+        ZoneScopedN("Render/Transparent/Pipeline setup");
 
-    if(ghasstencil) glEnable(GL_STENCIL_TEST);
+        // Underwater fog needs the exit mask first, but particles still
+        // composite over the fogged opaque scene.
+        glBindFramebuffer_(
+            GL_FRAMEBUFFER,
+            msaalight ? mshdrfbo : hdrfbo
+        );
 
-    matrix4 raymatrix(vec(-0.5f*vieww*projmatrix.a.x, 0, 0.5f*vieww - 0.5f*vieww*projmatrix.c.x),
-                      vec(0, -0.5f*viewh*projmatrix.b.y, 0.5f*viewh - 0.5f*viewh*projmatrix.c.y));
-    raymatrix.muld(cammatrix);
-    GLOBALPARAM(raymatrix, raymatrix);
-    GLOBALPARAM(linearworldmatrix, linearworldmatrix);
+        if(!editmode && particlelayers && ghasstencil)
+        {
+            ZoneScopedN("Render/Transparent/Particles under");
+            renderparticles(PL_UNDER);
+        }
+
+        glActiveTexture_(GL_TEXTURE7);
+
+        if(msaalight)
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msrefracttex);
+        else
+            glBindTexture(GL_TEXTURE_RECTANGLE, refracttex);
+
+        glActiveTexture_(GL_TEXTURE8);
+
+        if(msaalight)
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, mshdrtex);
+        else
+            glBindTexture(GL_TEXTURE_RECTANGLE, hdrtex);
+
+        glActiveTexture_(GL_TEXTURE9);
+
+        if(msaalight)
+            glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msdepthtex);
+        else
+            glBindTexture(GL_TEXTURE_RECTANGLE, gdepthtex);
+
+        glActiveTexture_(GL_TEXTURE0);
+
+        if(ghasstencil)
+            glEnable(GL_STENCIL_TEST);
+    }
+
+    {
+        ZoneScopedN("Render/Transparent/Ray matrix setup");
+
+        matrix4 raymatrix(
+            vec(
+                -0.5f*vieww*projmatrix.a.x,
+                0,
+                0.5f*vieww - 0.5f*vieww*projmatrix.c.x
+            ),
+            vec(
+                0,
+                -0.5f*viewh*projmatrix.b.y,
+                0.5f*viewh - 0.5f*viewh*projmatrix.c.y
+            )
+        );
+
+        raymatrix.muld(cammatrix);
+
+        GLOBALPARAM(raymatrix, raymatrix);
+        GLOBALPARAM(linearworldmatrix, linearworldmatrix);
+    }
 
     uint tiles[LIGHTTILE_MAXH];
-    float allsx1 = 1, allsy1 = 1, allsx2 = -1, allsy2 = -1, sx1, sy1, sx2, sy2;
+
+    float allsx1 = 1,
+          allsy1 = 1,
+          allsx2 = -1,
+          allsy2 = -1,
+          sx1,
+          sy1,
+          sx2,
+          sy2;
+
+    // Helper solely to avoid duplicating the actual light dispatch while
+    // still allowing each transparent category to get its own Tracy scope.
+    auto rendertransparentlights = [&]()
+    {
+        if(msaalight)
+        {
+            glBindFramebuffer_(GL_FRAMEBUFFER, mshdrfbo);
+
+            if((ghasstencil && msaaedgedetect) || msaalight == 2)
+            {
+                loopi(2)
+                {
+                    renderlights(
+                        sx1, sy1, sx2, sy2,
+                        tiles,
+                        transparentlayer,
+                        i+1,
+                        true
+                    );
+                }
+            }
+            else
+            {
+                renderlights(
+                    sx1, sy1, sx2, sy2,
+                    tiles,
+                    transparentlayer,
+                    3,
+                    true
+                );
+            }
+        }
+        else
+        {
+            glBindFramebuffer_(GL_FRAMEBUFFER, hdrfbo);
+
+            renderlights(
+                sx1, sy1, sx2, sy2,
+                tiles,
+                transparentlayer,
+                0,
+                true
+            );
+        }
+    };
+
+    // -------------------------------------------------------------------------
+    // Transparent layers
+    // -------------------------------------------------------------------------
 
     loop(renderlayer, 4)
     {
-        // Above a liquid, its surface is normally behind nearby transparent geometry. Below it, the surface is in front of geometry seen through
-        // the liquid and must render last so its depth does not reject that geometry before the surface can composite over it.
-        int layer = liquidlast ? (renderlayer + 1) % 4 : renderlayer;
-        // Underwater, clouds must resolve after the other transparent layers but before the final liquid surface writes its depth.
-        if(cloudsbeforeliquid && layer == 0) renderclouds();
+        ZoneScopedN("Render/Transparent/Layer");
+
+        // Above a liquid, its surface is normally behind nearby transparent
+        // geometry. Below it, the surface is in front of geometry seen
+        // through the liquid and must render last.
+        int layer =
+            liquidlast
+            ? (renderlayer + 1) % 4
+            : renderlayer;
+
+        if(cloudsbeforeliquid && layer == 0)
+        {
+            ZoneScopedN("Render/Transparent/Clouds before liquid");
+            renderclouds();
+        }
+
+        // ---------------------------------------------------------------------
+        // Determine layer bounds / tiles
+        // ---------------------------------------------------------------------
+
         switch(layer)
         {
         case 0:
-            if(!(hasmats&1)) continue;
-            sx1 = matliquidsx1; sy1 = matliquidsy1; sx2 = matliquidsx2; sy2 = matliquidsy2;
-            memcpy(tiles, matliquidtiles, sizeof(tiles));
+        {
+            ZoneScopedN("Render/Transparent/Liquid prepare");
+
+            if(!(hasmats&1))
+                continue;
+
+            sx1 = matliquidsx1;
+            sy1 = matliquidsy1;
+            sx2 = matliquidsx2;
+            sy2 = matliquidsy2;
+
+            memcpy(
+                tiles,
+                matliquidtiles,
+                sizeof(tiles)
+            );
+
             break;
+        }
+
         case 1:
-            if(!(hasalphavas&1)) continue;
-            sx1 = alphabacksx1; sy1 = alphabacksy1; sx2 = alphabacksx2; sy2 = alphabacksy2;
-            memcpy(tiles, alphatiles, sizeof(tiles));
+        {
+            ZoneScopedN("Render/Transparent/Alpha back prepare");
+
+            if(!(hasalphavas&1))
+                continue;
+
+            sx1 = alphabacksx1;
+            sy1 = alphabacksy1;
+            sx2 = alphabacksx2;
+            sy2 = alphabacksy2;
+
+            memcpy(
+                tiles,
+                alphatiles,
+                sizeof(tiles)
+            );
+
             break;
+        }
+
         case 2:
-            if(!(hasalphavas&2) && !(hasmats&2)) continue;
-            sx1 = alphafrontsx1; sy1 = alphafrontsy1; sx2 = alphafrontsx2; sy2 = alphafrontsy2;
-            memcpy(tiles, alphatiles, sizeof(tiles));
+        {
+            ZoneScopedN("Render/Transparent/Alpha front prepare");
+
+            if(!(hasalphavas&2) && !(hasmats&2))
+                continue;
+
+            sx1 = alphafrontsx1;
+            sy1 = alphafrontsy1;
+            sx2 = alphafrontsx2;
+            sy2 = alphafrontsy2;
+
+            memcpy(
+                tiles,
+                alphatiles,
+                sizeof(tiles)
+            );
+
             if(hasmats&2)
             {
                 sx1 = min(sx1, matsolidsx1);
                 sy1 = min(sy1, matsolidsy1);
                 sx2 = max(sx2, matsolidsx2);
                 sy2 = max(sy2, matsolidsy2);
-                loopj(LIGHTTILE_MAXH) tiles[j] |= matsolidtiles[j];
+
+                loopj(LIGHTTILE_MAXH)
+                    tiles[j] |= matsolidtiles[j];
             }
+
             break;
+        }
+
         case 3:
-            if(!hasmodels) continue;
-            sx1 = transmdlsx1; sy1 = transmdlsy1; sx2 = transmdlsx2; sy2 = transmdlsy2;
-            memcpy(tiles, transmdltiles, sizeof(tiles));
+        {
+            ZoneScopedN("Render/Transparent/Models prepare");
+
+            if(!hasmodels)
+                continue;
+
+            sx1 = transmdlsx1;
+            sy1 = transmdlsy1;
+            sx2 = transmdlsx2;
+            sy2 = transmdlsy2;
+
+            memcpy(
+                tiles,
+                transmdltiles,
+                sizeof(tiles)
+            );
+
             break;
+        }
 
         default:
             continue;
         }
 
-        transparentlayer = layer+1;
-        // A liquid boundary gives the actual exit distance, including slopes above the camera's local water level.
-        GLOBALPARAMF(underwaterfog, liquidlast && layer != 0 ? 1.0f : 0.0f);
+        transparentlayer = layer + 1;
+
+        GLOBALPARAMF(
+            underwaterfog,
+            liquidlast && layer != 0 ? 1.0f : 0.0f
+        );
 
         allsx1 = min(allsx1, sx1);
         allsy1 = min(allsy1, sy1);
         allsx2 = max(allsx2, sx2);
         allsy2 = max(allsy2, sy2);
 
-        glBindFramebuffer_(GL_FRAMEBUFFER, msaalight ? msfbo : gfbo);
-        if(ghasstencil)
+        // ---------------------------------------------------------------------
+        // G-buffer / stencil setup
+        // ---------------------------------------------------------------------
+
         {
-            glStencilFunc(GL_ALWAYS, layer+1, ~0);
-            glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-        }
-        else
-        {
-            bool scissor = sx1 > -1 || sy1 > -1 || sx2 < 1 || sy2 < 1;
-            if(scissor)
+            ZoneScopedN("Render/Transparent/GBuffer setup");
+
+            glBindFramebuffer_(
+                GL_FRAMEBUFFER,
+                msaalight ? msfbo : gfbo
+            );
+
+            if(ghasstencil)
             {
-                int x1 = int(floor((sx1*0.5f+0.5f)*vieww)), y1 = int(floor((sy1*0.5f+0.5f)*viewh)),
-                    x2 = int(ceil((sx2*0.5f+0.5f)*vieww)), y2 = int(ceil((sy2*0.5f+0.5f)*viewh));
-                glEnable(GL_SCISSOR_TEST);
-                glScissor(x1, y1, x2 - x1, y2 - y1);
+                glStencilFunc(
+                    GL_ALWAYS,
+                    layer + 1,
+                    ~0
+                );
+
+                glStencilOp(
+                    GL_KEEP,
+                    GL_KEEP,
+                    GL_REPLACE
+                );
+            }
+            else
+            {
+                bool scissor =
+                    sx1 > -1 ||
+                    sy1 > -1 ||
+                    sx2 < 1 ||
+                    sy2 < 1;
+
+                if(scissor)
+                {
+                    int x1 = int(floor(
+                            (sx1*0.5f + 0.5f) * vieww)),
+                        y1 = int(floor(
+                            (sy1*0.5f + 0.5f) * viewh)),
+                        x2 = int(ceil(
+                            (sx2*0.5f + 0.5f) * vieww)),
+                        y2 = int(ceil(
+                            (sy2*0.5f + 0.5f) * viewh));
+
+                    glEnable(GL_SCISSOR_TEST);
+
+                    glScissor(
+                        x1,
+                        y1,
+                        x2 - x1,
+                        y2 - y1
+                    );
+                }
+
+                maskgbuffer("n");
+
+                glColorMask(
+                    GL_TRUE,
+                    GL_TRUE,
+                    GL_TRUE,
+                    GL_FALSE
+                );
+
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+
+                glColorMask(
+                    GL_TRUE,
+                    GL_TRUE,
+                    GL_TRUE,
+                    GL_TRUE
+                );
+
+                if(scissor)
+                    glDisable(GL_SCISSOR_TEST);
             }
 
-            maskgbuffer("n");
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-            if(scissor) glDisable(GL_SCISSOR_TEST);
+            maskgbuffer("cndg");
         }
-        maskgbuffer("cndg");
 
-        if(wireframe && editmode) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        if(wireframe && editmode)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+        // ---------------------------------------------------------------------
+        // Geometry
+        // ---------------------------------------------------------------------
 
         switch(layer)
         {
         case 0:
+        {
+            ZoneScopedN("Render/Transparent/Liquid geometry");
             renderliquidmaterials();
             break;
+        }
+
         case 1:
+        {
+            ZoneScopedN("Render/Transparent/Alpha back geometry");
             renderalphageom(1);
             break;
+        }
+
         case 2:
-            if(hasalphavas&2) renderalphageom(2);
-            if(hasmats&2) rendersolidmaterials();
-            renderstains(STAINBUF_TRANSPARENT, true, layer+1);
+        {
+            ZoneScopedN("Render/Transparent/Alpha front layer");
+
+            if(hasalphavas&2)
+            {
+                ZoneScopedN("Render/Transparent/Alpha front geometry");
+                renderalphageom(2);
+            }
+
+            if(hasmats&2)
+            {
+                ZoneScopedN("Render/Transparent/Solid material geometry");
+                rendersolidmaterials();
+            }
+
+            {
+                ZoneScopedN("Render/Transparent/Stains pre");
+                renderstains(
+                    STAINBUF_TRANSPARENT,
+                    true,
+                    layer + 1
+                );
+            }
+
             break;
+        }
+
         case 3:
-            rendertransparentmodelbatches(layer+1);
+        {
+            ZoneScopedN("Render/Transparent/Model geometry");
+
+            rendertransparentmodelbatches(
+                layer + 1
+            );
+
             break;
         }
-
-        if(wireframe && editmode) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-        if(msaalight)
-        {
-            glBindFramebuffer_(GL_FRAMEBUFFER, mshdrfbo);
-            if((ghasstencil && msaaedgedetect) || msaalight==2) loopi(2) renderlights(sx1, sy1, sx2, sy2, tiles, layer+1, i+1, true);
-            else renderlights(sx1, sy1, sx2, sy2, tiles, layer+1, 3, true);
         }
-        else
-        {
-            glBindFramebuffer_(GL_FRAMEBUFFER, hdrfbo);
-            renderlights(sx1, sy1, sx2, sy2, tiles, layer+1, 0, true);
-        }
+
+        if(wireframe && editmode)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        // ---------------------------------------------------------------------
+        // Lighting
+        //
+        // Deliberately separated by category because THIS is one of the prime
+        // suspects for foliage performance.
+        // ---------------------------------------------------------------------
 
         switch(layer)
         {
-        case 2:
-            renderstains(STAINBUF_TRANSPARENT, false, layer+1);
+        case 0:
+        {
+            ZoneScopedN("Render/Transparent/Liquid lighting");
+            rendertransparentlights();
             break;
+        }
+
+        case 1:
+        {
+            ZoneScopedN("Render/Transparent/Alpha back lighting");
+            rendertransparentlights();
+            break;
+        }
+
+        case 2:
+        {
+            ZoneScopedN("Render/Transparent/Alpha front lighting");
+            rendertransparentlights();
+            break;
+        }
+
+        case 3:
+        {
+            ZoneScopedN("Render/Transparent/Model lighting");
+            rendertransparentlights();
+            break;
+        }
+        }
+
+        if(layer == 2)
+        {
+            ZoneScopedN("Render/Transparent/Stains post");
+
+            renderstains(
+                STAINBUF_TRANSPARENT,
+                false,
+                layer + 1
+            );
         }
     }
 
     transparentlayer = 0;
 
-    if(ghasstencil) glDisable(GL_STENCIL_TEST);
+    if(ghasstencil)
+        glDisable(GL_STENCIL_TEST);
 
     endtimer(transtimer);
 
-    if(editmode) return;
+    if(editmode)
+        return;
+
+    // -------------------------------------------------------------------------
+    // Particles over transparent geometry
+    // -------------------------------------------------------------------------
 
     if(particlelayers && ghasstencil)
     {
-        bool scissor = allsx1 > -1 || allsy1 > -1 || allsx2 < 1 || allsy2 < 1;
+        ZoneScopedN("Render/Transparent/Particles layered");
+
+        bool scissor =
+            allsx1 > -1 ||
+            allsy1 > -1 ||
+            allsx2 < 1 ||
+            allsy2 < 1;
+
         if(scissor)
         {
-            int x1 = int(floor((allsx1*0.5f+0.5f)*vieww)), y1 = int(floor((allsy1*0.5f+0.5f)*viewh)),
-                x2 = int(ceil((allsx2*0.5f+0.5f)*vieww)), y2 = int(ceil((allsy2*0.5f+0.5f)*viewh));
-            glEnable(GL_SCISSOR_TEST);
-            glScissor(x1, y1, x2 - x1, y2 - y1);
-        }
-        glStencilFunc(GL_NOTEQUAL, 0, 0x07);
-        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-        glEnable(GL_STENCIL_TEST);
-        renderparticles(PL_OVER);
-        glDisable(GL_STENCIL_TEST);
-        if(scissor) glDisable(GL_SCISSOR_TEST);
+            ZoneScopedN("Render/Transparent/Particle scissor");
 
-        renderparticles(PL_NOLAYER);
+            int x1 = int(floor(
+                    (allsx1*0.5f + 0.5f) * vieww)),
+                y1 = int(floor(
+                    (allsy1*0.5f + 0.5f) * viewh)),
+                x2 = int(ceil(
+                    (allsx2*0.5f + 0.5f) * vieww)),
+                y2 = int(ceil(
+                    (allsy2*0.5f + 0.5f) * viewh));
+
+            glEnable(GL_SCISSOR_TEST);
+
+            glScissor(
+                x1,
+                y1,
+                x2 - x1,
+                y2 - y1
+            );
+        }
+
+        glStencilFunc(
+            GL_NOTEQUAL,
+            0,
+            0x07
+        );
+
+        glStencilOp(
+            GL_KEEP,
+            GL_KEEP,
+            GL_KEEP
+        );
+
+        glEnable(GL_STENCIL_TEST);
+
+        {
+            ZoneScopedN("Render/Transparent/Particles over");
+            renderparticles(PL_OVER);
+        }
+
+        glDisable(GL_STENCIL_TEST);
+
+        if(scissor)
+            glDisable(GL_SCISSOR_TEST);
+
+        {
+            ZoneScopedN("Render/Transparent/Particles no layer");
+            renderparticles(PL_NOLAYER);
+        }
     }
-    else renderparticles();
+    else
+    {
+        ZoneScopedN("Render/Transparent/Particles");
+        renderparticles();
+    }
 }
 
 VAR(gdepthclear, 0, 1, 1);
