@@ -633,7 +633,11 @@ static int loadworldtextureslot(const char *path, float texsize, bool alpha)
     string command;
     if(!strcmp(path, "terrain/ice.png"))
         formatstring(command, "setshader alphaworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
-    else if(alpha) formatstring(command, "setshader leafworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
+    else if(alpha)
+    {
+        const char *shader = !strcmp(path, "terrain/leaves.png") ? "leafclimateworld" : "leafworld";
+        formatstring(command, "setshader %s; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", shader, texture, texture, texsize);
+    }
     else
     {
         const char *shader = !strcmp(path, "terrain/grass.png") ? "grassclimateworld" :

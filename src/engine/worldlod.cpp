@@ -789,7 +789,7 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
         if(SDL_AtomicGet(&job.cancelled)) return;
         worldlodvertex &vertex = job.mesh.vertices[i];
         if(vertex.material.x != WORLD_LOD_GRASS_TOP && vertex.material.x != WORLD_LOD_GRASS_SIDE &&
-           vertex.material.x != WORLD_LOD_SAND && vertex.material.x != WORLD_LOD_DIRT) continue;
+           vertex.material.x != WORLD_LOD_SAND && vertex.material.x != WORLD_LOD_DIRT && vertex.material.x != WORLD_LOD_LEAVES) continue;
         vec color(0, 0, 0);
         if(job.key.lod >= 2)
         {

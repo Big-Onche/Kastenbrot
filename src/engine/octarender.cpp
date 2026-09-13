@@ -17,7 +17,7 @@ static float grassclimatevertex(const vec &position, bool playeredited = false)
 {
     vec absolute = position;
     worldpositiontoabsolute(absolute);
-    // tc.z is unused by opaque world surfaces. A float stores all 24 RGB bits exactly.
+    // tc.z is unused by world texture sampling. A float stores all 24 RGB bits exactly.
     vec color = game::getterrainworldclimate(absolute);
     if(playeredited) color.z = 1.0f; // Terrain shader's no-soil-transition sentinel; keep temperature and humidity.
     const bvec rgb(uchar(color.x * 255 + 0.5f), uchar(color.y * 255 + 0.5f), uchar(color.z * 255 + 0.5f));
@@ -27,7 +27,8 @@ static float grassclimatevertex(const vec &position, bool playeredited = false)
 static bool terrainclimateslot(const VSlot &slot)
 {
     return grassclimateslot(slot) || (slot.slot->shader &&
-        (!strcmp(slot.slot->shader->name, "sandclimateworld") || !strcmp(slot.slot->shader->name, "dirtclimateworld")));
+        (!strcmp(slot.slot->shader->name, "sandclimateworld") || !strcmp(slot.slot->shader->name, "dirtclimateworld") ||
+         !strcmp(slot.slot->shader->name, "leafclimateworld")));
 }
 
 struct verthash

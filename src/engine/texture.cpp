@@ -546,6 +546,8 @@ const char *worlditemtexturemodifier(const char *texture)
     // Fixed item albedo: temperate green grass and warm, neutral sand, independent of the world climate.
     if(!strcmp(texture, "terrain/grass.png")) return "<mad:0.423529/0.745098/0.192157>";
     if(!strcmp(texture, "terrain/grass_dirt.png")) return "<grasslayers:0.423529/0.745098/0.192157>";
+    // Match the temperate grass palette and brightness; preserve asset alpha.
+    if(!strcmp(texture, "terrain/leaves.png")) return "<mad:0.423529/0.745098/0.192157>";
     if(!strcmp(texture, "terrain/sand.png")) return "<mad:1/0.90/0.72>";
     return "";
 }
