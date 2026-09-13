@@ -1137,6 +1137,21 @@ void editredo() { swapundo(redos, undos, EDIT_REDO); }
 vector<editinfo *> editinfos;
 editinfo *localedit = NULL;
 
+static void markworldcubeplayeredited(cube &c)
+{
+    c.playeredited = true;
+    if(c.children) loopi(8) markworldcubeplayeredited(c.children[i]);
+}
+
+void markworldcubeplayeredited(const selinfo &selection)
+{
+    loop(z, selection.s.z) loop(y, selection.s.y) loop(x, selection.s.x)
+    {
+        const ivec position = ivec(x, y, z).mul(selection.grid).add(selection.o);
+        markworldcubeplayeredited(lookupcube(position, selection.grid));
+    }
+}
+
 template<class B>
 static void packcube(cube &c, B &buf)
 {
@@ -1150,7 +1165,7 @@ static void packcube(cube &c, B &buf)
         cube data = c;
         lilswap(data.texture, 6);
         buf.put(c.material&0xFF);
-        buf.put(c.material>>8);
+        buf.put((c.material>>8) | (c.playeredited ? 0x80 : 0));
         buf.put(data.edges, sizeof(data.edges));
         buf.put((uchar *)data.texture, sizeof(data.texture));
     }
@@ -1219,6 +1234,8 @@ static void unpackcube(cube &c, B &buf)
     else
     {
         c.material = mat | (buf.get()<<8);
+        c.playeredited = (c.material & 0x8000) != 0;
+        c.material &= ~0x8000;
         buf.get(c.edges, sizeof(c.edges));
         buf.get((uchar *)c.texture, sizeof(c.texture));
         lilswap(c.texture, 6);

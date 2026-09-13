@@ -998,6 +998,8 @@ struct blockchiprenderer
             vec absolute = p;
             worldpositiontoabsolute(absolute);
             terrain = vec4(game::getterrainworldclimate(absolute), material);
+            const vec source = vec(p).madd(normal, -0.1f);
+            if(insideworld(source) && lookupcube(ivec(source)).playeredited) terrain.z = 1.0f;
         }
         add(vslot.slot->sts[0].t,
             bvec(uchar(clamp(int(vslot.colorscale.x*255), 0, 255)), uchar(clamp(int(vslot.colorscale.y*255), 0, 255)),

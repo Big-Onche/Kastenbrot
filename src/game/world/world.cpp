@@ -105,6 +105,57 @@ namespace game
         return t * t * (3.0f - 2.0f * t);
     }
 
+    static uint treespatialhash(uint seed, int x, int y, uint salt)
+    {
+        uint hash = seed ^ salt;
+        hash ^= uint(x) * 0x9E3779B9U;
+        hash ^= uint(y) * 0x85EBCA6BU;
+        hash ^= hash >> 16;
+        hash *= 0x7FEB352DU;
+        hash ^= hash >> 15;
+        hash *= 0x846CA68BU;
+        hash ^= hash >> 16;
+        return hash;
+    }
+
+    static float treespatialunit(uint seed, int x, int y, uint salt)
+    {
+        return float(treespatialhash(seed, x, y, salt) & 0x00FFFFFFU) / float(0x01000000U);
+    }
+
+    float treepinechance(const worldsettings &settings, const BiomeSample &sample, uint seed, int x, int y, int height)
+    {
+        const int broadx = x >= 0 ? x / 24 : (x - 23) / 24,
+                  broady = y >= 0 ? y / 24 : (y - 23) / 24;
+
+        const float broad = treespatialunit(seed, broadx, broady, 0xA24BAED4U),
+                    local = treespatialunit(seed, x, y, 0x9FB21C65U),
+                    patch = clamp(0.65f * broad + 0.35f * local, 0.0f, 1.0f),
+
+                    pinelow = float(min(settings.pinestartheight, settings.pinefullheight)),
+                    pinehigh = float(max(settings.pinestartheight, settings.pinefullheight)),
+                    altitude = smoothstep(pinelow, pinehigh, float(height)),
+
+                    cooltemperate = 1.0f - smoothstep(8.0f, 14.0f, sample.temperature),
+                    humidity = smoothstep(25.0f, 70.0f, sample.humidity);
+
+        // Species follow the actual climate and elevation, including across biome boundaries.
+        const float cold = 1.0f - smoothstep(-4.0f, 8.0f, sample.temperature),
+                    warm = smoothstep(16.0f, 30.0f, sample.temperature),
+                    chance = (0.10f + 0.55f * cold + 0.20f * cooltemperate + 0.30f * altitude +
+                              0.16f * (patch - 0.5f)) * (1.0f - 0.88f * warm) * (0.85f + 0.15f * humidity);
+
+        return clamp(chance, 0.02f, 0.96f);
+    }
+
+    int treefinalheight(bool pine, float temperature, uint shape)
+    {
+        if(!pine) return 4 + int((shape >> 24) % 3U);
+        if(temperature <= -4.0f) return 4 + int((shape >> 24) & 1U);
+        if(temperature <= 1.5f) return 5 + int((shape >> 24) % 3U);
+        return 6 + int((shape >> 24) & 3U);
+    }
+
     static void setupnoise(FastNoiseLite &noise, int seed, float frequency, int octaves, float gain = 0.5f)
     {
         noise.SetSeed(seed);
@@ -607,9 +658,9 @@ namespace game
             const vec coldpos(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                               worldclimate::GROUND_UNITS + (settings.sealevel + continentalelevation) * worldclimate::BLOCK_UNITS);
             const float temperature = environmentclimate.gettemperature(coldpos),
-                        humidity = environmentclimate.gethumidity(coldpos),
+                        //humidity = environmentclimate.gethumidity(coldpos),
                         cold = (1.0f - smoothstep(-4.0f, 2.0f, temperature)) * smoothstep(2.0f, 18.0f, continentalelevation),
-                        polar = (1.0f - smoothstep(-16.0f, -6.0f, temperature)) * (1.0f - smoothstep(30.0f, 55.0f, humidity)),
+                        polar = 1.0f - smoothstep(-11.0f, -9.0f, temperature),
                         broad = coldbroad.GetNoise(float(x), float(y)), roll = coldroll.GetNoise(float(x), float(y)),
                         micro = coldmicro.GetNoise(float(x), float(y)), region = coldregions.GetNoise(float(x), float(y)),
                         ridge = powf(1.0f - fabsf(coldroll.GetNoise(x * 1.5f + y * 0.3f, y * 0.45f)), 3.0f),
@@ -674,15 +725,15 @@ namespace game
 
     // Ranges normalize Celsius and percent independently; density scales existing climate suitability.
     const ClimateBiome climateBiomes[] =
-    {
+    {   //type, name, identifier, temp, humidity, temp range, humidity range, tree density
         { WORLD_BIOME_SNOW_DESERT, "Snow Desert", "snow_desert", -20, 20, 10, 25, 0.0f },
         { WORLD_BIOME_TUNDRA, "Tundra", "tundra", -10, 40, 12, 25, 0.02f },
-        { WORLD_BIOME_TAIGA, "Taiga", "taiga", 3, 60, 12, 25, 0.85f },
+        { WORLD_BIOME_TAIGA, "Taiga", "taiga", 3, 60, 12, 25, 0.75f },
         { WORLD_BIOME_COLD_DESERT, "Cold Desert", "cold_desert", 5, 15, 12, 25, 0.02f },
-        { WORLD_BIOME_PLAINS, "Temperate Grassland", "grassland", 14, 40, 12, 25, 0.20f },
-        { WORLD_BIOME_FOREST, "Temperate Forest", "forest", 15, 70, 12, 25, 1.0f },
+        { WORLD_BIOME_PLAINS, "Grassland", "grassland", 14, 40, 12, 25, 0.10f },
+        { WORLD_BIOME_FOREST, "Temperate Forest", "forest", 15, 70, 12, 25, 1.00f },
         { WORLD_BIOME_DESERT, "Desert", "desert", 35, 20, 12, 30, 0.0f },
-        { WORLD_BIOME_SAVANNA, "Savanna", "savanna", 27, 40, 12, 25, 0.25f },
+        { WORLD_BIOME_SAVANNA, "Savanna", "savanna", 27, 40, 12, 25, 0.06f },
         { WORLD_BIOME_RAINFOREST, "Tropical Rainforest", "rainforest", 27, 85, 12, 25, 1.0f }
     };
     const int climateBiomeCount = sizeof(climateBiomes) / sizeof(climateBiomes[0]);
@@ -698,6 +749,8 @@ namespace game
         BiomeSample sample = {};
         sample.temperature = temperature;
         sample.humidity = humidity;
+
+        // evaluate the normal climate biomes
         float nearest = FLT_MAX;
         loopi(climateBiomeCount)
         {
@@ -705,35 +758,77 @@ namespace game
             const float dt = (temperature - biome.temperatureCenter) / biome.temperatureRange,
                         dh = (humidity - biome.humidityCenter) / biome.humidityRange,
                         distance = dt * dt + dh * dh;
+
             sample.weights[biome.type] = distance;
             nearest = min(nearest, distance);
         }
-        float total = 0;
+
         loopi(climateBiomeCount)
         {
             float &weight = sample.weights[climateBiomes[i].type];
-            // Subtract the nearest distance before exponentiation to avoid underflow in extreme climates.
+
+            // subtracting nearest keeps the exponent numerically stable
             weight = expf(-2.0f * (weight - nearest));
-            total += weight;
         }
-        const float cold = 1.0f - smoothstep(-2.0f, 2.0f, temperature),
-                    desert = (1.0f - smoothstep(-16.0f, -6.0f, temperature)) * (1.0f - smoothstep(30.0f, 55.0f, humidity));
+
+        // Cold climates are explicitly temperature-driven
+        // ~5°C       : temperate <-> taiga
+        // ~0°C       : taiga <-> tundra
+        // ~-10°C     : tundra <-> snow desert
+        const float coldmix = 1.0f - smoothstep(4.0f, 6.0f, temperature),
+                    taiga = smoothstep(-1.0f, 1.0f, temperature),
+                    snowdesert = 1.0f - smoothstep(-11.0f, -9.0f, temperature),
+                    tundra = clamp(1.0f - taiga - snowdesert, 0.0f, 1.0f);
+
+        // Taiga -> Tundra -> Snow Desert
         loopi(climateBiomeCount)
         {
             const int type = climateBiomes[i].type;
-            // Cold candidates do not leak into warm climates; all weights remain normalized.
-            if(type == WORLD_BIOME_TUNDRA || type == WORLD_BIOME_SNOW_DESERT) sample.weights[type] = 0;
+
+            if(type == WORLD_BIOME_TAIGA ||
+               type == WORLD_BIOME_TUNDRA ||
+               type == WORLD_BIOME_SNOW_DESERT ||
+               type == WORLD_BIOME_COLD_DESERT)
+            {
+                sample.weights[type] = 0.0f;
+            }
         }
-        total = 0;
-        loopi(climateBiomeCount) total += sample.weights[climateBiomes[i].type];
-        loopi(climateBiomeCount) sample.weights[climateBiomes[i].type] *= (1.0f - cold) / max(total, 1e-20f);
-        sample.weights[WORLD_BIOME_TUNDRA] = cold * (1.0f - desert);
-        sample.weights[WORLD_BIOME_SNOW_DESERT] = cold * desert;
-        total = 1.0f;
+
+        // Renormalize the remaining warm biomes into the non-cold share
+        float warmtotal = 0.0f;
+        loopi(climateBiomeCount)
+            warmtotal += sample.weights[climateBiomes[i].type];
+
+        if(warmtotal > 1e-20f)
+        {
+            const float warmmix = 1.0f - coldmix;
+
+            loopi(climateBiomeCount)
+                sample.weights[climateBiomes[i].type] *= warmmix / warmtotal;
+        }
+
+        sample.weights[WORLD_BIOME_TAIGA] = coldmix * taiga;
+        sample.weights[WORLD_BIOME_TUNDRA] = coldmix * tundra;
+        sample.weights[WORLD_BIOME_SNOW_DESERT] = coldmix * snowdesert;
+        sample.weights[WORLD_BIOME_COLD_DESERT] = 0.0f;
+
+        // final normalization
+        float total = 0.0f;
+        loopi(climateBiomeCount)
+            total += sample.weights[climateBiomes[i].type];
+
+        if(total > 1e-20f)
+        {
+            loopi(climateBiomeCount)
+                sample.weights[climateBiomes[i].type] /= total;
+        }
+
+        // determine primary and secondary biomes
         loopi(climateBiomeCount)
         {
             const worldbiome type = climateBiomes[i].type;
-            const float weight = sample.weights[type] /= total;
+            const float weight = sample.weights[type];
+
             if(weight > sample.primaryWeight)
             {
                 sample.secondary = sample.primary;
@@ -747,6 +842,7 @@ namespace game
                 sample.secondaryWeight = weight;
             }
         }
+
         return sample;
     }
 
@@ -875,35 +971,132 @@ namespace game
 
     int worldgenerator::surfacematerial(int x, int y, int height) const
     {
-        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
-                           worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
+        const vec position(
+            float(x) * worldclimate::BLOCK_UNITS,
+            float(y) * worldclimate::BLOCK_UNITS,
+            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS
+        );
+
         const BiomeSample sample = sampleBiome(position);
         const worldwatersample water = surface(x, y);
+
+        // water / frozen water
         if(height < water.water)
         {
-            const vec waterpos(position.x, position.y, worldclimate::GROUND_UNITS + water.water * worldclimate::BLOCK_UNITS);
+            const vec waterpos(
+                position.x,
+                position.y,
+                worldclimate::GROUND_UNITS + water.water * worldclimate::BLOCK_UNITS
+            );
+
             const float temperature = environmentclimate.gettemperature(waterpos);
-            if(temperature < -2.0f || (water.freshwater && temperature < 0.0f && snowpatches.GetNoise(float(x), float(y)) > 0))
+
+            if(temperature < -2.0f || (water.freshwater && temperature < 0.0f && snowpatches.GetNoise(float(x), float(y)) > 0.0f))
+            {
                 return WORLD_FROZEN_WATER;
+            }
+
             return WORLD_BIOME_OCEAN;
         }
-        if(sample.temperature <= 2.0f)
+
+        const bool coldbiome =
+            sample.primary == WORLD_BIOME_TAIGA ||
+            sample.primary == WORLD_BIOME_TUNDRA ||
+            sample.primary == WORLD_BIOME_SNOW_DESERT;
+
+        if(coldbiome)
         {
             const ColdSample cold = samplecold(x, y, height, sample);
-            if(cold.slope > 0.72f) return WORLD_COLD_ROCK;
-            const float palette = clamp(0.5f + snowpatches.GetNoise(float(x), float(y)) * 0.5f, 0.15f, 0.85f);
-            if(cold.covered)
+
+            if(cold.slope > 0.80f) return WORLD_COLD_ROCK; // True exposed steep terrain remains rock regardless of biome.
+
+            // Broad field defines coherent patches
+            // Detail only perturbs their borders instead of producing visual TV static
+            const float broad = coldroll.GetNoise(float(x) + 3171.0f, float(y) - 951.0f),
+                        detail = coldmicro.GetNoise(float(x) + 731.0f, float(y) + 1913.0f),
+                        groundpattern = clamp(0.5f + broad * 0.35f +detail * 0.15f, 0.0f, 1.0f);
+
+            switch(sample.primary)
             {
-                if(cold.desert > palette) return cold.snow > 0.75f ? WORLD_DEEP_SNOW : WORLD_SNOW_CRUST;
-                return WORLD_SNOW_CRUST;
+                case WORLD_BIOME_TAIGA:
+                {
+                    // Taiga:
+                    // mostly living grass around +5°C, progressively frozen towards 0°C, with sparse snow, dirt and moss patches
+                    if(cold.snowscore > 0.74f) return WORLD_SNOW_CRUST;
+
+                    // gravel only on genuinely exposed terrain.
+                    if(cold.slope > 0.55f && cold.exposure > 0.68f && groundpattern > 0.82f)
+                        return WORLD_FROZEN_GRAVEL;
+
+                    // damp low spots
+                    if(cold.wetness > 0.68f && cold.slope < 0.35f && groundpattern < 0.30f)
+                        return sample.temperature > 0.5f ? WORLD_MOSS : WORLD_FROZEN_MOSS;
+
+                    // frozen dirt remain an accent
+                    if(groundpattern > 0.84f) return WORLD_FROZEN_DIRT;
+
+                    // gradually freeze the grass when approaching 0°C
+                    const float frost = 1.0f - smoothstep(0.5f, 4.0f, sample.temperature),
+                                frostselector = clamp(0.5f + detail * 0.5f, 0.0f, 1.0f);
+
+                    if(frostselector < frost) return WORLD_FROZEN_GRASS;
+
+                    return WORLD_BIOME_PLAINS; // normal grass will still receive the climate colour tint
+                }
+
+                case WORLD_BIOME_TUNDRA:
+                {
+                    // Tundra:
+                    // frozen vegetation dominates, snow becomes increasingly common
+
+                    if(cold.snowscore > 0.60f) return WORLD_SNOW_CRUST;
+
+                    if(cold.slope > 0.60f && cold.exposure > 0.70f && groundpattern > 0.78f)
+                        return WORLD_FROZEN_GRAVEL;
+
+                    if(cold.wetness > 0.62f && cold.slope < 0.40f && groundpattern < 0.32f)
+                        return WORLD_FROZEN_MOSS;
+
+                    if(groundpattern > 0.74f) return WORLD_FROZEN_DIRT;
+
+                    return WORLD_FROZEN_GRASS;
+                }
+
+                case WORLD_BIOME_SNOW_DESERT:
+                {
+                    // Snow desert:
+                    // white is the default, rock / gravel / ice only appear where wind or slope realistically strips the snow away
+
+                    const float windscour = cold.exposure * 0.52f + groundpattern * 0.30f + cold.slope * 0.18f;
+
+                    if(cold.slope > 0.80f) return WORLD_COLD_ROCK;
+
+                    if(windscour > 0.88f)
+                    {
+                        if(cold.slope > 0.48f) return WORLD_COLD_ROCK;
+
+                        // Occasional windswept icy shelves
+                        if(groundpattern < 0.32f) return WORLD_ICE;
+
+                        return WORLD_FROZEN_GRAVEL;
+                    }
+
+                    // deep accumulation in sheltered / depositional terrain
+                    if(cold.deposition > 0.68f && cold.snowscore > 0.56f)
+                        return WORLD_DEEP_SNOW;
+
+                    // IMPORTANT: the normal polar surface is snow, not frozen dirt
+                    return WORLD_SNOW_CRUST;
+                }
+
+                default:
+                    break;
             }
-            if(cold.desert > palette)
-                return cold.exposure > 0.55f || cold.region < 0.4f ? WORLD_COLD_ROCK : WORLD_ICE;
-            return cold.material;
         }
-        // Desert soil follows the regional hot/dry climate; altitude still controls snow and the surface ecosystem.
-        // Cold desert is sparse cold ground, not a synonym for sandy desert.
+
+        // warm climates retain the simple soil logic
         const BiomeSample soil = samplesoil(position);
+
         return sandcoverage(soil) > 0.5f ? WORLD_BIOME_DESERT : WORLD_BIOME_PLAINS;
     }
 
@@ -982,8 +1175,10 @@ namespace game
 
     float treesuitability(float temperature, float humidity)
     {
-        return smoothstep(20.0f, 70.0f, humidity) * smoothstep(-10.0f, 5.0f, temperature) *
-               (1.0f - smoothstep(35.0f, 45.0f, temperature));
+        // Dryness alone does not erase cool woodland, and heat alone does not erase rainforest.
+        const float hotdry = smoothstep(22.0f, 34.0f, temperature) * (1.0f - smoothstep(15.0f, 45.0f, humidity));
+        return smoothstep(-11.0f, 3.0f, temperature) * (0.65f + 0.35f * smoothstep(15.0f, 70.0f, humidity)) *
+               (1.0f - 0.98f * hotdry);
     }
 
     float worldgenerator::treedensity(int x, int y, int height) const
@@ -991,72 +1186,82 @@ namespace game
         const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
         const BiomeSample sample = sampleBiome(position);
-        if(sample.temperature <= 2.0f)
-        {
-            const ColdSample cold = samplecold(x, y, height, sample);
-            if(sample.temperature <= -8.0f || sample.humidity <= 35.0f || cold.snow >= 0.45f || cold.covered ||
-               cold.slope >= 0.30f || cold.desert > 0.35f) return 0;
-            const int material = surfacematerial(x, y, height);
-            const float soil = material == WORLD_FROZEN_DIRT ? 1.0f : material == WORLD_FROZEN_GRASS ? 0.70f :
-                               material == WORLD_FROZEN_MOSS ? 0.25f : 0.0f;
-            return 0.035f * cold.pinemask * soil * smoothstep(-8.0f, 1.0f, sample.temperature) *
-                   smoothstep(35.0f, 65.0f, sample.humidity);
-        }
-        float ecosystemdensity = 0;
-        loopi(climateBiomeCount) ecosystemdensity += sample.weights[climateBiomes[i].type] * climateBiomes[i].treeDensity;
-        const BiomeSample soil = samplesoil(position);
-        const float sand = sandcoverage(soil);
-        const float suitability = treesuitability(sample.temperature, sample.humidity) * ecosystemdensity * (1.0f - 0.85f * sand),
-                    localnoise = vegetationvariation.GetNoise(x + 10000.5f, y - 10000.5f),
-                    altitude = float(height - settings.sealevel),
-                    mountainbelt = smoothstep(50.0f, 75.0f, altitude) *
-                                   smoothstep(-2.0f, 5.0f, sample.temperature),
-                    plainsvariation = smoothstep(-0.10f, 0.50f, localnoise),
-                    mountainvariation = smoothstep(-0.55f, 0.45f, localnoise),
-                    variation = plainsvariation + mountainbelt * (mountainvariation - plainsvariation);
-        // Forested slopes retain smaller clearings; lowland plains keep their broad open patches.
-        // The boost fades in freezing temperatures and still multiplies climate suitability, including dry/cold limits.
-        return clamp(settings.basetreedensity * smoothstep(-2.0f, 4.0f, sample.temperature) *
-                     (1.0f + 1.5f * mountainbelt) * suitability * variation, 0.0f, 1.0f);
+        const float suitability = treesuitability(sample.temperature, sample.humidity);
+        if(suitability <= 0.0f || settings.basetreedensity <= 0.0f) return 0.0f;
+
+        // Continuous fields create connected woods and clearings without rectangular patch boundaries.
+        const float noisex = x + 10000.5f, noisey = y - 10000.5f,
+                    broad = vegetationvariation.GetNoise(noisex * 0.28f + 1731.0f, noisey * 0.28f - 2917.0f),
+                    local = vegetationvariation.GetNoise(noisex, noisey),
+                    patch = clamp(0.5f + 0.80f * broad + 0.25f * local, 0.0f, 1.0f);
+        const worldtectonicsample relief = tectonics(x, y);
+        const float altitude = float(height - settings.sealevel),
+                    foothills = smoothstep(0.10f, 0.48f, relief.terrainroughness) * smoothstep(4.0f, 24.0f, altitude),
+                    mountainbelt = max(foothills, smoothstep(28.0f, 65.0f, altitude)),
+                    // Freshwater improves the odds, but neither requires nor guarantees a forest.
+                    freshwater = hydrology->moisture(float(x), float(y), float(height)),
+                    woodland = smoothstep(0.38f - 0.22f * mountainbelt, 0.70f - 0.20f * mountainbelt, patch),
+                    scattered = 0.12f + 0.20f * smoothstep(-0.5f, 0.5f, local),
+                    densityfactor = scattered + (3.0f + 2.0f * mountainbelt) * woodland,
+                    waterbonus = 1.0f + 0.45f * freshwater,
+                    // The climate already includes altitude cooling; rock masks leave exposed summits bare.
+                    density = settings.basetreedensity * suitability * densityfactor * waterbonus;
+
+        return clamp(density, 0.0f, 1.0f);
     }
 
     static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
     {
         worldtectonicsample terrain;
-        const int height = generator.height(x, y, &terrain), biome = generator.surfacematerial(x, y, height);
+        const int height = generator.height(x, y, &terrain),
+                  biome = generator.surfacematerial(x, y, height);
+
         if(height < generator.surface(x, y).water) return false;
-        // Preserve the sand/snow surface restriction independently of density.
-        if(biome == WORLD_BIOME_DESERT || biome == WORLD_BIOME_SNOW) return false;
+
+        const bool growable = biome == WORLD_BIOME_PLAINS || biome == WORLD_MOSS || biome == WORLD_FROZEN_GRASS ||
+                              biome == WORLD_FROZEN_DIRT || biome == WORLD_FROZEN_MOSS;
+
+        if(!growable) return false;
+
         const int beachmin = generator.settings.sealevel + min(generator.settings.beachminheight, generator.settings.beachmaxheight),
                   beachmax = generator.settings.sealevel + max(generator.settings.beachminheight, generator.settings.beachmaxheight),
                   coasttreemax = generator.settings.sealevel + 2;
+
         if(generator.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) return false;
+
         bool cliffface = false;
         generator.cliff(x, y, height, &cliffface);
         if(terrain.rockyledge > 0.22f || cliffface || generator.rock(x, y, height)) return false;
+
         const float density = generator.treedensity(x, y, height);
-        const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64, chunky = y >= 0 ? y / 64 : (y - 63) / 64,
-                  blockx = x - chunkx * 64, blocky = y - chunky * 64;
+
+        const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64,
+                  chunky = y >= 0 ? y / 64 : (y - 63) / 64,
+                  blockx = x - chunkx * 64,
+                  blocky = y - chunky * 64;
+
         const uint spawn = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0xD1B54A35U);
         if(worldtreeunit(spawn) >= density) return false;
+
         const uint shape = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0x94D049BBU);
-        const float pinelow = float(min(generator.settings.pinestartheight, generator.settings.pinefullheight)),
-                    pinehigh = float(max(generator.settings.pinestartheight, generator.settings.pinefullheight)),
-                    pinechance = smoothstep(pinelow, pinehigh, float(height));
+
+        const vec treepos(
+            float(x) * worldclimate::BLOCK_UNITS,
+            float(y) * worldclimate::BLOCK_UNITS,
+            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS
+        );
+
+        const BiomeSample sample = generator.sampleBiome(treepos);
+        const float pinechance = treepinechance(generator.settings, sample, uint(generator.seed), x, y, height);
+
         tree.x = x;
         tree.y = y;
         tree.base = 256 + height;
         tree.pine = worldtreeunit(shape) < pinechance;
-        tree.height = tree.pine ? 6 + int((shape >> 24) & 3U) : 4 + int((shape >> 24) % 3U);
-        const vec treepos(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
-                          worldclimate::GROUND_UNITS + height * worldclimate::BLOCK_UNITS);
-        if(generator.environmentclimate.gettemperature(treepos) <= 2.0f)
-        {
-            tree.pine = true;
-            tree.height = 4 + int((shape >> 24) & 1U);
-        }
+        tree.height = treefinalheight(tree.pine, sample.temperature, shape);
         tree.priority = spawn;
         tree.shape = shape;
+
         return tree.base + tree.height < 512;
     }
 

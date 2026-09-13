@@ -620,6 +620,7 @@ static const cube &lookupworldchunkrootcube(const cube *root, const ivec &pos, i
 
 static void resetworldcube(cube &c)
 {
+    c.playeredited = false;
     c.children = NULL;
     c.ext = NULL;
     c.visible = 0;
@@ -3017,6 +3018,7 @@ static bool subdivideworldmip(const cube &c, cube *children)
             resetworldcube(children[i]);
             if(isentirelysolid(c)) solidfaces(children[i]);
             children[i].material = c.material;
+            children[i].playeredited = c.playeredited;
             loopj(6) children[i].texture[j] = c.texture[j];
         }
         return true;
@@ -3027,6 +3029,7 @@ static bool subdivideworldmip(const cube &c, cube *children)
         resetworldcube(children[i]);
         solidfaces(children[i]);
         children[i].material = c.material;
+        children[i].playeredited = c.playeredited;
     }
     bool perfect = true;
     ivec v[8];
@@ -3155,6 +3158,8 @@ static bool remipworldchunk(cube &c, const ivec &co, int size, cube *root,
     loopi(6) c.texture[i] = getmippedtexture(c, i);
     if(sameworldblock && worldindex >= 0) loopi(6) c.texture[i] = getworldcubefaceslot(worldindex, i);
     if(!perfect || !sameworldblock || (size << 1) > 0x1000) return false;
+    loopi(8) if(children[i].playeredited != children[0].playeredited) return false;
+    c.playeredited = children[0].playeredited;
 
     ushort material = MAT_AIR;
     loopi(8)

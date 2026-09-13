@@ -386,11 +386,13 @@ bool subdividecube(cube &c, bool fullcheck, bool brighten)
         loopi(8)
         {
             loopl(6) c.children[i].texture[l] = c.texture[l];
+            c.children[i].playeredited = c.playeredited;
             if(brighten && !isempty(c)) brightencube(c.children[i]);
         }
         return true;
     }
     cube *ch = c.children = newcubes(F_SOLID, c.material);
+    loopi(8) ch[i].playeredited = c.playeredited;
     bool perfect = true;
     ivec v[8];
     loopi(8)
@@ -498,6 +500,8 @@ bool remip(cube &c, const ivec &co, int size)
         c.texture[j] = getmippedtexture(c, j); // parents get child texs regardless
 
     if(!perfect) return false;
+    loopi(8) if(ch[i].playeredited != ch[0].playeredited) return false;
+    c.playeredited = ch[0].playeredited;
     if(size<<1 > 0x1000) return false;
 
     ushort mat = MAT_AIR;
@@ -1850,6 +1854,7 @@ void genmerges(cube *c = worldroot, const ivec &o = ivec(0, 0, 0), int size = wo
         if(c[i].children) genmerges(c[i].children, co, size>>1, stackneighbours, showprogress);
         else if(!isempty(c[i])) loopj(6) if((vis = visibletris(c[i], j, co, size)))
         {
+            if(c[i].playeredited) { clearmerge(c[i], j); continue; }
             cfkey k;
             poly p;
             if(size < mergesize && c != worldroot)

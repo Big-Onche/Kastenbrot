@@ -13,12 +13,13 @@ static bool grassclimateslot(const VSlot &slot)
     return slot.slot->shader && !strncmp(slot.slot->shader->name, "grassclimateworld", 17);
 }
 
-static float grassclimatevertex(const vec &position)
+static float grassclimatevertex(const vec &position, bool playeredited = false)
 {
     vec absolute = position;
     worldpositiontoabsolute(absolute);
     // tc.z is unused by opaque world surfaces. A float stores all 24 RGB bits exactly.
-    const vec color = game::getterrainworldclimate(absolute);
+    vec color = game::getterrainworldclimate(absolute);
+    if(playeredited) color.z = 1.0f; // Terrain shader's no-soil-transition sentinel; keep temperature and humidity.
     const bvec rgb(uchar(color.x * 255 + 0.5f), uchar(color.y * 255 + 0.5f), uchar(color.z * 255 + 0.5f));
     return float(rgb.tohexcolor());
 }
@@ -577,7 +578,7 @@ extern const vec orientation_bitangent[8][6] =
     { vec( 0, -1,  0), vec( 0,  1,  0), vec( 1,  0,  0), vec(-1,  0,  0), vec(-1,  0,  0), vec(-1,  0,  0) },
 };
 
-void addtris(VSlot &vslot, int orient, const sortkey &key, vertex *verts, int *index, int numverts, int convex, int tj)
+void addtris(VSlot &vslot, int orient, const sortkey &key, vertex *verts, int *index, int numverts, int convex, int tj, bool playeredited)
 {
     int &total = key.tex==DEFAULT_SKY ? vc.skytris : vc.worldtris;
     int edge = orient*(MAXFACEVERTS+1);
@@ -642,7 +643,7 @@ void addtris(VSlot &vslot, int orient, const sortkey &key, vertex *verts, int *i
                     vertex vt;
                     vt.pos = vec(d).mul(t.offset/8.0f).add(o);
                     vt.tc.lerp(v1.tc, v2.tc, offset);
-                    if(terrainclimateslot(vslot)) vt.tc.z = grassclimatevertex(vt.pos);
+                    if(terrainclimateslot(vslot)) vt.tc.z = grassclimatevertex(vt.pos, playeredited);
                     vt.norm.lerp(v1.norm, v2.norm, offset);
                     vt.tangent.lerp(v1.tangent, v2.tangent, offset);
                     if(v1.tangent.w != v2.tangent.w)
@@ -772,7 +773,8 @@ void guessnormals(const vec *pos, int numverts, vec *normals)
     normals[3] = n2;
 }
 
-void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, ushort texture, vertinfo *vinfo, int numverts, int tj = -1, ushort envmap = EMID_NONE, int grassy = 0, bool alpha = false, int layer = LAYER_TOP)
+void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, ushort texture, vertinfo *vinfo, int numverts, int tj = -1,
+                  ushort envmap = EMID_NONE, int grassy = 0, bool alpha = false, int layer = LAYER_TOP, bool playeredited = false)
 {
     // Keep merged/LOD grass polygons on a fixed absolute grid. Large faces must not interpolate
     // across whole sections while their neighbours sample the same climate at much shorter edges.
@@ -784,7 +786,7 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
             vec triangle[3] = { pos[0], pos[k], pos[k + 1] };
             vertinfo triangleinfo[3];
             if(vinfo) { triangleinfo[0] = vinfo[0]; triangleinfo[1] = vinfo[k]; triangleinfo[2] = vinfo[k + 1]; }
-            addcubeverts(vslot, orient, size, triangle, 0, texture, vinfo ? triangleinfo : NULL, 3, -1, envmap, grassy, alpha, layer);
+            addcubeverts(vslot, orient, size, triangle, 0, texture, vinfo ? triangleinfo : NULL, 3, -1, envmap, grassy, alpha, layer, playeredited);
         }
         return;
     }
@@ -827,13 +829,13 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
                 }
             }
             if(count >= 3 && count <= MAXFACEVERTS)
-                addcubeverts(vslot, orient, size, clipped, convex, texture, vinfo ? normals : NULL, count, -1, envmap, grassy, alpha, layer);
+                addcubeverts(vslot, orient, size, clipped, convex, texture, vinfo ? normals : NULL, count, -1, envmap, grassy, alpha, layer, playeredited);
             else if(count > MAXFACEVERTS) for(int k = 1; k + 1 < count; ++k)
             {
                 vec triangle[3] = { clipped[0], clipped[k], clipped[k + 1] };
                 vertinfo triangleinfo[3];
                 if(vinfo) { triangleinfo[0] = normals[0]; triangleinfo[1] = normals[k]; triangleinfo[2] = normals[k + 1]; }
-                addcubeverts(vslot, orient, size, triangle, 0, texture, vinfo ? triangleinfo : NULL, 3, -1, envmap, grassy, alpha, layer);
+                addcubeverts(vslot, orient, size, triangle, 0, texture, vinfo ? triangleinfo : NULL, 3, -1, envmap, grassy, alpha, layer, playeredited);
             }
         }
         return;
@@ -848,7 +850,7 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
         vertex &v = verts[k];
         v.pos = pos[k];
         v.tc = vec(sgen.dot(v.pos), tgen.dot(v.pos), 0);
-        if(terrainclimateslot(vslot)) v.tc.z = grassclimatevertex(v.pos);
+        if(terrainclimateslot(vslot)) v.tc.z = grassclimatevertex(v.pos, playeredited);
         if(vinfo && vinfo[k].norm)
         {
             vec n = decodenormal(vinfo[k].norm), t = orientation_tangent[vslot.rotation][orient];
@@ -886,7 +888,7 @@ void addcubeverts(VSlot &vslot, int orient, int size, vec *pos, int convex, usho
     }
 
     sortkey key(texture, vslot.scroll.iszero() ? O_ANY : orient, layer&LAYER_BOTTOM ? layer : LAYER_TOP, envmap, alpha ? (vslot.refractscale > 0 ? ALPHA_REFRACT : (vslot.alphaback ? ALPHA_BACK : ALPHA_FRONT)) : NO_ALPHA);
-    addtris(vslot, orient, key, verts, index, numverts, convex, tj);
+    addtris(vslot, orient, key, verts, index, numverts, convex, tj, playeredited);
 
     if(grassy)
     {
@@ -1097,14 +1099,17 @@ void gencubeverts(cube &c, const ivec &co, int size, int csi)
         int hastj = tj >= 0 && tjoints[tj].edge < (i+1)*(MAXFACEVERTS+1) ? tj : -1;
         int grassy = vslot.slot->grass && i!=O_BOTTOM ? (vis!=3 || convex ? 1 : 2) : 0;
         if(!c.ext)
-            addcubeverts(vslot, i, size, pos, convex, c.texture[i], NULL, numverts, hastj, envmap, grassy, (c.material&MAT_ALPHA)!=0);
+            addcubeverts(vslot, i, size, pos, convex, c.texture[i], NULL, numverts, hastj, envmap, grassy,
+                         (c.material&MAT_ALPHA)!=0, LAYER_TOP, c.playeredited);
         else
         {
             const surfaceinfo &surf = c.ext->surfaces[i];
             if(!surf.numverts || surf.numverts&LAYER_TOP)
-                addcubeverts(vslot, i, size, pos, convex, c.texture[i], verts, numverts, hastj, envmap, grassy, (c.material&MAT_ALPHA)!=0, surf.numverts&LAYER_BLEND);
+                addcubeverts(vslot, i, size, pos, convex, c.texture[i], verts, numverts, hastj, envmap, grassy,
+                             (c.material&MAT_ALPHA)!=0, surf.numverts&LAYER_BLEND, c.playeredited);
             if(surf.numverts&LAYER_BOTTOM)
-                addcubeverts(layer ? *layer : vslot, i, size, pos, convex, vslot.layer, verts, numverts, hastj, envmap2, 0, false, surf.numverts&LAYER_TOP ? LAYER_BOTTOM : LAYER_TOP);
+                addcubeverts(layer ? *layer : vslot, i, size, pos, convex, vslot.layer, verts, numverts, hastj, envmap2, 0, false,
+                             surf.numverts&LAYER_TOP ? LAYER_BOTTOM : LAYER_TOP, c.playeredited);
         }
     }
 }

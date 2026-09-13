@@ -2115,6 +2115,7 @@ namespace server
             voxel->material = worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
             voxel->visible = voxel->merged = 0;
             solidfaces(*voxel);
+            voxel->playeredited = true;
             loopi(6) voxel->texture[i] = ushort(worldindex);
         }
         else if(action == WORLD_ACTION_BREAK_CUBE_START)

@@ -20,6 +20,7 @@ struct cube
         uchar escaped;
         uchar visible;
     };
+    bool playeredited = false; // Persistent provenance; disables natural soil-boundary blending.
 };
 
 const uint F_EMPTY = 0;
@@ -52,6 +53,7 @@ static inline void pushworldcubeedge(uchar &edge, int direction, int endpoint)
 
 static inline void pushworldcubecorneredge(cube &c, int axis, int x, int y, int endpoint, int direction)
 {
+    c.playeredited = true;
     ivec selected, candidate;
     getworldcubevector(c, axis, x, y, endpoint, selected);
     loopi(2) loopj(2)

@@ -16,14 +16,13 @@ struct worldmeshtexture
 
 struct worldmeshsnapshot
 {
-    cube root[8];
+    cube root[8] = {};
     ivec origin;
     int scale, size;
     vector<worldmeshtexture> textures;
 
     worldmeshsnapshot(const ivec &origin) : origin(origin), scale(worldscale), size(worldsize)
     {
-        memset(root, 0, sizeof(root));
     }
 
     static void release(cube *family)
@@ -71,12 +70,12 @@ struct worldmeshsnapshot
             memcpy(dst.edges, src.edges, sizeof(dst.edges));
             memcpy(dst.texture, src.texture, sizeof(dst.texture));
             dst.material = src.material;
+            dst.playeredited = src.playeredited;
             // Private metadata, never written back to gameplay cubes.
             dst.visible = isworldleafcube(src) ? 1 : 0;
             if(src.children)
             {
-                dst.children = new cube[8];
-                memset(dst.children, 0, 8 * sizeof(cube));
+                dst.children = new cube[8]();
                 capture(src.children, dst.children, o, size / 2);
             }
             else if(o.x < origin.x + WORLD_SECTION_SIZE && o.y < origin.y + WORLD_SECTION_SIZE && o.z < origin.z + WORLD_SECTION_SIZE &&
@@ -119,7 +118,7 @@ struct worldmeshface
     vec position[4];
     ushort texture, material;
     int orient, count;
-    bool axis;
+    bool axis, playeredited;
 };
 
 struct worldmeshjob
@@ -163,12 +162,13 @@ static bool worldmeshfaceorder(const worldmeshface &a, const worldmeshface &b)
     const int dim = dimension(a.orient);
     if(a.position[0][dim] != b.position[0][dim]) return a.position[0][dim] < b.position[0][dim];
     if(a.texture != b.texture) return a.texture < b.texture;
+    if(a.playeredited != b.playeredited) return a.playeredited < b.playeredited;
     return a.material < b.material;
 }
 
 static bool worldmeshsameplane(const worldmeshface &a, const worldmeshface &b)
 {
-    return a.axis && b.axis && a.orient == b.orient && a.texture == b.texture && a.material == b.material &&
+    return a.axis && b.axis && a.orient == b.orient && a.texture == b.texture && a.material == b.material && a.playeredited == b.playeredited &&
            a.position[0][dimension(a.orient)] == b.position[0][dimension(b.orient)];
 }
 
@@ -197,6 +197,7 @@ static void collectworldmeshsolidface(worldmeshjob &job, const cube &c, const iv
     worldmeshface &face = faces.add();
     face.texture = c.texture[orient];
     face.material = c.material;
+    face.playeredited = c.playeredited;
     face.orient = orient;
     face.axis = visible == 3;
     face.count = 0;
@@ -266,6 +267,7 @@ static void collectworldmeshfaces(worldmeshjob &job, const cube *family, const i
             worldmeshface &face = faces.add();
             face.texture = c.texture[orient];
             face.material = c.material;
+            face.playeredited = c.playeredited;
             face.orient = orient;
             face.axis = isentirelysolid(c) && visible == 3;
             face.count = 0;
@@ -328,7 +330,8 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
     {
         vertex &v = packet.vertices.add();
         v.pos = polygon[i];
-        v.tc = vec(texture->sgen[face.orient].dot(v.pos), texture->tgen[face.orient].dot(v.pos), 0);
+        // Keep provenance separate during vertex deduplication; resolve climate on the main thread at publication.
+        v.tc = vec(texture->sgen[face.orient].dot(v.pos), texture->tgen[face.orient].dot(v.pos), face.playeredited ? -1.0f : 0.0f);
         v.norm = bvec(normal);
         v.tangent = bvec4(bvec(tangent), texture->bitangent[face.orient].scalartriple(normal, tangent) < 0 ? 0 : 255);
         // Pack the signed GL_BYTE attributes just like vacollect::genverts().
@@ -726,6 +729,9 @@ int processworldmeshpackets(double budget, int uploadlimit)
             {
                 ZoneScopedN("WorldMesh/Publish packet");
                 // Resolve mutable climate settings once, never during drawing.
+                vector<uchar> resolved;
+                const int numvertices = job->packet.vertices.length();
+                if(numvertices > 0) memset(resolved.pad(numvertices), 0, numvertices);
                 loopv(job->packet.ranges)
                 {
                     worldmeshdrawrange &range = job->packet.ranges[i];
@@ -736,8 +742,11 @@ int processworldmeshpackets(double budget, int uploadlimit)
                     if(!terrainclimateslot(slot)) continue;
                     loopj(range.count)
                     {
-                        vertex &v = job->packet.vertices[job->packet.indices[range.first + j]];
-                        v.tc.z = grassclimatevertex(v.pos);
+                        const uint index = job->packet.indices[range.first + j];
+                        if(resolved[index]) continue;
+                        resolved[index] = 1;
+                        vertex &v = job->packet.vertices[index];
+                        v.tc.z = grassclimatevertex(v.pos, v.tc.z < 0);
                     }
                 }
                 worldmeshrange vertices, indices;

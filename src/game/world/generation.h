@@ -41,6 +41,9 @@ struct worldsurfacesample
 
 namespace game
 {
+    float treepinechance(const worldsettings &settings, const BiomeSample &sample, uint seed, int x, int y, int height);
+    int treefinalheight(bool pine, float temperature, uint shape);
+
     struct worldgenerator
     {
         FastNoiseLite geology, hills, coastshape, coastdetail, covenoise, oceanregional, beachnoise, cliffnoise;

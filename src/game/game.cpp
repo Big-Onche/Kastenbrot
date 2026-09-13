@@ -26,6 +26,7 @@ namespace game
     static void paintworldcube(int worldindex, const selinfo &selection, bool local)
     {
 #ifndef STANDALONE
+        markworldcubeplayeredited(selection);
         loopi(6)
         {
             selinfo face = selection;

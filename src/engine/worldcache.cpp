@@ -6,13 +6,14 @@ extern int compresschunks;
 
 enum
 {
-    WORLD_SNAPSHOT_VOX_VERSION = 2,
+    WORLD_SNAPSHOT_VOX_VERSION = 3,
     WORLD_SNAPSHOT_DAT_VERSION = 3,
     WORLD_SNAPSHOT_COMPRESSION_VERSION = 1,
     WORLD_SNAPSHOT_MAX_FILE_SIZE = 512 << 20,
     WORLD_SNAPSHOT_MAX_STORED_FILE_SIZE = WORLD_SNAPSHOT_MAX_FILE_SIZE + (WORLD_SNAPSHOT_MAX_FILE_SIZE >> 8) + 65536,
     WORLD_SNAPSHOT_EMPTY = 1 << 0,
     WORLD_SNAPSHOT_SOLID = 1 << 1,
+    WORLD_SNAPSHOT_PLAYER_EDITED = 1 << 2,
     WORLD_SNAPSHOT_SCATTER = 1
 };
 
@@ -170,6 +171,7 @@ static bool worldsnapshotreadstring(worldsnapshotreader &reader, char *value, in
 
 static void resetworldsnapshotcube(cube &c)
 {
+    c.playeredited = false;
     c.children = NULL;
     c.ext = NULL;
     c.visible = c.merged = 0;
@@ -397,6 +399,7 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     voxel.material = source.material;
     voxel.orientation = O_TOP;
     voxel.flags = empty ? WORLD_SNAPSHOT_EMPTY : solid ? WORLD_SNAPSHOT_SOLID : 0;
+    if(source.playeredited) voxel.flags |= WORLD_SNAPSHOT_PLAYER_EDITED;
     if(empty) memset(voxel.edges, 0, sizeof(voxel.edges));
     else if(solid) memset(voxel.edges, 0x80, sizeof(voxel.edges));
     else memcpy(voxel.edges, source.edges, sizeof(voxel.edges));
@@ -569,7 +572,7 @@ static bool deserializeworldsnapshotvox(const vector<uchar> &contents, int x, in
     uint revision;
     uchar playeredited;
     ushort width, depth, height, palettesize;
-    if(!reader.read(magic, 4) || memcmp(magic, "CCVX", 4) || !reader.readuint(version) || version != WORLD_SNAPSHOT_VOX_VERSION ||
+    if(!reader.read(magic, 4) || memcmp(magic, "CCVX", 4) || !reader.readuint(version) || (version != 2 && version != WORLD_SNAPSHOT_VOX_VERSION) ||
        !reader.readuint(storedx) || !reader.readuint(storedy) || int(storedx) != x || int(storedy) != y || !reader.readushort(width) ||
        !reader.readushort(depth) || !reader.readushort(height) || width != WORLD_CHUNK_BLOCKS || depth != WORLD_CHUNK_BLOCKS ||
        height != WORLD_HEIGHT_BLOCKS || !reader.readushort(palettesize) || !palettesize || !reader.readuint(columns) ||
@@ -618,7 +621,8 @@ static bool deserializeworldsnapshotvox(const vector<uchar> &contents, int x, in
             ushort length, palette, material;
             uchar orientation, flags, edges[12];
             if(!reader.readushort(length) || !length || z + length > WORLD_HEIGHT_BLOCKS || !reader.readushort(palette) || palette >= palettesize ||
-               !reader.readbyte(orientation) || !reader.readbyte(flags) || flags & ~(WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_SOLID) ||
+               !reader.readbyte(orientation) || !reader.readbyte(flags) ||
+               flags & ~(WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_SOLID | (version >= 3 ? WORLD_SNAPSHOT_PLAYER_EDITED : 0)) ||
                ((flags & WORLD_SNAPSHOT_EMPTY) && (flags & WORLD_SNAPSHOT_SOLID)) || !reader.readushort(material) ||
                !reader.read(edges, sizeof(edges)) || orientation < O_LEFT || orientation > O_TOP)
             {
@@ -680,6 +684,7 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
         const int x = origin.x / WORLD_BLOCK_SIZE, y = origin.y / WORLD_BLOCK_SIZE, z = origin.z / WORLD_BLOCK_SIZE;
         const worldsnapshotvoxel &voxel = voxels[(y * WORLD_CHUNK_BLOCKS + x) * WORLD_HEIGHT_BLOCKS + z];
         destination.material = voxel.material;
+        destination.playeredited = (voxel.flags & WORLD_SNAPSHOT_PLAYER_EDITED) != 0;
         memcpy(destination.edges, voxel.edges, sizeof(destination.edges));
         const int worldindex = snapshot.palette[voxel.palette].worldindex;
         if(worldindex >= 0)
@@ -700,7 +705,8 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
     loopi(8) if(identical)
     {
         const cube &child = destination.children[i];
-        identical = !child.children && child.material == first.material && !memcmp(child.edges, first.edges, sizeof(first.edges)) &&
+        identical = !child.children && child.playeredited == first.playeredited && child.material == first.material &&
+                    !memcmp(child.edges, first.edges, sizeof(first.edges)) &&
                     !memcmp(child.texture, first.texture, sizeof(first.texture));
     }
     if(identical)

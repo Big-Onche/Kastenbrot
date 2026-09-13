@@ -23,6 +23,7 @@ extern int remipworldchunk(cube *root, bool prepared, int &families, SDL_atomic_
 
 static void resetworldgencube(cube &c)
 {
+    c.playeredited = false;
     c.children = NULL;
     c.ext = NULL;
     c.visible = 0;
@@ -551,20 +552,18 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
 
 static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int blocky, int height, int biome)
 {
-    if(height < worldwaterheight(ctx, blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE)) return false;
+    if(height < worldwaterheight(ctx, blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE))
+        return false;
 
     const int localx = blockx * WORLD_BLOCK_SIZE,
               localy = blocky * WORLD_BLOCK_SIZE,
               surfacez = WORLD_GROUND_HEIGHT + height - WORLD_BLOCK_SIZE,
-              type = worldcolumncubetype(ctx, surfacez, WORLD_BLOCK_SIZE, height, biome,
-                                         worldbeach(ctx, localx, localy),
-                                         worldcliff(ctx, localx, localy),
-                                         worldrock(ctx, localx, localy));
+              type = worldcolumncubetype(ctx, surfacez, WORLD_BLOCK_SIZE, height, biome, worldbeach(ctx, localx, localy), worldcliff(ctx, localx, localy), worldrock(ctx, localx, localy));
 
     return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt") ||
-           type == ctx.cubetype("frozen_grass") || type == ctx.cubetype("frozen_dirt") || type == ctx.cubetype("frozen_moss");
+           type == ctx.cubetype("moss") || type == ctx.cubetype("frozen_grass") ||
+           type == ctx.cubetype("frozen_dirt") || type == ctx.cubetype("frozen_moss");
 }
-
 static bool generateworldgeology(worldgencontext &ctx, int chunkx, int chunky)
 {
     // One shared 3D field bends both contacts. Sampling a world-aligned lattice keeps chunks seamless and avoids voxel noise calls.
@@ -2115,30 +2114,48 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             game::worldtectonicsample terrain;
             const int height = inside ? ctx.heightmap[index] : generateworldheight(ctx, chunkx, chunky, x, y, &terrain),
                       biome = inside ? ctx.materialmap[index] :
-                              ctx.generator.surfacematerial(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y,
-                                                            height / WORLD_BLOCK_SIZE);
+                              ctx.generator.surfacematerial(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, height / WORLD_BLOCK_SIZE);
             if(!inside && height < ctx.generator.surface(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y).water * WORLD_BLOCK_SIZE)
                 continue;
-            if(ctx.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) continue;
+
+            if(ctx.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax))
+                continue;
+
             if(inside)
             {
                 if(!worldtreegrowablesurface(ctx, x, y, height, biome)) continue;
             }
-            else if(biome == game::WORLD_BIOME_DESERT || biome == game::WORLD_BIOME_SNOW || terrain.rockyledge > 0.22f ||
-                    (generateworldcliff(ctx, chunkx, chunky, x, y, height) & WORLD_CLIFF_ROCK) ||
-                    generateworldrock(ctx, chunkx, chunky, x, y, height)) continue;
-            const float density = ctx.generator.treedensity(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y,
-                                                           height / WORLD_BLOCK_SIZE);
+            else
+            {
+                const bool growable = biome == game::WORLD_BIOME_PLAINS || biome == game::WORLD_MOSS || biome == game::WORLD_FROZEN_GRASS ||
+                                      biome == game::WORLD_FROZEN_DIRT || biome == game::WORLD_FROZEN_MOSS;
+
+                if(!growable || terrain.rockyledge > 0.22f || (generateworldcliff(ctx, chunkx, chunky, x, y, height ) & WORLD_CLIFF_ROCK) || generateworldrock( ctx, chunkx, chunky, x, y, height))
+                    continue;
+            }
+
+            const float density = ctx.generator.treedensity(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, height / WORLD_BLOCK_SIZE);
             const uint spawn = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0xD1B54A35U);
+
             if(worldtreeunit(spawn) >= density) continue;
 
-            const float heightblocks = height / float(WORLD_BLOCK_SIZE),
-                        pinelow = float(min(ctx.settings.pinestartheight, ctx.settings.pinefullheight)),
-                        pinehigh = float(max(ctx.settings.pinestartheight, ctx.settings.pinefullheight)),
-                        pinechance = worldsmoothstep(pinelow, pinehigh, heightblocks);
+            const float heightblocks = height / float(WORLD_BLOCK_SIZE);
             const uint shape = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0x94D049BBU);
+
+            const int worldx = chunkx * WORLD_CHUNK_BLOCKS + x,
+                      worldy = chunky * WORLD_CHUNK_BLOCKS + y;
+
+            const vec treepos(
+                float(worldx) * game::worldclimate::BLOCK_UNITS,
+                float(worldy) * game::worldclimate::BLOCK_UNITS,
+                game::worldclimate::GROUND_UNITS + heightblocks * game::worldclimate::BLOCK_UNITS
+            );
+
+            const game::BiomeSample sample = ctx.generator.sampleBiome(treepos);
+            const float pinechance = game::treepinechance(ctx.settings, sample, uint(ctx.seed), worldx, worldy, int(heightblocks));
             const bool pine = worldtreeunit(shape) < pinechance;
-            const int treeheight = pine ? 6 + int((shape >> 24) & 3U) : 4 + int((shape >> 24) % 3U),
+
+            const int treeheight = game::treefinalheight(pine, sample.temperature, shape),
                       basez = WORLD_GROUND_HEIGHT / WORLD_BLOCK_SIZE + height / WORLD_BLOCK_SIZE;
 
             if(basez + treeheight >= WORLD_HEIGHT_BLOCKS) continue;
