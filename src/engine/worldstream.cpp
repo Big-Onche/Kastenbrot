@@ -2673,53 +2673,166 @@ static void updateworldchunkprediction(int chunkx, int chunky, double absolutex,
 void updateworldchunks(bool force)
 {
     if(worldchunks.empty() || rebuildingworldchunks || !worldroot) return;
+
     ZoneScopedN("Chunks/Update world chunks");
+
     if(stopworldchunkgeneration)
     {
+        ZoneScopedN("Chunks/Update/Paused");
+
         // Pausing terrain generation must not freeze edits to resident terrain.
         if(lastworldchunkpublish != totalmillis)
         {
+            ZoneScopedN("Chunks/Update/Paused streaming geometry");
+
             lastworldchunkpublish = totalmillis;
-            resetworldvauploadstats();
-            processstreaminggeometry(chunkpublishbudget, chunkvauploadkb * 1024, true);
+
+            {
+                ZoneScopedN("Chunks/Update/Reset VA upload stats");
+                resetworldvauploadstats();
+            }
+
+            {
+                ZoneScopedN("Chunks/Update/Process streaming geometry");
+                processstreaminggeometry(
+                    chunkpublishbudget,
+                    chunkvauploadkb * 1024,
+                    true
+                );
+            }
         }
+
         return;
     }
 
     int localchunkx = 0, localchunky = 0;
-    if(player)
+
     {
-        localchunkx = int(floor(player->o.x / WORLD_CHUNK_SIZE));
-        localchunky = int(floor(player->o.y / WORLD_CHUNK_SIZE));
-    }
-    int chunkx = worldfirstchunkx + localchunkx,
-        chunky = worldfirstchunky + localchunky;
-    double absolutex = double(worldfirstchunkx) * WORLD_CHUNK_SIZE + (player ? player->o.x : 0),
-           absolutey = double(worldfirstchunky) * WORLD_CHUNK_SIZE + (player ? player->o.y : 0);
-    updateworldchunkprediction(chunkx, chunky, absolutex, absolutey);
-    if(!force) processworldchunkupdates(chunkx, chunky, worldchunkaheadx, worldchunkaheady);
-    updateworldlods(chunkx, chunky, force);
-    if(!force && chunkx == lastplayerchunkx && chunky == lastplayerchunky &&
-       worldchunkradius() == lastchunkdist)
-    {
-        updateworldscatterers();
-        return;
+        ZoneScopedN("Chunks/Update/Player chunk position");
+
+        if(player)
+        {
+            localchunkx = int(floor(player->o.x / WORLD_CHUNK_SIZE));
+            localchunky = int(floor(player->o.y / WORLD_CHUNK_SIZE));
+        }
     }
 
-    int viewdist = worldchunkradius();
-    bool rebase = localchunkx - viewdist <= 0 || localchunkx + viewdist >= WORLD_RUNTIME_CHUNKS - 1 ||
-                  localchunky - viewdist <= 0 || localchunky + viewdist >= WORLD_RUNTIME_CHUNKS - 1;
+    int chunkx = 0, chunky = 0;
+    double absolutex = 0.0, absolutey = 0.0;
+
+    {
+        ZoneScopedN("Chunks/Update/Absolute chunk position");
+
+        chunkx = worldfirstchunkx + localchunkx;
+        chunky = worldfirstchunky + localchunky;
+
+        absolutex =
+            double(worldfirstchunkx) * WORLD_CHUNK_SIZE +
+            (player ? player->o.x : 0);
+
+        absolutey =
+            double(worldfirstchunky) * WORLD_CHUNK_SIZE +
+            (player ? player->o.y : 0);
+    }
+
+    {
+        ZoneScopedN("Chunks/Update/Prediction");
+        updateworldchunkprediction(
+            chunkx,
+            chunky,
+            absolutex,
+            absolutey
+        );
+    }
+
+    if(!force)
+    {
+        ZoneScopedN("Chunks/Update/Process chunk updates");
+        processworldchunkupdates(
+            chunkx,
+            chunky,
+            worldchunkaheadx,
+            worldchunkaheady
+        );
+    }
+
+    {
+        ZoneScopedN("Chunks/Update/LODs");
+        updateworldlods(chunkx, chunky, force);
+    }
+
+    {
+        ZoneScopedN("Chunks/Update/Check unchanged position");
+
+        if(!force &&
+           chunkx == lastplayerchunkx &&
+           chunky == lastplayerchunky &&
+           worldchunkradius() == lastchunkdist)
+        {
+            ZoneScopedN("Chunks/Update/Scatterers only");
+            updateworldscatterers();
+            return;
+        }
+    }
+
+    int viewdist = 0;
+    bool rebase = false;
+
+    {
+        ZoneScopedN("Chunks/Update/Rebase check");
+
+        viewdist = worldchunkradius();
+
+        rebase =
+            localchunkx - viewdist <= 0 ||
+            localchunkx + viewdist >= WORLD_RUNTIME_CHUNKS - 1 ||
+            localchunky - viewdist <= 0 ||
+            localchunky + viewdist >= WORLD_RUNTIME_CHUNKS - 1;
+    }
+
     if(rebase)
     {
-        rebaseworldchunks(chunkx, chunky);
+        ZoneScopedN("Chunks/Update/Rebase");
+
+        {
+            ZoneScopedN("Chunks/Update/Rebase world chunks");
+            rebaseworldchunks(chunkx, chunky);
+        }
+
+        {
+            ZoneScopedN("Chunks/Update/Mount safety region after rebase");
+            mountworldchunksafetyregion(chunkx, chunky);
+        }
+    }
+
+    // A forced view refresh is not a request to reload all geometry.
+    // Bootstrap only once per world; position restores and later refreshes
+    // use streaming.
+    const bool bootstrap = force && !rebase && !worldgeometryinitialized;
+
+    if(force && !bootstrap && !rebase)
+    {
+        ZoneScopedN("Chunks/Update/Mount safety region");
         mountworldchunksafetyregion(chunkx, chunky);
     }
-    // A forced view refresh is not a request to reload all geometry. Bootstrap
-    // only once per world; position restores and later refreshes use streaming.
-    const bool bootstrap = force && !rebase && !worldgeometryinitialized;
-    if(force && !bootstrap && !rebase) mountworldchunksafetyregion(chunkx, chunky);
-    rebuildworldchunks(chunkx, chunky, worldchunkaheadx, worldchunkaheady, bootstrap, true);
-    updateworldscatterers();
+
+    {
+        ZoneScopedN("Chunks/Update/Rebuild world chunks");
+
+        rebuildworldchunks(
+            chunkx,
+            chunky,
+            worldchunkaheadx,
+            worldchunkaheady,
+            bootstrap,
+            true
+        );
+    }
+
+    {
+        ZoneScopedN("Chunks/Update/Scatterers");
+        updateworldscatterers();
+    }
 }
 
 static bool parseworldcoordinate(const char *text, double &coordinate)

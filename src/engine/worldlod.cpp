@@ -145,6 +145,9 @@ static SDL_cond *worldlodcond = NULL;
 static bool stopworldlodthreads = false;
 static uint worldlodepoch = 1;
 static ullong worldlodsettings = 0;
+// Refreshed once per update, after settings invalidation. Cache lookups and
+// rendering must use the same generation identity as the selected meshes.
+static worldlodkey worldlodkeys[3];
 static int worldlodcachehits = 0, worldlodcachemisses = 0;
 static int worldloddiskhits = 0, worldloddiskwrites = 0, worldloddiskerrors = 0;
 static int worldlodrendervertices = 0, worldlodrendertriangles = 0, worldlodrendertopfaces = 0, worldlodrendersidefaces = 0;
@@ -211,10 +214,10 @@ static int findworldlodcache(const worldlodkey &key)
 
 static worldlodkey currentworldlodkey(int x, int y, int lod)
 {
-    const int resolution = max(worldlod1resolution >> (lod - 1), 1),
-              skirtdepth = lod == 1 ? worldlodskirtdepth : max(worldlodskirtdepth, WORLD_CHUNK_BLOCKS / resolution);
-    return worldlodkey(x, y, lod, resolution, skirtdepth, game::getworldseed(),
-                       game::worldgenerationparameterhash());
+    worldlodkey key = worldlodkeys[lod - 1];
+    key.x = x;
+    key.y = y;
+    return key;
 }
 
 static bool worldlodpriorityless(int apriority, float adistance, float aalignment, int bpriority, float bdistance, float balignment)
@@ -932,9 +935,9 @@ void cleanupworldlods()
     clearworldlods();
 }
 
-static ullong currentworldlodsettings()
+static ullong currentworldlodsettings(int seed, ullong generation)
 {
-    ullong hash = game::worldgenerationparameterhash() ^ ullong(uint(game::getworldseed())) ^ ullong(WORLDGEN_VERSION) << 32;
+    ullong hash = generation ^ ullong(uint(seed)) ^ ullong(WORLDGEN_VERSION) << 32;
     const int values[] = { worldlod1resolution, worldrenderdistance, worldlod2distance, worldlod3distance, worldloddistance,
                            worldlodhysteresis, worldloddither, worldlodskirtdepth, worldlodthreads };
     loopi(sizeof(values) / sizeof(values[0]))
@@ -1007,6 +1010,7 @@ static int worldlodoutstandingjobs()
 
 static void processworldlodresults()
 {
+    ZoneScopedN("LOD/Results");
     if(!worldlodmutex) return;
     loopi(worldloduploadlimit)
     {
@@ -1018,8 +1022,8 @@ static void processworldlodresults()
         if(job->cachehit) worldloddiskhits++;
         if(job->cachewritten) worldloddiskwrites++;
         if(job->cachewritefailed) worldloddiskerrors++;
-        if(job->epoch != worldlodepoch || !job->succeeded || SDL_AtomicGet(&job->cancelled) || job->key.seed != game::getworldseed() ||
-           job->key.generation != game::worldgenerationparameterhash())
+        if(job->epoch != worldlodepoch || !job->succeeded || SDL_AtomicGet(&job->cancelled) || job->key.seed != worldlodkeys[0].seed ||
+           job->key.generation != worldlodkeys[0].generation)
         {
             delete job;
             continue;
@@ -1244,6 +1248,7 @@ static bool worldlodrequiresvoxel(const worldchunk &chunk)
 
 static void pruneworldlodcache()
 {
+    ZoneScopedN("LOD/Prune cache");
     if(worldlodcache.length() <= worldlodcachelimit)
     {
         worldlodunprunablecache = -1;
@@ -1278,6 +1283,7 @@ static void pruneworldlodcache()
 
 static void activateworldlodfullchunks()
 {
+    ZoneScopedN("LOD/Activate detailed chunks");
     loopv(worldchunks)
     {
         const worldchunk &chunk = worldchunks[i];
@@ -1303,9 +1309,19 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         if(!worldlodselections.empty() || !worldlodcache.empty() || !worldlodworkers.empty()) clearworldlods();
         return;
     }
-    ullong settings = currentworldlodsettings();
-    if(worldlodsettings && settings != worldlodsettings) clearworldlods();
-    worldlodsettings = settings;
+    {
+        ZoneScopedN("LOD/Settings");
+        const int seed = game::getworldseed();
+        const ullong generation = game::worldgenerationparameterhash(), settings = currentworldlodsettings(seed, generation);
+        if(worldlodsettings && settings != worldlodsettings) clearworldlods();
+        worldlodsettings = settings;
+        loopi(3)
+        {
+            const int lod = i + 1, resolution = max(worldlod1resolution >> i, 1),
+                      skirtdepth = lod == 1 ? worldlodskirtdepth : max(worldlodskirtdepth, WORLD_CHUNK_BLOCKS / resolution);
+            worldlodkeys[i] = worldlodkey(0, 0, lod, resolution, skirtdepth, seed, generation);
+        }
+    }
     processworldlodresults();
 
     const vec &focus = camera1->o;
@@ -1332,6 +1348,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         pruneworldlodcache();
         return;
     }
+    ZoneScopedN("LOD/Selection and scheduling");
     worldlodlastupdate = totalmillis;
     worldlodlastfocusx = focusx;
     worldlodlastfocusy = focusy;
@@ -1362,10 +1379,16 @@ static void updateworldlods(int chunkx, int chunky, bool force)
     }
 
     // A one-chunk LOD1 collar prevents detailed terrain from touching a coarse tier.
+    float nearstart, nearend;
+    worldlodditherrange(nearstart, nearend);
+    const float collardistance = nearstart + worldlodhysteresis * WORLD_BLOCK_SIZE + WORLD_CHUNK_SIZE;
     loopv(worldlodselections)
     {
         worldlodselection &selection = worldlodselections[i];
-        if(selection.lastseen != totalmillis || selection.desired < 2) continue;
+        // A desired LOD0 chunk cannot be farther than nearstart + hysteresis.
+        // Neighboring chunk distances differ by at most one chunk, so the
+        // rest of the distant radius cannot touch LOD0 and needs no lookups.
+        if(selection.lastseen != totalmillis || selection.desired < 2 || selection.distance > collardistance) continue;
         bool toucheslod0 = false;
         for(int oy = -1; oy <= 1 && !toucheslod0; ++oy) for(int ox = -1; ox <= 1; ++ox)
         {
@@ -1406,7 +1429,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
         }
         if(selection.desired == 0)
         {
-            if(worldlodfullready(selection.x, selection.y) &&
+            if(selection.active != 0 && worldlodfullready(selection.x, selection.y) &&
                (selection.active != 1 || !worldloddither || worldlodrenderfade(selection) <= 0.0f))
                 selection.active = 0;
         }
@@ -1441,6 +1464,7 @@ static void updateworldlods(int chunkx, int chunky, bool force)
 
     if(missing > 0)
     {
+        ZoneScopedN("LOD/Schedule required meshes");
         canceloptionalworldlodjobs();
         reprioritizeworldlodjobs();
         hashtable<ivec, int> outstanding(1 << 10);
