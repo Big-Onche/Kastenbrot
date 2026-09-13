@@ -73,6 +73,7 @@ static inline void setfont(font *f) { if(f) curfont = f; }
 extern int hwtexsize, hwcubetexsize, hwmaxaniso, maxtexsize, hwtexunits, hwvtexunits;
 
 extern Texture *textureload(const char *name, int clamp = 0, bool mipit = true, bool msg = true, bool unfiltered = false);
+extern Texture *loadworlditemtexture(Slot &slot);
 extern int texalign(const void *data, int w, int bpp);
 extern bool floatformat(GLenum format);
 extern void cleanuptexture(Texture *t);

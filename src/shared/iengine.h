@@ -166,6 +166,7 @@ extern bool getworldcubesupportdecay(int index);
 extern bool getworldcubesupportpersistentonplace(int index);
 extern bool isworldcubepushable(int index, int toolitem);
 extern const char *getworldcubetexture(int index, int face = WORLD_CUBE_TOP);
+extern const char *worlditemtexturemodifier(const char *texture);
 extern bool pushworldcubecorner(selinfo &sel, bool local, int toolitem = -1);
 extern int numworldscatters();
 extern const char *getworldscattername(int index);

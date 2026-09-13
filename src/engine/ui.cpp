@@ -3194,6 +3194,7 @@ namespace UI
         Texture *previewtexture(Slot &slot)
         {
             if(slot.sts.empty()) return NULL;
+            if(Texture *texture = loadworlditemtexture(slot)) return texture;
             if(slot.loaded) return slot.sts[0].t != notexture ? slot.sts[0].t : NULL;
             if(!slot.thumbnail)
             {
@@ -3235,7 +3236,7 @@ namespace UI
             vec2 tc[4];
             texcoords(*texture, vslot, tc);
             glBindTexture(GL_TEXTURE_2D, texture->id);
-            gle::color(slot.loaded ? vec(vslot.colorscale).mul(shade) : vec(shade, shade, shade));
+            gle::color(slot.loaded || texture != slot.thumbnail ? vec(vslot.colorscale).mul(shade) : vec(shade, shade, shade));
             quad(pos, tc);
         }
 

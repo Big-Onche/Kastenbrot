@@ -1,6 +1,7 @@
 // renderparticles.cpp
 
 #include "engine.h"
+#include "world/grasscolor.h"
 
 Shader *particleshader = NULL, *particlenotextureshader = NULL, *particlesoftshader = NULL, *particletextshader = NULL,
        *blockchipshader = NULL;
@@ -890,6 +891,7 @@ struct softquadrenderer : quadrenderer
 struct blockchip
 {
     vec o, velocity;
+    vec4 terrain; // Source climate in xyz; w selects plain, grass, sand, dirt, or layered grass/dirt.
     Texture *tex;
     physent *owner;
     vec2 uvmin, uvmax;
@@ -935,7 +937,8 @@ struct blockchiprenderer
         return raycube(chip.o, vec(0, 0, -1), maxdist, RAY_CLIPMAT | RAY_SKIPFIRST) < maxdist;
     }
 
-    void add(Texture *tex, const bvec &color, float scale, const vec &p, const vec &normal, int num, physent *owner, bool centered)
+    void add(Texture *tex, const bvec &color, float scale, const vec &p, const vec &normal, int num, physent *owner, bool centered,
+             const vec4 &terrain = vec4(0, 0, 0, 0))
     {
         if(!tex || tex == notexture || tex->xs <= 0 || tex->ys <= 0) return;
 
@@ -969,6 +972,7 @@ struct blockchiprenderer
             chip.uvmin = vec2(x/float(tex->xs), y/float(tex->ys));
             chip.uvmax = vec2((x + crop)/float(tex->xs), (y + crop)/float(tex->ys));
             chip.color = color;
+            chip.terrain = terrain;
             chip.size = max(crop*scale/(2.0f*TEX_SCALE), 0.1f);
             chip.groundz = 0;
             chip.millis = lastmillis;
@@ -983,10 +987,22 @@ struct blockchiprenderer
     {
         VSlot &vslot = lookupvslot(texture, true);
         if(!vslot.slot || vslot.slot->sts.empty()) return;
+        const Shader *shader = vslot.slot->shader;
+        const char *name = shader ? shader->name : "";
+        const float material = !strcmp(name, "grassclimateworldside") ? 4.0f : !strcmp(name, "grassclimateworld") ? 1.0f :
+                               !strcmp(name, "sandclimateworld") ? 2.0f : !strcmp(name, "dirtclimateworld") ? 3.0f : 0.0f;
+        vec4 terrain(0, 0, 0, material);
+        if(material > 0)
+        {
+            // Keep the source block's climate as chips move, using the same shader tint and soil blend as terrain.
+            vec absolute = p;
+            worldpositiontoabsolute(absolute);
+            terrain = vec4(game::getterrainworldclimate(absolute), material);
+        }
         add(vslot.slot->sts[0].t,
             bvec(uchar(clamp(int(vslot.colorscale.x*255), 0, 255)), uchar(clamp(int(vslot.colorscale.y*255), 0, 255)),
                  uchar(clamp(int(vslot.colorscale.z*255), 0, 255))),
-            vslot.scale, p, normal, num, NULL, false);
+            vslot.scale, p, normal, num, NULL, false, terrain);
     }
 
     void add(const char *texture, const vec &p, const vec &normal, int num, physent *owner)
@@ -1064,6 +1080,7 @@ struct blockchiprenderer
         gle::defvertex();
         gle::deftexcoord0();
         gle::defcolor(4, GL_UNSIGNED_BYTE);
+        if(!hud) gle::deftexcoord1(4);
         int start = 0;
         while(start < chips.length())
         {
@@ -1099,6 +1116,7 @@ struct blockchiprenderer
                     gle::attrib(vec(renderorigin).madd(camright, coeffs[j].x*chip.size).madd(camup, coeffs[j].y*chip.size));
                     gle::attribf(j == 0 || j == 3 ? chip.uvmin.x : chip.uvmax.x, j < 2 ? chip.uvmin.y : chip.uvmax.y);
                     gle::attrib(color);
+                    if(!hud) gle::attrib(chip.terrain);
                 }
             }
             gle::end();
@@ -1293,6 +1311,9 @@ void renderdeferredblockchips()
     blockchips.update();
     if(!blockchips.haswork(false)) return;
 
+    extern int terrainblendwidth, terrainblendstrength;
+    GLOBALPARAMF(terrainblendwidth, float(terrainblendwidth));
+    GLOBALPARAMF(terrainblendstrength, terrainblendstrength * 0.01f);
     blockchipshader->set();
     LOCALPARAMF(chipnormal, -camdir.x, -camdir.y, -camdir.z);
     blockchips.render(false, false);

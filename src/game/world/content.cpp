@@ -164,7 +164,7 @@ const char *getworldcubetexture(int index, int face)
         texture = type.bottomtexture[0] ? type.bottomtexture
                 : type.sidetexture[0] ? type.sidetexture
                 : type.cubetexture;
-    formatstring(texturepath, "media/texture/%s", texture);
+    formatstring(texturepath, "%smedia/texture/%s", worlditemtexturemodifier(texture), texture);
     return texturepath;
 }
 
@@ -365,7 +365,7 @@ const char *getinventoryitemicon(int index)
     }
     loopv(worldcubedefinitions) if(worldcubedefinitions[i]->item == index)
     {
-        formatstring(iconpath, "media/texture/%s", worldcubedefinitions[i]->cubetexture);
+        copystring(iconpath, getworldcubetexture(i, WORLD_CUBE_TOP));
         return iconpath;
     }
     loopv(worldscatterdefinitions) if(worldscatterdefinitions[i]->item == index)

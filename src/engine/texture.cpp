@@ -536,18 +536,47 @@ void texcolormask(ImageData &s, const vec &color1, const vec &color2)
     s.replace(d);
 }
 
-void texgrasslayers(ImageData &s)
+const char *worlditemtexturemodifier(const char *texture)
+{
+    // Slot names use native separators after path(), while world definitions keep forward slashes.
+    string normalized;
+    copystring(normalized, texture);
+    for(char *p = normalized; *p; ++p) if(*p == '\\') *p = '/';
+    texture = normalized;
+    // Fixed item albedo: temperate green grass and warm, neutral sand, independent of the world climate.
+    if(!strcmp(texture, "terrain/grass.png")) return "<mad:0.423529/0.745098/0.192157>";
+    if(!strcmp(texture, "terrain/grass_dirt.png")) return "<grasslayers:0.423529/0.745098/0.192157>";
+    if(!strcmp(texture, "terrain/sand.png")) return "<mad:1/0.90/0.72>";
+    return "";
+}
+
+Texture *loadworlditemtexture(Slot &slot)
+{
+    if(slot.sts.empty()) return NULL;
+    const char *texture = slot.sts[0].name;
+    // Terrain grass sides store dirt in RGB and grass in alpha. Rebuild opaque item albedo from the source instead.
+    if(!strncmp(texture, "<grasslayers>", 13)) texture += 13;
+    const char *modifier = worlditemtexturemodifier(texture);
+    if(!modifier[0]) return NULL;
+    defformatstring(filename, "%s%s/%s", modifier, slot.texturedir(), texture);
+    Texture *result = textureload(filename, 0, true, true, true);
+    return result != notexture ? result : NULL;
+}
+
+void texgrasslayers(ImageData &s, const vec *tint = NULL)
 {
     // Opaque grass/dirt albedo only: RGB stores dirt, A stores grayscale grass luminance.
     // Separating before filtering keeps both contributions correct at every mip level.
     if(s.bpp < 3) return;
-    ImageData d(s.w, s.h, 4);
+    // Item textures can bake a fixed tint into opaque RGB using the same grass/dirt separation.
+    ImageData d(s.w, s.h, tint ? 3 : 4);
     readwritetex(d, s,
         const int chroma = max(max(src[0], src[1]), src[2]) - min(min(src[0], src[1]), src[2]);
         const float t = clamp(chroma / 5.1f, 0.0f, 1.0f);
         const float dirt = t * t * (3.0f - 2.0f * t);
-        loopk(3) dst[k] = uchar(src[k] * dirt + 0.5f);
-        dst[3] = uchar((src[0] + src[1] + src[2]) * ((1.0f - dirt) / 3.0f) + 0.5f);
+        const float grass = (src[0] + src[1] + src[2]) * ((1.0f - dirt) / 3.0f);
+        loopk(3) dst[k] = uchar(clamp(src[k] * dirt + (tint ? grass * (*tint)[k] : 0.0f) + 0.5f, 0.0f, 255.0f));
+        if(!tint) dst[3] = uchar(grass + 0.5f);
     );
     s.replace(d);
 }
@@ -1740,7 +1769,11 @@ static bool texturedata(ImageData &d, const char *tname, bool msg = true, int *c
         if(matchstring(cmd, len, "mad")) texmad(d, parsevec(arg[0]), parsevec(arg[1]));
         else if(matchstring(cmd, len, "colorify")) texcolorify(d, parsevec(arg[0]), parsevec(arg[1]));
         else if(matchstring(cmd, len, "colormask")) texcolormask(d, parsevec(arg[0]), *arg[1] ? parsevec(arg[1]) : vec(1, 1, 1));
-        else if(matchstring(cmd, len, "grasslayers")) texgrasslayers(d);
+        else if(matchstring(cmd, len, "grasslayers"))
+        {
+            const vec tint = parsevec(arg[0]);
+            texgrasslayers(d, *arg[0] ? &tint : NULL);
+        }
         else if(matchstring(cmd, len, "normal"))
         {
             int emphasis = atoi(arg[0]);
