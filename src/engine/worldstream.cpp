@@ -264,7 +264,8 @@ static void setworldleavesalpha(cube *root, bool enabled, int leaveslot, int nee
             if(!foliage) continue;
             if(enabled) c.material |= MAT_ALPHA;
             else c.material &= ~MAT_ALPHA;
-            c.visible = c.merged = 0;
+            // Preserve collision faces: packet mesh rebuilds do not restore c.visible on live cubes.
+            c.merged = 0;
         }
     }
 }
