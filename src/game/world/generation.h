@@ -62,6 +62,7 @@ namespace game
         int seed;
         float foldcos, foldsin;
         mutable hashtable<ivec, int> treeblockcache;
+        mutable hashtable<ivec, float> icecoastcache;
         mutable worldhydrology *hydrology;
 
         worldgenerator(int seed, const worldsettings &settings = worldsettings());
@@ -99,6 +100,12 @@ namespace game
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;
         int treeblock(int x, int y, int z) const;
         float treedensity(int x, int y, int height) const;
+        float icecoastdistance(int x, int y) const;
+        bool iceformation(int x, int y, int height, int &bottom, int &top) const;
+        bool coastice(int x, int y, float temperature, float margin = 0.0f) const;
+        bool coastfloe(int x, int y, int height, int &bottom, int &top) const;
+        // Solid ice interval in absolute terrain blocks; top is exclusive.
+        bool icecolumn(int x, int y, int height, int &bottom, int &top) const;
     };
 
     // Shared main-thread sampler; generation jobs keep their own instances.

@@ -2094,6 +2094,32 @@ static bool placeworldores(worldgencontext &ctx, cube *root, int chunkx, int chu
     return !ctx.iscanceled();
 }
 
+static bool placeworldice(worldgencontext &ctx, cube *root, int chunkx, int chunky)
+{
+    const int ice = ctx.cubetype("ice");
+    for(int y = 0; y < WORLD_CHUNK_BLOCKS; ++y)
+    {
+        if(ctx.iscanceled()) return false;
+        for(int x = 0; x < WORLD_CHUNK_BLOCKS; ++x)
+        {
+            const int height = ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE;
+            int bottom, top;
+            if(!ctx.generator.icecolumn(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, height, bottom, top)) continue;
+            for(int z = max(bottom, int(WORLD_MIN_HEIGHT)); z < top; ++z)
+            {
+                const ivec position(x * WORLD_BLOCK_SIZE, y * WORLD_BLOCK_SIZE, WORLD_GROUND_HEIGHT + z * WORLD_BLOCK_SIZE);
+                cube &c = lookupworldgenblock(ctx, root, position);
+                if(setworldcubetype(c, ctx, ice))
+                {
+                    uchar &flags = worldgensectionflags(ctx, x, y, position.z / WORLD_BLOCK_SIZE);
+                    flags = (flags | SECTION_EXTERIOR) & ~(SECTION_FULLY_SOLID | SECTION_NO_RENDER);
+                }
+            }
+        }
+    }
+    return !ctx.iscanceled();
+}
+
 static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int chunky)
 {
     vector<ivec> wood, pinewood, leaves, needles;
@@ -2260,6 +2286,14 @@ static cube *generateworldchunk(int chunkx, int chunky, worldgencontext &ctx)
         }
     }
     {
+        ZoneScopedN("Chunks/Generate ice formations");
+        if(!placeworldice(ctx, root, chunkx, chunky))
+        {
+            freepreparedworldchunk(root);
+            return NULL;
+        }
+    }
+    {
         ZoneScopedN("Chunks/Generate trees");
         if(!placeworldtrees(ctx, root, chunkx, chunky))
         {
@@ -2398,7 +2432,8 @@ namespace game
     {
         const worldsettings settings;
         const uchar *bytes = (const uchar *)&settings;
-        ullong hash = 1469598103934665603ULL;
+        // Include procedural geometry revisions so cached distant surfaces match regenerated chunks.
+        ullong hash = 1469598103934665603ULL ^ 0x2026091303ULL;
         loopi(sizeof(settings))
         {
             hash ^= bytes[i];
@@ -2609,7 +2644,10 @@ namespace game
 
     bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height)
     {
-        return sampleterrainheightcached(generation, blockx, blocky, height);
+        if(!sampleterrainheightcached(generation, blockx, blocky, height)) return false;
+        int icebottom, icetop;
+        if(generation->generator.icecolumn(blockx, blocky, height, icebottom, icetop)) height = icetop;
+        return !generation->iscanceled();
     }
 
     bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface)
@@ -2653,6 +2691,13 @@ namespace game
         {
             surface.material = WORLD_SURFACE_ICE;
             if(biome == WORLD_FROZEN_WATER) surface.height = hydro.water;
+            surface.water = false;
+        }
+        int icebottom, icetop;
+        if(generation->generator.icecolumn(blockx, blocky, height, icebottom, icetop))
+        {
+            surface.height = icetop;
+            surface.material = WORLD_SURFACE_ICE;
             surface.water = false;
         }
         return !generation->iscanceled();
