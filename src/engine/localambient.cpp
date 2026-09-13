@@ -8,6 +8,7 @@
 static void localambienttogglechanged();
 static void localambientfieldchanged();
 static void localambientgichanged();
+static void resetlocalambientfar();
 
 VARFP(localambient, 0, 0, 1, localambienttogglechanged());
 VARF(localambientresolution, 4, 16, 128, localambientfieldchanged());
@@ -31,6 +32,94 @@ VAR(localambientscroll, 0, 1, 1);
 VAR(localambientscrollstep, 1, 4, 32);
 FVAR(localambientdeadzone, 0.1f, 0.5f, 0.9f);
 VAR(localambientdebug, 0, 0, 2);
+VARFP(localambientfar, 0, 1, 1, resetlocalambientfar());
+VARF(localambientfarresolution, 16, 128, 1024, resetlocalambientfar());
+FVAR(localambientfarms, 0.1f, 0.25f, 4.0f);
+
+// A world-wide 2D sky-height cache is much smaller than a second lighting volume.
+// Capture nearby dirty tiles first; edits and streaming only refresh touched XY.
+static GLuint localambientfartexture = 0;
+static int localambientfarside = 0, localambientfarspacing = 0, localambientfartiles = 0;
+static int localambientfartile = -1, localambientfarrow = 0;
+static vector<float> localambientfarheights;
+static vector<uchar> localambientfardirty;
+
+static void resetlocalambientfar()
+{
+    localambientfarside = 0;
+    localambientfartile = -1;
+    localambientfarheights.setsize(0);
+    localambientfardirty.setsize(0);
+}
+
+static void invalidatelocalambientfar(const ivec &minimum, const ivec &maximum)
+{
+    if(!localambientfarside) return;
+    const int span = 16 * localambientfarspacing;
+    const int x0 = clamp(minimum.x / span, 0, localambientfartiles), y0 = clamp(minimum.y / span, 0, localambientfartiles),
+              x1 = clamp((maximum.x + span - 1) / span, 0, localambientfartiles),
+              y1 = clamp((maximum.y + span - 1) / span, 0, localambientfartiles);
+    for(int y = y0; y < y1; y++) for(int x = x0; x < x1; x++) localambientfardirty[y * localambientfartiles + x] = 1;
+}
+
+static void updatelocalambientfar()
+{
+    if(!localambientfar) return;
+    ZoneScopedN("LocalAmbient/Far sky height");
+    if(!localambientfarside)
+    {
+        localambientfarspacing = max(localambientfarresolution, (worldsize + 1023) / 1024);
+        localambientfarside = (worldsize + localambientfarspacing - 1) / localambientfarspacing;
+        localambientfartiles = (localambientfarside + 15) / 16;
+        localambientfarheights.pad(localambientfarside * localambientfarside);
+        memset(localambientfarheights.getbuf(), 0, localambientfarheights.length() * sizeof(float));
+        localambientfardirty.pad(localambientfartiles * localambientfartiles);
+        memset(localambientfardirty.getbuf(), 1, localambientfardirty.length());
+        if(!localambientfartexture) glGenTextures(1, &localambientfartexture);
+        glActiveTexture_(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, localambientfartexture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        const GLfloat border[4] = { 0, 0, 0, 0 };
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, localambientfarside, localambientfarside, 0, GL_RED, GL_FLOAT,
+                     localambientfarheights.getbuf());
+    }
+    const Uint64 start = SDL_GetPerformanceCounter();
+    const double budget = localambientfarms * SDL_GetPerformanceFrequency() / 1000.0;
+    glActiveTexture_(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, localambientfartexture);
+    do
+    {
+        if(localambientfartile < 0)
+        {
+            float nearest = 1e30f;
+            loopv(localambientfardirty) if(localambientfardirty[i])
+            {
+                const float dx = (i % localambientfartiles * 16 + 8) * localambientfarspacing - camera1->o.x,
+                            dy = (i / localambientfartiles * 16 + 8) * localambientfarspacing - camera1->o.y,
+                            distance = dx * dx + dy * dy;
+                if(distance < nearest) { nearest = distance; localambientfartile = i; }
+            }
+            if(localambientfartile < 0) break;
+            // Changes received during this capture remain queued for another pass.
+            localambientfardirty[localambientfartile] = 0;
+            localambientfarrow = 0;
+        }
+        const int x = localambientfartile % localambientfartiles * 16,
+                  y = localambientfartile / localambientfartiles * 16 + localambientfarrow,
+                  count = min(16, localambientfarside - x);
+        float *heights = localambientfarheights.getbuf() + y * localambientfarside + x;
+        loopi(count) heights[i] = sampleworldskyheight((x + i) * localambientfarspacing + localambientfarspacing / 2,
+                                                      y * localambientfarspacing + localambientfarspacing / 2);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, count, 1, GL_RED, GL_FLOAT, heights);
+        if(++localambientfarrow >= 16 || y + 1 >= localambientfarside) localambientfartile = -1;
+    }
+    while(SDL_GetPerformanceCounter() - start < budget);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
 
 enum
 {
@@ -196,6 +285,7 @@ static void marklocalambientfull()
 void invalidatelocalambient()
 {
     if(!localambient) return;
+    resetlocalambientfar();
     marklocalambientfull();
 }
 
@@ -203,6 +293,7 @@ void invalidatelocalambient(const ivec &minimum, const ivec &maximum)
 {
     if(!localambient) return;
     if(minimum.x >= maximum.x || minimum.y >= maximum.y || minimum.z >= maximum.z) return;
+    invalidatelocalambientfar(minimum, maximum);
     // Finish the current capture and queue changes for the next one. Its dirty
     // bounds were consumed when it started, so cancelling it loses that work
     // (and continuous chunk publication can prevent any capture from finishing).
@@ -225,6 +316,7 @@ void invalidatelocalambient(const ivec &minimum, const ivec &maximum)
 
 void resetlocalambient()
 {
+    resetlocalambientfar();
     marklocalambientfull();
     delete localambientcachedsolve;
     localambientcachedsolve = NULL;
@@ -653,6 +745,7 @@ static bool scrolllocalambientfield(const ivec &origin)
 void updatelocalambient()
 {
     if(!localambient || !camera1 || !worldroot || drawtex) return;
+    updatelocalambientfar();
     ZoneScopedN("LocalAmbient/Update");
     finishlocalambientsolve();
 
@@ -731,6 +824,8 @@ void bindlocalambient()
     if(localambientfieldready && !localambientbootstrap)
         texture = localambienttexture;
     glBindTexture(GL_TEXTURE_3D, texture);
+    glActiveTexture_(GL_TEXTURE15);
+    glBindTexture(GL_TEXTURE_2D, localambientfartexture);
     glActiveTexture_(GL_TEXTURE0);
 }
 
@@ -745,6 +840,8 @@ void setlocalambientparams(bool enabled)
                              : vec(0, 0, 0);
     GLOBALPARAM(localambientorigin, origin);
     GLOBALPARAM(localambientscale, scale);
+    GLOBALPARAMF(localambientfarparams, localambientfarside ? 1.0f / (localambientfarside * localambientfarspacing) : 0.0f,
+                 float(localambientfarspacing), enabled && localambientfar && localambientfarside ? 1.0f : 0.0f, 0.0f);
     GLOBALPARAMF(localambientparams, active ? localambientstrength : 0.0f, localambientmin, float(debug), 2.0f * ldrscale);
     GLOBALPARAMF(localambientgiparams, active && localambientgi && !localambientbootstrap ? 1.0f : 0.0f, localambientgiintensity,
                  localambientgisaturation,
@@ -776,6 +873,8 @@ void cleanuplocalambient()
     }
     if(localambientwhitetexture) glDeleteTextures(1, &localambientwhitetexture);
     if(localambienttexture) glDeleteTextures(1, &localambienttexture);
+    if(localambientfartexture) glDeleteTextures(1, &localambientfartexture);
+    localambientfartexture = 0;
     localambientwhitetexture = localambienttexture = 0;
     localambientgirebuild = false;
     localambientmaxtexturesize = 0;

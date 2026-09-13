@@ -1298,6 +1298,58 @@ bool sampleworldcolumnroof(const ivec &position, int &roof)
     return true;
 }
 
+// Highest geometric sky blocker, including detached streamed sections. Unknown
+// columns return zero so the distant ambient fallback never invents a roof.
+float sampleworldskyheight(int x, int y)
+{
+    if(x < 0 || y < 0 || x >= worldsize || y >= worldsize) return 0;
+    const worldchunk *chunk = NULL;
+    const int chunkx = x / WORLD_CHUNK_SIZE, chunky = y / WORLD_CHUNK_SIZE;
+    if(!worldchunks.empty())
+    {
+        const int index = findworldchunk(worldfirstchunkx + chunkx, worldfirstchunky + chunky);
+        if(!worldchunks.inrange(index)) return 0;
+        chunk = &worldchunks[index];
+        if(chunk->loading || chunk->corrupted || !chunk->root) return 0;
+    }
+    for(int z = (chunk ? min(worldsize, int(WORLD_MAP_SIZE)) : worldsize) - 1; z >= 0;)
+    {
+        const int section = z / WORLD_SECTION_SIZE,
+                  tile = ((y % WORLD_CHUNK_SIZE) / WORLD_SECTION_SIZE) * WORLD_SECTION_COLUMNS +
+                         (x % WORLD_CHUNK_SIZE) / WORLD_SECTION_SIZE;
+        const bool mounted = !chunk || (chunk->mountedtiles[section] & (1U << tile));
+        const ivec point(mounted ? x : x % WORLD_CHUNK_SIZE, mounted ? y : y % WORLD_CHUNK_SIZE, z);
+        ivec origin;
+        int size;
+        const cube *c;
+        if(mounted) c = &lookupcube(point, -1, origin, size);
+        else
+        {
+            int scale = WORLD_CHUNK_SCALE - 1;
+            c = &chunk->root[octastep(point.x, point.y, point.z, scale)];
+            while(c->children)
+            {
+                --scale;
+                c = &c->children[octastep(point.x, point.y, point.z, scale)];
+            }
+            size = 1 << scale;
+            origin = ivec(point).mask(~0U << scale);
+        }
+        if(!isempty(*c))
+        {
+            const float ceiling = float(z + 1);
+            if(isentirelysolid(*c)) return ceiling;
+            const localambientleafshape shape(*c, size);
+            float height;
+            if(shape.roof(vec(float(point.x - origin.x), float(point.y - origin.y), 0), height, true, ceiling - origin.z))
+                return origin.z + height;
+        }
+        // Mounted and detached ownership can change at each section boundary.
+        z = (chunk ? max(origin.z, section * WORLD_SECTION_SIZE) : origin.z) - 1;
+    }
+    return 0;
+}
+
 bool sampleworldsolid(const ivec &position, int &leafbottom)
 {
     if(worldchunks.empty())

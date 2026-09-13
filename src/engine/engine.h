@@ -226,6 +226,7 @@ extern int getworldsectionrenderflags(int chunkx, int chunky, int tile, int sect
 extern float worldplayercavefactor();
 extern bool sampleworldsolid(const ivec &position, int &leafbottom);
 extern bool sampleworldcolumnroof(const ivec &position, int &roof);
+extern float sampleworldskyheight(int x, int y);
 extern void captureworldlocalambient(const ivec &origin, const ivec &dimensions, int resolution, uchar *solid, bvec4 *albedo);
 extern bool worldsectionvaenabled(const ivec &origin, int size);
 extern bool worldsectionvavisible(const ivec &origin, int size);

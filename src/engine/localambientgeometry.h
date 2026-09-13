@@ -25,10 +25,10 @@ struct localambientleafshape
         return true;
     }
 
-    bool roof(const vec &point, float &height) const
+    bool roof(const vec &point, float &height, bool top = false, float ceiling = 1e16f) const
     {
         if(point.x < minimum.x || point.x >= maximum.x || point.y < minimum.y || point.y >= maximum.y) return false;
-        float lower = max(point.z, minimum.z), upper = maximum.z;
+        float lower = max(point.z, minimum.z), upper = min(maximum.z, ceiling);
         if(lower >= upper) return false;
         loopi(numplanes)
         {
@@ -39,7 +39,7 @@ struct localambientleafshape
             else if(offset > 0) return false;
         }
         if(lower >= upper) return false;
-        height = lower;
+        height = top ? upper : lower;
         return true;
     }
 };
