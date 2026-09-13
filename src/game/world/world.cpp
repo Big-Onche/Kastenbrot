@@ -985,7 +985,7 @@ namespace game
             const worldwatersample center = surface(sx, sy);
             float distance = 1024.0f;
             if(center.height >= settings.sealevel && center.height >= center.water) distance = 0.0f;
-            else for(int radius = 8; radius <= 256 && distance > radius; radius += 8)
+            else for(int radius = 8; radius <= 512 && distance > radius; radius += 8)
             {
                 loopj(16)
                 {
@@ -1003,11 +1003,11 @@ namespace game
 
     static float icecoastwidth(const worldgenerator &generator, int x, int y, float temperature)
     {
-        const float cold = 1.0f - smoothstep(-22.0f, 5.0f, temperature),
-                    broad = generator.snowpatches.GetNoise(float(x) * 2.0f, float(y) * 2.0f),
-                    detail = generator.snowpatches.GetNoise(float(x) * 11.0f + 1731.0f, float(y) * 11.0f - 2917.0f),
-                    variation = clamp(0.80f + 0.25f * broad + 0.15f * detail, 0.45f, 1.0f);
-        return (12.0f + 52.0f * sqrtf(cold)) * variation * (1.0f - smoothstep(3.0f, 5.0f, temperature));
+        // Start with one or two shore blocks, then expand smoothly to the 192-block cap (three times the original extent).
+        const float growth = 1.0f - smoothstep(-22.0f, -5.0f, temperature),
+                    broad = generator.snowpatches.GetNoise(float(x) * 0.20f, float(y) * 0.20f),
+                    variation = clamp(0.90f + 0.10f * broad, 0.80f, 1.0f);
+        return temperature >= -5.0f ? 0.0f : 1.5f + 190.5f * growth * variation;
     }
 
     bool worldgenerator::coastice(int x, int y, float temperature, float margin) const
@@ -1016,36 +1016,104 @@ namespace game
         return icecoastdistance(x, y) <= icecoastwidth(*this, x, y, temperature) + margin;
     }
 
-    bool worldgenerator::coastfloe(int x, int y, int height, int &bottom, int &top) const
+    struct seaicecell
     {
-        const int spacing = 16, cellx = int(floorf(float(x) / spacing)), celly = int(floorf(float(y) / spacing));
-        const uint salt = 0x4B13F6A9U;
-        if(treespatialunit(uint(seed), cellx, celly, salt) > 0.92f) return false;
-        const int cx = cellx * spacing + 6 + int(treespatialunit(uint(seed), cellx, celly, salt ^ 0x1273U) * 4),
-                  cy = celly * spacing + 6 + int(treespatialunit(uint(seed), cellx, celly, salt ^ 0x9173U) * 4);
-        const float shape = treespatialunit(uint(seed), cellx, celly, salt ^ 0x3179U),
-                    dx = float(x - cx), dy = float(y - cy),
-                    edge = max(fabsf(dx), max(fabsf(dy) * 1.25f, fabsf(dx + dy) * 0.75f));
-        if(edge > 3.0f + 3.0f * shape || height >= settings.sealevel - 2) return false;
-        const vec position(float(cx) * worldclimate::BLOCK_UNITS, float(cy) * worldclimate::BLOCK_UNITS,
-                           worldclimate::GROUND_UNITS + settings.sealevel * worldclimate::BLOCK_UNITS);
-        const vec localposition(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS, position.z);
-        const float temperature = max(environmentclimate.gettemperature(position), environmentclimate.gettemperature(localposition)),
-                    cold = 0.60f + 0.40f * (1.0f - smoothstep(-22.0f, 5.0f, temperature));
-        if(temperature >= -5.0f || edge > (3.0f + 3.0f * shape) * sqrtf(cold)) return false;
-        const worldwatersample center = surface(cx, cy);
-        if(center.freshwater || center.height >= settings.sealevel - 2) return false;
+        int x, y;
+        float edge, centerx, centery;
+    };
 
-        // A crowded shattered fringe gives way to open water; flat slabs do not reach the outer berg zone.
-        const float offshore = icecoastdistance(cx, cy) - icecoastwidth(*this, cx, cy, temperature),
-                    fringe = smoothstep(2.0f, 12.0f, offshore) * (1.0f - smoothstep(35.0f, 100.0f, offshore));
-        if(treespatialunit(uint(seed), cellx, celly, salt) > 0.92f * fringe) return false;
-        // Flat, one-block freeboard with a shallow submerged underside and chipped margins.
-        const float chips = snowpatches.GetNoise(float(x) * 19.0f, float(y) * 19.0f);
-        if(edge > (2.5f + 2.5f * shape + 0.6f * chips) * sqrtf(cold)) return false;
-        bottom = max(height + 1, settings.sealevel - 1 - int(shape * 2.0f));
-        top = settings.sealevel + 1;
-        return true;
+    static seaicecell sampleseaicecell(uint seed, float x, float y, int size, uint salt)
+    {
+        const int gx = int(floorf(x / size)), gy = int(floorf(y / size));
+        float first = 1e20f, second = 1e20f, secondx = 0, secondy = 0;
+        seaicecell cell = { 0, 0, 0, 0, 0 };
+        for(int cy = gy - 1; cy <= gy + 1; ++cy) for(int cx = gx - 1; cx <= gx + 1; ++cx)
+        {
+            const float px = (cx + 0.20f + 0.60f * treespatialunit(seed, cx, cy, salt)) * size,
+                        py = (cy + 0.20f + 0.60f * treespatialunit(seed, cx, cy, salt ^ 0x8913U)) * size,
+                        distance = (x - px) * (x - px) + (y - py) * (y - py);
+            if(distance < first)
+            {
+                second = first;
+                secondx = cell.centerx;
+                secondy = cell.centery;
+                first = distance;
+                cell.x = cx;
+                cell.y = cy;
+                cell.centerx = px;
+                cell.centery = py;
+            }
+            else if(distance < second)
+            {
+                second = distance;
+                secondx = px;
+                secondy = py;
+            }
+        }
+        const float dx = cell.centerx - secondx, dy = cell.centery - secondy;
+        cell.edge = (second - first) / max(2.0f * sqrtf(dx * dx + dy * dy), 0.001f);
+        return cell;
+    }
+
+    bool worldgenerator::seaice(int x, int y, int height, float &bottom, float &top) const
+    {
+        if(height >= settings.sealevel) return false;
+        const ivec key(x, y, height);
+        if(seaicequery *cached = seaicecache.access(key))
+        {
+            bottom = cached->bottom;
+            top = cached->top;
+            return cached->covered;
+        }
+        seaicequery result;
+        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                           worldclimate::GROUND_UNITS + settings.sealevel * worldclimate::BLOCK_UNITS);
+        const float temperature = environmentclimate.gettemperature(position),
+                    cold = 1.0f - smoothstep(-22.0f, 3.0f, temperature);
+        if(cold > 0.0f && !surface(x, y).freshwater)
+        {
+            const float shore = icecoastdistance(x, y), width = icecoastwidth(*this, x, y, temperature),
+                        fringe = temperature < -5.0f ? 1.0f - smoothstep(width, width + 48.0f, shore) : 0.0f,
+                        reach = 1.0f - smoothstep(width + 80.0f, width + 250.0f, shore),
+                        wx = float(x) + 12.0f * coldmicro.GetNoise(float(x), float(y)),
+                        wy = float(y) + 12.0f * coldmicro.GetNoise(float(x) + 713.0f, float(y) - 419.0f);
+            const seaicecell parent = sampleseaicecell(uint(seed), wx, wy, 48, 0x5041434BU);
+            const float division = treespatialunit(uint(seed), parent.x, parent.y, 0x5041434CU);
+            const int size = division < 0.22f * cold ? 48 : division < 0.60f + 0.20f * cold ? 18 : 8;
+            const seaicecell plate = size == 48 ? parent : sampleseaicecell(uint(seed), wx, wy, size, 0x5041434BU ^ uint(size));
+            const float cluster = coldroll.GetNoise(plate.centerx * 1.5f + 1731.0f, plate.centery * 1.5f - 2917.0f),
+                        chance = max(fringe, clamp(cold * (0.80f + 0.35f * cluster) * reach, 0.0f, 0.96f)),
+                        erosion = 0.45f + 1.5f * (1.0f - cold) +
+                                  0.35f * snowpatches.GetNoise(float(x) * 1.3f + 5713.0f, float(y) * 1.3f - 2137.0f),
+                        selected = treespatialunit(uint(seed), plate.x, plate.y, 0x504C4154U ^ uint(size));
+            bool cracked = min(parent.edge, plate.edge) <= erosion;
+            // Some large sheets retain a short internal fracture; its broad gate leaves the plate connected elsewhere.
+            if(size == 48 && division < 0.10f)
+            {
+                const seaicecell fracture = sampleseaicecell(uint(seed), wx, wy, 18, 0x43524143U);
+                cracked = cracked || (fracture.edge < 0.45f &&
+                    coldmicro.GetNoise(float(x) * 2.0f + 3171.0f, float(y) * 2.0f - 951.0f) > 0.10f);
+            }
+            if(temperature < -5.0f && shore <= width)
+            {
+                // Continuous shore-fast ice remains intact underneath the broken offshore field.
+                result.bottom = max(float(height), float(settings.sealevel - 1));
+                result.top = float(settings.sealevel);
+                result.covered = true;
+            }
+            else if(!cracked && selected < chance)
+            {
+                // Full voxels share the same sea-level top as the continuous frozen coast.
+                result.top = float(settings.sealevel);
+                result.bottom = float(settings.sealevel - 1);
+                result.covered = true;
+            }
+        }
+        if(seaicecache.numelems >= 1 << 16) seaicecache.clear();
+        seaicecache.access(key, result);
+        bottom = result.bottom;
+        top = result.top;
+        return result.covered;
     }
 
     bool worldgenerator::iceformation(int x, int y, int height, int &bottom, int &top) const
@@ -1058,14 +1126,14 @@ namespace game
                   cellx = int(floorf(float(x) / spacing)), celly = int(floorf(float(y) / spacing));
         const uint salt = ocean ? 0x71C8B249U : 0x3E9D5A17U;
         const float occurrence = treespatialunit(uint(seed), cellx, celly, salt);
-        if(occurrence > (ocean ? 0.70f : 0.52f)) return false;
+        if(occurrence > (ocean ? 0.85f : 0.52f)) return false;
 
         // Centres stay inside their cells, with enough margin for the whole footprint.
         const int margin = ocean ? 16 : 20,
                   cx = cellx * spacing + margin + int(treespatialunit(uint(seed), cellx, celly, salt ^ 0x2917U) * (spacing - 2 * margin)),
                   cy = celly * spacing + margin + int(treespatialunit(uint(seed), cellx, celly, salt ^ 0x8913U) * (spacing - 2 * margin));
         const float shape = treespatialunit(uint(seed), cellx, celly, salt ^ 0xD71FU),
-                    radius = ocean ? 5.0f + 6.0f * shape : 5.0f + 4.0f * shape,
+                    radius = ocean ? 8.0f + 7.0f * shape : 5.0f + 4.0f * shape,
                     angle = treespatialunit(uint(seed), cellx, celly, salt ^ 0xE3A9U) * 2.0f * M_PI,
                     dx = float(x - cx), dy = float(y - cy),
                     u = (dx * cosf(angle) + dy * sinf(angle)) / radius,
@@ -1082,12 +1150,14 @@ namespace game
         if(ocean)
         {
             if(center.freshwater || center.height >= settings.sealevel - 3 || climate.temperature >= 5.0f) return false;
-            const float offshore = icecoastdistance(cx, cy) - icecoastwidth(*this, cx, cy, climate.temperature),
+            const float width = icecoastwidth(*this, cx, cy, climate.temperature),
+                        offshore = icecoastdistance(cx, cy) - width,
                         outer = smoothstep(35.0f, 210.0f, offshore),
-                        chance = (0.70f - 0.65f * outer) * smoothstep(0.0f, 15.0f, offshore) *
+                        chance = (0.85f - 0.70f * outer) * smoothstep(-16.0f, 4.0f, offshore) *
                                  (1.0f - smoothstep(210.0f, 250.0f, offshore));
             if(occurrence >= chance) return false;
-            bergscale = 1.0f - 0.62f * outer;
+            // Offshore bergs survive beyond the shelf and do not collapse with its narrow onset width.
+            bergscale = 1.0f - 0.50f * outer;
             if(edge >= bergscale) return false;
         }
         else
@@ -1101,8 +1171,9 @@ namespace game
                                 worldclimate::GROUND_UNITS + max(height, base) * worldclimate::BLOCK_UNITS);
         const float temperature = environmentclimate.gettemperature(localposition),
                     cold = 1.0f - smoothstep(ocean ? -16.0f : -18.0f, ocean ? 5.0f : -8.0f, temperature),
-                    summit = ocean ? (4.0f + 9.0f * shape) * bergscale : 14.0f + 23.0f * shape,
-                    ridge = 0.85f + 0.15f * snowpatches.GetNoise(float(x) * 9.0f, float(y) * 9.0f);
+                    summit = ocean ? (6.0f + 10.0f * shape) * bergscale : 14.0f + 23.0f * shape,
+                    ridge = 0.85f + 0.15f * snowpatches.GetNoise(float(x) * (ocean ? 0.8f : 9.0f), float(y) * (ocean ? 0.8f : 9.0f));
+        if(ocean && temperature >= 5.0f) return false;
         float profile = powf(max(1.0f - edge / bergscale, 0.0f), ocean ? 0.65f : 1.05f);
         if(!ocean) loopi(3)
         {
@@ -1125,9 +1196,16 @@ namespace game
 
     bool worldgenerator::icecolumn(int x, int y, int height, int &bottom, int &top) const
     {
-        if(iceformation(x, y, height, bottom, top)) return true;
         const worldwatersample water = surface(x, y);
-        return height < settings.sealevel && !water.freshwater && coastfloe(x, y, height, bottom, top);
+        if(height < settings.sealevel && !water.freshwater)
+        {
+            float low, high;
+            if(!seaice(x, y, height, low, high)) return false;
+            bottom = int(low);
+            top = int(high);
+            return true;
+        }
+        return iceformation(x, y, height, bottom, top);
     }
 
     int worldgenerator::surfacematerial(int x, int y, int height) const
@@ -1152,6 +1230,7 @@ namespace game
 
             const float temperature = environmentclimate.gettemperature(waterpos);
 
+            // Solid shore-fast ice ends at the shelf edge; offshore slabs keep their water cracks.
             if(water.freshwater ? temperature < -2.0f ||
                (temperature < 0.0f && snowpatches.GetNoise(float(x), float(y)) > 0.0f) : coastice(x, y, temperature))
             {
@@ -1179,6 +1258,26 @@ namespace game
                         width = 0.70f * (1.0f - smoothstep(-2.0f, 3.0f, sample.temperature));
             // Let grass paths enter the cold side too, without a solid-cover discontinuity at zero degrees.
             if(sample.temperature <= -2.0f || channels < width) return WORLD_SNOWY_GRASS;
+
+            // Residual snow collects in scattered, multi-block pockets around the broad melt paths.
+            // Jittered, rotated ellipses give each spot a minimum size instead of thresholding voxel noise.
+            const int cellx = int(floorf(float(x) / 32.0f)), celly = int(floorf(float(y) / 32.0f));
+            const float proximity = 1.0f - smoothstep(0.0f, 0.35f, channels - width),
+                        chance = (0.30f + 0.45f * proximity) * (1.0f - smoothstep(1.0f, 3.0f, sample.temperature)),
+                        rim = 1.0f + 0.18f * coldmicro.GetNoise(float(x) * 3.0f + 5713.0f, float(y) * 3.0f - 2137.0f);
+            for(int cy = celly - 1; cy <= celly + 1; ++cy) for(int cx = cellx - 1; cx <= cellx + 1; ++cx)
+            {
+                if(treespatialunit(uint(seed), cx, cy, 0x534E4201U) >= chance) continue;
+                const float centerx = (cx + 0.15f + 0.70f * treespatialunit(uint(seed), cx, cy, 0x534E4202U)) * 32.0f,
+                            centery = (cy + 0.15f + 0.70f * treespatialunit(uint(seed), cx, cy, 0x534E4203U)) * 32.0f,
+                            radius = 5.0f + 7.0f * treespatialunit(uint(seed), cx, cy, 0x534E4204U),
+                            aspect = 0.70f + 0.50f * treespatialunit(uint(seed), cx, cy, 0x534E4205U),
+                            angle = 2.0f * M_PI * treespatialunit(uint(seed), cx, cy, 0x534E4206U),
+                            dx = float(x) - centerx, dy = float(y) - centery,
+                            u = (dx * cosf(angle) + dy * sinf(angle)) / radius,
+                            v = (dy * cosf(angle) - dx * sinf(angle)) / (radius * aspect);
+                if(u * u + v * v < rim) return WORLD_SNOWY_GRASS;
+            }
         }
 
         // warm climates retain the simple soil logic

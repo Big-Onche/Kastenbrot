@@ -2104,7 +2104,8 @@ static bool placeworldice(worldgencontext &ctx, cube *root, int chunkx, int chun
         {
             const int height = ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE;
             int bottom, top;
-            if(!ctx.generator.icecolumn(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, height, bottom, top)) continue;
+            if(!ctx.generator.icecolumn(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y,
+                                       height, bottom, top)) continue;
             for(int z = max(bottom, int(WORLD_MIN_HEIGHT)); z < top; ++z)
             {
                 const ivec position(x * WORLD_BLOCK_SIZE, y * WORLD_BLOCK_SIZE, WORLD_GROUND_HEIGHT + z * WORLD_BLOCK_SIZE);

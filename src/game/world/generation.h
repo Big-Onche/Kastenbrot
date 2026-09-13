@@ -70,6 +70,13 @@ namespace game
         };
         mutable hashtable<ivec, treequery> treequerycache;
         mutable hashtable<ivec, int> treeblockcache, canopyheightcache;
+        struct seaicequery
+        {
+            float bottom, top;
+            bool covered;
+            seaicequery() : bottom(0), top(0), covered(false) {}
+        };
+        mutable hashtable<ivec, seaicequery> seaicecache;
         mutable hashtable<ivec, float> icecoastcache;
         mutable worldhydrology *hydrology;
 
@@ -113,7 +120,7 @@ namespace game
         float icecoastdistance(int x, int y) const;
         bool iceformation(int x, int y, int height, int &bottom, int &top) const;
         bool coastice(int x, int y, float temperature, float margin = 0.0f) const;
-        bool coastfloe(int x, int y, int height, int &bottom, int &top) const;
+        bool seaice(int x, int y, int height, float &bottom, float &top) const;
         // Solid ice interval in absolute terrain blocks; top is exclusive.
         bool icecolumn(int x, int y, int height, int &bottom, int &top) const;
     };
