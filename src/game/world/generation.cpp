@@ -81,6 +81,7 @@ struct worldgencontext
     int watermap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar biomemap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar materialmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
+    bool snowbeachmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar sandstonedepthmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar beachmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
     uchar cliffmap[WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS];
@@ -335,6 +336,10 @@ static bool generateworldheightmap(worldgencontext &ctx, int chunkx, int chunky)
 
                 const float strata = ctx.generator.rockiness.GetNoise(float(chunkx * WORLD_CHUNK_BLOCKS + x), float(chunky * WORLD_CHUNK_BLOCKS + y));
                 ctx.sandstonedepthmap[index] = clamp(int(floorf(3.5f + 2.0f * strata)), 2, 4);
+                const vec beachposition(float(chunkx * WORLD_CHUNK_BLOCKS + x) * WORLD_BLOCK_SIZE,
+                                         float(chunky * WORLD_CHUNK_BLOCKS + y) * WORLD_BLOCK_SIZE,
+                                         float(WORLD_GROUND_HEIGHT + ctx.heightmap[index]));
+                ctx.snowbeachmap[index] = ctx.generator.environmentclimate.gettemperature(beachposition) < -5.0f;
                 ctx.materialmap[index] = ctx.generator.surfacematerial(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, ctx.heightmap[index] / WORLD_BLOCK_SIZE);
                 ctx.cliffmap[index] = (ctx.reliefcliffmap[index] ? WORLD_CLIFF_ROCK : 0) | generateworldcliff(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
                 ctx.rockmap[index] = generateworldrock(ctx, chunkx, chunky, x, y, ctx.heightmap[index]);
@@ -475,7 +480,7 @@ static const char *coldsurfacename(int material)
     }
 }
 
-static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock, int waterheight = INT_MIN, int sandstonedepth = 3)
+static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int height, int biome, bool beachprofile, int cliff, bool rock, int waterheight = INT_MIN, int sandstonedepth = 3, bool snowbeach = false)
 {
     const int surface = WORLD_GROUND_HEIGHT + height,
               watertop = WORLD_GROUND_HEIGHT + (waterheight == INT_MIN ? ctx.settings.sealevel * WORLD_BLOCK_SIZE : waterheight),
@@ -501,6 +506,11 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
 
     if(sandy)
     {
+        if(beach && snowbeach && surface >= watertop)
+        {
+            if(z >= grassbottom && z + size <= surface) return ctx.cubetype("snow");
+            if(z < surface && z + size > grassbottom) return WORLD_TERRAIN_MIXED;
+        }
         // Keep the existing sand thickness and insert sandstone between it and the underlying geology.
         const int sandbottom = cliff & WORLD_CLIFF_COAST ? grassbottom : dirtbottom,
                   stonebottom = sandbottom - clamp(sandstonedepth, 2, 4) * WORLD_BLOCK_SIZE;
@@ -644,7 +654,8 @@ static int worldcubetype(const worldgencontext &ctx, const ivec &o, int size)
     for(int x = o.x; x < o.x + size; x += WORLD_BLOCK_SIZE)
     {
         int columntype = worldcolumncubetype(ctx, o.z, size, worldheight(ctx, x, y), worldmaterial(ctx, x, y), worldbeach(ctx, x, y), worldcliff(ctx, x, y),
-                                             worldrock(ctx, x, y), worldwaterheight(ctx, x, y), ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
+                                             worldrock(ctx, x, y), worldwaterheight(ctx, x, y), ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE],
+                                         ctx.snowbeachmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
 
         if(columntype == WORLD_TERRAIN_MIXED || (type != WORLD_TERRAIN_UNSET && type != columntype)) return WORLD_TERRAIN_MIXED;
         type = columntype;
@@ -671,7 +682,8 @@ static int worldrepresentativecubetype(const worldgencontext &ctx, const ivec &o
     if(visibletop > o.z && visibletop <= o.z + size) z = clamp(visibletop - 1, 0, WORLD_MAP_SIZE - 1);
 
     const int type = worldcolumncubetype(ctx, z, 1, height, biome, worldbeach(ctx, x, y), worldcliff(ctx, x, y), worldrock(ctx, x, y),
-                                         worldwaterheight(ctx, x, y), ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
+                                         worldwaterheight(ctx, x, y), ctx.sandstonedepthmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE],
+                                         ctx.snowbeachmap[y / WORLD_BLOCK_SIZE * WORLD_CHUNK_BLOCKS + x / WORLD_BLOCK_SIZE]);
 
     return type == ctx.geologymaterials[0] ? worldgeologicalcubetype(ctx, ivec(x, y, z), 1) : type;
 }
@@ -2711,6 +2723,10 @@ namespace game
         else if(biome == WORLD_BIOME_OCEAN) surface.material = WORLD_SURFACE_DIRT;
         else if(biome == WORLD_BIOME_SNOW) surface.material = WORLD_SURFACE_SNOW;
         else surface.material = WORLD_SURFACE_GRASS;
+        if(beach && !surface.water && surface.material == WORLD_SURFACE_SAND &&
+           generation->generator.environmentclimate.gettemperature(vec(float(blockx) * WORLD_BLOCK_SIZE,
+               float(blocky) * WORLD_BLOCK_SIZE, float(WORLD_GROUND_HEIGHT + height * WORLD_BLOCK_SIZE))) < -5.0f)
+            surface.material = WORLD_SURFACE_SNOW;
         if(cliff && !cliffface && !rock) surface.material |= WORLD_SURFACE_STONE_BASE;
         if(hydro.freshwater) surface.material = WORLD_SURFACE_DIRT;
         if(!cliffface && !(beach && !cliff)) switch(biome)
