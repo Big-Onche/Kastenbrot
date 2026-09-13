@@ -147,9 +147,14 @@ static ullong worldmeshepoch = 1;
 static ullong worldmeshrequest = 0;
 static ullong worldmeshgeneration = 1;
 static worldmeshjob *worldmeshactive = NULL;
+static ullong worldmeshcachedbytes = 0, worldmeshgarbagebytes = 0;
+static Uint64 worldmeshlastpublish = 0;
+static vector<ivec> worldmeshcompactqueue;
+static int worldmeshcompactcursor = 0;
 
-// Keep the traditional renderer available while validating the migration.
-VARF(worldmeshpackets, 0, 0, 1, allchanged());
+// Keep the traditional renderer available while validating the migration, but
+// preserve the selected renderer across launches like other graphics settings
+VARFP(worldmeshpackets, 0, 1, 1, allchanged());
 
 static bool worldmeshfaceorder(const worldmeshface &a, const worldmeshface &b)
 {
@@ -525,6 +530,11 @@ static int worldmeshworker(void *)
 
 static void releaseworldmeshsection(worldmeshsection &section)
 {
+    const ullong bytes = ullong(section.rendervertices.length()) * sizeof(vertex) + ullong(section.renderindices.length()) * sizeof(uint);
+    worldmeshcachedbytes -= bytes;
+    worldmeshgarbagebytes += bytes;
+    section.rendervertices.setsize(0);
+    section.renderindices.setsize(0);
     releasewaterresource(section.water);
     if(section.vertices.buffer) destroyvbo(section.vertices.buffer);
     if(section.indices.buffer) destroyvbo(section.indices.buffer);
@@ -552,7 +562,64 @@ void clearworldmeshpackets()
     loopv(worldmeshsections) { releaseworldmeshsection(*worldmeshsections[i]); delete worldmeshsections[i]; }
     worldmeshsections.setsize(0);
     worldmeshowners.clear();
+    closeworldmeshterrainpages();
+    worldmeshcachedbytes = worldmeshgarbagebytes = 0;
+    worldmeshlastpublish = 0;
+    worldmeshcompactqueue.setsize(0);
+    worldmeshcompactcursor = 0;
     worldmeshstop = false;
+}
+
+static void compactworldmeshpages(Uint64 start, double budget, int uploadlimit, int &uploaded, bool idle)
+{
+    if(worldmeshcompactqueue.empty())
+    {
+        // Initial border rebuilds leave dead allocations behind. Wait for mesh
+        // work to settle, then relocate published bytes instead of remeshing.
+        if(!idle || worldmeshgarbagebytes < max(worldmeshcachedbytes / 2, ullong(1 << 20)) ||
+           SDL_GetPerformanceCounter() - worldmeshlastpublish < SDL_GetPerformanceFrequency() / 4) return;
+        loopv(worldmeshsections) if(!worldmeshsections[i]->renderindices.empty()) worldmeshcompactqueue.add(worldmeshsections[i]->origin);
+        if(worldmeshcompactqueue.empty()) return;
+        worldmeshcompactqueue.sort([](const ivec &a, const ivec &b)
+        {
+            return a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z < b.z;
+        });
+        closeworldmeshterrainpages();
+        worldmeshgarbagebytes = 0;
+        worldmeshcompactcursor = 0;
+    }
+    ZoneScopedN("WorldMesh/Compact GPU pages");
+    while(worldmeshcompactcursor < worldmeshcompactqueue.length())
+    {
+        if(uploaded >= uploadlimit ||
+           (budget >= 0 && (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency() >= budget)) break;
+        // Owners can disappear while a multi-frame compaction is in progress.
+        worldmeshsection **owner = worldmeshowners.access(worldmeshcompactqueue[worldmeshcompactcursor]);
+        if(!owner || (*owner)->dirty || (*owner)->pending || (*owner)->renderindices.empty())
+        {
+            ++worldmeshcompactcursor;
+            continue;
+        }
+        worldmeshsection &section = **owner;
+        const int bytes = section.rendervertices.length() * sizeof(vertex) + section.renderindices.length() * sizeof(uint);
+        if(uploaded && bytes > uploadlimit - uploaded) break;
+        worldmeshrange vertices, indices;
+        uploadworldmeshterrain(vertices, indices, section.rendervertices, section.renderindices);
+        // Publish only after both uploads; retire old buffers through the pool's
+        // existing reference counts and fences. Water and material data stay put.
+        if(section.vertices.buffer) destroyvbo(section.vertices.buffer);
+        if(section.indices.buffer) destroyvbo(section.indices.buffer);
+        section.vertices = vertices;
+        section.indices = indices;
+        ++worldmeshgeneration;
+        uploaded += bytes;
+        ++worldmeshcompactcursor;
+    }
+    if(worldmeshcompactcursor == worldmeshcompactqueue.length())
+    {
+        worldmeshcompactqueue.setsize(0);
+        worldmeshcompactcursor = 0;
+    }
 }
 
 void discardworldmeshsection(const ivec &origin)
@@ -674,17 +741,15 @@ int processworldmeshpackets(double budget, int uploadlimit)
                     }
                 }
                 worldmeshrange vertices, indices;
-                uploadworldmesh(vertices, GL_ARRAY_BUFFER, job->packet.vertices.getbuf(),
-                                job->packet.vertices.length() * sizeof(vertex), sizeof(vertex));
-                // Shared-page indices make ordinary OpenGL 2.0 multi-draw possible:
-                // every draw uses the page's vertex origin, not a section pointer offset.
-                ASSERT(vertices.offset % sizeof(vertex) == 0);
-                const uint basevertex = vertices.offset / sizeof(vertex);
-                loopv(job->packet.indices) job->packet.indices[i] += basevertex;
-                uploadworldmesh(indices, GL_ELEMENT_ARRAY_BUFFER, job->packet.indices.getbuf(), job->packet.indices.length() * sizeof(uint));
+                uploadworldmeshterrain(vertices, indices, job->packet.vertices, job->packet.indices);
                 releaseworldmeshsection(section);
                 section.vertices = vertices;
                 section.indices = indices;
+                section.rendervertices.move(job->packet.vertices);
+                section.renderindices.move(job->packet.indices);
+                worldmeshcachedbytes += ullong(section.rendervertices.length()) * sizeof(vertex) +
+                                        ullong(section.renderindices.length()) * sizeof(uint);
+                worldmeshlastpublish = SDL_GetPerformanceCounter();
                 section.ranges.setsize(0);
                 section.ranges.move(job->packet.ranges);
                 section.materials.setsize(0);
@@ -728,6 +793,16 @@ int processworldmeshpackets(double budget, int uploadlimit)
         SDL_UnlockMutex(worldmeshmutex);
         ++outstanding;
     }
+    bool idle = outstanding == 0;
+    if(idle) loopv(worldmeshsections) if(worldmeshsections[i]->dirty && worldsectionvaenabled(worldmeshsections[i]->origin, WORLD_SECTION_SIZE))
+    {
+        idle = false;
+        break;
+    }
+    compactworldmeshpages(start, budget, uploadlimit, uploaded, idle);
+    TracyPlot("WorldMesh/CPU mesh cache bytes", int64_t(worldmeshcachedbytes));
+    TracyPlot("WorldMesh/Retired mesh bytes since compaction", int64_t(worldmeshgarbagebytes));
+    TracyPlot("WorldMesh/Compaction sections pending", int64_t(worldmeshcompactqueue.length() - worldmeshcompactcursor));
     return completed;
 }
 

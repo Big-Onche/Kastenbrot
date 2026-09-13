@@ -76,11 +76,15 @@ static void prepareworldmeshcommands()
     worldmeshopaquecommands.setsize(0);
     worldmeshalphacommands.setsize(0);
     worldmeshdepthcommands.setsize(0);
+    hashset<GLuint> vertexpages, indexpages;
+    int numvertexpages = 0, numindexpages = 0;
     const vector<worldmeshsection *> &sections = getworldmeshsections();
     loopv(sections)
     {
         const worldmeshsection &section = *sections[i];
         if(!section.published || !section.vertices.buffer || !section.indices.buffer) continue;
+        if(!vertexpages.access(section.vertices.buffer)) { vertexpages.add(section.vertices.buffer); ++numvertexpages; }
+        if(!indexpages.access(section.indices.buffer)) { indexpages.add(section.indices.buffer); ++numindexpages; }
         const int sectionindex = worldmeshcommandsections.length();
         worldmeshcommandsections.add(sections[i]);
         loopvj(section.ranges)
@@ -112,6 +116,8 @@ static void prepareworldmeshcommands()
     worldmeshdrawcounts.reserve(capacity);
     worldmeshdrawstarts.reserve(capacity);
     worldmeshcommandgeneration = generation;
+    TracyPlot("WorldMesh/Terrain vertex pages", int64_t(numvertexpages));
+    TracyPlot("WorldMesh/Terrain index pages", int64_t(numindexpages));
 }
 
 enum
@@ -136,6 +142,7 @@ void beginworldmeshdrawstats()
 void endworldmeshdrawstats()
 {
 #ifdef TRACY_ENABLE
+    TracyPlot("WorldMesh/Enabled", int64_t(worldmeshpackets));
     ullong draws = 0;
     loopi(WORLDMESH_PASSES) draws += worldmeshstats.draws[i];
     TracyPlot("WorldMesh/Visible sections", int64_t(worldmeshstats.sections));

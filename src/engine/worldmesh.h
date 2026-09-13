@@ -61,6 +61,10 @@ struct worldmeshsection
 {
     ivec origin, minimum, maximum;
     worldmeshrange vertices, indices;
+    // Published CPU data allows budgeted GPU compaction without rebuilding the
+    // octree mesh. Indices remain section-relative; GPU uploads rebase a copy.
+    vector<vertex> rendervertices;
+    vector<uint> renderindices;
     vector<worldmeshdrawrange> ranges;
     vector<materialsurface> materials;
     ullong revision, published;

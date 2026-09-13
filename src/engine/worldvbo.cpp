@@ -50,8 +50,9 @@ static PFNGLFENCESYNCPROC worldfencesync = NULL;
 static PFNGLCLIENTWAITSYNCPROC worldclientwaitsync = NULL;
 static PFNGLDELETESYNCPROC worlddeletesync = NULL;
 static bool worldsyncinitialized = false;
-static GLuint worldmeshpages[2] = { 0, 0 };
-static int worldmeshused[2] = { 0, 0 };
+// Water attributes and terrain must not split each other's material batches.
+static GLuint worldmeshpages[4] = { 0, 0, 0, 0 };
+static int worldmeshused[4] = { 0, 0, 0, 0 };
 VARP(chunkvbocachemb, 0, 32, 256);
 
 static bool initworldvbosync()
@@ -80,7 +81,7 @@ static void discardretiredworldvbo(int index)
 
 void cleanupstreamingvbos()
 {
-    loopi(2)
+    loopi(4)
     {
         if(worldmeshpages[i]) destroyvbo(worldmeshpages[i]);
         worldmeshpages[i] = 0;
@@ -159,12 +160,12 @@ void destroyvbo(GLuint vbo)
 
 // Byte-addressed ranges for section attachments. Use the world's reference counting,
 // page ownership and fence retirement; published mesh ranges are never overwritten.
-void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes, int alignment)
+static void uploadworldmeshpool(worldmeshrange &range, GLenum target, const void *data, int bytes, int alignment, int pool)
 {
     if(range.buffer) destroyvbo(range.buffer);
     range = worldmeshrange();
     if(!bytes) return;
-    const int stream = target == GL_ARRAY_BUFFER ? 0 : 1, type = NUMVBO + stream;
+    const int stream = pool * 2 + (target == GL_ARRAY_BUFFER ? 0 : 1), type = NUMVBO + stream;
     const int capacity = max(1 << 20, (bytes + 4095) & ~4095);
     ASSERT(alignment > 0);
     int offset = ((worldmeshused[stream] + alignment - 1) / alignment) * alignment;
@@ -198,6 +199,47 @@ void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int
     glBindBuffer_(target, 0);
     worldmeshused[stream] = offset + bytes;
     worldvauploadbytes += bytes;
+}
+
+void uploadworldmesh(worldmeshrange &range, GLenum target, const void *data, int bytes, int alignment)
+{
+    uploadworldmeshpool(range, target, data, bytes, alignment, 0);
+}
+
+static void closeworldmeshterrainpages()
+{
+    loopi(2)
+    {
+        const int stream = 2 + i;
+        if(worldmeshpages[stream]) destroyvbo(worldmeshpages[stream]);
+        worldmeshpages[stream] = 0;
+        worldmeshused[stream] = 0;
+    }
+}
+
+static void uploadworldmeshterrain(worldmeshrange &vertices, worldmeshrange &indices,
+                                   const vector<vertex> &vertexdata, const vector<uint> &indexdata)
+{
+    const int bytes[2] = { vertexdata.length() * int(sizeof(vertex)), indexdata.length() * int(sizeof(uint)) };
+    // Rotate both terrain streams together so one VBO does not acquire several
+    // different EBO partners as independently sized pages fill up.
+    loopi(2)
+    {
+        const int stream = 2 + i, alignment = i ? 16 : sizeof(vertex),
+                  offset = (worldmeshused[stream] + alignment - 1) / alignment * alignment;
+        if(worldmeshpages[stream] && offset + bytes[i] > vbos[worldmeshpages[stream]].capacity)
+        {
+            closeworldmeshterrainpages();
+            break;
+        }
+    }
+    uploadworldmeshpool(vertices, GL_ARRAY_BUFFER, vertexdata.getbuf(), bytes[0], sizeof(vertex), 1);
+    ASSERT(vertices.offset % sizeof(vertex) == 0);
+    const uint base = vertices.offset / sizeof(vertex);
+    vector<uint> rebased;
+    rebased.reserve(indexdata.length());
+    loopv(indexdata) rebased.add(indexdata[i] + base);
+    uploadworldmeshpool(indices, GL_ELEMENT_ARRAY_BUFFER, rebased.getbuf(), bytes[1], 16, 1);
 }
 
 static void releaseworldvbopage()
