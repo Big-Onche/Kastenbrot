@@ -20,7 +20,7 @@ enum worldsurfacematerial
     WORLD_SURFACE_SAND,
     WORLD_SURFACE_SNOW,
     WORLD_SURFACE_DIRT,
-    WORLD_SURFACE_FROZEN_GRASS,
+    WORLD_SURFACE_SNOWY_GRASS,
     WORLD_SURFACE_FROZEN_DIRT,
     WORLD_SURFACE_FROZEN_MOSS,
     WORLD_SURFACE_FROZEN_GRAVEL,
@@ -61,7 +61,15 @@ namespace game
         worldsettings settings;
         int seed;
         float foldcos, foldsin;
-        mutable hashtable<ivec, int> treeblockcache;
+        struct treequery
+        {
+            int base, height;
+            uint shape;
+            bool pine, valid;
+            treequery() : base(0), height(0), shape(0), pine(false), valid(false) {}
+        };
+        mutable hashtable<ivec, treequery> treequerycache;
+        mutable hashtable<ivec, int> treeblockcache, canopyheightcache;
         mutable hashtable<ivec, float> icecoastcache;
         mutable worldhydrology *hydrology;
 
@@ -99,6 +107,8 @@ namespace game
         bool rock(int x, int y, int height) const;
         bool tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const;
         int treeblock(int x, int y, int z) const;
+        int treecanopyheight(int x, int y) const;
+        int treegroundmaterial(int x, int y, int height, int material) const;
         float treedensity(int x, int y, int height) const;
         float icecoastdistance(int x, int y) const;
         bool iceformation(int x, int y, int height, int &bottom, int &top) const;
@@ -118,6 +128,7 @@ namespace game
                                  bool generated = true);
     extern bool sampleterrainheight(worldgencontext *generation, int blockx, int blocky, int &height);
     extern bool sampleterrainsurface(worldgencontext *generation, int blockx, int blocky, worldsurfacesample &surface);
+    extern bool sampleworldsnow(worldgencontext *generation, int blockx, int blocky);
     extern bool sampleworldtree(worldgencontext *generation, int blockx, int blocky, int &base, int &height, uint &shape, bool &pine);
     extern cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized, worldsectionrenderdata *renderdata = NULL);
     extern void generateworldscatter(worldgencontext *generation, cube *root, int chunkx, int chunky, vector<worldscatterinstance> &scatter);

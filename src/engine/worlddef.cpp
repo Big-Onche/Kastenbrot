@@ -1196,6 +1196,15 @@ static bool buildworldpersistentindexes()
             else indexes.access(worldpersistentkey(definition.persistentid), i);
         }
     }
+    // Migrate saved terrain and inventory stacks from the renamed block.
+    worlddefinition *snowygrass = findworldcube("snowy_grass");
+    if(snowygrass)
+    {
+        const worldpersistentkey legacy(worldpersistentid("frozen_grass"));
+        const int cubeindex = worldcubedefinitions.find(snowygrass), itemindex = inventoryitemdefinitions.find(snowygrass);
+        if(cubeindex >= 0) worldcubepersistentindexes.access(legacy, cubeindex);
+        if(itemindex >= 0) inventoryitempersistentindexes.access(legacy, itemindex);
+    }
     return valid;
 }
 

@@ -36,7 +36,7 @@ enum
 
 enum
 {
-    WORLDGEN_VERSION = 8
+    WORLDGEN_VERSION = 10
 };
 
 enum

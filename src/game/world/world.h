@@ -43,7 +43,7 @@ namespace game
     // Surface codes are independent of ecosystem IDs; old biome-valued soil codes remain compatible.
     enum coldmaterial
     {
-        WORLD_FROZEN_GRASS = WORLD_BIOME_COUNT, WORLD_FROZEN_DIRT, WORLD_FROZEN_MOSS, WORLD_FROZEN_GRAVEL,
+        WORLD_SNOWY_GRASS = WORLD_BIOME_COUNT, WORLD_FROZEN_DIRT, WORLD_FROZEN_MOSS, WORLD_FROZEN_GRAVEL,
         WORLD_COLD_ROCK, WORLD_SNOW_CRUST, WORLD_DEEP_SNOW, WORLD_ICE, WORLD_FROZEN_WATER, WORLD_MOSS
     };
 

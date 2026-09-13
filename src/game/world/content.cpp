@@ -499,12 +499,13 @@ VARFP(leavesalpha, 0, 1, 1, updateleavesalpha());
 static bool isworldleaftexture(const cube &c)
 {
     if(c.children || isempty(c)) return false;
-    const int texture = c.texture[0];
-    worlddefinition *leaves = findworldcube("leaves"), *needles = findworldcube("needles");
-    const bool foliage = (leaves && texture == leaves->slot) || (needles && texture == needles->slot);
-    if(!foliage) return false;
-    loopi(6) if(c.texture[i] != texture) return false;
-    return true;
+    static const char * const ids[] = { "leaves", "needles", "snowy_leaves", "snowy_needles" };
+    loopi(4)
+    {
+        const worlddefinition *type = findworldcube(ids[i]);
+        if(type && c.texture[O_TOP] == type->slot && c.texture[0] == type->sideslot) return true;
+    }
+    return false;
 }
 
 bool isworldleafcube(const cube &c)
@@ -880,7 +881,8 @@ static bool loadworlddefinitions(bool assets = true)
         if(i == worlderrorcube) continue;
         worlddefinition &type = *worldcubedefinitions[i];
         type.errorfallback = false;
-        const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles");
+        const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles") ||
+                           !cubecasecmp(type.id, "snowy_leaves") || !cubecasecmp(type.id, "snowy_needles");
         if(canloadworldtexture(type.cubetexture)) type.slot = loadworldtextureslot(type.cubetexture, type.texsize, alpha);
         else
         {
@@ -927,7 +929,8 @@ static bool loadworlddefinitions(bool assets = true)
         }
         else if(type.bottom[0])
         {
-            const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles");
+            const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles") ||
+                           !cubecasecmp(type.id, "snowy_leaves") || !cubecasecmp(type.id, "snowy_needles");
             if(canloadworldtexture(type.bottom))
             {
                 type.bottomslot = loadworldtextureslot(type.bottom, type.texsize, alpha);

@@ -904,7 +904,7 @@ namespace game
                                        detail * 0.08f, 0.0f, 1.0f);
         c.snowscore = clamp(c.severity * 0.24f + c.basin * 0.16f + altitude * 0.08f + snowregion * 0.46f +
                             c.snow * 0.16f - c.slope * 0.25f - c.exposure * 0.10f, 0.0f, 1.0f);
-        c.material = WORLD_FROZEN_GRASS;
+        c.material = WORLD_SNOWY_GRASS;
         if(c.dirtscore > c.grassscore && patch > 0.55f) c.material = WORLD_FROZEN_DIRT;
         if(c.mossscore > c.grassscore && c.wetness > 0.42f && c.slope < 0.40f)
         {
@@ -1161,99 +1161,24 @@ namespace game
             return WORLD_BIOME_OCEAN;
         }
 
-        const bool coldbiome =
-            sample.primary == WORLD_BIOME_TAIGA ||
-            sample.primary == WORLD_BIOME_TUNDRA ||
-            sample.primary == WORLD_BIOME_SNOW_DESERT;
-
-        if(coldbiome)
+        // Snow cover follows temperature in every biome, with coherent wind-shaped melt edges.
+        if(sample.temperature < -4.0f) return WORLD_BIOME_SNOW;
+        if(sample.temperature < 3.0f)
         {
-            const ColdSample cold = samplecold(x, y, height, sample);
-
-            if(cold.slope > 0.80f) return WORLD_COLD_ROCK; // True exposed steep terrain remains rock regardless of biome.
-
-            // Broad field defines coherent patches
-            // Detail only perturbs their borders instead of producing visual TV static
-            const float broad = coldroll.GetNoise(float(x) + 3171.0f, float(y) - 951.0f),
+            const float broad = snowpatches.GetNoise(float(x), float(y)),
                         detail = coldmicro.GetNoise(float(x) + 731.0f, float(y) + 1913.0f),
-                        groundpattern = clamp(0.5f + broad * 0.35f +detail * 0.15f, 0.0f, 1.0f);
-
-            switch(sample.primary)
-            {
-                case WORLD_BIOME_TAIGA:
-                {
-                    // Taiga:
-                    // mostly living grass around +5°C, progressively frozen towards 0°C, with sparse snow, dirt and moss patches
-                    if(cold.snowscore > 0.74f) return WORLD_SNOW_CRUST;
-
-                    // gravel only on genuinely exposed terrain.
-                    if(cold.slope > 0.55f && cold.exposure > 0.68f && groundpattern > 0.82f)
-                        return WORLD_FROZEN_GRAVEL;
-
-                    // damp low spots
-                    if(cold.wetness > 0.68f && cold.slope < 0.35f && groundpattern < 0.30f)
-                        return sample.temperature > 0.5f ? WORLD_MOSS : WORLD_FROZEN_MOSS;
-
-                    // frozen dirt remain an accent
-                    if(groundpattern > 0.84f) return WORLD_FROZEN_DIRT;
-
-                    // gradually freeze the grass when approaching 0°C
-                    const float frost = 1.0f - smoothstep(0.5f, 4.0f, sample.temperature),
-                                frostselector = clamp(0.5f + detail * 0.5f, 0.0f, 1.0f);
-
-                    if(frostselector < frost) return WORLD_FROZEN_GRASS;
-
-                    return WORLD_BIOME_PLAINS; // normal grass will still receive the climate colour tint
-                }
-
-                case WORLD_BIOME_TUNDRA:
-                {
-                    // Tundra:
-                    // frozen vegetation dominates, snow becomes increasingly common
-
-                    if(cold.snowscore > 0.60f) return WORLD_SNOW_CRUST;
-
-                    if(cold.slope > 0.60f && cold.exposure > 0.70f && groundpattern > 0.78f)
-                        return WORLD_FROZEN_GRAVEL;
-
-                    if(cold.wetness > 0.62f && cold.slope < 0.40f && groundpattern < 0.32f)
-                        return WORLD_FROZEN_MOSS;
-
-                    if(groundpattern > 0.74f) return WORLD_FROZEN_DIRT;
-
-                    return WORLD_FROZEN_GRASS;
-                }
-
-                case WORLD_BIOME_SNOW_DESERT:
-                {
-                    // Snow desert:
-                    // white is the default, rock / gravel / ice only appear where wind or slope realistically strips the snow away
-
-                    const float windscour = cold.exposure * 0.52f + groundpattern * 0.30f + cold.slope * 0.18f;
-
-                    if(cold.slope > 0.80f) return WORLD_COLD_ROCK;
-
-                    if(windscour > 0.88f)
-                    {
-                        if(cold.slope > 0.48f) return WORLD_COLD_ROCK;
-
-                        // Occasional windswept icy shelves
-                        if(groundpattern < 0.32f) return WORLD_ICE;
-
-                        return WORLD_FROZEN_GRAVEL;
-                    }
-
-                    // deep accumulation in sheltered / depositional terrain
-                    if(cold.deposition > 0.68f && cold.snowscore > 0.56f)
-                        return WORLD_DEEP_SNOW;
-
-                    // IMPORTANT: the normal polar surface is snow, not frozen dirt
-                    return WORLD_SNOW_CRUST;
-                }
-
-                default:
-                    break;
-            }
+                        drift = broad * 0.85f + detail * 0.15f,
+                        warmth = clamp((sample.temperature + 4.0f) / 6.0f, 0.0f, 1.0f);
+            // Raising the threshold continuously makes warm snowdrifts progressively rarer.
+            if(sample.temperature <= 2.0f && drift > -0.03f + 0.56f * warmth) return WORLD_BIOME_SNOW;
+            // Warp a broad channel field: snow fingers and grass clearings share winding boundaries.
+            // The shortest noise wavelength is about 74 blocks, never individual-voxel speckle.
+            const float warpx = float(x) + 80.0f * coldroll.GetNoise(float(x) + 3171.0f, float(y) - 951.0f),
+                        warpy = float(y) + 80.0f * coldroll.GetNoise(float(x) - 1921.0f, float(y) + 7813.0f),
+                        channels = fabsf(coldmicro.GetNoise(warpx * 1.25f, warpy * 1.25f)),
+                        width = 0.70f * (1.0f - smoothstep(-2.0f, 3.0f, sample.temperature));
+            // Let grass paths enter the cold side too, without a solid-cover discontinuity at zero degrees.
+            if(sample.temperature <= -2.0f || channels < width) return WORLD_SNOWY_GRASS;
         }
 
         // warm climates retain the simple soil logic
@@ -1380,8 +1305,8 @@ namespace game
 
         if(height < generator.surface(x, y).water) return false;
 
-        const bool growable = biome == WORLD_BIOME_PLAINS || biome == WORLD_MOSS || biome == WORLD_FROZEN_GRASS ||
-                              biome == WORLD_FROZEN_DIRT || biome == WORLD_FROZEN_MOSS;
+        const bool growable = biome == WORLD_BIOME_PLAINS || biome == WORLD_MOSS || biome == WORLD_SNOWY_GRASS ||
+                              biome == WORLD_FROZEN_DIRT || biome == WORLD_FROZEN_MOSS || biome == WORLD_BIOME_SNOW;
 
         if(!growable) return false;
 
@@ -1444,12 +1369,28 @@ namespace game
 
     bool worldgenerator::tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const
     {
-        queriedworldtree tree;
-        if(!queryworldtree(*this, x, y, tree)) return false;
-        base = tree.base;
-        height = tree.height;
-        shape = tree.shape;
-        pine = tree.pine;
+        const ivec key(x, y, 0);
+        treequery *cached = treequerycache.access(key);
+        if(!cached)
+        {
+            if(treequerycache.numelems >= 1 << 16) treequerycache.clear();
+            treequery result;
+            queriedworldtree tree;
+            result.valid = queryworldtree(*this, x, y, tree);
+            if(result.valid)
+            {
+                result.base = tree.base;
+                result.height = tree.height;
+                result.shape = tree.shape;
+                result.pine = tree.pine;
+            }
+            cached = &treequerycache.access(key, result);
+        }
+        if(!cached->valid) return false;
+        base = cached->base;
+        height = cached->height;
+        shape = cached->shape;
+        pine = cached->pine;
         return true;
     }
 
@@ -1470,6 +1411,41 @@ namespace game
         if(level < 2 || level >= tree.height) return false;
         const int radius = min(3, 1 + (tree.height - level) / 3);
         return dx <= radius && dy <= radius && dx + dy <= radius + 1;
+    }
+
+    int worldgenerator::treecanopyheight(int x, int y) const
+    {
+        const ivec key(x, y, 0);
+        if(int *cached = canopyheightcache.access(key)) return *cached;
+        int top = -1;
+        for(int ty = y - 3; ty <= y + 3; ++ty) for(int tx = x - 3; tx <= x + 3; ++tx)
+        {
+            queriedworldtree tree;
+            tree.x = tx;
+            tree.y = ty;
+            if(!this->tree(tx, ty, tree.base, tree.height, tree.shape, tree.pine)) continue;
+            for(int z = tree.base + tree.height; z >= tree.base + 2 && z > top; --z)
+                if(tree.pine ? pineworldtreeneedle(tree, x, y, z) : regularworldtreeleaf(tree, x, y, z))
+                {
+                    top = z;
+                    break;
+                }
+        }
+        if(canopyheightcache.numelems >= 1 << 16) canopyheightcache.clear();
+        canopyheightcache.access(key, top);
+        return top;
+    }
+
+    int worldgenerator::treegroundmaterial(int x, int y, int height, int material) const
+    {
+        if(material != WORLD_SNOWY_GRASS && material != WORLD_BIOME_SNOW) return material;
+        const int ground = int(worldclimate::GROUND_UNITS / worldclimate::BLOCK_UNITS) + height - 1;
+        if(treecanopyheight(x, y) <= ground) return material;
+        const bool edge = treecanopyheight(x - 1, y) <= ground || treecanopyheight(x + 1, y) <= ground ||
+                          treecanopyheight(x, y - 1) <= ground || treecanopyheight(x, y + 1) <= ground;
+        // Absolute coordinates keep the same 33% edge decisions across chunks and LOD tiers.
+        if(edge && treespatialunit(uint(seed), x, y, 0x534E4F57U) < 0.33f) return material;
+        return WORLD_BIOME_PLAINS;
     }
 
     int worldgenerator::treeblock(int x, int y, int z) const

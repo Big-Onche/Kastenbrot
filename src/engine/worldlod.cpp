@@ -35,7 +35,7 @@ enum
     WORLD_LOD_LEAVES,
     WORLD_LOD_NEEDLES,
     WORLD_LOD_WATER,
-    WORLD_LOD_FROZEN_GRASS,
+    WORLD_LOD_SNOWY_GRASS,
     WORLD_LOD_FROZEN_DIRT,
     WORLD_LOD_FROZEN_MOSS,
     WORLD_LOD_FROZEN_GRAVEL,
@@ -43,10 +43,14 @@ enum
     WORLD_LOD_DEEP_SNOW,
     WORLD_LOD_ICE,
     WORLD_LOD_MOSS,
+    WORLD_LOD_SNOWY_LEAVES,
+    WORLD_LOD_SNOWY_NEEDLES,
     WORLD_LOD_MATERIALS
 };
 
-static_assert(WORLD_LOD_FROZEN_GRASS == 13 && WORLD_LOD_DEEP_SNOW == 18 && WORLD_LOD_ICE == 19 && WORLD_LOD_MOSS == 20,"Cold texture array layers must match the worldlod shader");
+static_assert(WORLD_LOD_SNOWY_GRASS == 13 && WORLD_LOD_DEEP_SNOW == 18 && WORLD_LOD_ICE == 19 && WORLD_LOD_MOSS == 20,"Cold texture array layers must match the worldlod shader");
+
+static_assert(WORLD_LOD_SNOWY_LEAVES == 21 && WORLD_LOD_SNOWY_NEEDLES == 22, "Snowy foliage must match the worldlod shader");
 
 struct worldlodvertex
 {
@@ -166,7 +170,7 @@ static int worldlodtopmaterial(int material)
         case WORLD_SURFACE_STONE: return WORLD_LOD_STONE;
         case WORLD_SURFACE_SAND: return WORLD_LOD_SAND;
         case WORLD_SURFACE_SNOW: return WORLD_LOD_SNOW;
-        case WORLD_SURFACE_FROZEN_GRASS: return WORLD_LOD_FROZEN_GRASS;
+        case WORLD_SURFACE_SNOWY_GRASS: return WORLD_LOD_SNOWY_GRASS;
         case WORLD_SURFACE_FROZEN_DIRT: return WORLD_LOD_FROZEN_DIRT;
         case WORLD_SURFACE_FROZEN_MOSS: return WORLD_LOD_FROZEN_MOSS;
         case WORLD_SURFACE_FROZEN_GRAVEL: return WORLD_LOD_FROZEN_GRAVEL;
@@ -513,6 +517,21 @@ static bool addworldlodtrees(worldlodjob &job, worldgencontext *generation, int 
         loop(z, tree.height) setworldlodtreeblock(blocks, tree.x, tree.y, tree.base + z, WORLD_LOD_TREE_DARK_WOOD, true);
     }
 
+    int canopy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
+    bool snowy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
+    loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+    {
+        canopy[y][x] = -1;
+        snowy[y][x] = false;
+        for(int z = WORLD_HEIGHT_BLOCKS - 1; z >= 0; --z)
+            if(getworldlodtreeblock(blocks, x, y, z) != WORLD_LOD_TREE_AIR)
+            {
+                canopy[y][x] = z;
+                snowy[y][x] = game::sampleworldsnow(generation, job.key.x * WORLD_CHUNK_BLOCKS + x, job.key.y * WORLD_CHUNK_BLOCKS + y);
+                break;
+            }
+    }
+
     static const ivec normals[6] = { ivec(-1, 0, 0), ivec(1, 0, 0), ivec(0, -1, 0), ivec(0, 1, 0), ivec(0, 0, -1), ivec(0, 0, 1) };
     loop(z, WORLD_HEIGHT_BLOCKS) loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
     {
@@ -528,6 +547,8 @@ static bool addworldlodtrees(worldlodjob &job, worldgencontext *generation, int 
             else if(type == WORLD_LOD_TREE_NEEDLES) material = WORLD_LOD_NEEDLES;
             else if(type == WORLD_LOD_TREE_DARK_WOOD) material = i >= O_BOTTOM ? WORLD_LOD_DARK_WOOD_TOP : WORLD_LOD_DARK_WOOD_SIDE;
             else material = i >= O_BOTTOM ? WORLD_LOD_WOOD_TOP : WORLD_LOD_WOOD_SIDE;
+            if(!wood && i == O_TOP && z == canopy[y][x] && snowy[y][x])
+                material = type == WORLD_LOD_TREE_LEAVES ? WORLD_LOD_SNOWY_LEAVES : WORLD_LOD_SNOWY_NEEDLES;
             addworldlodtreeface(job.mesh, x, y, z, i, material);
         }
         if(wood || type == WORLD_LOD_TREE_LEAVES || type == WORLD_LOD_TREE_NEEDLES)
@@ -537,7 +558,7 @@ static bool addworldlodtrees(worldlodjob &job, worldgencontext *generation, int 
 }
 
 static void addworldlodtreebox(worldlodcpumesh &mesh, float x0, float y0, float z0, float x1, float y1, float z1, int topmaterial,
-                               int sidematerial)
+                               int sidematerial, int snowtop = -1)
 {
     if(x0 >= x1 || y0 >= y1 || z0 >= z1) return;
     addworldlodquad(mesh, vec(x0, y1, z1), vec(x0, y1, z0), vec(x0, y0, z0), vec(x0, y0, z1), vec(-1, 0, 0), sidematerial, O_LEFT);
@@ -545,7 +566,7 @@ static void addworldlodtreebox(worldlodcpumesh &mesh, float x0, float y0, float 
     addworldlodquad(mesh, vec(x1, y0, z1), vec(x0, y0, z1), vec(x0, y0, z0), vec(x1, y0, z0), vec(0, -1, 0), sidematerial, O_BACK);
     addworldlodquad(mesh, vec(x0, y1, z0), vec(x0, y1, z1), vec(x1, y1, z1), vec(x1, y1, z0), vec(0, 1, 0), sidematerial, O_FRONT);
     addworldlodquad(mesh, vec(x0, y1, z0), vec(x1, y1, z0), vec(x1, y0, z0), vec(x0, y0, z0), vec(0, 0, -1), topmaterial, O_BOTTOM);
-    addworldlodquad(mesh, vec(x0, y0, z1), vec(x1, y0, z1), vec(x1, y1, z1), vec(x0, y1, z1), vec(0, 0, 1), topmaterial, O_TOP);
+    addworldlodquad(mesh, vec(x0, y0, z1), vec(x1, y0, z1), vec(x1, y1, z1), vec(x0, y1, z1), vec(0, 0, 1), snowtop >= 0 ? snowtop : topmaterial, O_TOP);
     mesh.sidefaces += 4;
     mesh.topfaces += 2;
 }
@@ -574,7 +595,10 @@ static bool addworldlod2trees(worldlodjob &job, worldgencontext *generation, flo
                     canopyy1 = min((tree.y + radius + 1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE)),
                     canopyz0 = (tree.base + bottom) * WORLD_BLOCK_SIZE, canopyz1 = (tree.base + tree.height + 1) * WORLD_BLOCK_SIZE;
         const int foliage = tree.pine ? WORLD_LOD_NEEDLES : WORLD_LOD_LEAVES;
-        addworldlodtreebox(job.mesh, canopyx0, canopyy0, canopyz0, canopyx1, canopyy1, canopyz1, foliage, foliage);
+        const bool snowy = game::sampleworldsnow(generation, job.key.x * WORLD_CHUNK_BLOCKS + tree.x,
+                                                job.key.y * WORLD_CHUNK_BLOCKS + tree.y);
+        const int snowtop = snowy ? (tree.pine ? WORLD_LOD_SNOWY_NEEDLES : WORLD_LOD_SNOWY_LEAVES) : -1;
+        addworldlodtreebox(job.mesh, canopyx0, canopyy0, canopyz0, canopyx1, canopyy1, canopyz1, foliage, foliage, snowtop);
         maximumz = max(maximumz, canopyz1);
     }
     return !SDL_AtomicGet(&job.cancelled);
@@ -1618,7 +1642,7 @@ static GLuint worldlodtexture(const char *id, bool side = false)
 // Seven ground textures share one sampler. Build from resolved block textures so fallback and asset changes match solid geometry.
 static void bindworldlodcoldtextures()
 {
-    static const char * const ids[] = { "frozen_grass", "frozen_dirt", "frozen_moss", "frozen_gravel", "snow_crust", "deep_snow", "moss" };
+    static const char * const ids[] = { "snowy_grass", "frozen_dirt", "frozen_moss", "frozen_gravel", "snow_crust", "deep_snow", "moss" };
     GLuint sources[7];
     loopi(7) sources[i] = worldlodtexture(ids[i]);
     if(!worldlodcoldtexture || memcmp(sources, worldlodcoldsources, sizeof(sources)))

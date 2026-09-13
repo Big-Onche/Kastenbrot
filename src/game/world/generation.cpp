@@ -462,7 +462,7 @@ static const char *coldsurfacename(int material)
 {
     switch(material)
     {
-        case game::WORLD_FROZEN_GRASS: return "frozen_grass";
+        case game::WORLD_SNOWY_GRASS: return "snowy_grass";
         case game::WORLD_FROZEN_DIRT: return "frozen_dirt";
         case game::WORLD_MOSS: return "moss";
         case game::WORLD_FROZEN_MOSS: return "frozen_moss";
@@ -561,8 +561,8 @@ static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int
               type = worldcolumncubetype(ctx, surfacez, WORLD_BLOCK_SIZE, height, biome, worldbeach(ctx, localx, localy), worldcliff(ctx, localx, localy), worldrock(ctx, localx, localy));
 
     return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt") ||
-           type == ctx.cubetype("moss") || type == ctx.cubetype("frozen_grass") ||
-           type == ctx.cubetype("frozen_dirt") || type == ctx.cubetype("frozen_moss");
+           type == ctx.cubetype("moss") || type == ctx.cubetype("snowy_grass") ||
+           type == ctx.cubetype("frozen_dirt") || type == ctx.cubetype("frozen_moss") || type == ctx.cubetype("snow");
 }
 static bool generateworldgeology(worldgencontext &ctx, int chunkx, int chunky)
 {
@@ -931,7 +931,7 @@ static void collectworldgrassnode(worldgrasscollectcontext &ctx, const cube &c, 
 
     if(size < WORLD_BLOCK_SIZE || isempty(c) || !isentirelysolid(c) || c.material != MAT_AIR)
         return;
-    const worlddefinition *frozen = findworldcube("frozen_grass"),
+    const worlddefinition *frozen = findworldcube("snowy_grass"),
                           *moss = findworldcube("frozen_moss"), *thawedmoss = findworldcube("moss"),
                           *dirt = findworldcube("frozen_dirt"), *gravel = findworldcube("frozen_gravel");
     if(c.texture[O_TOP] != surfacetexture && (!frozen || c.texture[O_TOP] != frozen->slot) &&
@@ -2153,8 +2153,8 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             }
             else
             {
-                const bool growable = biome == game::WORLD_BIOME_PLAINS || biome == game::WORLD_MOSS || biome == game::WORLD_FROZEN_GRASS ||
-                                      biome == game::WORLD_FROZEN_DIRT || biome == game::WORLD_FROZEN_MOSS;
+                const bool growable = biome == game::WORLD_BIOME_PLAINS || biome == game::WORLD_MOSS || biome == game::WORLD_SNOWY_GRASS ||
+                                      biome == game::WORLD_FROZEN_DIRT || biome == game::WORLD_FROZEN_MOSS || biome == game::WORLD_BIOME_SNOW;
 
                 if(!growable || terrain.rockyledge > 0.22f || (generateworldcliff(ctx, chunkx, chunky, x, y, height ) & WORLD_CLIFF_ROCK) || generateworldrock( ctx, chunkx, chunky, x, y, height))
                     continue;
@@ -2234,6 +2234,42 @@ static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int ch
             {
                 if(setworldcubetype(c, ctx, pinewoodcube)) markworldgentreeblock(ctx, pinewood[i]);
             }
+        }
+        // Accumulate only on the highest canopy cube in each column, after trunks replace foliage.
+        int canopy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
+        loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS) canopy[y][x] = -1;
+        const vector<ivec> *treeblocks[] = { &leaves, &needles, &wood, &pinewood };
+        loopk(4) loopv(*treeblocks[k])
+        {
+            const ivec &p = (*treeblocks[k])[i];
+            int &top = canopy[p.y / WORLD_BLOCK_SIZE][p.x / WORLD_BLOCK_SIZE];
+            top = max(top, p.z);
+        }
+        loopk(2) loopv(*treeblocks[k])
+        {
+            const ivec &p = (*treeblocks[k])[i];
+            if(p.z != canopy[p.y / WORLD_BLOCK_SIZE][p.x / WORLD_BLOCK_SIZE]) continue;
+            cube &c = lookupworldgenblock(ctx, root, p);
+            if(c.texture[0] != (k ? needlestexture : leaftexture)) continue;
+            const int x = chunkx * WORLD_CHUNK_BLOCKS + p.x / WORLD_BLOCK_SIZE,
+                      y = chunky * WORLD_CHUNK_BLOCKS + p.y / WORLD_BLOCK_SIZE,
+                      ground = ctx.generator.height(x, y), material = ctx.generator.surfacematerial(x, y, ground);
+            if(material == game::WORLD_SNOWY_GRASS || material == game::WORLD_BIOME_SNOW)
+                setworldcubetype(c, ctx, ctx.cubetype(k ? "snowy_needles" : "snowy_leaves"), leavesalpha ? MAT_ALPHA : MAT_AIR);
+        }
+        const int snowcube = ctx.cubetype("snow"), snowygrasscube = ctx.cubetype("snowy_grass"), grasscube = ctx.cubetype("grass");
+        loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+        {
+            if(canopy[y][x] < 0) continue;
+            const int wx = chunkx * WORLD_CHUNK_BLOCKS + x, wy = chunky * WORLD_CHUNK_BLOCKS + y,
+                      height = ctx.heightmap[y * WORLD_CHUNK_BLOCKS + x] / WORLD_BLOCK_SIZE,
+                      material = ctx.generator.surfacematerial(wx, wy, height);
+            if(ctx.generator.treegroundmaterial(wx, wy, height, material) != game::WORLD_BIOME_PLAINS) continue;
+            const ivec p(x * WORLD_BLOCK_SIZE, y * WORLD_BLOCK_SIZE, WORLD_GROUND_HEIGHT + (height - 1) * WORLD_BLOCK_SIZE);
+            cube &c = lookupworldgenblock(ctx, root, p);
+            const int snowtexture = ctx.indexedtextures ? snowcube : ctx.cubetextures[snowcube].top,
+                      grasstexture = ctx.indexedtextures ? snowygrasscube : ctx.cubetextures[snowygrasscube].top;
+            if(c.texture[O_TOP] == snowtexture || c.texture[O_TOP] == grasstexture) setworldcubetype(c, ctx, grasscube);
         }
     }
     return !ctx.iscanceled();
@@ -2678,7 +2714,7 @@ namespace game
         if(hydro.freshwater) surface.material = WORLD_SURFACE_DIRT;
         if(!cliffface && !(beach && !cliff)) switch(biome)
         {
-            case WORLD_FROZEN_GRASS: surface.material = WORLD_SURFACE_FROZEN_GRASS; break;
+            case WORLD_SNOWY_GRASS: surface.material = WORLD_SURFACE_SNOWY_GRASS; break;
             case WORLD_FROZEN_DIRT: surface.material = WORLD_SURFACE_FROZEN_DIRT; break;
             case WORLD_MOSS: surface.material = WORLD_SURFACE_MOSS; break;
             case WORLD_FROZEN_MOSS: surface.material = WORLD_SURFACE_FROZEN_MOSS; break;
@@ -2700,7 +2736,18 @@ namespace game
             surface.material = WORLD_SURFACE_ICE;
             surface.water = false;
         }
+        if((surface.material == WORLD_SURFACE_SNOW || surface.material == WORLD_SURFACE_SNOWY_GRASS) &&
+           generation->generator.treegroundmaterial(blockx, blocky, height, biome) == WORLD_BIOME_PLAINS)
+            surface.material = WORLD_SURFACE_GRASS;
         return !generation->iscanceled();
+    }
+
+    bool sampleworldsnow(worldgencontext *generation, int blockx, int blocky)
+    {
+        if(!generation || generation->iscanceled()) return false;
+        const int height = generation->generator.height(blockx, blocky),
+                  material = generation->generator.surfacematerial(blockx, blocky, height);
+        return material == WORLD_SNOWY_GRASS || material == WORLD_BIOME_SNOW;
     }
 
     bool sampleworldtree(worldgencontext *generation, int blockx, int blocky, int &base, int &height, uint &shape, bool &pine)

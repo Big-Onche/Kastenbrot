@@ -458,7 +458,7 @@ static const char *debugsurfacename(int material)
 {
     switch(material)
     {
-        case game::WORLD_FROZEN_GRASS: return "Frozen grass";
+        case game::WORLD_SNOWY_GRASS: return "Snowy grass";
         case game::WORLD_FROZEN_DIRT: return "Frozen dirt";
         case game::WORLD_FROZEN_GRAVEL: return "Frozen gravel";
         case game::WORLD_MOSS: return "Moss";
@@ -494,7 +494,7 @@ static void debugbiomematerials()
         ++samples;
     }
     conoutf("TUNDRA SURFACE DISTRIBUTION - generated ground in camera chunk (%d, %d): %d samples", stats.chunkx, stats.chunky, samples);
-    const int materials[] = { game::WORLD_FROZEN_GRASS, game::WORLD_FROZEN_DIRT, game::WORLD_FROZEN_GRAVEL,
+    const int materials[] = { game::WORLD_SNOWY_GRASS, game::WORLD_FROZEN_DIRT, game::WORLD_FROZEN_GRAVEL,
                              game::WORLD_MOSS, game::WORLD_FROZEN_MOSS, game::WORLD_SNOW_CRUST };
     loopi(6) conoutf("%s: %.1f%% (%d)", debugsurfacename(materials[i]), 100.0f * counts[materials[i]] / max(samples, 1), counts[materials[i]]);
     loopi(game::WORLD_MOSS + 1)

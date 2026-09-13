@@ -1682,6 +1682,30 @@ VAR(scaledds, 0, 2, 4);
 
 static bool texturedata(ImageData &d, const char *tname, bool msg = true, int *compress = NULL, int *wrap = NULL, const char *tdir = NULL, int ttype = TEX_DIFFUSE)
 {
+    // Snow variants are derived from the original assets, including their alpha coverage.
+    string snowname;
+    copystring(snowname, tname);
+    for(char *p = snowname; *p; ++p) if(*p == '\\') *p = '/';
+    char *snow = strstr(snowname, "terrain/snowy_");
+    if(snow && (!strcmp(snow + 14, "grass.png") || !strcmp(snow + 14, "grass_dirt.png") ||
+                !strcmp(snow + 14, "leaves.png") || !strcmp(snow + 14, "needles.png")))
+    {
+        const bool side = !strcmp(snow + 14, "grass_dirt.png");
+        memmove(snow + 8, snow + 14, strlen(snow + 14) + 1);
+        if(!texturedata(d, snowname, msg, compress, wrap, tdir, ttype)) return false;
+        if(d.bpp < 3) swizzleimage(d);
+        if(d.bpp >= 3)
+        {
+            writetex(d,
+                const float luminance = (dst[0] + dst[1] + dst[2]) / 3.0f;
+                const int chroma = max(max(dst[0], dst[1]), dst[2]) - min(min(dst[0], dst[1]), dst[2]);
+                const float t = side ? clamp(chroma / 5.1f, 0.0f, 1.0f) : 0.0f;
+                const float dirt = t * t * (3.0f - 2.0f * t);
+                loopk(3) dst[k] = uchar(dst[k] * dirt + (205.0f + luminance * 0.18f) * (1.0f - dirt));
+            );
+        }
+        return true;
+    }
     const char *cmds = NULL, *file = tname;
     if(tname[0]=='<')
     {
