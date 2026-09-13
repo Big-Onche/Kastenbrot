@@ -488,6 +488,7 @@ struct stainrenderer
 
     void gentris(cube &cu, int orient, const ivec &o, int size, materialsurface *mat = NULL, int vismask = 0)
     {
+        const bool packetgeometry = worldmeshpackets && getworldsectionsize();
         vec pos[MAXFACEVERTS+4];
         int numverts = 0, numplanes = 1;
         vec planes[2];
@@ -509,7 +510,7 @@ struct stainrenderer
             }
         }
         else if(cu.texture[orient] == DEFAULT_SKY) return;
-        else if(cu.ext && (numverts = cu.ext->surfaces[orient].numverts&MAXFACEVERTS))
+        else if(!packetgeometry && cu.ext && (numverts = cu.ext->surfaces[orient].numverts&MAXFACEVERTS))
         {
             vertinfo *verts = cu.ext->verts() + cu.ext->surfaces[orient].verts;
             ivec vo = ivec(o).mask(~0xFFF).shl(3);
@@ -521,19 +522,22 @@ struct stainrenderer
                 numplanes++;
             }
         }
-        else if(cu.merged&(1<<orient)) return;
-        else if(!vismask || (vismask&0x40 && visibleface(cu, orient, o, size, MAT_AIR, (cu.material&MAT_ALPHA)^MAT_ALPHA, MAT_ALPHA)))
+        else if(!packetgeometry && cu.merged&(1<<orient)) return;
+        else if(packetgeometry || !vismask ||
+                (vismask&0x40 && visibleface(cu, orient, o, size, MAT_AIR, (cu.material&MAT_ALPHA)^MAT_ALPHA, MAT_ALPHA)))
         {
             ivec v[4];
             genfaceverts(cu, orient, v);
-            int vis = 3, convex = faceconvexity(v, vis), order = convex < 0 ? 1 : 0;
+            int vis = packetgeometry ? visibletris(cu, orient, o, size) : 3;
+            if(!vis) return;
+            int convex = packetgeometry ? faceconvexity(v) : faceconvexity(v, vis), order = vis&4 || convex < 0 ? 1 : 0;
             vec vo(o);
             pos[numverts++] = vec(v[order]).mul(size/8.0f).add(vo);
             if(vis&1) pos[numverts++] = vec(v[order+1]).mul(size/8.0f).add(vo);
             pos[numverts++] = vec(v[order+2]).mul(size/8.0f).add(vo);
             if(vis&2) pos[numverts++] = vec(v[(order+3)&3]).mul(size/8.0f).add(vo);
             planes[0].cross(pos[0], pos[1], pos[2]).normalize();
-            if(convex) { planes[1].cross(pos[0], pos[2], pos[3]).normalize(); numplanes++; }
+            if(convex && numverts >= 4) { planes[1].cross(pos[0], pos[2], pos[3]).normalize(); numplanes++; }
         }
         else return;
 
@@ -720,14 +724,14 @@ struct stainrenderer
             center.mul(scale);
             if(staincenter.reject(vec(e.o).add(center), stainradius + rejectradius*scale)) continue;
 
-            if(m->animated() || (!m->bih && !m->setBIH())) continue; 
+            if(m->animated() || (!m->bih && !m->setBIH())) continue;
 
             int yaw = e.attr2, pitch = e.attr3, roll = e.attr4;
 
             m->bih->genstaintris(this, staincenter, stainradius, e.o, yaw, pitch, roll, scale);
         }
     }
-    
+
     void gentris(cube *c, const ivec &o, int size, int escaped = 0)
     {
         int overlap = octaboxoverlap(o, size, bbmin, bbmax);
@@ -740,9 +744,14 @@ struct stainrenderer
                 if(cu.ext)
                 {
                     if(cu.ext->va && cu.ext->va->matsurfs) findmaterials(cu.ext->va);
-                    if(cu.ext->ents && cu.ext->ents->mapmodels.length()) genmmtris(*cu.ext->ents);            
+                    if(cu.ext->ents && cu.ext->ents->mapmodels.length()) genmmtris(*cu.ext->ents);
                 }
                 if(cu.children) gentris(cu.children, co, size>>1, cu.escaped);
+                else if(worldmeshpackets && getworldsectionsize())
+                {
+                    // packet builds do not populate legacy visibility or merged surfaces, resolve stains against current cube geometry instead of that cache
+                    if(!isempty(cu)) loopj(6) gentris(cu, j, co, size);
+                }
                 else
                 {
                     int vismask = cu.visible;
@@ -753,7 +762,7 @@ struct stainrenderer
                     }
                 }
             }
-            else if(escaped&(1<<i))
+            else if(!(worldmeshpackets && getworldsectionsize()) && escaped&(1<<i))
             {
                 ivec co(i, o, size);
                 if(cu.children) findescaped(cu.children, co, size>>1, cu.escaped);
