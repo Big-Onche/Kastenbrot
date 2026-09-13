@@ -207,7 +207,7 @@ $(filter shared/%,$(CLIENT_OBJS)): $(filter shared/%,$(CLIENT_PCH))
 $(filter engine/%,$(CLIENT_OBJS)): $(filter engine/%,$(CLIENT_PCH))
 $(filter game/%,$(CLIENT_OBJS)): $(filter game/%,$(CLIENT_PCH))
 game/game.h.gch standalone/game/game.h.gch: game/npcanimation.h game/npcspawn.h
-game/npc.o standalone/game/npc.o: game/npcsound.h game/npcdef.h game/npcanimation.h game/game.h
+game/npc.o standalone/game/npc.o: game/npcsound.h game/npclook.h game/npcdef.h game/npcanimation.h game/game.h
 game/world/world.o standalone/game/world/world.o: game/world/hydrology.h game/world/world.h
 engine/material.o: engine/watergeometry.h engine/watercache.h
 

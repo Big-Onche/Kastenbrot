@@ -2,6 +2,7 @@
 #include "engine.h"
 #include "world/world.h"
 #include "npcsound.h"
+#include "npclook.h"
 #include "npcdef.h"
 
 namespace game
@@ -191,6 +192,9 @@ namespace game
         vector<characterhitbox> hitboxes;
         npcvoice::schedule wandervoice;
         uint wandervoicerevision;
+        uint lookserial;
+        int lookclient, lookstart, lookmillis;
+        float lookyaw, lookpitch;
 
         npc(npcdefinition *definition, int instanceid)
             : definition(definition), spawnkey(0), instanceid(instanceid), attitude(definition->attitude), behavior(definition->behavior),
@@ -199,7 +203,8 @@ namespace game
               fleeuntil(0), renderlastmillis(-1), staggeruntil(0), crawlstart(0), lastlimbhop(-1000), renderstride(0),
               totalhealth(definition->health), detachedparts(0), frozen(false), wanderpaused(false), replicated(false), dropsspawned(false),
               snapshotmillis(0), servertick(0), serverstateflags(0), spawn(0, 0, 0), destination(0, 0, 0), fleeorigin(0, 0, 0),
-              serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL), wandervoicerevision(0)
+              serverposition(0, 0, 0), servervelocity(0, 0, 0), serveryaw(0), target(NULL), wandervoicerevision(0),
+              lookserial(~0U), lookclient(-3), lookstart(0), lookmillis(-1), lookyaw(0), lookpitch(0)
         {
             type = ENT_PLAYER;
             state = CS_ALIVE;
@@ -288,6 +293,7 @@ namespace game
     static uint nextnpcattackrequest = 1;
 
     VARP(npcmaxdist, 1, 256, 4096);
+    VARP(npclookdist, 0, 256, 4096);
     VARP(npcdebrisduration, 1000, 20000, 120000);
     VARP(npcdebrissinktime, 250, 3000, 10000);
     VAR(npcbleedduration, 0, 2000, 10000);
@@ -1349,7 +1355,7 @@ namespace game
         mob.nextdecision = lastmillis + 8000 + rnd(6001);
     }
 
-    static physent *nearestnpctarget(npc &mob, float radius)
+    static physent *nearestnpcthreat(npc &mob, float radius)
     {
         physent *best = NULL;
         float bestdistance = radius * radius;
@@ -1365,7 +1371,7 @@ namespace game
         loopv(npcs)
         {
             npc *candidate = npcs[i];
-            if(candidate == &mob || candidate->state != CS_ALIVE) continue;
+            if(candidate == &mob || candidate->state != CS_ALIVE || candidate->attitude != NPC_AGGRESSIVE) continue;
             const float distance = mob.o.squaredist(candidate->o);
             if(distance <= bestdistance)
             {
@@ -1399,7 +1405,7 @@ namespace game
         }
         else if(mob.attitude == NPC_SCARED)
         {
-            mob.target = nearestnpctarget(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
+            mob.target = nearestnpcthreat(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
             mob.behavior = mob.target ? NPC_FLEE : mob.definition->behavior;
         }
         else
@@ -1673,6 +1679,90 @@ namespace game
         conoutf(CON_DEBUG, "activated %d persistent NPCs after their chunk geometry became ready", activated);
     }
 
+    static bool npclookcandidate(const npc &mob, const gameent &player, float &yaw, float &pitch, float &distance)
+    {
+        if(player.state != CS_ALIVE) return false;
+        const vec delta = vec(player.o).sub(mob.o);
+        distance = delta.magnitude();
+        if(distance > npclookdist || distance < 0.001f) return false;
+        yaw = fmodf(-atan2f(delta.x, delta.y) / RAD - mob.yaw + 540.0f, 360.0f) - 180.0f;
+        // Never twist the neck around to a player behind the body.
+        if(fabsf(yaw) > 85.0f) return false;
+        pitch = clamp(atan2f(delta.z, sqrtf(delta.x * delta.x + delta.y * delta.y)) / RAD, -35.0f, 35.0f);
+        vec hit;
+        return raycubelos(mob.o, player.o, hit);
+    }
+
+    static void updatenpclook(npc &mob)
+    {
+        const int elapsed = mob.lookmillis < 0 ? 0 : max(lastmillis - mob.lookmillis, 0);
+        mob.lookmillis = lastmillis;
+        // Existing snapshot ticks supply the multiplayer clock, including for late joiners.
+        // No local RNG, camera identity, extra packets, or rendering callbacks drive decisions.
+        const uint now = uint(max(mob.replicated ? mob.servertick + clamp(lastmillis - mob.snapshotmillis, 0, 200) : lastmillis, 0));
+        const ullong identity = mob.spawnkey ? mob.spawnkey : ullong(uint(mob.instanceid));
+        const uint seed = npcvoice::mix(uint(identity) ^ npcvoice::mix(uint(identity >> 32)) ^ uint(getworldseed()));
+        const npclook::window window(now, seed);
+        if(window.serial != mob.lookserial)
+        {
+            mob.lookserial = window.serial;
+            mob.lookclient = -3;
+        }
+        const bool allowed = npclookdist > 0 && mob.state == CS_ALIVE && !mob.frozen && mob.attitude != NPC_AGGRESSIVE &&
+                             !(mob.detachedparts & (1U << HITBOX_HEAD)) &&
+                             (mob.replicated ? mob.servertick > 0 && !(mob.serverstateflags & (NPC_STATE_RUNNING | NPC_STATE_ATTACKING))
+                                             : mob.behavior == NPC_WANDERING);
+        float wantedyaw = 0, wantedpitch = 0;
+        if(!allowed || !window.active()) mob.lookclient = window.elapsed < 0 ? -3 : -2;
+        else
+        {
+            if(mob.lookclient == -3 && window.acquiring())
+            {
+                // Reuse the same draw as players approach, so proximity can trigger a glance without frame-based random retries.
+                // Once acquired, keep this target for the window. Stable client IDs break ties independently of player array order.
+                float best = 1;
+                loopv(players)
+                {
+                    gameent *player = players[i];
+                    float yaw, pitch, distance;
+                    if(!player || !npclookcandidate(mob, *player, yaw, pitch, distance)) continue;
+                    const vec toward = vec(mob.o).sub(player->o);
+                    const float approach = clamp(player->vel.dot(toward) / (distance * 4.0f * GAMEUNITSPERMETER), 0.0f, 1.0f),
+                                chance = npclook::probability(distance, float(npclookdist), approach),
+                                score = npclook::roll(window.seed, player->clientnum) / chance;
+                    if(score < best || (score == best && mob.lookclient >= -1 && player->clientnum < mob.lookclient))
+                    {
+                        best = score;
+                        mob.lookclient = player->clientnum;
+                        mob.lookstart = window.elapsed;
+                    }
+                }
+            }
+            bool found = false;
+            loopv(players)
+            {
+                gameent *player = players[i];
+                if(!player || mob.lookclient < -1 || player->clientnum != mob.lookclient) continue;
+                float distance;
+                if(!npclookcandidate(mob, *player, wantedyaw, wantedpitch, distance)) break;
+                const float fade = clamp(min(window.elapsed - mob.lookstart, window.duration - window.elapsed) / 450.0f, 0.0f, 1.0f),
+                            weight = fade * fade * (3 - 2 * fade);
+                wantedyaw = clamp(wantedyaw, -65.0f, 65.0f) * weight;
+                wantedpitch *= weight;
+                found = true;
+                break;
+            }
+            if(!found)
+            {
+                wantedyaw = wantedpitch = 0;
+                if(mob.lookclient != -3) mob.lookclient = -2;
+            }
+        }
+        const float blend = 1 - expf(-elapsed / 160.0f);
+        mob.lookyaw += (wantedyaw - mob.lookyaw) * blend;
+        mob.lookpitch += (wantedpitch - mob.lookpitch) * blend;
+    }
+
     static void updatenpcwandersound(npc &mob)
     {
         if(mob.state == CS_DEAD || mob.definition->wandersounds.empty()) return;
@@ -1731,6 +1821,7 @@ namespace game
                 mob.vel = mob.servervelocity;
                 mob.falling = vec(0, 0, 0);
                 updatenpcwandersound(mob);
+                updatenpclook(mob);
                 updatenpchitboxes(mob);
                 updatenpcbleeding(mob);
                 shownpcdebugtext(mob);
@@ -1785,6 +1876,7 @@ namespace game
                 attacklocalplayer(mob);
             }
             updatenpcwandersound(mob);
+            updatenpclook(mob);
             updatenpchitboxes(mob);
             updatenpcbleeding(mob);
             shownpcdebugtext(mob);
@@ -1872,7 +1964,8 @@ namespace game
         modeltagpositions(models[NPC_PART_TORSO], &tags[NPC_PART_HEAD], &origins[NPC_PART_HEAD], &found[NPC_PART_HEAD],
                           NUM_NPC_PARTS - NPC_PART_HEAD, pose.torsoorigin, mob.yaw, pose.torsopitch, pose.torsoroll);
         if(found[NPC_PART_HEAD] && !(mob.detachedparts & (1U << HITBOX_HEAD)))
-            rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw, pose.headpitch, pose.torsoroll, flags,
+            rendermodel(models[NPC_PART_HEAD], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_HEAD], mob.yaw + mob.lookyaw,
+                        pose.headpitch + mob.lookpitch, pose.torsoroll, flags,
                         &mob);
         if(found[NPC_PART_LEFT_ARM] && !(mob.detachedparts & (1U << HITBOX_LEFT_ARM)))
             rendermodel(models[NPC_PART_LEFT_ARM], ANIM_MAPMODEL | ANIM_LOOP, origins[NPC_PART_LEFT_ARM], mob.yaw, pose.leftarmpitch,

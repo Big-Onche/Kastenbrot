@@ -2968,6 +2968,25 @@ namespace server
         return best;
     }
 
+    static bool nearestservernpcthreat(const servernpc &mob, float radius, vec &position)
+    {
+        clientinfo *player = nearestservernpcplayer(mob, radius);
+        bool found = player != NULL;
+        float bestdistance = player ? mob.o.squaredist(player->o) : radius * radius;
+        if(player) position = vec(player->o).addz(28.0f);
+        loopv(servernpcs)
+        {
+            const servernpc &candidate = *servernpcs[i];
+            if(&candidate == &mob || candidate.deathmillis || candidate.definition->attitude != NPC_AGGRESSIVE) continue;
+            const float distance = mob.o.squaredist(candidate.o);
+            if(distance > bestdistance) continue;
+            bestdistance = distance;
+            position = candidate.o;
+            found = true;
+        }
+        return found;
+    }
+
     static void damageservernpcfall(servernpc &mob)
     {
         const int damage = game::fallimpactdamage(mob.falldistance);
@@ -3045,6 +3064,8 @@ namespace server
         updateservernpcfall(mob, elapsed);
         if(mob.deathmillis) return;
         clientinfo *target = NULL;
+        vec threatposition(0, 0, 0);
+        bool threatened = false;
         const bool forcedflee = totalmillis < mob.fleeuntil;
         if(!forcedflee && mob.definition->attitude == NPC_AGGRESSIVE)
             target = nearestservernpcplayer(mob, mob.definition->aggrodist * GAMEUNITSPERMETER);
@@ -3057,11 +3078,11 @@ namespace server
             else mob.retaliateclient = -1;
         }
         else if(!forcedflee && mob.definition->attitude == NPC_SCARED)
-            target = nearestservernpcplayer(mob, mob.definition->fleedist * GAMEUNITSPERMETER);
-        if(forcedflee || target)
+            threatened = nearestservernpcthreat(mob, mob.definition->fleedist * GAMEUNITSPERMETER, threatposition);
+        if(forcedflee || target || threatened)
         {
             mob.running = true;
-            const vec targetposition = target ? vec(target->o).addz(28.0f) : mob.fleeorigin;
+            const vec targetposition = forcedflee ? mob.fleeorigin : threatened ? threatposition : vec(target->o).addz(28.0f);
             vec offset;
             if(forcedflee || mob.definition->attitude == NPC_SCARED)
             {
@@ -3110,7 +3131,7 @@ namespace server
                            : (1U << HITBOX_LEFT_LEG) | (1U << HITBOX_RIGHT_LEG),
                    missinglegs = mob.detachedparts & legmask;
         if(missinglegs) speed *= missinglegs == legmask ? 0.34f : 0.58f;
-        if(forcedflee || (mob.definition->attitude == NPC_SCARED && target)) speed *= mob.definition->fleespeed;
+        if(forcedflee || threatened) speed *= mob.definition->fleespeed;
         mob.velocity.x = direction.x * speed;
         mob.velocity.y = direction.y * speed;
         vec next = vec(mob.o).madd(vec(mob.velocity.x, mob.velocity.y, 0), elapsed / 1000.0f);
