@@ -2069,7 +2069,8 @@ VARF(csmshadowmap, 0, 1, 1, { cleardeferredlightshaders(); cleanupcsm(); });
 VAR(csmnearplane, 1, 1, 16);
 VARP(csmfarplane, 64, 2048, 16384);
 FVAR(csmtransition, 0, 0.1f, 0.3f);
-FVAR(csmcastermargin, 0, 1024, 16384);
+// Zero fits all sunward casters; a positive value explicitly limits their reach.
+FVAR(csmcastermargin, 0, 0, 16384);
 FVAR(csmconstantbias, 0, 2, 4);
 FVAR(csmslopebias, 0, 2, 4);
 FVAR(csmnormalbias, 0, 1, 4);
@@ -2263,7 +2264,8 @@ void cascadedshadowmap::setup()
         // Extrude toward the sun for off-screen casters, bounded by the occupied world.
         const float guard = (2 + csmnormalbias + csmconstantbias)*split.texelsize;
         minz -= guard;
-        maxz = max(maxz + guard, min(worldtop + guard, maxz + csmcastermargin));
+        const float castertop = csmcastermargin > 0 ? min(worldtop + guard, maxz + csmcastermargin) : worldtop + guard;
+        maxz = max(maxz + guard, castertop);
         const float depthrange = max(maxz - minz, 1.0f);
         split.center = vec(lightcenter.x, lightcenter.y, minz + depthrange/2);
         split.bounds = vec(halfsize, halfsize, depthrange/2);

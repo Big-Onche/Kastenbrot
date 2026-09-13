@@ -1282,6 +1282,10 @@ void findshadowvas(bool transparent)
 void rendershadowmapworld()
 {
     ZoneScopedN("Render/Draw shadow geometry");
+    // A streamed cave may retain its ceiling but not the terrain's outer surface.
+    // Its back face must still stop sunlight. Keep models and other shadow types unchanged.
+    const bool twosided = shadowmapping == SM_CASCADE && glIsEnabled(GL_CULL_FACE);
+    if(twosided) glDisable(GL_CULL_FACE);
     SETSHADER(smworld);
 
     gle::enablevertex();
@@ -1312,8 +1316,11 @@ void rendershadowmapworld()
     {
         renderworldsolidshadows();
         renderworldscattershadows();
+        // The solid/scatter helpers restore face culling themselves.
+        if(twosided) glDisable(GL_CULL_FACE);
         renderworldmeshgeometry(0, true);
     }
+    if(twosided) glEnable(GL_CULL_FACE);
 }
 
 static octaentities *shadowmms = NULL;
