@@ -335,6 +335,15 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
         range.twosided = texture->leaf && range.renderclass == WORLDMESH_CUTOUT;
     }
     const uint base = packet.vertices.length();
+    const bool sealedges = face.axis && packet.ranges.last().renderclass == WORLDMESH_OPAQUE;
+    const int dim = dimension(face.orient), row = R[dim], col = C[dim];
+    vec minimum(face.position[0]), maximum(face.position[0]);
+    if(sealedges)
+    {
+        loopi(face.count) { minimum.min(face.position[i]); maximum.max(face.position[i]); }
+        minimum.max(vec(job.snapshot.origin));
+        maximum.min(vec(ivec(job.snapshot.origin).add(WORLD_SECTION_SIZE)));
+    }
     vec tangent(texture->tangent[face.orient]);
     tangent.project(normal);
     if(!tangent.iszero()) tangent.normalize();
@@ -342,6 +351,17 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
     {
         vertex &v = packet.vertices.add();
         v.pos = polygon[i];
+        if(sealedges)
+        {
+            // Greedy rectangles leave T-junctions. Overlap their outer edges in-plane
+            // to hide rasterization cracks without extra triangles or shader work.
+            // Apply after clipping so section seams are sealed too; leave the face
+            // plane and shared triangle diagonal unchanged. 1/64 is representable
+            // throughout the streamed world and is less than 0.1% of a terrain cube.
+            const float overlap = 1.0f / 64.0f;
+            v.pos[row] += polygon[i][row] == minimum[row] ? -overlap : polygon[i][row] == maximum[row] ? overlap : 0;
+            v.pos[col] += polygon[i][col] == minimum[col] ? -overlap : polygon[i][col] == maximum[col] ? overlap : 0;
+        }
         // Keep provenance separate during vertex deduplication; resolve climate on the main thread at publication.
         v.tc = vec(texture->sgen[face.orient].dot(v.pos), texture->tgen[face.orient].dot(v.pos), face.playeredited ? -1.0f : 0.0f);
         v.norm = bvec(normal);
@@ -511,8 +531,9 @@ static void buildworldmeshpacket(worldmeshjob &job)
     if(SDL_AtomicGet(&job.cancelled)) return;
     groupworldmeshranges(job.packet);
     compactworldmeshvertices(job.packet);
-    job.packet.minimum = job.snapshot.origin;
-    job.packet.maximum = ivec(job.snapshot.origin).add(WORLD_SECTION_SIZE);
+    // Integer culling bounds must contain the small opaque face overlaps.
+    job.packet.minimum = ivec(job.snapshot.origin).sub(1);
+    job.packet.maximum = ivec(job.snapshot.origin).add(WORLD_SECTION_SIZE + 1);
     if(!SDL_AtomicGet(&job.cancelled))
         buildwatermeshpacket(job.packet.water, job.packet.materials.getbuf(), job.packet.materials.length(),
             [&](const ivec &position)
