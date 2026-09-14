@@ -60,7 +60,7 @@ VAR(worldcoastvariation, 0, 3, 16);
 VAR(worldbeachminheight, -32, -2, 32);
 VAR(worldbeachmaxheight, -32, 1, 32);
 
-FVAR(worldbasetreedensity, 0.0f, 0.025f, 0.25f);
+FVAR(worldbasetreedensity, 0.0f, 0.018f, 0.25f);
 FVAR(worldgrassfrequency, 0.00001f, 0.02f, 1.0f);
 FVAR(worldgrassdensity, 0.0f, 0.35f, 1.0f);
 FVAR(worldgrassmaxoffset, 0.0f, 0.18f, 0.45f);
@@ -1410,24 +1410,33 @@ namespace game
         const float suitability = treesuitability(sample.temperature, sample.humidity);
         if(suitability <= 0.0f || generator.settings.basetreedensity <= 0.0f) return 0.0f;
 
-        // Continuous fields create connected woods and clearings without rectangular patch boundaries.
         const float noisex = x + 10000.5f, noisey = y - 10000.5f,
                     broad = generator.vegetationvariation.GetNoise(noisex * 0.28f + 1731.0f, noisey * 0.28f - 2917.0f),
                     local = generator.vegetationvariation.GetNoise(noisex, noisey),
                     patch = clamp(0.5f + 0.80f * broad + 0.25f * local, 0.0f, 1.0f);
+
         const worldtectonicsample relief = generator.tectonics(x, y);
         const float altitude = float(height - generator.settings.sealevel),
                     foothills = smoothstep(0.10f, 0.48f, relief.terrainroughness) * smoothstep(4.0f, 24.0f, altitude),
+
                     mountainbelt = max(foothills, smoothstep(28.0f, 65.0f, altitude)),
-                    // Freshwater improves the odds, but neither requires nor guarantees a forest.
                     woodland = smoothstep(0.38f - 0.22f * mountainbelt, 0.70f - 0.20f * mountainbelt, patch),
                     scattered = 0.12f + 0.20f * smoothstep(-0.5f, 0.5f, local),
                     densityfactor = scattered + (3.0f + 2.0f * mountainbelt) * woodland,
+
                     waterbonus = 1.0f + 0.45f * freshwater,
-                    // The climate already includes altitude cooling; rock masks leave exposed summits bare.
+
                     density = generator.settings.basetreedensity * suitability * densityfactor * waterbonus;
 
-        return clamp(density, 0.0f, 1.0f);
+        // hot and relatively dry.
+        const float spirouland = smoothstep(20.0f, 28.0f, sample.temperature) * (1.0f - smoothstep(35.0f, 60.0f, sample.humidity));
+
+        // Keep hot zones mostly open, but allow denser vegetation near freshwater.
+        const float spiroulandrelief = clamp(freshwater * 0.65f, 0.0f, 0.65f);
+        const float spiroulandtarget = 0.18f + spiroulandrelief;
+        const float spiroulandpenalty = 1.0f * (1.0f - spirouland) + spiroulandtarget * spirouland;
+
+        return clamp(density * spiroulandpenalty, 0.0f, 1.0f);
     }
 
     bool worldgenerator::treeweights(int x, int y, int height, const BiomeSample &sample, float (&weights)[TREE_SPECIES_COUNT], int material, float spawn) const
@@ -1501,8 +1510,7 @@ namespace game
 
     float worldgenerator::treedensity(int x, int y, int height) const
     {
-        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
-                           worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
+        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS, worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
         float weights[TREE_SPECIES_COUNT], density = 0;
         treeweights(x, y, height, sampleBiome(position), weights);
         loopi(TREE_SPECIES_COUNT) density += weights[i];
