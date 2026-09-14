@@ -29,6 +29,10 @@ namespace game
         FVARP(ambientdropinterval, 0.5f, 4, 120);
         FVARP(ambientrockinterval, 0.5f, 7, 120);
         FVARP(ambientbigrockinterval, 5, 45, 300);
+        VARP(ambientrescaninterval, 100, 1000, 5000);
+        FVARP(ambientrescanmove, 1, 64, 512);
+        FVARP(ambientscanms, 0.05f, 0.35f, 2.0f);
+        VARP(ambientvoiceupdateinterval, 10, 50, 250);
 
         static float smooth(float value)
         {
@@ -68,6 +72,7 @@ namespace game
             uint seed;
             int seen;
             float temperature, vegetation, altitude, depth;
+            float pickCost[11];
             bool water;
         };
 
@@ -101,11 +106,6 @@ namespace game
             return int(seconds * (0.65f + (mix(seed) & 65535) / 65535.0f * 0.7f) * (cave ? 1000 : 4000) + 0.5f);
         }
 
-        static bool physicalrange(int kind, float distance)
-        {
-            return distance >= 500 && distance <= 900;
-        }
-
         class AmbientManager
         {
         public:
@@ -116,10 +116,15 @@ namespace game
             int nextPhysical[3];
             uint physicalSerial[3];
             worldgenerator *terrain;
-            int cursor, epoch, nextMix, nextDebug;
+            int cursor, epoch, nextMix, nextDebug, nextScan, nextVoiceUpdate;
             int waiting;
+            vec lastScanListener, lastVoiceListener;
+            bool scanning, haveScanListener, haveVoiceListener;
 
-            AmbientManager() : terrain(NULL), cursor(0), epoch(1), nextMix(0), nextDebug(0), waiting(0)
+            AmbientManager() :
+                terrain(NULL), cursor(0), epoch(1), nextMix(0), nextDebug(0), nextScan(0), nextVoiceUpdate(0),
+                waiting(0), lastScanListener(0, 0, 0), lastVoiceListener(0, 0, 0),
+                scanning(false), haveScanListener(false), haveVoiceListener(false)
             {
                 loopi(3) { nextPhysical[i] = 0; physicalSerial[i] = 0; }
             }
@@ -137,17 +142,39 @@ namespace game
                 indices.clear();
                 delete terrain;
                 terrain = NULL;
-                cursor = nextMix = nextDebug = 0;
+                cursor = nextMix = nextDebug = nextScan = nextVoiceUpdate = 0;
                 epoch = 1;
                 waiting = 0;
+                scanning = haveScanListener = haveVoiceListener = false;
+                lastScanListener = lastVoiceListener = vec(0, 0, 0);
             }
 
-            void scan()
+            void scan(const vec &listener)
             {
-                const uint started = SDL_GetTicks();
+                ZoneScopedN("Ambient/Scan");
+
+                // scanambientsection() walks the streamed ambient placement list. The old code restarted
+                // from cursor 0 immediately after a completed pass, burning the full scan budget every frame.
+                if(!scanning)
+                {
+                    const float move = ambientrescanmove * blockunits();
+                    const bool moved = !haveScanListener || listener.squaredist(lastScanListener) >= move * move;
+                    if(!moved && totalmillis < nextScan) return;
+
+                    scanning = true;
+                    cursor = 0;
+                    lastScanListener = listener;
+                    haveScanListener = true;
+                }
+
+                const int worldseed = getworldseed();
+                const Uint64 started = SDL_GetPerformanceCounter();
+                const Uint64 budget = Uint64(double(SDL_GetPerformanceFrequency()) * ambientscanms / 1000.0);
                 loopi(ambientscanbudget)
                 {
-                    if(i && SDL_GetTicks() - started >= 2) break;
+                    // Performance counters are much finer than SDL_GetTicks(); check in batches to keep
+                    // the timer itself out of the hot path.
+                    if(i && !(i & 7) && SDL_GetPerformanceCounter() - started >= budget) break;
                     ambientplacement placement;
                     cursor = scanambientsection(cursor, placement);
                     if(!cursor)
@@ -159,6 +186,8 @@ namespace game
                             if(j < sites.length()) indices[sites[j].placement.key] = j;
                         }
                         ++epoch;
+                        scanning = false;
+                        nextScan = totalmillis + ambientrescaninterval;
                         break;
                     }
                     if(placement.key.z < 0) continue;
@@ -167,7 +196,7 @@ namespace game
                     {
                         Site &site = sites[*found];
                         site.seen = epoch;
-                        if(site.sampledPosition.dist(placement.position) < 1 && site.placement.cave == placement.cave) continue;
+                        if(site.sampledPosition.squaredist(placement.position) < 1 && site.placement.cave == placement.cave) continue;
                     }
                     const int index = found ? *found : sites.length();
                     if(!found) { sites.add(); indices[placement.key] = index; }
@@ -175,9 +204,16 @@ namespace game
                     site.placement = placement;
                     site.sampledPosition = placement.position;
                     site.seen = epoch;
-                    site.seed = placementseed(getworldseed(), placement.key);
-                    const int x = int(floorf(placement.position.x / blockunits()));
-                    const int y = int(floorf(placement.position.y / blockunits()));
+                    site.seed = placementseed(worldseed, placement.key);
+                    loop(type, 11)
+                    {
+                        const double random = ((mix(site.seed + type) >> 8) + 1.0) / 16777217.0;
+                        site.pickCost[type] = float(-log(random));
+                    }
+
+                    const float units = blockunits();
+                    const int x = int(floorf(placement.position.x / units));
+                    const int y = int(floorf(placement.position.y / units));
                     const float temperature = terrain->environmentclimate.gettemperature(placement.position),
                                 humidity = terrain->gethumidity(placement.position);
                     site.temperature = clamp((temperature + 20.0f) / 60.0f, 0.0f, 1.0f);
@@ -189,8 +225,7 @@ namespace game
                     const int surface = terrain->height(x, y);
                     site.water = surface < terrain->settings.sealevel;
                     if(site.water && !placement.cave)
-                        site.placement.position.z = max(site.placement.position.z,
-                                                        (terrain->settings.sealevel - worldpositionheight(0) + 5) * blockunits());
+                        site.placement.position.z = max(site.placement.position.z, (terrain->settings.sealevel - worldpositionheight(0) + 5) * units);
                     site.depth = smooth(max(surface - height, 0.0f) / ambientdepthscale);
                 }
             }
@@ -230,9 +265,8 @@ namespace game
                 {
                     float gain = weight(site, type, daylight, wind, rain);
                     if(gain < 0.001f) continue;
-                    // Stable weighted selection gives nearby sources variety without rerolling every update.
-                    double random = ((mix(site.seed + type) >> 8) + 1.0) / 16777217.0;
-                    float score = float(-log(random) / gain);
+                    // Stable weighted selection; the expensive -log(random) term is cached per site.
+                    const float score = site.pickCost[type] / gain;
                     if(score < best) { best = score; chosen = type; }
                 }
                 return chosen;
@@ -240,25 +274,29 @@ namespace game
 
             void select(const vec &listener)
             {
+                ZoneScopedN("Ambient/Select");
                 const int capacity = min(ambientvoices, max(sound::soundchans - 8, 1));
-                vector<Voice> desired;
+                Voice desired[96];
+                int desiredCount = 0;
                 waiting = 0;
                 float daylight = smooth(0.5f + 2 * sinf((environment::getdayprogress() - 0.25f) * 2 * M_PI));
                 float wind = clamp(fabsf(weather::getcloudspeed(cloudwindspeed)) / ambientwindscale, 0.0f, 1.0f);
                 // Round-robin families reserve coverage for caves and waves even near a busy surface.
                 int nearest[11][8];
                 float distances[11][8];
-                loop(t, 11) loopi(8) { nearest[t][i] = -1; distances[t][i] = ambientradius; }
+                const float radius2 = ambientradius * ambientradius;
+                loop(t, 11) loopi(8) { nearest[t][i] = -1; distances[t][i] = radius2; }
                 loopv(sites)
                 {
                     Site &site = sites[i];
-                    float distance = listener.dist(site.placement.position);
-                    if(distance >= ambientradius) continue;
-                    float rain = weather::samplecurrentrain(site.placement.position.x, site.placement.position.y,
-                                                           worldpositionheight(site.placement.position.z));
+                    const float distance2 = listener.squaredist(site.placement.position);
+                    if(distance2 >= radius2) continue;
+                    const float rain = site.placement.cave ? 0.0f :
+                        weather::samplecurrentrain(site.placement.position.x, site.placement.position.y,
+                                                   worldpositionheight(site.placement.position.z));
                     int type = chooseType(site, daylight, wind, rain);
                     if(type < 0) continue;
-                    loopj(8) if(distance < distances[type][j])
+                    loopj(8) if(distance2 < distances[type][j])
                     {
                         for(int k = 7; k > j; --k)
                         {
@@ -266,7 +304,7 @@ namespace game
                             distances[type][k] = distances[type][k - 1];
                         }
                         nearest[type][j] = i;
-                        distances[type][j] = distance;
+                        distances[type][j] = distance2;
                         break;
                     }
                 }
@@ -276,8 +314,8 @@ namespace game
                     Site &site = sites[nearest[type][rank]];
                     float gain = ambientenabled ? ambientvolume * 0.3f : 0;
                     if(gain < 0.001f) continue;
-                    if(desired.length() >= capacity) continue;
-                    Voice &candidate = desired.add();
+                    if(desiredCount >= capacity) continue;
+                    Voice &candidate = desired[desiredCount++];
                     candidate.key = site.placement.key;
                     candidate.position = site.placement.position;
                     candidate.type = type;
@@ -285,9 +323,9 @@ namespace game
                 }
                 // Preserve all retained voices before releasing slots for newly selected sources.
                 loopi(96) voices[i].selected = false;
-                loopv(desired) loopj(capacity)
+                loopi(desiredCount) loopj(capacity)
                     if(voices[j].gain > 0 && voices[j].key == desired[i].key && voices[j].type == desired[i].type &&
-                       voices[j].position.dist(desired[i].position) < 1)
+                       voices[j].position.squaredist(desired[i].position) < 1)
                     {
                         voices[j].selected = desired[i].selected = true;
                         voices[j].gain = desired[i].gain;
@@ -298,7 +336,7 @@ namespace game
                     stopambientloop(voices[i].handle);
                     voices[i] = Voice();
                 }
-                loopv(desired) if(!desired[i].selected)
+                loopi(desiredCount) if(!desired[i].selected)
                 {
                     bool allocated = false;
                     loopj(capacity) if(!voices[j].selected)
@@ -314,12 +352,21 @@ namespace game
 
             void physicalevents(const vec &listener)
             {
+                ZoneScopedN("Ambient/Physical events");
+
+                bool due = false;
+                loop(kind, 3) if(!nextPhysical[kind] || totalmillis >= nextPhysical[kind]) { due = true; break; }
+                if(!due) return;
+
                 int roof = -1;
                 const bool cave = sampleworldcolumnroof(ivec(camera1->o), roof) && roof >= 0;
+                const int worldseed = getworldseed();
+                const ivec cell(int(floorf(listener.x / 256)), int(floorf(listener.y / 256)), 0);
+                const float minPhysical2 = 500.0f * 500.0f, maxPhysical2 = 900.0f * 900.0f;
+
                 loop(kind, 3)
                 {
-                    uint seed = placementseed(getworldseed(), ivec(int(floorf(listener.x / 256)),
-                                                                  int(floorf(listener.y / 256)), kind));
+                    uint seed = placementseed(worldseed, ivec(cell.x, cell.y, kind));
                     seed = mix(seed ^ physicalSerial[kind]);
                     if(!nextPhysical[kind])
                     {
@@ -339,7 +386,9 @@ namespace game
                     loopv(sites)
                     {
                         const Site &site = sites[i];
-                        if(site.placement.cave != cave || site.water || !physicalrange(kind, listener.dist(site.placement.position))) continue;
+                        if(site.placement.cave != cave || site.water) continue;
+                        const float distance2 = listener.squaredist(site.placement.position);
+                        if(distance2 < minPhysical2 || distance2 > maxPhysical2) continue;
                         uint rank = mix(seed ^ site.seed);
                         if(chosen >= 0 && rank >= best) continue;
                         chosen = i;
@@ -361,21 +410,9 @@ namespace game
                 }
             }
 
-            void update()
+            void updatephysicalvoices()
             {
-                if(mainmenu || !player1 || !camera1) { if(terrain) reset(); return; }
-                if(terrain && terrain->seed != getworldseed()) reset();
-                if(!terrain) terrain = new worldgenerator(getworldseed());
-                scan();
-                vec listener(camera1->o);
-                worldpositiontoabsolute(listener);
-                if(totalmillis >= nextMix)
-                {
-                    nextMix = totalmillis + 250;
-                    weather::update(getworldseed());
-                    select(listener);
-                    physicalevents(listener);
-                }
+                ZoneScopedN("Ambient/Update physical voices");
                 loopi(4) if(physical[i].handle)
                 {
                     PhysicalVoice &voice = physical[i];
@@ -384,6 +421,12 @@ namespace game
                     if(!ambientenabled || !ambientphysical) { stopambientloop(voice.handle); voice.handle = 0; }
                     else if(!updateambientloop(voice.handle, voice.gain, &local)) voice.handle = 0;
                 }
+            }
+
+            void updatevoices()
+            {
+                ZoneScopedN("Ambient/Update loop voices");
+                const int worldseed = getworldseed();
                 loopi(96)
                 {
                     Voice &voice = voices[i];
@@ -395,11 +438,50 @@ namespace game
                         voice.handle = 0;
                         if(totalmillis >= voice.nextStart)
                         {
-                            voice.handle = startambientloop(names[voice.type], &local,
-                                                            mix(placementseed(getworldseed(), voice.key) + voice.type), int(ambientradius), voice.gain);
+                            voice.handle = startambientloop(names[voice.type], &local, mix(placementseed(worldseed, voice.key) + voice.type), int(ambientradius), voice.gain);
                             voice.nextStart = totalmillis + 1000 + i * 13;
                         }
                     }
+                }
+            }
+
+            void update()
+            {
+                ZoneScopedN("Ambient/Update");
+
+                if(mainmenu || !player1 || !camera1) { if(terrain) reset(); return; }
+                if(terrain && terrain->seed != getworldseed()) reset();
+                if(!terrain) terrain = new worldgenerator(getworldseed());
+
+                vec listener(camera1->o);
+                worldpositiontoabsolute(listener);
+
+                scan(listener);
+
+                bool mixed = false;
+                if(totalmillis >= nextMix)
+                {
+                    ZoneScopedN("Ambient/Mix");
+                    nextMix = totalmillis + 250;
+                    weather::update(getworldseed());
+                    select(listener);
+                    physicalevents(listener);
+                    mixed = true;
+                }
+
+                // Source positions and occlusion do not need to be refreshed every render frame while
+                // the listener is stationary. Keep immediate updates while moving and a low-cost
+                // maintenance tick while idle so stopped loops are still restarted promptly.
+                const float voiceMove = 0.25f * blockunits();
+                const bool listenerMoved = !haveVoiceListener ||
+                    listener.squaredist(lastVoiceListener) >= voiceMove * voiceMove;
+                if(mixed || listenerMoved || totalmillis >= nextVoiceUpdate)
+                {
+                    nextVoiceUpdate = totalmillis + ambientvoiceupdateinterval;
+                    lastVoiceListener = listener;
+                    haveVoiceListener = true;
+                    updatephysicalvoices();
+                    updatevoices();
                 }
             }
 
@@ -411,8 +493,7 @@ namespace game
                     {
                         vec local(physical[i].position);
                         worldpositiontolocal(local);
-                        defformatstring(label, "%s_%d (one shot)", physical[i].kind == 0 ? "water_drop" :
-                                        physical[i].kind == 1 ? "rock" : "rock_big", physical[i].variant);
+                        defformatstring(label, "%s_%d (one shot)", physical[i].kind == 0 ? "water_drop" : physical[i].kind == 1 ? "rock" : "rock_big", physical[i].variant);
                         particle_textcopy(local, label, PART_TEXT, 300, 0x88BBFF, 2);
                         particle_splash(PART_SPARK, 1, 100, local, 0x88BBFF, 2, 1, 0);
                     }
@@ -431,11 +512,13 @@ namespace game
                         {
                             if(site.placement.cave ? type < 7 : site.water ? type > 3 && type != 6 : type > 5) continue;
                             bool active = false;
-                            loopj(96) if(playing[j] && voices[j].type == type && voices[j].key == site.placement.key &&
-                                         voices[j].position.dist(site.placement.position) < 1)
+                            loopj(96)
                             {
-                                active = true;
-                                break;
+                                if(playing[j] && voices[j].type == type && voices[j].key == site.placement.key && voices[j].position.dist(site.placement.position) < 1)
+                                {
+                                    active = true;
+                                    break;
+                                }
                             }
                             defformatstring(entry, "%s\fc%s%s", label[0] ? "\fc888 / " : "", active ? "8F8" : "888", names[type]);
                             concatstring(label, entry);
@@ -448,8 +531,7 @@ namespace game
                         vec local(voices[i].position);
                         worldpositiontolocal(local);
                         local.z += 8 + voices[i].type * 4;
-                        defformatstring(label, "%s: blocked %.0f%%, transmitted %.0f%%", names[voices[i].type],
-                                        occlusions[i] * 100, gains[i] * 100);
+                        defformatstring(label, "%s: blocked %.0f%%, transmitted %.0f%%", names[voices[i].type], occlusions[i] * 100, gains[i] * 100);
                         particle_textcopy(local, label, PART_TEXT, 300, 0x88FF88, 1);
                     }
                 }
@@ -481,8 +563,7 @@ namespace game
                 if(manager.voices[i].handle) ++active;
                 else if(manager.voices[i].selected) ++pending;
             }
-            defformatstring(line, "Ambient: %d sites, %d playing, %d pending, radius %.0f cubes, scan %d", manager.sites.length(), active,
-                            pending, ambientradius / blockunits(), manager.cursor);
+            defformatstring(line, "Ambient: %d sites, %d playing, %d pending, radius %.0f cubes, scan %d", manager.sites.length(), active, pending, ambientradius / blockunits(), manager.cursor);
             draw_text(line, 20, 100);
         }
     }
