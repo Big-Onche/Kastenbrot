@@ -92,8 +92,19 @@ namespace game
 
         float gettemperature(const vec &worldpos) const
         {
-            // A consistent cooling rate lets each region reach freezing at its own altitude.
-            return getregionaltemperature(worldpos) - getaltitude(worldpos) * temperaturelapserate;
+            const float altitude = max(getaltitude(worldpos), 0.0f);
+
+            const float normalized = clamp(altitude / 255.0f, 0.0f, 1.0f);
+            // Default cooling: about 30 degrees at 200 blocks and 40 degrees at 255 blocks.
+            // Keep the low foothill climate while bringing the full mountain curve in above it.
+            const float curvature = powf(normalized, 1.7f), regional = getregionaltemperature(worldpos),
+                        foothillcooling = altitude * temperaturelapserate * (0.65f + 0.85f * powf(normalized, 1.5f)),
+                        mountaincooling = altitude * (temperaturelapserate + 0.01f) + 12.0f * curvature,
+                        mountain = transition(55.0f, 100.0f, altitude),
+                        temperature = regional - (foothillcooling + (mountaincooling - foothillcooling) * mountain),
+                        // Even the warmest regional extremes converge below freezing at the world ceiling.
+                        summit = transition(220.0f, 255.0f, altitude);
+            return temperature - max(temperature + 2.0f, 0.0f) * summit;
         }
 
         static float transition(float low, float high, float value)

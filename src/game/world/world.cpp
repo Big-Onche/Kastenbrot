@@ -28,9 +28,9 @@ FVAR(worldreliefmicrovariation, 0.0f, 6.0f, 32.0f);
 FVAR(worldsecondarysummitheight, 0.0f, 14.0f, 64.0f);
 FVAR(worldrockyledgeheight, 0.0f, 5.0f, 24.0f);
 FVAR(worldclusedepth, 0.0f, 9.0f, 48.0f);
-FVAR(worldmountainchainfrequency, 0.00005f, 0.00065f, 0.01f);
+FVAR(worldmountainchainfrequency, 0.00005f, 0.00058f, 0.01f);
 FVAR(worldmountainlocalfrequency, 0.0002f, 0.0035f, 0.05f);
-FVAR(worldmountainmaxamplitude, 0.0f, 150.0f, 255.0f);
+FVAR(worldmountainmaxamplitude, 0.0f, 250.0f, 255.0f);
 FVAR(worldmountainthreshold, 0.0f, 0.52f, 1.0f);
 FVAR(worldmountainwidth, 0.01f, 0.16f, 0.5f);
 
@@ -38,7 +38,7 @@ FVAR(worldtectonicfrequency, 0.0001f, 0.0014f, 0.01f);
 FVAR(worldtectonicwarpamplitude, 0.0f, 64.0f, 512.0f);
 FVAR(worldtectonicridgepower, 0.1f, 2.2f, 8.0f);
 FVAR(worldtectonicactivitythreshold, 0.0f, 0.35f, 0.95f);
-FVAR(worldmaxlanduplift, 0.0f, 160.0f, 255.0f);
+FVAR(worldmaxlanduplift, 0.0f, 250.0f, 255.0f);
 FVAR(worldmaxoceansubsidence, 0.0f, 100.0f, 255.0f);
 FVAR(worldtectoniccavestrength, 0.0f, 0.35f, 1.0f);
 FVAR(worldtectonicfracturestrength, 0.0f, 0.40f, 1.0f);
@@ -51,9 +51,9 @@ FVAR(worldrockfrequency, 0.000001f, 0.08f, 1.0f);
 VAR(worldsealevel, -255, 0, 255);
 VAR(worldsoildepth, 2, 5, 6);
 // Scaled-world cooling in Celsius per metre (one block), independent of regional temperature.
-FVAR(worldtemperaturelapserate, 0.0f, 0.1f, 1.0f);
-VAR(worldstonelow, -255, 75, 255);
-VAR(worldstonehigh, -255, 125, 255);
+FVAR(worldtemperaturelapserate, 0.0f, 0.065f, 1.0f);
+VAR(worldstonelow, -255, 120, 255);
+VAR(worldstonehigh, -255, 200, 255);
 VAR(worldbiomeblend, 0, 16, 64);
 VAR(worldcoastwidth, 0, 8, 32);
 VAR(worldcoastvariation, 0, 3, 16);
@@ -68,8 +68,8 @@ FVAR(worldflowerchance, 0.0f, 0.18f, 1.0f);
 FVAR(worldroseweight, 0.0f, 1.0f, 100.0f);
 FVAR(worldtulipweight, 0.0f, 1.0f, 100.0f);
 FVAR(worlddandelionweight, 0.0f, 1.0f, 100.0f);
-VAR(worldpinestartheight, -255, 50, 255);
-VAR(worldpinefullheight, -255, 100, 255);
+VAR(worldpinestartheight, -255, 80, 255);
+VAR(worldpinefullheight, -255, 160, 255);
 
 FVAR(worldcavefrequency, 0.0001f, 0.045f, 0.25f);
 FVAR(worldcavethreshold, -1.0f, 0.58f, 1.0f);
@@ -411,12 +411,16 @@ namespace game
                     mountainshare = (settings.mountainscoverage + settings.highsummitscoverage) / reliefcoverage,
                     configuredthreshold = clamp(settings.mountainthreshold + (0.23f - mountainshare) * 0.45f, 0.08f, 0.92f),
                     envelopewidth = max(settings.mountainwidth, 0.01f),
-                    hillregion = smoothstep(configuredthreshold - envelopewidth * 2.4f, configuredthreshold - envelopewidth * 0.25f, chainstrength),
-                    mountainregion = smoothstep(configuredthreshold - envelopewidth, configuredthreshold + envelopewidth, chainstrength),
+                    // Expand the foot of the existing chains without moving their crests or changing the noise frequencies.
+                    reliefscale = max(settings.mountainmaxamplitude / 160.0f, 1.0f),
+                    footwidth = envelopewidth * sqrtf(reliefscale),
+                    hillregion = smoothstep(configuredthreshold - footwidth * 2.4f, configuredthreshold - envelopewidth * 0.25f, chainstrength),
+                    mountainregion = smoothstep(configuredthreshold - footwidth, configuredthreshold + envelopewidth, chainstrength),
                     summitregion = smoothstep(configuredthreshold + envelopewidth * 0.55f,
                                               configuredthreshold + envelopewidth * 1.75f, chainstrength),
-                    primaryridge = powf(clamp(1.0f - fabs(generator.mountainnoise.GetNoise(noisex, noisey)), 0.0f, 1.0f), 1.55f),
-                    secondaryridge = powf(clamp(1.0f - fabs(generator.mountainpeaks.GetNoise(noisex, noisey)), 0.0f, 1.0f), 1.85f),
+                    // Broader shoulders compensate for the extra height instead of stretching narrow peaks vertically.
+                    primaryridge = powf(clamp(1.0f - fabs(generator.mountainnoise.GetNoise(noisex, noisey)), 0.0f, 1.0f), 1.55f / reliefscale),
+                    secondaryridge = powf(clamp(1.0f - fabs(generator.mountainpeaks.GetNoise(noisex, noisey)), 0.0f, 1.0f), 1.85f / reliefscale),
                     plainhillshape = smoothstep(0.48f, 0.78f, hill),
                     backgroundrelief = 0.025f * plainhillshape * (1.0f - 0.75f * hillregion),
                     foothills = 0.14f * hillregion * (0.45f + 0.55f * hill),
@@ -427,7 +431,9 @@ namespace game
                     amplitudeconversion = settings.maxlanduplift > 0.0f ? settings.mountainmaxamplitude / settings.maxlanduplift : 0.0f,
                     trenchpotential = sample.activity * deepoceanmask;
 
-        sample.landuplift = clamp(landmask * (backgroundrelief + amplitudeconversion * mountainrelief), 0.0f, 1.0f);
+        // Overlapping ridges can exceed the nominal uplift. Preserve their contours here;
+        // the final surface approaches the world ceiling smoothly after all relief is added.
+        sample.landuplift = max(landmask * (backgroundrelief + amplitudeconversion * mountainrelief), 0.0f);
         sample.terrainroughness = clamp(landmask * (0.22f * hillregion + 0.52f * mountainregion + 0.26f * summitregion)
                                             * (0.72f + 0.28f * max(primaryridge, secondaryridge)),
                                         0.0f, 1.0f);
@@ -475,7 +481,7 @@ namespace game
         const float protecteddepth = max(float(settings.cavemindepth), 12.0f),
                     fulldepth = max(float(settings.cavefulldepth), 20.0f),
                     depthmask = smoothstep(protecteddepth, max(fulldepth, protecteddepth + 1.0f), cavedepth),
-                    foundationprotection = 1.0f - sample.landuplift * 0.70f;
+                    foundationprotection = 1.0f - min(sample.landuplift, 1.0f) * 0.70f;
 
         sample.caveexpansion = clamp(sample.activity * depthmask * foundationprotection * settings.tectoniccavestrength, 0.0f, 1.0f);
 
@@ -695,7 +701,16 @@ namespace game
             // starts cleanly at level +2.
             elevation = min(elevation, -1.0f);
         }
-        return clamp(int(floor(settings.sealevel + elevation + 0.5f)), -255, 255);
+        // Leave lower slopes intact, then approach 255 monotonically instead of slicing off summits.
+        // The shoulder has matching first and second derivatives at 200, so it introduces no ledge.
+        // Work in absolute height, including sea level, and apply this after every terrain contribution.
+        float surfaceheight = settings.sealevel + elevation;
+        if(surfaceheight > 200.0f)
+        {
+            const float excess = surfaceheight - 200.0f, headroom = 55.0f;
+            surfaceheight = 200.0f + headroom * excess / sqrtf(headroom * headroom + excess * excess);
+        }
+        return clamp(int(floor(surfaceheight + 0.5f)), -255, 255);
     }
 
     #include "world/hydrology.h"
