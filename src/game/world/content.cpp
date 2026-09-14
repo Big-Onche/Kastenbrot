@@ -812,11 +812,42 @@ static void prebakelocalambientgialbedo()
     invalidatelocalambient();
 }
 
+static void clearworldscattermeshes();
+
+static void preloadblocktexturearrays()
+{
+    clearworldscattermeshes();
+    beginblocktexturearrays();
+    loopv(worldcubedefinitions)
+    {
+        const worlddefinition &type = *worldcubedefinitions[i];
+        const int indexes[] = { type.slot, type.sideslot, type.bottomslot };
+        loopj(3)
+        {
+            VSlot &slot = lookupvslot(indexes[j], true);
+            const int mode = blocktexturemode(slot);
+            if(mode >= 0 && !slot.slot->sts.empty())
+                registerblocktexture(slot.slot->sts[0].t, mode >= 5 ? BLOCKARRAY_CUTOUT : BLOCKARRAY_OPAQUE);
+        }
+    }
+    loopv(worldscatterrenderdefinitions)
+    {
+        const worldscatterrenderdefinition &render = worldscatterrenderdefinitions[i];
+        if(render.texture[0]) registerblocktexture(textureload(render.texture, 3, true, true, true), BLOCKARRAY_SCATTER);
+    }
+    static const char *cactustextures[] = { "media/texture/terrain/cactus_side.png", "media/texture/terrain/cactus_top.png",
+                                         "media/texture/terrain/cactus_bottom.png" };
+    loopi(3) registerblocktexture(textureload(cactustextures[i], 3, true, false, true), BLOCKARRAY_SCATTER);
+    bakeblocktexturearrays();
+    queueworldmeshworld();
+}
+
 void preloadworldassets()
 {
     if(worldcubedefinitions.empty()) return;
     ZoneScopedN("Assets/Preload world assets");
     renderprogress(0, "preloading world assets...");
+    preloadblocktexturearrays();
 
     // Geometry slots were loaded for GI above. Held/dropped cubes and UI images
     // use the separate unfiltered texture cache, so warm those exact paths too.

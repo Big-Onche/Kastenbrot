@@ -4,10 +4,23 @@
 #include "watermeshpacket.h"
 
 // Disposable render data. None of these objects owns gameplay cubes or VAs.
-// VSlot identity includes shader, textures, uniforms, scroll, alpha and refraction
-// settings. Orientation and environment selection remain explicit. Clip/volume
-// material bits are gameplay metadata and do not change the surface draw state.
+// Loose materials retain VSlot identity. Array materials replace that identity
+// with an array and canonical uniform state; layer, climate mode and MSAA source
+// identity live in the vertices. Orientation and environment remain explicit.
 enum { WORLDMESH_OPAQUE, WORLDMESH_CUTOUT, WORLDMESH_TRANSLUCENT, WORLDMESH_REFRACTIVE };
+
+struct Texture;
+struct VSlot;
+enum { BLOCKARRAY_OPAQUE, BLOCKARRAY_CUTOUT, BLOCKARRAY_SCATTER };
+extern void beginblocktexturearrays();
+extern void registerblocktexture(Texture *texture, int renderclass);
+extern void bakeblocktexturearrays();
+extern void cleanupblocktexturearrays();
+extern void updateblocktexturearrayfilter();
+extern uint getblocktexturearraygeneration();
+extern GLuint lookupblocktexturearray(Texture *texture, int renderclass, ushort &layer);
+extern int blocktexturemode(const VSlot &slot);
+extern bool compatibleblocktexturestate(const VSlot &a, const VSlot &b);
 
 struct worldmeshbatchkey
 {
@@ -16,6 +29,8 @@ struct worldmeshbatchkey
     bool alpha;
     uchar renderclass;
     bool twosided;
+    GLuint texturearray = 0;
+    ushort arraystate = 0;
 
     worldmeshbatchkey() : texture(0), envmap(EMID_NONE), orient(0), layer(LAYER_TOP), alpha(false), renderclass(WORLDMESH_OPAQUE), twosided(false)
     {
@@ -23,7 +38,8 @@ struct worldmeshbatchkey
 
     bool operator==(const worldmeshbatchkey &b) const
     {
-        return texture == b.texture && envmap == b.envmap && orient == b.orient && layer == b.layer &&
+        return texturearray == b.texturearray && (texturearray ? arraystate == b.arraystate : texture == b.texture) &&
+               envmap == b.envmap && orient == b.orient && layer == b.layer &&
                renderclass == b.renderclass && twosided == b.twosided;
     }
 
@@ -31,7 +47,9 @@ struct worldmeshbatchkey
     {
         if(renderclass != b.renderclass) return renderclass < b.renderclass;
         if(twosided != b.twosided) return twosided < b.twosided;
-        if(texture != b.texture) return texture < b.texture;
+        if(texturearray != b.texturearray) return texturearray < b.texturearray;
+        if(texturearray) { if(arraystate != b.arraystate) return arraystate < b.arraystate; }
+        else if(texture != b.texture) return texture < b.texture;
         if(envmap != b.envmap) return envmap < b.envmap;
         if(layer != b.layer) return layer < b.layer;
         return orient < b.orient;

@@ -211,6 +211,26 @@ static void setworldmeshbatchstate(renderstate &cur, int pass, const worldmeshba
     Slot &slot = *vslot.slot;
     Texture *diffuse = slot.sts.empty() ? notexture : slot.sts[0].t;
     GLOBALPARAMF(worldmeshtexsize, float(diffuse->w), float(diffuse->h));
+    if(key.texturearray)
+    {
+        glActiveTexture_(GL_TEXTURE0);
+        cur.tmu = 0;
+        glBindTexture(GL_TEXTURE_2D_ARRAY, key.texturearray);
+        GLOBALPARAMF(colorparams, vslot.colorscale.x, vslot.colorscale.y, vslot.colorscale.z, 1.0f);
+        GLOBALPARAMF(terrainblendwidth, float(terrainblendwidth));
+        GLOBALPARAMF(terrainblendstrength, terrainblendstrength * 0.01f);
+        if(msaasamples) GLOBALPARAMF(hashid, key.arraystate);
+        changetexgen(cur, key.orient, slot, vslot);
+        Shader *shader = lookupshaderbyname(pass == RENDERPASS_RSM ? "rsmblockarrayworld" : "blockarrayworld");
+        if(shader) shader->set(slot, vslot);
+        // Loose-path state caches must not retain uniforms overwritten above.
+        cur.colorscale = vec(-1, -1, -1);
+        cur.alphascale = -1;
+        cur.slot = NULL;
+        cur.vslot = NULL;
+        cur.globals = GlobalShaderParamState::nextversion;
+        return;
+    }
     changeslottmus(cur, pass, slot, vslot);
     if(slot.shader->type & SHADER_ENVMAP && !(slot.texmask & (1 << TEX_ENVMAP)))
     {
@@ -294,6 +314,7 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
         if(depth && !refractmask) SETSHADER(smworld);
         if(side == 1 && !shadow) glCullFace(GL_FRONT);
         enablevattribs(cur, attributes);
+        if(attributes) gle::enabletexcoord1();
     }
     GLuint vbo = 0, ebo = 0;
     worldmeshbatchkey previouskey;
@@ -325,6 +346,7 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
                 gle::normalpointer(sizeof(vertex), (void *)offsetof(vertex, norm), GL_BYTE);
                 gle::texcoord0pointer(sizeof(vertex), (void *)offsetof(vertex, tc), GL_FLOAT, 3);
                 gle::tangentpointer(sizeof(vertex), (void *)offsetof(vertex, tangent), GL_BYTE);
+                gle::texcoord1pointer(sizeof(vertex), (void *)offsetof(vertex, textureLayer), GL_UNSIGNED_SHORT, 3);
             }
         }
         if(ebo != batch->ebo)
@@ -346,9 +368,16 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
                 VSlot &vslot = lookupvslot(batch->key.texture);
                 Texture *diffuse = vslot.slot->sts.empty() ? notexture : vslot.slot->sts[0].t;
                 GLOBALPARAMF(worldmeshtexsize, float(diffuse->w), float(diffuse->h));
-                changeslottmus(cur, RENDERPASS_GBUFFER, *vslot.slot, vslot);
+                if(batch->key.texturearray)
+                {
+                    glActiveTexture_(GL_TEXTURE0);
+                    cur.tmu = 0;
+                    glBindTexture(GL_TEXTURE_2D_ARRAY, batch->key.texturearray);
+                }
+                else changeslottmus(cur, RENDERPASS_GBUFFER, *vslot.slot, vslot);
                 changetexgen(cur, batch->key.orient, *vslot.slot, vslot);
-                SETSHADER(smcutoutworld);
+                if(batch->key.texturearray) { SETSHADER(smblockarrayworld); }
+                else { SETSHADER(smcutoutworld); }
             }
             else SETSHADER(smworld);
         }
@@ -428,6 +457,7 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
     {
         ZoneScopedN("WorldMesh/Cleanup");
         disablevattribs(cur, attributes);
+        if(attributes) gle::disabletexcoord1();
         disablevbuf(cur);
         if(side == 1 && !shadow) glCullFace(GL_BACK);
         if(!refractmask) cleanupgeom(cur);

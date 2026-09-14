@@ -1563,7 +1563,6 @@ int main(int argc, char **argv)
 
         if(lastmillis)
         {
-            ZoneScopedN("Frame/World update");
             game::updateworld();
         }
 

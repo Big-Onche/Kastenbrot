@@ -744,6 +744,7 @@ namespace game
     void updateworld()
     {
 #ifndef STANDALONE
+        ZoneScopedN("World/Update");
         if(pendingnetworkworld)
         {
             const int seed = pendingnetworkseed, timemillis = pendingnetworktime;
@@ -777,8 +778,7 @@ namespace game
             vec worldspawn;
             float worldspawnyaw = 0, worldspawnpitch = 0;
             if(getpreparedworldspawn(worldspawn, worldspawnyaw, worldspawnpitch))
-                addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF),
-                       int(worldspawnyaw), int(worldspawnpitch));
+                addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF), int(worldspawnyaw), int(worldspawnpitch));
             else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
             requestworldchunk(0, 0);
         }

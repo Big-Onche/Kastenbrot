@@ -67,6 +67,7 @@ struct worldscattermeshvertex
     vec position, normal;
     vec2 texcoord;
     bvec4 color;
+    ushort textureLayer = 0;
 
     worldscattermeshvertex(const vec &position = vec(0, 0, 0), const vec &normal = vec(0, 0, 1), const vec2 &texcoord = vec2(0, 0))
         : position(position), normal(normal), texcoord(texcoord), color(255, 255, 255, 255)
@@ -80,6 +81,7 @@ struct worldscattermeshbatch
     int offset, length;
     bool rigid;
     float alphatest;
+    GLuint texturearray = 0;
 
     worldscattermeshbatch(Texture *texture = NULL, int offset = 0, int length = 0, bool rigid = false, float alphatest = -1)
         : texture(texture), offset(offset), length(length), rigid(rigid), alphatest(alphatest)
@@ -94,6 +96,7 @@ struct worldscattermesh
     ivec bbmin, bbmax;
     vector<worldscattermeshbatch> batches;
     bool dirty, boundsvalid, hascacti;
+    uint arraygeneration = 0;
 
     worldscattermesh(int chunkx, int chunky, int tile, int section)
         : chunkx(chunkx), chunky(chunky), tile(tile), section(section), instances(0), grasses(0), flowers(0), vbo(0), ebo(0), bbmin(0, 0, 0),
@@ -387,6 +390,49 @@ static void addworldcactusgeometry(const worldscatterinstance &scatter, int part
     }
 }
 
+static void batchworldscatterarrays(worldscattermesh &mesh, vector<worldscattermeshvertex> &vertices, vector<uint> &indices)
+{
+    loopv(mesh.batches)
+    {
+        worldscattermeshbatch &batch = mesh.batches[i];
+        ushort layer = 0;
+        batch.texturearray = lookupblocktexturearray(batch.texture, BLOCKARRAY_SCATTER, layer);
+        loopj(batch.length) vertices[indices[batch.offset + j]].textureLayer = layer;
+    }
+    struct order
+    {
+        static bool compare(const worldscattermeshbatch &a, const worldscattermeshbatch &b)
+        {
+            if(a.texturearray != b.texturearray) return a.texturearray < b.texturearray;
+            if(!a.texturearray && a.texture != b.texture) return a.texture->id < b.texture->id;
+            if(a.rigid != b.rigid) return a.rigid < b.rigid;
+            if(a.alphatest != b.alphatest) return a.alphatest < b.alphatest;
+            return a.offset < b.offset;
+        }
+    };
+    mesh.batches.sort(order::compare);
+    vector<worldscattermeshbatch> batches;
+    vector<uint> grouped;
+    loopv(mesh.batches)
+    {
+        const worldscattermeshbatch &source = mesh.batches[i];
+        if(batches.empty() || source.texturearray != batches.last().texturearray ||
+           (!source.texturearray && source.texture != batches.last().texture) ||
+           source.rigid != batches.last().rigid || source.alphatest != batches.last().alphatest)
+        {
+            worldscattermeshbatch &batch = batches.add(source);
+            batch.offset = grouped.length();
+            batch.length = 0;
+        }
+        grouped.put(indices.getbuf() + source.offset, source.length);
+        batches.last().length += source.length;
+    }
+    mesh.batches.setsize(0);
+    mesh.batches.move(batches);
+    indices.setsize(0);
+    indices.move(grouped);
+}
+
 static void rebuildworldscattermesh(worldscattermesh &mesh, const worldchunk &chunk)
 {
     vector<worldscattermeshvertex> vertices;
@@ -454,6 +500,8 @@ static void rebuildworldscattermesh(worldscattermesh &mesh, const worldchunk &ch
         return;
     }
 
+    batchworldscatterarrays(mesh, vertices, indices);
+    mesh.arraygeneration = getblocktexturearraygeneration();
     if(!mesh.vbo) glGenBuffers_(1, &mesh.vbo);
     if(!mesh.ebo) glGenBuffers_(1, &mesh.ebo);
     gle::bindvbo(mesh.vbo);
@@ -529,6 +577,7 @@ static void drawworldscattermeshes(bool shadow)
     glDisable(GL_CULL_FACE);
     gle::enablevertex();
     gle::enabletexcoord0();
+    gle::enabletexcoord1();
     if(!shadow) { gle::enablenormal(); gle::enablecolor(); }
     loopv(worldscattermeshes)
     {
@@ -537,6 +586,7 @@ static void drawworldscattermeshes(bool shadow)
         if(!worldchunks.inrange(chunkindex)) continue;
         const worldchunk &chunk = worldchunks[chunkindex];
         if(shadow ? !worldscattermeshshadowvisible(mesh, chunk) : !worldscattermeshvisible(mesh, chunk)) continue;
+        if(mesh.arraygeneration != getblocktexturearraygeneration()) mesh.dirty = true;
         if(mesh.dirty) rebuildworldscattermesh(mesh, chunk);
         if(!mesh.vbo || !mesh.ebo || mesh.batches.empty()) continue;
 
@@ -547,6 +597,7 @@ static void drawworldscattermeshes(bool shadow)
         const worldscattermeshvertex *pointer = 0;
         gle::vertexpointer(sizeof(worldscattermeshvertex), pointer->position.v);
         gle::texcoord0pointer(sizeof(worldscattermeshvertex), pointer->texcoord.v);
+        gle::texcoord1pointer(sizeof(worldscattermeshvertex), (void *)offsetof(worldscattermeshvertex, textureLayer), GL_UNSIGNED_SHORT, 1);
         if(!shadow)
         {
             gle::normalpointer(sizeof(worldscattermeshvertex), pointer->normal.v);
@@ -555,9 +606,18 @@ static void drawworldscattermeshes(bool shadow)
         loopvj(mesh.batches)
         {
             const worldscattermeshbatch &batch = mesh.batches[j];
+            Shader *batchshader = batch.texturearray ? lookupshaderbyname(shadow ? "smscatterarray" : "scatterarrayworld") : shader;
+            if(!batchshader) continue;
+            batchshader->set();
+            if(!shadow)
+            {
+                LOCALPARAMF(colorparams, 1, 1, 1, 1);
+                LOCALPARAMF(texgenscroll, 0, 0);
+            }
             LOCALPARAMF(scatterparams, float(origin.x), float(origin.y), 0.0f, batch.rigid ? 0.0f : scattermeshwind);
             LOCALPARAMF(scatteralphatest, batch.alphatest >= 0 ? batch.alphatest : scattermeshalphatest);
-            glBindTexture(GL_TEXTURE_2D, batch.texture->id);
+            glBindTexture(batch.texturearray ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D,
+                          batch.texturearray ? batch.texturearray : batch.texture->id);
             glDrawElements(GL_TRIANGLES, batch.length, GL_UNSIGNED_INT, (uint *)0 + batch.offset);
             glde++;
             xtravertsva += batch.length;
@@ -573,6 +633,7 @@ static void drawworldscattermeshes(bool shadow)
     gle::clearebo();
     if(!shadow) { gle::disablenormal(); gle::disablecolor(); }
     gle::disabletexcoord0();
+    gle::disabletexcoord1();
     gle::disablevertex();
     glEnable(GL_CULL_FACE);
 }

@@ -580,6 +580,7 @@ struct Texture
     int type, w, h, xs, ys, bpp, clamp;
     bool mipmap, canreduce;
     GLuint id;
+    ullong sourcehash = 0;
     uchar *alphamask;
     bvec gialbedo;
     bool gialbedoready;

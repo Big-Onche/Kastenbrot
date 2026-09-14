@@ -774,16 +774,44 @@ int processworldmeshpackets(double budget, int uploadlimit)
                     range.envmap = slot.slot->shader->type & SHADER_ENVMAP ?
                                    (slot.slot->texmask & (1 << TEX_ENVMAP) ? EMID_CUSTOM :
                                     closestenvmap(range.orient, section.origin, WORLD_SECTION_SIZE)) : EMID_NONE;
-                    if(!terrainclimateslot(slot)) continue;
+                    const int mode = blocktexturemode(slot);
+                    ushort textureLayer = 0;
+                    if(!range.alpha && mode >= 0 && !slot.slot->sts.empty())
+                    {
+                        range.texturearray = lookupblocktexturearray(slot.slot->sts[0].t,
+                                                                    mode >= 5 ? BLOCKARRAY_CUTOUT : BLOCKARRAY_OPAQUE, textureLayer);
+                        if(range.texturearray)
+                        {
+                            range.arraystate = range.texture;
+                            // Canonical uniform state, independent of diffuse texture and climate shader.
+                            loopj(range.texture)
+                            {
+                                VSlot &candidate = lookupvslot(j);
+                                if(blocktexturemode(candidate) >= 0 && compatibleblocktexturestate(slot, candidate))
+                                {
+                                    range.arraystate = j;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    const bool climate = terrainclimateslot(slot);
                     loopj(range.count)
                     {
                         const uint index = job->packet.indices[range.first + j];
                         if(resolved[index]) continue;
                         resolved[index] = 1;
                         vertex &v = job->packet.vertices[index];
-                        v.tc.z = grassclimatevertex(v.pos, v.tc.z < 0);
+                        if(climate) v.tc.z = grassclimatevertex(v.pos, v.tc.z < 0);
+                        v.textureLayer = textureLayer;
+                        v.textureMode = max(mode, 0);
+                        v.textureSource = range.texture;
                     }
                 }
+                // Resolve per-source attributes before coalescing across texture identities.
+                const int sourceranges = job->packet.sourceranges;
+                groupworldmeshranges(job->packet);
+                job->packet.sourceranges = sourceranges;
                 worldmeshrange vertices, indices;
                 uploadworldmeshterrain(vertices, indices, job->packet.vertices, job->packet.indices);
                 releaseworldmeshsection(section);

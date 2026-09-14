@@ -1309,6 +1309,13 @@ static bool texturegialbedo(const ImageData &image, bvec &albedo)
     return true;
 }
 
+static ullong blocktexturehash(ullong hash, const void *data, int length)
+{
+    const uchar *bytes = (const uchar *)data;
+    loopi(length) hash = (hash ^ bytes[i]) * 1099511628211ULL;
+    return hash;
+}
+
 static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clamp = 0, bool mipit = true, bool canreduce = false, bool transient = false, int compress = 0, bool geometry = false)
 {
     if(!t)
@@ -1318,6 +1325,15 @@ static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clam
         t->name = key;
     }
 
+    // Include alpha merges and generated snow/grass variants before resizing.
+    t->sourcehash = 14695981039346656037ULL;
+    if(s.data && geometry)
+    {
+        const int layout[] = { s.w, s.h, s.bpp, s.levels, s.align, int(s.compressed) };
+        t->sourcehash = blocktexturehash(t->sourcehash, layout, sizeof(layout));
+        if(s.compressed) t->sourcehash = blocktexturehash(t->sourcehash, s.data, s.calcsize());
+        else loopi(s.h) t->sourcehash = blocktexturehash(t->sourcehash, s.data + i * s.pitch, s.w * s.bpp);
+    }
     t->clamp = clamp;
     t->mipmap = mipit;
     t->canreduce = canreduce;
@@ -1392,6 +1408,7 @@ static Texture *newtexture(Texture *t, const char *rname, ImageData &s, int clam
 
 static void updatetexturefilter(bool geometryonly)
 {
+    updateblocktexturearrayfilter();
     GLint oldtex = 0;
     bool changed = false;
     enumerate(textures, Texture, tex,
@@ -3409,8 +3426,11 @@ void cleanuptexture(Texture *t)
     if(t->type&Texture::TRANSIENT) textures.remove(t->name);
 }
 
+#include "texturearray.cpp"
+
 void cleanuptextures()
 {
+    cleanupblocktexturearrays();
     cleanupmipmaps();
     clearenvmaps();
     loopv(slots) slots[i]->cleanup();
@@ -3462,7 +3482,11 @@ void reloadtex(char *name)
         *t = oldtex;
         conoutf(CON_ERROR, "failed to reload texture %s", name);
     }
-    else game::reloaditemsprites();
+    else
+    {
+        reloadblocktexturearrays(t);
+        game::reloaditemsprites();
+    }
 }
 
 COMMAND(reloadtex, "s");
