@@ -54,7 +54,7 @@ namespace game
     struct worldgenerator
     {
         FastNoiseLite geology, hills, coastshape, coastdetail, covenoise, oceanregional, beachnoise, cliffnoise;
-        FastNoiseLite mountainrange, mountainnoise, mountainpeaks;
+        FastNoiseLite mountainrange, mountainnoise, mountainpeaks, foothillgeology;
         FastNoiseLite secondarysummita, secondarysummitb, hollowshape, foldnoise, clusenoise;
         FastNoiseLite terrainmicro, terrainmicromask, plainsroll, deeprock;
         FastNoiseLite tectonicnoise, tectonicwarp;

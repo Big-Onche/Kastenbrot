@@ -72,11 +72,11 @@ namespace game
     struct worldtectonicsample
     {
         float activity, landuplift, oceantrench, caveexpansion;
-        float terrainroughness, terrainstructure, rockyledge;
+        float terrainroughness, terrainstructure, rockyledge, grassplateau, grassplateaudetail, hillrock;
 
         worldtectonicsample()
             : activity(0), landuplift(0), oceantrench(0), caveexpansion(0),
-              terrainroughness(0), terrainstructure(0), rockyledge(0)
+              terrainroughness(0), terrainstructure(0), rockyledge(0), grassplateau(0), grassplateaudetail(0), hillrock(0)
         {
         }
     };
@@ -92,7 +92,7 @@ namespace game
         float terrainmicrofrequency, plainsmicrovariation, reliefmicrovariation;
         float secondarysummitheight, rockyledgeheight, clusedepth;
         float mountainchainfrequency, mountainlocalfrequency, mountainmaxamplitude;
-        float mountainthreshold, mountainwidth;
+        float mountainthreshold, mountainwidth, mountainspacing;
         float tectonicfrequency, tectonicwarpamplitude, tectonicridgepower;
         float tectonicactivitythreshold, maxlanduplift, maxoceansubsidence;
         float tectoniccavestrength, tectonicfracturestrength, coastprotectionwidth;

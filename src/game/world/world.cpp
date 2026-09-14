@@ -7,7 +7,7 @@
 
 VARP(worldseed, 0, 1337, INT_MAX);
 
-FVAR(worldgeologyfrequency, 0.00001f, 0.0012f, 0.1f);
+FVAR(worldgeologyfrequency, 0.00001f, 0.0009f, 0.1f);
 FVAR(worldmaxcontinentheight, 1.0f, 96.0f, 255.0f);
 FVAR(worldmaxoceandepth, 1.0f, 32.0f, 255.0f);
 FVAR(worldmegacontinentfrequency, 0.00001f, 0.00016f, 0.01f);
@@ -28,11 +28,12 @@ FVAR(worldreliefmicrovariation, 0.0f, 6.0f, 32.0f);
 FVAR(worldsecondarysummitheight, 0.0f, 14.0f, 64.0f);
 FVAR(worldrockyledgeheight, 0.0f, 5.0f, 24.0f);
 FVAR(worldclusedepth, 0.0f, 9.0f, 48.0f);
-FVAR(worldmountainchainfrequency, 0.00005f, 0.00058f, 0.01f);
-FVAR(worldmountainlocalfrequency, 0.0002f, 0.0035f, 0.05f);
+FVAR(worldmountainchainfrequency, 0.00005f, 0.0005f, 0.01f);
+FVAR(worldmountainlocalfrequency, 0.0002f, 0.003f, 0.05f);
 FVAR(worldmountainmaxamplitude, 0.0f, 250.0f, 255.0f);
 FVAR(worldmountainthreshold, 0.0f, 0.52f, 1.0f);
 FVAR(worldmountainwidth, 0.01f, 0.16f, 0.5f);
+FVAR(worldmountainspacing, 1.0f, 1.25f, 4.0f);
 
 FVAR(worldtectonicfrequency, 0.0001f, 0.0014f, 0.01f);
 FVAR(worldtectonicwarpamplitude, 0.0f, 64.0f, 512.0f);
@@ -103,6 +104,33 @@ namespace game
         if(high <= low) return value >= high ? 1.0f : 0.0f;
         const float t = clamp((value - low) / (high - low), 0.0f, 1.0f);
         return t * t * (3.0f - 2.0f * t);
+    }
+
+    static float grassplateauweight(float geology)
+    {
+        return smoothstep(0.05f, 0.45f, -geology);
+    }
+
+    static float hillrockweight(float detail, float micro)
+    {
+        // Small summit outcrops and a few recessed flank exposures, each in coherent multi-block patches.
+        return max(smoothstep(0.35f, 0.60f, micro) * smoothstep(0.05f, 0.40f, detail),
+                   0.65f * smoothstep(0.40f, 0.65f, -micro) * smoothstep(0.10f, 0.40f, -detail));
+    }
+
+    static float grassplateauheight(float height, float weight, float macro, float detail)
+    {
+        if(height <= 100.0f || height >= 150.0f || weight <= 0.0f) return height;
+        // Regional height and local rolls break up identical shelves. Every shoulder still ends inside 100-150.
+        const float variation = smoothstep(0.20f, 0.80f, macro),
+                    center = 110.0f + 30.0f * variation + (2.0f + 2.0f * variation) * detail,
+                    offset = height - center, span = offset < 0.0f ? center - 100.0f : 150.0f - center,
+                    width = 0.06f + 0.32f * smoothstep(-0.55f, 0.55f, detail),
+                    t = clamp((fabsf(offset) / span - width) / (1.0f - width), 0.0f, 1.0f),
+                    shoulder = span * t * t * ((2.0f + width) - (1.0f + width) * t),
+                    target = center + (offset < 0.0f ? -shoulder : shoulder);
+        // Retain at least a quarter of the original slope and microrelief, even in the strongest meadow patches.
+        return height + 0.75f * weight * (target - height);
     }
 
     static uint treespatialhash(uint seed, int x, int y, uint salt)
@@ -201,6 +229,7 @@ namespace game
           clusedepth(worldclusedepth),
           mountainchainfrequency(worldmountainchainfrequency), mountainlocalfrequency(worldmountainlocalfrequency),
           mountainmaxamplitude(worldmountainmaxamplitude), mountainthreshold(worldmountainthreshold), mountainwidth(worldmountainwidth),
+          mountainspacing(worldmountainspacing),
           tectonicfrequency(worldtectonicfrequency),
           tectonicwarpamplitude(worldtectonicwarpamplitude),
           tectonicridgepower(worldtectonicridgepower),
@@ -263,9 +292,11 @@ namespace game
         setupnoise(cliffnoise, seed ^ 0x4E91A73B, settings.macrocontinentfrequency * 2.5f, 1);
         // Long ridged chain envelopes gate all local mountain relief. Independent
         // local fields provide multiple peaks, valleys, saddles, and foothills.
-        setupnoise(mountainrange, seed ^ 0x18F47C53, settings.mountainchainfrequency * 0.55f, 1);
+        setupnoise(mountainrange, seed ^ 0x18F47C53, settings.mountainchainfrequency * 0.55f / settings.mountainspacing, 1);
         setupnoise(mountainnoise, seed ^ 0x3D72A95B, settings.mountainlocalfrequency, 3, 0.42f);
         setupnoise(mountainpeaks, seed ^ 0x25B46D81, settings.mountainlocalfrequency * 2.1f, 2, 0.36f);
+        // Reuse one independent octave at two scales for patchy foothills, smaller summits and rolling mountain meadows.
+        setupnoise(foothillgeology, seed ^ 0x53C91B27, settings.mountainlocalfrequency * 0.65f, 1);
         setupnoise(secondarysummita, seed ^ 0x41D7A2C9, settings.mountainlocalfrequency * 1.45f, 2, 0.40f);
         setupnoise(secondarysummitb, seed ^ 0x6B2E935D, settings.mountainlocalfrequency * 1.85f, 2, 0.40f);
         setupnoise(hollowshape, seed ^ 0x2C85F1B7, settings.mountainlocalfrequency * 0.75f, 2, 0.35f);
@@ -277,7 +308,7 @@ namespace game
         setupnoise(terrainmicromask, seed ^ 0x62E9B4D7, settings.terrainmicrofrequency * 0.25f, 2, 0.45f);
         setupnoise(plainsroll, seed ^ 0x39C6A17D, settings.terrainmicrofrequency * 0.35f, 2, 0.35f);
         setupnoise(deeprock, seed ^ 0x53B8D291, 0.015f, 1);
-        setupnoise(tectonicnoise, seed ^ 0x68E31DA4, settings.mountainchainfrequency, 1);
+        setupnoise(tectonicnoise, seed ^ 0x68E31DA4, settings.mountainchainfrequency / settings.mountainspacing, 1);
         setupwarp(tectonicwarp, seed ^ 0x6C8E9CF5, settings.tectonicfrequency * 0.8f, min(settings.tectonicwarpamplitude, 36.0f));
         setupnoise(biomeblend, seed ^ 0x13C6E91F, settings.biomeblend > 0 ? 1.0f / settings.biomeblend : 1.0f, 1);
         setupnoise(rockiness, seed ^ 0x5E4A19C3, settings.rockfrequency, 2);
@@ -385,11 +416,17 @@ namespace game
         float tectonicx = x + 10000.5f, tectonicy = y - 10000.5f;
         generator.tectonicwarp.DomainWarp(tectonicx, tectonicy);
 
-        const float ridge = powf(clamp(1.0f - fabs(generator.tectonicnoise.GetNoise(tectonicx, tectonicy)), 0.0f, 1.0f),
+        // Stretch the chain spacing, then partially compensate the profile to retain typical ridge widths.
+        // Full linear compensation narrows the shoulders of the curved noise belts too much.
+        // Local summit/shoulder frequencies stay unchanged; spacing does not shrink the individual mountains.
+        const float ridgewidth = powf(settings.mountainspacing, 0.75f),
+                    ridge = powf(clamp(1.0f - ridgewidth * fabs(generator.tectonicnoise.GetNoise(tectonicx, tectonicy)), 0.0f, 1.0f),
                                  max(settings.tectonicridgepower * 0.65f, 0.1f)),
                     noisex = x + 10000.5f, noisey = y - 10000.5f,
                     broadchain = clamp(generator.mountainrange.GetNoise(noisex, noisey) * 0.5f + 0.5f, 0.0f, 1.0f),
-                    chainstrength = clamp(0.78f * ridge + 0.22f * broadchain, 0.0f, 1.0f);
+                    chainstrength = clamp(0.78f * ridge + 0.22f * broadchain, 0.0f, 1.0f),
+                    localgeology = generator.foothillgeology.GetNoise(noisex, noisey),
+                    geologydetail = generator.foothillgeology.GetNoise(noisex * 2.7f + 1731.0f, noisey * 2.7f - 2917.0f);
 
         worldtectonicsample sample;
         sample.activity = smoothstep(settings.tectonicactivitythreshold, min(settings.tectonicactivitythreshold + 0.35f, 1.0f),
@@ -427,13 +464,23 @@ namespace game
                     mainridges = 0.52f * powf(mountainregion, 1.55f) * (0.24f + 0.76f * primaryridge),
                     surroundingpeaks = 0.24f * powf(mountainregion, 2.0f) * secondaryridge * (0.30f + 0.70f * primaryridge),
                     localsummits = 0.19f * powf(summitregion, 2.4f) * powf(primaryridge * secondaryridge, 1.15f),
-                    mountainrelief = foothills + mainridges + surroundingpeaks + localsummits,
+                    // Positive patches grow low satellite summits around the belts, fading before their main crests.
+                    // Other patches add no relief, retaining direct transitions from plains into mountains.
+                    hillpatch = smoothstep(0.0f, 0.40f + 0.30f * hill, localgeology + 0.20f * geologydetail),
+                    ridgefringe = smoothstep(configuredthreshold - footwidth * 3.5f,
+                                            configuredthreshold - footwidth * 0.75f, chainstrength) *
+                                  (1.0f - smoothstep(0.25f, 0.85f, mountainregion)),
+                    satellitehills = (0.08f + 0.16f * hill) * ridgefringe * hillpatch * hillpatch *
+                                     (0.55f + 0.45f * smoothstep(-0.55f, 0.55f, geologydetail)),
+                    mountainrelief = foothills + mainridges + surroundingpeaks + localsummits + satellitehills,
                     amplitudeconversion = settings.maxlanduplift > 0.0f ? settings.mountainmaxamplitude / settings.maxlanduplift : 0.0f,
                     trenchpotential = sample.activity * deepoceanmask;
 
         // Overlapping ridges can exceed the nominal uplift. Preserve their contours here;
         // the final surface approaches the world ceiling smoothly after all relief is added.
         sample.landuplift = max(landmask * (backgroundrelief + amplitudeconversion * mountainrelief), 0.0f);
+        sample.grassplateau = grassplateauweight(localgeology);
+        sample.grassplateaudetail = geologydetail;
         sample.terrainroughness = clamp(landmask * (0.22f * hillregion + 0.52f * mountainregion + 0.26f * summitregion)
                                             * (0.72f + 0.28f * max(primaryridge, secondaryridge)),
                                         0.0f, 1.0f);
@@ -475,6 +522,18 @@ namespace game
                                     - settings.rockyledgeheight * 0.35f * structuralzone * hollowcore
                                     - settings.clusedepth * cluse;
             sample.rockyledge = clamp(ledge, 0.0f, 1.0f);
+        }
+        const float hillzone = landmask * ridgefringe * hillpatch;
+        if(hillzone > 0.001f && settings.mountainmaxamplitude > 0.0f && settings.maxlanduplift > 0.0f)
+        {
+            // Broad top/side rolls use existing fields; only the small outcrops need a finer sample.
+            const float micro = generator.terrainmicro.GetNoise(noisex, noisey),
+                        peakfoot = smoothstep(0.05f, 0.55f, micro) * smoothstep(0.0f, 0.40f, geologydetail),
+                        peakcore = smoothstep(0.35f, 0.65f, micro),
+                        smallpeak = peakfoot * (2.0f + 5.0f * peakcore),
+                        rolls = 8.0f * geologydetail + 3.0f * (secondaryridge - primaryridge);
+            sample.terrainstructure += hillzone * min(settings.mountainmaxamplitude / 160.0f, 1.0f) * (rolls + smallpeak);
+            sample.hillrock = hillzone * hillrockweight(geologydetail, micro);
         }
         sample.oceantrench = clamp(trenchpotential * powf(sample.activity, 0.35f), 0.0f, 1.0f);
 
@@ -685,6 +744,9 @@ namespace game
             elevation += cold * (max(target, minimumelevation) - elevation);
             // Only the beach terraces may fall below sea level +2, including after relief and microvariation.
             elevation = max(elevation, minimumelevation);
+            // Shape the completed surface into varied, gently rolling meadows while retaining some fine relief.
+            elevation = grassplateauheight(settings.sealevel + elevation, tectonicsample.grassplateau,
+                                          hill, tectonicsample.grassplateaudetail) - settings.sealevel;
         }
         else
         {
@@ -1376,10 +1438,26 @@ namespace game
     {
         const float low = min(settings.stonelow, settings.stonehigh);
         const float high = max(settings.stonelow, settings.stonehigh);
-        if(height <= low) return false;
         if(height >= high) return true;
 
-        const float rockweight = smoothstep(low, high, height);
+        if(height > settings.sealevel + 8)
+        {
+            // Reject most columns cheaply; only potential outcrops need the full ridge/fringe mask.
+            const float noisex = x + 10000.5f, noisey = y - 10000.5f,
+                        micro = terrainmicro.GetNoise(noisex, noisey);
+            if(micro > 0.35f || micro < -0.40f)
+            {
+                const float detail = foothillgeology.GetNoise(noisex * 2.7f + 1731.0f, noisey * 2.7f - 2917.0f);
+                if(hillrockweight(detail, micro) > 0.22f && tectonics(x, y).hillrock > 0.22f) return true;
+            }
+        }
+        if(height <= low) return false;
+
+        // Reuse the same single-octave field as the terrace; retain the normal climate-dependent soil/snow rules.
+        const float meadow = height > 100 && height < 150 ?
+                        grassplateauweight(foothillgeology.GetNoise(x + 10000.5f, y - 10000.5f)) *
+                        smoothstep(100.0f, 108.0f, height) * (1.0f - smoothstep(142.0f, 150.0f, height)) : 0.0f,
+                    rockweight = smoothstep(low, high, height) * (1.0f - meadow);
         const float selector = clamp(rockiness.GetNoise(x + 10000.5f, y - 10000.5f) * 1.25f + 0.5f, 0.0f, 1.0f);
         return rockweight > selector;
     }
