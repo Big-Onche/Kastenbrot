@@ -15,6 +15,7 @@ gold.png
 grass.png
 grass_dirt.png
 iron.png
+light_wood_plank.png
 moon_dust_block.png
 rose.png
 sand.png
@@ -28,6 +29,8 @@ wood_plank.png
 Source: https://opengameart.org/content/assorted-minecraft-style-textures
 
 Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed
+birch_wood
+birch_wood_top
 cactus_bottom.png
 cactus_side.png
 cacuts_top.png
@@ -40,7 +43,9 @@ iron_block.png - Based on JoeEnderman's work
 leaves.png
 moon_dust.png
 moonstone.png - Based on JoeEnderman's work
-needles.pg
+needles.png
+palm_leaves.png
+palm_wood.png
 peridotitis.png
 sandstone_brick.png - Based on JoeEnderman's work
 stoe.png

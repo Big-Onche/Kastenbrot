@@ -47,7 +47,7 @@ struct worldmeshsnapshot
         worldmeshtexture &copy = textures.add();
         copy.index = index;
         const char *shader = slot.slot->shader->name;
-        copy.leaf = !strcmp(shader, "leafworld") || !strcmp(shader, "leafclimateworld");
+        copy.leaf = !strcmp(shader, "leafworld") || !strcmp(shader, "leafclimateworld") || !strcmp(shader, "birchleafclimateworld");
         copy.cutout = copy.leaf || !strcmp(shader, "scatterworld");
         copy.refractive = slot.refractscale > 0;
         // Match legacy O_ANY batching, but retain face direction when selecting

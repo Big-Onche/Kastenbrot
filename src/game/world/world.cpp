@@ -150,9 +150,13 @@ namespace game
         return 1.0f - (1.0f - clamp(chance, 0.02f, 0.96f)) * broadleaf;
     }
 
-    int treefinalheight(bool pine, float temperature, uint shape)
+    int treefinalheight(int species, float temperature, uint shape)
     {
-        if(!pine) return 4 + int((shape >> 24) % 3U);
+        if(species == TREE_PALM) return 7 + int((shape >> 24) % 4U);
+        if(species == TREE_BIRCH) return 5 + int((shape >> 24) % 3U);
+        if(species == TREE_POPLAR) return 15 + int((shape >> 24) & 1U); // Including the leafy tip: 11--12 blocks.
+        if(species == TREE_PINE) return 6 + int((shape >> 24) % 3U);
+        else return 4 + int((shape >> 24) % 3U); // regular ones
         if(temperature <= -4.0f) return 4 + int((shape >> 24) & 1U);
         if(temperature <= 1.5f) return 5 + int((shape >> 24) % 3U);
         return 6 + int((shape >> 24) & 3U);
@@ -1242,7 +1246,7 @@ namespace game
         return iceformation(x, y, height, bottom, top);
     }
 
-    int worldgenerator::surfacematerial(int x, int y, int height) const
+    int worldgenerator::surfacematerial(int x, int y, int height, const BiomeSample *climate) const
     {
         const vec position(
             float(x) * worldclimate::BLOCK_UNITS,
@@ -1250,7 +1254,7 @@ namespace game
             worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS
         );
 
-        const BiomeSample sample = sampleBiome(position);
+        const BiomeSample sample = climate ? *climate : sampleBiome(position);
         const worldwatersample water = surface(x, y);
 
         // water / frozen water
@@ -1388,9 +1392,9 @@ namespace game
     {
         int x, y, base, height;
         uint priority, shape;
-        bool pine;
+        int species;
 
-        queriedworldtree() : x(0), y(0), base(0), height(0), priority(0), shape(0), pine(false) {}
+        queriedworldtree() : x(0), y(0), base(0), height(0), priority(0), shape(0), species(TREE_REGULAR) {}
     };
 
     float treesuitability(float temperature, float humidity)
@@ -1401,98 +1405,285 @@ namespace game
                (1.0f - 0.98f * hotdry);
     }
 
-    float worldgenerator::treedensity(int x, int y, int height) const
+    static float woodlanddensity(const worldgenerator &generator, int x, int y, int height, const BiomeSample &sample, float freshwater)
     {
-        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
-                           worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
-        const BiomeSample sample = sampleBiome(position);
         const float suitability = treesuitability(sample.temperature, sample.humidity);
-        if(suitability <= 0.0f || settings.basetreedensity <= 0.0f) return 0.0f;
+        if(suitability <= 0.0f || generator.settings.basetreedensity <= 0.0f) return 0.0f;
 
         // Continuous fields create connected woods and clearings without rectangular patch boundaries.
         const float noisex = x + 10000.5f, noisey = y - 10000.5f,
-                    broad = vegetationvariation.GetNoise(noisex * 0.28f + 1731.0f, noisey * 0.28f - 2917.0f),
-                    local = vegetationvariation.GetNoise(noisex, noisey),
+                    broad = generator.vegetationvariation.GetNoise(noisex * 0.28f + 1731.0f, noisey * 0.28f - 2917.0f),
+                    local = generator.vegetationvariation.GetNoise(noisex, noisey),
                     patch = clamp(0.5f + 0.80f * broad + 0.25f * local, 0.0f, 1.0f);
-        const worldtectonicsample relief = tectonics(x, y);
-        const float altitude = float(height - settings.sealevel),
+        const worldtectonicsample relief = generator.tectonics(x, y);
+        const float altitude = float(height - generator.settings.sealevel),
                     foothills = smoothstep(0.10f, 0.48f, relief.terrainroughness) * smoothstep(4.0f, 24.0f, altitude),
                     mountainbelt = max(foothills, smoothstep(28.0f, 65.0f, altitude)),
                     // Freshwater improves the odds, but neither requires nor guarantees a forest.
-                    freshwater = hydrology->moisture(float(x), float(y), float(height)),
                     woodland = smoothstep(0.38f - 0.22f * mountainbelt, 0.70f - 0.20f * mountainbelt, patch),
                     scattered = 0.12f + 0.20f * smoothstep(-0.5f, 0.5f, local),
                     densityfactor = scattered + (3.0f + 2.0f * mountainbelt) * woodland,
                     waterbonus = 1.0f + 0.45f * freshwater,
                     // The climate already includes altitude cooling; rock masks leave exposed summits bare.
-                    density = settings.basetreedensity * suitability * densityfactor * waterbonus;
+                    density = generator.settings.basetreedensity * suitability * densityfactor * waterbonus;
 
         return clamp(density, 0.0f, 1.0f);
     }
 
-    static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
+    bool worldgenerator::treeweights(int x, int y, int height, const BiomeSample &sample, float (&weights)[TREE_SPECIES_COUNT], int material, float spawn) const
     {
-        worldtectonicsample terrain;
-        const int height = generator.height(x, y, &terrain),
-                  biome = generator.surfacematerial(x, y, height);
+        loopi(TREE_SPECIES_COUNT) weights[i] = 0;
+        if(settings.basetreedensity <= 0) return false;
+        const float freshwater = hydrology->moisture(float(x), float(y), float(height)),
+                    hot = smoothstep(18.0f, 30.0f, sample.temperature),
+                    palmmoisture = smoothstep(25.0f, 50.0f, sample.humidity),
+                    dry = 1.0f - smoothstep(30.0f, 60.0f, sample.humidity),
+                    humid = smoothstep(35.0f, 80.0f, sample.humidity),
+                    temperate = smoothstep(-2.0f, 6.0f, sample.temperature) * (1.0f - smoothstep(18.0f, 28.0f, sample.temperature));
+        float palm = 0;
+        if(hot > 0 && palmmoisture > 0)
+        {
+            ZoneScopedN("Trees/Palm suitability");
+            const float patch = clamp(0.5f + vegetationvariation.GetNoise(x * 0.28f + 4531.0f, y * 0.28f - 713.0f), 0.0f, 1.0f),
+                        grove = smoothstep(0.48f, 0.78f, patch);
+            float coastal = 0;
+            if(settings.coastwidth > 0)
+            {
+                // coast() raster-searches a large neighbourhood and invokes height() at every point.
+                // Species suitability uses the same fixed-cost distance field as terrain and climate instead.
+                const float noisex = x + 10000.5f, noisey = y - 10000.5f,
+                            continental = samplecontinental(*this, noisex, noisey),
+                            distance = samplecoastdistance(*this, noisex, noisey, continental),
+                            configuredwidth = max(settings.coastwidth + biomeblend.GetNoise(noisex, noisey) * settings.coastvariation, 0.0f),
+                            width = max(configuredwidth, coasttransitionwidth(x, y));
+                coastal = 1.0f - smoothstep(width * 0.5f, max(width, 1.0f), distance);
+            }
+            // Local humidity includes freshwater influence; even oases must clear the survival threshold.
+            palm = hot * palmmoisture * (0.004f + 0.22f * coastal * grove + 0.012f * dry * grove +
+                                        (0.20f + 0.60f * dry) * freshwater * freshwater);
+        }
+        if(material < 0) material = surfacematerial(x, y, height, &sample);
+        const bool sand = material == WORLD_BIOME_DESERT;
+        const int beachmin = settings.sealevel + min(settings.beachminheight, settings.beachmaxheight),
+                  beachmax = settings.sealevel + max(settings.beachminheight, settings.beachmaxheight);
+        const bool shoreband = settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, settings.sealevel + 2);
+        weights[TREE_PALM] = min(settings.basetreedensity * palm * (sand ? 0.15f : 1.0f), sand ? 0.012f : 0.035f);
+        if(sand || shoreband) return spawn < weights[TREE_PALM];
 
-        if(height < generator.surface(x, y).water) return false;
+        const float density = woodlanddensity(*this, x, y, height, sample, freshwater);
+        // Species partition the woodland density without changing its total. Reject before the four
+        // neighbouring height samples and pine/species calculations. Leave a margin for float summation.
+        if(spawn >= density + weights[TREE_PALM] + 0.000001f) return false;
 
-        const bool growable = biome == WORLD_BIOME_PLAINS || biome == WORLD_MOSS || biome == WORLD_SNOWY_GRASS ||
-                              biome == WORLD_FROZEN_DIRT || biome == WORLD_FROZEN_MOSS || biome == WORLD_BIOME_SNOW;
+        const float savanna = smoothstep(20.0f, 28.0f, sample.temperature) * (1.0f - smoothstep(35.0f, 55.0f, sample.humidity));
+        const float pine = treepinechance(settings, sample, uint(seed), x, y, height) * (1.0f - savanna),
 
-        if(!growable) return false;
+                    open = 1.0f - smoothstep(0.7f, 2.4f, density / settings.basetreedensity),
+                    poplarhabitat = temperate * humid * open,
+                    left = poplarhabitat > 0 ? this->height(x - 4, y) : height,
+                    right = poplarhabitat > 0 ? this->height(x + 4, y) : height,
+                    down = poplarhabitat > 0 ? this->height(x, y - 4) : height,
+                    up = poplarhabitat > 0 ? this->height(x, y + 4) : height,
+                    basin = clamp((left + right + down + up - 4.0f * height) / 12.0f, 0.0f, 1.0f),
+                    flat = 1.0f - smoothstep(2.0f, 10.0f, fabsf(right - left) + fabsf(up - down)),
+                    exposure = clamp(0.5f + ((right - left) * 0.9701425f + (up - down) * 0.2425356f) / 16.0f, 0.0f, 1.0f),
+                    wind = clamp(exposure * 0.6f + (coldregions.GetNoise(float(x), float(y)) * 0.5f + 0.5f) * 0.4f, 0.0f, 1.0f),
+                    birch = (0.04f + 0.24f * humid) * temperate,
+                    poplar = min(0.40f, temperate * humid * open * (0.12f + 0.28f * wind) * (0.35f + 0.65f * max(flat, max(basin, freshwater))));
 
-        const int beachmin = generator.settings.sealevel + min(generator.settings.beachminheight, generator.settings.beachmaxheight),
-                  beachmax = generator.settings.sealevel + max(generator.settings.beachminheight, generator.settings.beachmaxheight),
-                  coasttreemax = generator.settings.sealevel + 2;
+        // Birch is at most 28% of the non-pine population, even in the wettest suitable forest.
+        weights[TREE_PINE] = density * pine;
+        weights[TREE_BIRCH] = density * (1.0f - pine) * birch;
+        weights[TREE_POPLAR] = density * (1.0f - pine) * poplar;
+        weights[TREE_REGULAR] = density * (1.0f - pine) * (1.0f - birch - poplar);
+        return true;
+    }
 
-        if(generator.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax)) return false;
+    float worldgenerator::treedensity(int x, int y, int height) const
+    {
+        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                           worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
+        float weights[TREE_SPECIES_COUNT], density = 0;
+        treeweights(x, y, height, sampleBiome(position), weights);
+        loopi(TREE_SPECIES_COUNT) density += weights[i];
+        return clamp(density, 0.0f, 1.0f);
+    }
 
-        bool cliffface = false;
-        generator.cliff(x, y, height, &cliffface);
-        if(terrain.rockyledge > 0.22f || cliffface || generator.rock(x, y, height)) return false;
+    bool treewood(int type)
+    {
+        return type == WORLD_TREE_WOOD || type == WORLD_TREE_DARK_WOOD || type == WORLD_TREE_PALM_WOOD || type == WORLD_TREE_BIRCH_WOOD;
+    }
 
-        const float density = generator.treedensity(x, y, height);
+    const char *treeblockname(int type)
+    {
+        static const char * const names[] =
+        {
+            "air", "wood", "dark_wood", "leaves", "needles", "palm_wood", "birch_wood", "palm_leaves", "birch_leaves"
+        };
+        return type >= 0 && type < WORLD_TREE_BLOCK_COUNT ? names[type] : "air";
+    }
 
+    int treeshaperadius(int species)
+    {
+        return species == TREE_PALM ? TREE_RADIUS : species == TREE_PINE ? 3 : species == TREE_POPLAR ? 1 : 2;
+    }
+
+    int treeshapeblock(int species, int height, uint shape, int x, int y, int z)
+    {
+        if(z < 0 || z > height) return WORLD_TREE_AIR;
+        if(species == TREE_PALM)
+        {
+            const int direction = (shape >> 8) & 3U, lean = 1 + int((shape >> 10) & 1U),
+                      dx = direction == 0 ? 1 : direction == 1 ? -1 : 0,
+                      dy = direction == 2 ? 1 : direction == 3 ? -1 : 0,
+                      bend = max(0, z - height / 3) * lean / max(1, height - 1 - height / 3),
+                      previous = max(0, z - 1 - height / 3) * lean / max(1, height - 1 - height / 3);
+            // Horizontal bridge cubes keep every stepped lean face-connected for foliage support.
+            if(z < height && ((x == dx * bend && y == dy * bend) || (x == dx * previous && y == dy * previous)))
+                return WORLD_TREE_PALM_WOOD;
+            x -= dx * lean;
+            y -= dy * lean;
+            if(z == height && abs(x) + abs(y) <= 1 + int((shape >> 12) & 1U)) return WORLD_TREE_PALM_LEAVES;
+            const int reachx = 2 + int((shape >> 13) & 1U), reachy = 2 + int((shape >> 14) & 1U),
+                      distance = max(abs(x), abs(y));
+            const bool frond = (y == 0 && abs(x) <= reachx) || (x == 0 && abs(y) <= reachy) ||
+                               (((shape >> 15) & 1U) && abs(x) <= 2 && abs(y) <= 2);
+            if(frond && ((distance <= 2 && z == height - 1) || (distance >= 2 && z == height - 2)))
+                return WORLD_TREE_PALM_LEAVES;
+            return WORLD_TREE_AIR;
+        }
+        if(species == TREE_POPLAR)
+        {
+            const int bottom = 2 + int((shape >> 11) & 1U),
+                      trunkheight = height - 3 + int((shape >> 12) & 1U),
+                      notch = bottom + 2 + int((shape >> 13) & 1U);
+            if(!x && !y && z < trunkheight) return WORLD_TREE_WOOD;
+            if(z < bottom || abs(x) > 1 || abs(y) > 1) return WORLD_TREE_AIR;
+            // Full three-block-wide tufts alternate with narrow, connected leafy sections near the tip.
+            // The trunk stops inside the crown, leaving several foliage-only levels above it.
+            if(z == height) return !x && !y ? WORLD_TREE_LEAVES : WORLD_TREE_AIR;
+            if(z == height - 2 || z == notch)
+            {
+                const bool shoulder = ((shape >> 14) & 1U) &&
+                                      (((shape >> 15) & 1U) ? !x : !y) && abs(x) + abs(y) == 1;
+                return (!x && !y) || shoulder ? WORLD_TREE_LEAVES : WORLD_TREE_AIR;
+            }
+            // Occasionally soften a lower tuft's corners while keeping the upper leafy cap full.
+            if(z < height - 3 && abs(x) == 1 && abs(y) == 1 &&
+               (worldtreehash(shape, x, y, z, height, 0x50F1A2B3U) & 3U) == 0) return WORLD_TREE_AIR;
+            return WORLD_TREE_LEAVES;
+        }
+        if(!x && !y && z < height) return species == TREE_PINE ? WORLD_TREE_DARK_WOOD :
+                                                         species == TREE_BIRCH ? WORLD_TREE_BIRCH_WOOD : WORLD_TREE_WOOD;
+        if(species == TREE_PINE)
+        {
+            if(z == height) return !x && !y ? WORLD_TREE_NEEDLES : WORLD_TREE_AIR;
+            const int radius = min(3, 1 + (height - z) / 3);
+            return z >= 2 && abs(x) <= radius && abs(y) <= radius && abs(x) + abs(y) <= radius + 1 ?
+                   WORLD_TREE_NEEDLES : WORLD_TREE_AIR;
+        }
+        const int bottom = height - 2 - (species == TREE_BIRCH ? int((shape >> 11) & 1U) : 0),
+                  radius = z == height ? 1 : 2;
+        if(z < bottom || abs(x) > radius || abs(y) > radius) return WORLD_TREE_AIR;
+        if(radius == 2 && abs(x) == 2 && abs(y) == 2 && (worldtreehash(shape, x, y, z, height, 0xA511E9B3U) & 1U))
+            return WORLD_TREE_AIR;
+        return species == TREE_BIRCH ? WORLD_TREE_BIRCH_LEAVES : WORLD_TREE_LEAVES;
+    }
+
+    static bool sampleworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
+    {
         const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64,
                   chunky = y >= 0 ? y / 64 : (y - 63) / 64,
-                  blockx = x - chunkx * 64,
-                  blocky = y - chunky * 64;
-
+                  blockx = x - chunkx * 64, blocky = y - chunky * 64;
         const uint spawn = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0xD1B54A35U);
+        // Bound woodland (5.32 * 1.45) plus palms before any height/hydrology query.
+        // This only skips impossible candidates; it does not change spatial decisions.
+        if(generator.settings.basetreedensity <= 0 ||
+           worldtreeunit(spawn) >= min(1.0f, generator.settings.basetreedensity * 7.715f) + 0.045f) return false;
+        const int height = generator.height(x, y);
+        if(height < generator.surface(x, y).water) return false;
+        const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
+                           worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
+        const BiomeSample sample = generator.sampleBiome(position);
+        const int material = generator.surfacematerial(x, y, height, &sample);
+        if(material != WORLD_BIOME_PLAINS && material != WORLD_MOSS && material != WORLD_SNOWY_GRASS &&
+           material != WORLD_FROZEN_DIRT && material != WORLD_FROZEN_MOSS && material != WORLD_BIOME_SNOW &&
+           material != WORLD_BIOME_DESERT) return false;
+
+        float weights[TREE_SPECIES_COUNT], density = 0;
+        if(!generator.treeweights(x, y, height, sample, weights, material, worldtreeunit(spawn))) return false;
+        loopi(TREE_SPECIES_COUNT) density += weights[i];
+
         if(worldtreeunit(spawn) >= density) return false;
+
+        // Surface masks are independent of density. Evaluate them only for surviving candidates.
+        bool cliffface = false;
+        generator.cliff(x, y, height, &cliffface);
+        if(generator.tectonics(x, y).rockyledge > 0.22f || cliffface || generator.rock(x, y, height)) return false;
 
         const uint shape = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0x94D049BBU);
 
-        const vec treepos(
-            float(x) * worldclimate::BLOCK_UNITS,
-            float(y) * worldclimate::BLOCK_UNITS,
-            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS
-        );
-
-        const BiomeSample sample = generator.sampleBiome(treepos);
-        const float pinechance = treepinechance(generator.settings, sample, uint(generator.seed), x, y, height);
+        float selection = worldtreeunit(shape) * density;
+        tree.species = TREE_REGULAR;
+        loopi(TREE_SPECIES_COUNT)
+        {
+            selection -= weights[i];
+            if(selection < 0) { tree.species = i; break; }
+        }
 
         tree.x = x;
         tree.y = y;
         tree.base = 256 + height;
-        tree.pine = worldtreeunit(shape) < pinechance;
-        tree.height = treefinalheight(tree.pine, sample.temperature, shape);
+        tree.height = treefinalheight(tree.species, sample.temperature, shape);
         tree.priority = spawn;
         tree.shape = shape;
 
         return tree.base + tree.height < 512;
     }
 
+    static bool queryworldtreecandidate(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
+    {
+        const ivec key(x, y, 0);
+        const worldgenerator::treequery *cached = generator.treecandidatecache.access(key);
+        if(!cached)
+        {
+            if(generator.treecandidatecache.numelems >= 1 << 16) generator.treecandidatecache.clear();
+            worldgenerator::treequery result;
+            result.valid = sampleworldtreecandidate(generator, x, y, tree);
+            if(result.valid)
+            {
+                result.base = tree.base;
+                result.height = tree.height;
+                result.species = tree.species;
+                result.shape = tree.shape;
+                result.priority = tree.priority;
+            }
+            cached = &generator.treecandidatecache.access(key, result);
+        }
+        if(!cached->valid) return false;
+        tree.x = x;
+        tree.y = y;
+        tree.base = cached->base;
+        tree.height = cached->height;
+        tree.species = cached->species;
+        tree.shape = cached->shape;
+        tree.priority = cached->priority;
+        return true;
+    }
+
     static bool queryworldtree(const worldgenerator &generator, int x, int y, queriedworldtree &tree)
     {
         if(!queryworldtreecandidate(generator, x, y, tree)) return false;
-        for(int oy = -1; oy <= 1; ++oy) for(int ox = -1; ox <= 1; ++ox)
+        for(int oy = -3; oy <= 3; ++oy) for(int ox = -3; ox <= 3; ++ox)
         {
             if(!ox && !oy) continue;
+            // A neighbour that loses priority cannot suppress this tree, regardless of its species or habitat.
+            const uint priority = worldtreehash(uint(generator.seed), 0, 0, x + ox, y + oy, 0xD1B54A35U);
+            if(priority > tree.priority || (priority == tree.priority && (oy > 0 || (!oy && ox > 0)))) continue;
             queriedworldtree other;
             if(!queryworldtreecandidate(generator, x + ox, y + oy, other)) continue;
+            const int spacing = tree.species == TREE_PALM || other.species == TREE_PALM ? 3 : 1;
+            if(abs(ox) > spacing || abs(oy) > spacing) continue;
             if(other.priority < tree.priority || (other.priority == tree.priority &&
                (other.y < tree.y || (other.y == tree.y && other.x < tree.x))))
                 return false;
@@ -1500,7 +1691,7 @@ namespace game
         return true;
     }
 
-    bool worldgenerator::tree(int x, int y, int &base, int &height, uint &shape, bool &pine) const
+    bool worldgenerator::tree(int x, int y, int &base, int &height, uint &shape, int &species) const
     {
         const ivec key(x, y, 0);
         treequery *cached = treequerycache.access(key);
@@ -1515,7 +1706,7 @@ namespace game
                 result.base = tree.base;
                 result.height = tree.height;
                 result.shape = tree.shape;
-                result.pine = tree.pine;
+                result.species = tree.species;
             }
             cached = &treequerycache.access(key, result);
         }
@@ -1523,27 +1714,8 @@ namespace game
         base = cached->base;
         height = cached->height;
         shape = cached->shape;
-        pine = cached->pine;
+        species = cached->species;
         return true;
-    }
-
-    static bool regularworldtreeleaf(const queriedworldtree &tree, int x, int y, int z)
-    {
-        const int level = z - tree.base, dx = x - tree.x, dy = y - tree.y;
-        if(level < tree.height - 2 || level > tree.height) return false;
-        const int radius = level == tree.height ? 1 : 2;
-        if(abs(dx) > radius || abs(dy) > radius) return false;
-        return radius != 2 || abs(dx) != 2 || abs(dy) != 2 ||
-               !(worldtreehash(tree.shape, dx, dy, level, tree.height, 0xA511E9B3U) & 1U);
-    }
-
-    static bool pineworldtreeneedle(const queriedworldtree &tree, int x, int y, int z)
-    {
-        const int level = z - tree.base, dx = abs(x - tree.x), dy = abs(y - tree.y);
-        if(level == tree.height) return !dx && !dy;
-        if(level < 2 || level >= tree.height) return false;
-        const int radius = min(3, 1 + (tree.height - level) / 3);
-        return dx <= radius && dy <= radius && dx + dy <= radius + 1;
     }
 
     int worldgenerator::treecanopyheight(int x, int y) const
@@ -1551,14 +1723,14 @@ namespace game
         const ivec key(x, y, 0);
         if(int *cached = canopyheightcache.access(key)) return *cached;
         int top = -1;
-        for(int ty = y - 3; ty <= y + 3; ++ty) for(int tx = x - 3; tx <= x + 3; ++tx)
+        for(int ty = y - TREE_RADIUS; ty <= y + TREE_RADIUS; ++ty) for(int tx = x - TREE_RADIUS; tx <= x + TREE_RADIUS; ++tx)
         {
             queriedworldtree tree;
             tree.x = tx;
             tree.y = ty;
-            if(!this->tree(tx, ty, tree.base, tree.height, tree.shape, tree.pine)) continue;
+            if(!this->tree(tx, ty, tree.base, tree.height, tree.shape, tree.species)) continue;
             for(int z = tree.base + tree.height; z >= tree.base + 2 && z > top; --z)
-                if(tree.pine ? pineworldtreeneedle(tree, x, y, z) : regularworldtreeleaf(tree, x, y, z))
+                if(treeshapeblock(tree.species, tree.height, tree.shape, x - tx, y - ty, z - tree.base) != WORLD_TREE_AIR)
                 {
                     top = z;
                     break;
@@ -1588,18 +1760,17 @@ namespace game
         int *cached = treeblockcache.access(key);
         if(cached) return *cached;
         int foliage = WORLD_TREE_AIR;
-        for(int treeY = y - 3; treeY <= y + 3; ++treeY) for(int treeX = x - 3; treeX <= x + 3; ++treeX)
+        for(int treeY = y - TREE_RADIUS; treeY <= y + TREE_RADIUS; ++treeY) for(int treeX = x - TREE_RADIUS; treeX <= x + TREE_RADIUS; ++treeX)
         {
             queriedworldtree tree;
-            if(!queryworldtree(*this, treeX, treeY, tree)) continue;
-            if(x == tree.x && y == tree.y && z >= tree.base && z < tree.base + tree.height)
+            if(!this->tree(treeX, treeY, tree.base, tree.height, tree.shape, tree.species)) continue;
+            const int type = treeshapeblock(tree.species, tree.height, tree.shape, x - treeX, y - treeY, z - tree.base);
+            if(treewood(type))
             {
-                const int wood = tree.pine ? WORLD_TREE_DARK_WOOD : WORLD_TREE_WOOD;
-                treeblockcache.access(key, wood);
-                return wood;
+                treeblockcache.access(key, type);
+                return type;
             }
-            if(!tree.pine && regularworldtreeleaf(tree, x, y, z)) foliage = WORLD_TREE_LEAVES;
-            else if(foliage == WORLD_TREE_AIR && tree.pine && pineworldtreeneedle(tree, x, y, z)) foliage = WORLD_TREE_NEEDLES;
+            if(foliage == WORLD_TREE_AIR) foliage = type;
         }
         treeblockcache.access(key, foliage);
         return foliage;

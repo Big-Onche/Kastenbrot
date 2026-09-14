@@ -28,7 +28,7 @@ static bool terrainclimateslot(const VSlot &slot)
 {
     return grassclimateslot(slot) || (slot.slot->shader &&
         (!strcmp(slot.slot->shader->name, "sandclimateworld") || !strcmp(slot.slot->shader->name, "dirtclimateworld") ||
-         !strcmp(slot.slot->shader->name, "leafclimateworld")));
+         !strcmp(slot.slot->shader->name, "leafclimateworld") || !strcmp(slot.slot->shader->name, "birchleafclimateworld")));
 }
 
 struct verthash

@@ -3,8 +3,7 @@
 #ifdef WORLDIO_MODULE_IMPLEMENTATION
 
 VARP(worldlod, 0, 1, 1);
-VARFP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS,
-      worldlod1resolution = (worldlod1resolution + 2) / 4 * 4);
+VARFP(worldlod1resolution, 4, 32, WORLD_CHUNK_BLOCKS, worldlod1resolution = (worldlod1resolution + 2) / 4 * 4);
 VARP(worldlod2distance, 32, 768, 4096);
 VARP(worldlod3distance, 64, 1280, 8192);
 VARP(worldloddistance, 128, 1536, 16384); // outer LOD3 cutoff in cubes
@@ -45,6 +44,12 @@ enum
     WORLD_LOD_MOSS,
     WORLD_LOD_SNOWY_LEAVES,
     WORLD_LOD_SNOWY_NEEDLES,
+    WORLD_LOD_PALM_WOOD_TOP,
+    WORLD_LOD_PALM_WOOD_SIDE,
+    WORLD_LOD_BIRCH_WOOD_TOP,
+    WORLD_LOD_BIRCH_WOOD_SIDE,
+    WORLD_LOD_PALM_LEAVES,
+    WORLD_LOD_BIRCH_LEAVES,
     WORLD_LOD_MATERIALS
 };
 
@@ -186,6 +191,7 @@ static int worldlodtopmaterial(int material)
 static int worldlodsidematerial(int material)
 {
     if(material & WORLD_SURFACE_STONE_BASE) return WORLD_LOD_STONE;
+    if(material == WORLD_SURFACE_SNOWY_GRASS) return WORLD_LOD_DIRT;
     return material == WORLD_SURFACE_GRASS ? WORLD_LOD_GRASS_SIDE : worldlodtopmaterial(material);
 }
 
@@ -379,26 +385,22 @@ static void addworldlodcolumnside(worldlodcpumesh &mesh, float x0, float y0, flo
     else addworldlodsidequad(mesh, x0, y0, x1, y1, bottom, top, orient, worldlodsidematerial(material));
 }
 
-enum
-{
-    WORLD_LOD_TREE_AIR = 0,
-    WORLD_LOD_TREE_WOOD,
-    WORLD_LOD_TREE_DARK_WOOD,
-    WORLD_LOD_TREE_LEAVES,
-    WORLD_LOD_TREE_NEEDLES
-};
-
-static void setworldlodtreeblock(vector<uchar> &blocks, int x, int y, int z, int type, bool overwritefoliage = false)
+static void setworldlodtreeblock(vector<uchar> &blocks, vector<int> &occupied, int (&canopy)[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS],
+                                 int x, int y, int z, int type, bool overwritefoliage = false)
 {
     if(x < 0 || x >= WORLD_CHUNK_BLOCKS || y < 0 || y >= WORLD_CHUNK_BLOCKS || z < 0 || z >= WORLD_HEIGHT_BLOCKS) return;
-    uchar &block = blocks[(z * WORLD_CHUNK_BLOCKS + y) * WORLD_CHUNK_BLOCKS + x];
-    if(block == WORLD_LOD_TREE_AIR || (overwritefoliage && (block == WORLD_LOD_TREE_LEAVES || block == WORLD_LOD_TREE_NEEDLES))) block = uchar(type);
+    const int index = (z * WORLD_CHUNK_BLOCKS + y) * WORLD_CHUNK_BLOCKS + x;
+    uchar &block = blocks[index];
+    if(block == game::WORLD_TREE_AIR) occupied.add(index);
+    canopy[y][x] = max(canopy[y][x], z);
+    if(block == game::WORLD_TREE_AIR || (overwritefoliage && !game::treewood(block)) ||
+       (game::treewood(type) == game::treewood(block) && type < block)) block = uchar(type);
 }
 
 static uchar getworldlodtreeblock(const vector<uchar> &blocks, int x, int y, int z)
 {
     if(x < 0 || x >= WORLD_CHUNK_BLOCKS || y < 0 || y >= WORLD_CHUNK_BLOCKS || z < 0 || z >= WORLD_HEIGHT_BLOCKS)
-        return WORLD_LOD_TREE_AIR;
+        return game::WORLD_TREE_AIR;
     return blocks[(z * WORLD_CHUNK_BLOCKS + y) * WORLD_CHUNK_BLOCKS + x];
 }
 
@@ -406,40 +408,41 @@ struct worldlodtree
 {
     int x, y, base, height;
     uint shape;
-    bool pine;
+    int species;
 
-    worldlodtree(int x, int y, int base, int height, uint shape, bool pine)
-        : x(x), y(y), base(base), height(height), shape(shape), pine(pine) {}
+    worldlodtree(int x, int y, int base, int height, uint shape, int species)
+        : x(x), y(y), base(base), height(height), shape(shape), species(species) {}
 };
 
 static bool collectworldlodtrees(worldlodjob &job, worldgencontext *generation, vector<worldlodtree> &trees, int halo)
 {
+    ZoneScopedN("LOD/Tree selection");
     for(int y = -halo; y < WORLD_CHUNK_BLOCKS + halo; ++y) for(int x = -halo; x < WORLD_CHUNK_BLOCKS + halo; ++x)
     {
         if(SDL_AtomicGet(&job.cancelled)) return false;
         int base, height;
         uint shape;
-        bool pine;
+        int species;
         if(game::sampleworldtree(generation, job.key.x * WORLD_CHUNK_BLOCKS + x, job.key.y * WORLD_CHUNK_BLOCKS + y,
-                                 base, height, shape, pine))
-            trees.add(worldlodtree(x, y, base, height, shape, pine));
+                                 base, height, shape, species))
+            trees.add(worldlodtree(x, y, base, height, shape, species));
     }
     return !SDL_AtomicGet(&job.cancelled);
 }
 
-static uint hashworldlodtree(uint seed, int x, int y, int z, int height, uint salt)
+static int worldlodtreematerial(int type, bool top)
 {
-    const uint worldx = uint(x) * uint(WORLD_CHUNK_BLOCKS) + uint(z),
-               worldy = uint(y) * uint(WORLD_CHUNK_BLOCKS) + uint(height);
-    uint hash = seed ^ salt;
-    hash ^= worldx * 0x9E3779B9U;
-    hash ^= worldy * 0x85EBCA6BU;
-    hash ^= hash >> 16;
-    hash *= 0x7FEB352DU;
-    hash ^= hash >> 15;
-    hash *= 0x846CA68BU;
-    hash ^= hash >> 16;
-    return hash;
+    switch(type)
+    {
+        case game::WORLD_TREE_LEAVES: return WORLD_LOD_LEAVES;
+        case game::WORLD_TREE_NEEDLES: return WORLD_LOD_NEEDLES;
+        case game::WORLD_TREE_PALM_LEAVES: return WORLD_LOD_PALM_LEAVES;
+        case game::WORLD_TREE_BIRCH_LEAVES: return WORLD_LOD_BIRCH_LEAVES;
+        case game::WORLD_TREE_PALM_WOOD: return top ? WORLD_LOD_PALM_WOOD_TOP : WORLD_LOD_PALM_WOOD_SIDE;
+        case game::WORLD_TREE_BIRCH_WOOD: return top ? WORLD_LOD_BIRCH_WOOD_TOP : WORLD_LOD_BIRCH_WOOD_SIDE;
+        case game::WORLD_TREE_DARK_WOOD: return top ? WORLD_LOD_DARK_WOOD_TOP : WORLD_LOD_DARK_WOOD_SIDE;
+        default: return top ? WORLD_LOD_WOOD_TOP : WORLD_LOD_WOOD_SIDE;
+    }
 }
 
 static void addworldlodtreeface(worldlodcpumesh &mesh, int x, int y, int z, int orient, int material)
@@ -474,85 +477,63 @@ static void addworldlodtreeface(worldlodcpumesh &mesh, int x, int y, int z, int 
 static bool addworldlodtrees(worldlodjob &job, worldgencontext *generation, int &maximumheight)
 {
     vector<worldlodtree> trees;
-    if(!collectworldlodtrees(job, generation, trees, 3)) return false;
+    if(!collectworldlodtrees(job, generation, trees, game::TREE_RADIUS)) return false;
 
+    ZoneScopedN("LOD/Tree voxel geometry");
+    if(trees.empty()) return true;
     vector<uchar> blocks;
+    vector<int> occupied;
     blocks.pad(WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS * WORLD_HEIGHT_BLOCKS);
-    loopv(blocks) blocks[i] = WORLD_LOD_TREE_AIR;
-    loopv(trees) if(!trees[i].pine)
+    memset(blocks.getbuf(), 0, blocks.length());
+    int canopy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
+    loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS) canopy[y][x] = -1;
+    loopv(trees)
     {
+        if(SDL_AtomicGet(&job.cancelled)) return false;
         const worldlodtree &tree = trees[i];
-        for(int z = tree.height - 2; z <= tree.height; ++z)
+        const int radius = game::treeshaperadius(tree.species);
+        for(int z = 0; z <= tree.height; ++z)
+        for(int y = -radius; y <= radius; ++y) for(int x = -radius; x <= radius; ++x)
         {
-            const int radius = z == tree.height ? 1 : 2;
-            for(int y = -radius; y <= radius; ++y) for(int x = -radius; x <= radius; ++x)
-            {
-                if(radius == 2 && abs(x) == 2 && abs(y) == 2 && (hashworldlodtree(tree.shape, x, y, z, tree.height, 0xA511E9B3U) & 1U)) continue;
-                setworldlodtreeblock(blocks, tree.x + x, tree.y + y, tree.base + z, WORLD_LOD_TREE_LEAVES);
-            }
+            const int type = game::treeshapeblock(tree.species, tree.height, tree.shape, x, y, z);
+            if(type != game::WORLD_TREE_AIR)
+                setworldlodtreeblock(blocks, occupied, canopy, tree.x + x, tree.y + y, tree.base + z, type, game::treewood(type));
         }
-    }
-    loopv(trees) if(trees[i].pine)
-    {
-        const worldlodtree &tree = trees[i];
-        setworldlodtreeblock(blocks, tree.x, tree.y, tree.base + tree.height, WORLD_LOD_TREE_NEEDLES);
-        for(int z = 2; z < tree.height; ++z)
-        {
-            const int radius = min(3, 1 + (tree.height - z) / 3);
-            for(int y = -radius; y <= radius; ++y) for(int x = -radius; x <= radius; ++x)
-            {
-                if(abs(x) + abs(y) > radius + 1) continue;
-                setworldlodtreeblock(blocks, tree.x + x, tree.y + y, tree.base + z, WORLD_LOD_TREE_NEEDLES);
-            }
-        }
-    }
-    loopv(trees) if(!trees[i].pine)
-    {
-        const worldlodtree &tree = trees[i];
-        loop(z, tree.height) setworldlodtreeblock(blocks, tree.x, tree.y, tree.base + z, WORLD_LOD_TREE_WOOD, true);
-    }
-    loopv(trees) if(trees[i].pine)
-    {
-        const worldlodtree &tree = trees[i];
-        loop(z, tree.height) setworldlodtreeblock(blocks, tree.x, tree.y, tree.base + z, WORLD_LOD_TREE_DARK_WOOD, true);
     }
 
-    int canopy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
-    bool snowy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
-    loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+    bool snowy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS] = {};
     {
-        canopy[y][x] = -1;
-        snowy[y][x] = false;
-        for(int z = WORLD_HEIGHT_BLOCKS - 1; z >= 0; --z)
-            if(getworldlodtreeblock(blocks, x, y, z) != WORLD_LOD_TREE_AIR)
-            {
-                canopy[y][x] = z;
-                snowy[y][x] = game::sampleworldsnow(generation, job.key.x * WORLD_CHUNK_BLOCKS + x, job.key.y * WORLD_CHUNK_BLOCKS + y);
-                break;
-            }
+        ZoneScopedN("LOD/Tree snow sampling");
+        loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+        {
+            if(SDL_AtomicGet(&job.cancelled)) return false;
+            if(canopy[y][x] < 0) continue;
+            const int type = getworldlodtreeblock(blocks, x, y, canopy[y][x]);
+            if(game::treewood(type) || type == game::WORLD_TREE_PALM_LEAVES) continue;
+            snowy[y][x] = game::sampleworldsnow(generation, job.key.x * WORLD_CHUNK_BLOCKS + x, job.key.y * WORLD_CHUNK_BLOCKS + y);
+        }
     }
 
     static const ivec normals[6] = { ivec(-1, 0, 0), ivec(1, 0, 0), ivec(0, -1, 0), ivec(0, 1, 0), ivec(0, 0, -1), ivec(0, 0, 1) };
-    loop(z, WORLD_HEIGHT_BLOCKS) loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
+    // Preserve z/y/x traversal while visiting only occupied cells, not two million empty-volume entries.
+    occupied.sort();
+    loopv(occupied)
     {
-        const int type = getworldlodtreeblock(blocks, x, y, z);
-        if(type == WORLD_LOD_TREE_AIR) continue;
-        const bool wood = type == WORLD_LOD_TREE_WOOD || type == WORLD_LOD_TREE_DARK_WOOD;
+        if((i & 255) == 0 && SDL_AtomicGet(&job.cancelled)) return false;
+        const int index = occupied[i], x = index % WORLD_CHUNK_BLOCKS,
+                  y = (index / WORLD_CHUNK_BLOCKS) % WORLD_CHUNK_BLOCKS, z = index / (WORLD_CHUNK_BLOCKS * WORLD_CHUNK_BLOCKS),
+                  type = blocks[index];
+        const bool wood = game::treewood(type);
         loopi(6)
         {
             const ivec &normal = normals[i];
-            if(getworldlodtreeblock(blocks, x + normal.x, y + normal.y, z + normal.z) != WORLD_LOD_TREE_AIR) continue;
-            int material;
-            if(type == WORLD_LOD_TREE_LEAVES) material = WORLD_LOD_LEAVES;
-            else if(type == WORLD_LOD_TREE_NEEDLES) material = WORLD_LOD_NEEDLES;
-            else if(type == WORLD_LOD_TREE_DARK_WOOD) material = i >= O_BOTTOM ? WORLD_LOD_DARK_WOOD_TOP : WORLD_LOD_DARK_WOOD_SIDE;
-            else material = i >= O_BOTTOM ? WORLD_LOD_WOOD_TOP : WORLD_LOD_WOOD_SIDE;
-            if(!wood && i == O_TOP && z == canopy[y][x] && snowy[y][x])
-                material = type == WORLD_LOD_TREE_LEAVES ? WORLD_LOD_SNOWY_LEAVES : WORLD_LOD_SNOWY_NEEDLES;
+            if(getworldlodtreeblock(blocks, x + normal.x, y + normal.y, z + normal.z) != game::WORLD_TREE_AIR) continue;
+            int material = worldlodtreematerial(type, i >= O_BOTTOM);
+            if(!wood && type != game::WORLD_TREE_PALM_LEAVES && i == O_TOP && z == canopy[y][x] && snowy[y][x])
+                material = type == game::WORLD_TREE_NEEDLES ? WORLD_LOD_SNOWY_NEEDLES : WORLD_LOD_SNOWY_LEAVES;
             addworldlodtreeface(job.mesh, x, y, z, i, material);
         }
-        if(wood || type == WORLD_LOD_TREE_LEAVES || type == WORLD_LOD_TREE_NEEDLES)
-            maximumheight = max(maximumheight, z + 1 - WORLD_GROUND_HEIGHT / WORLD_BLOCK_SIZE);
+        maximumheight = max(maximumheight, z + 1 - WORLD_GROUND_HEIGHT / WORLD_BLOCK_SIZE);
     }
     return !SDL_AtomicGet(&job.cancelled);
 }
@@ -574,32 +555,59 @@ static void addworldlodtreebox(worldlodcpumesh &mesh, float x0, float y0, float 
 static bool addworldlod2trees(worldlodjob &job, worldgencontext *generation, float &maximumz)
 {
     vector<worldlodtree> trees;
-    if(!collectworldlodtrees(job, generation, trees, 3)) return false;
+    if(!collectworldlodtrees(job, generation, trees, game::TREE_RADIUS)) return false;
+    ZoneScopedN("LOD/Tree coarse geometry");
     loopv(trees)
     {
         const worldlodtree &tree = trees[i];
-        const float trunkx0 = max(tree.x * WORLD_BLOCK_SIZE, 0), trunky0 = max(tree.y * WORLD_BLOCK_SIZE, 0),
-                    trunkx1 = min((tree.x + 1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE)),
-                    trunky1 = min((tree.y + 1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE)),
-                    trunkz0 = tree.base * WORLD_BLOCK_SIZE, trunkz1 = (tree.base + tree.height) * WORLD_BLOCK_SIZE;
-        if(trunkx0 < trunkx1 && trunky0 < trunky1)
+        const int radius = game::treeshaperadius(tree.species);
+        if(SDL_AtomicGet(&job.cancelled)) return false;
+        const bool snowy = tree.species != game::TREE_PALM &&
+                           game::sampleworldsnow(generation, job.key.x * WORLD_CHUNK_BLOCKS + tree.x,
+                                                  job.key.y * WORLD_CHUNK_BLOCKS + tree.y);
+        // Bound each horizontal slice, then join identical slices vertically. Coarse crowns need a handful
+        // of boxes, not one box and one hydrology query for every column of the full-resolution footprint.
+        loop(pass, 2)
         {
-            const int top = tree.pine ? WORLD_LOD_DARK_WOOD_TOP : WORLD_LOD_WOOD_TOP,
-                      side = tree.pine ? WORLD_LOD_DARK_WOOD_SIDE : WORLD_LOD_WOOD_SIDE;
-            addworldlodtreebox(job.mesh, trunkx0, trunky0, trunkz0, trunkx1, trunky1, trunkz1, top, side);
+            int runbottom = 0, runtype = game::WORLD_TREE_AIR, runx0 = 0, runy0 = 0, runx1 = 0, runy1 = 0;
+            for(int z = 0; z <= tree.height + 1; ++z)
+            {
+                int type = game::WORLD_TREE_AIR, x0 = radius + 1, y0 = x0, x1 = -x0, y1 = -x0;
+                if(z <= tree.height)
+                    for(int y = -radius; y <= radius; ++y)
+                    for(int x = -radius; x <= radius; ++x)
+                    {
+                        const int block = game::treeshapeblock(tree.species, tree.height, tree.shape, x, y, z);
+                        if(block == game::WORLD_TREE_AIR || game::treewood(block) != (pass != 0)) continue;
+                        type = block;
+                        x0 = min(x0, x);
+                        y0 = min(y0, y);
+                        x1 = max(x1, x + 1);
+                        y1 = max(y1, y + 1);
+                    }
+                if(type == runtype && (type == game::WORLD_TREE_AIR ||
+                   (x0 == runx0 && y0 == runy0 && x1 == runx1 && y1 == runy1))) continue;
+                if(runtype != game::WORLD_TREE_AIR)
+                {
+                    const float bx0 = max((tree.x + runx0) * WORLD_BLOCK_SIZE, 0),
+                                by0 = max((tree.y + runy0) * WORLD_BLOCK_SIZE, 0),
+                                bx1 = min((tree.x + runx1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE)),
+                                by1 = min((tree.y + runy1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE));
+                    const int snowtop = snowy && !pass ?
+                                        (runtype == game::WORLD_TREE_NEEDLES ? WORLD_LOD_SNOWY_NEEDLES : WORLD_LOD_SNOWY_LEAVES) : -1;
+                    addworldlodtreebox(job.mesh, bx0, by0, (tree.base + runbottom) * WORLD_BLOCK_SIZE,
+                                       bx1, by1, (tree.base + z) * WORLD_BLOCK_SIZE,
+                                       worldlodtreematerial(runtype, true), worldlodtreematerial(runtype, false), snowtop);
+                    maximumz = max(maximumz, float((tree.base + z) * WORLD_BLOCK_SIZE));
+                }
+                runbottom = z;
+                runtype = type;
+                runx0 = x0;
+                runy0 = y0;
+                runx1 = x1;
+                runy1 = y1;
+            }
         }
-
-        const int radius = tree.pine ? 3 : 2, bottom = tree.pine ? 2 : tree.height - 2;
-        const float canopyx0 = max((tree.x - radius) * WORLD_BLOCK_SIZE, 0), canopyy0 = max((tree.y - radius) * WORLD_BLOCK_SIZE, 0),
-                    canopyx1 = min((tree.x + radius + 1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE)),
-                    canopyy1 = min((tree.y + radius + 1) * WORLD_BLOCK_SIZE, int(WORLD_CHUNK_SIZE)),
-                    canopyz0 = (tree.base + bottom) * WORLD_BLOCK_SIZE, canopyz1 = (tree.base + tree.height + 1) * WORLD_BLOCK_SIZE;
-        const int foliage = tree.pine ? WORLD_LOD_NEEDLES : WORLD_LOD_LEAVES;
-        const bool snowy = game::sampleworldsnow(generation, job.key.x * WORLD_CHUNK_BLOCKS + tree.x,
-                                                job.key.y * WORLD_CHUNK_BLOCKS + tree.y);
-        const int snowtop = snowy ? (tree.pine ? WORLD_LOD_SNOWY_NEEDLES : WORLD_LOD_SNOWY_LEAVES) : -1;
-        addworldlodtreebox(job.mesh, canopyx0, canopyy0, canopyz0, canopyx1, canopyy1, canopyz1, foliage, foliage, snowtop);
-        maximumz = max(maximumz, canopyz1);
     }
     return !SDL_AtomicGet(&job.cancelled);
 }
@@ -813,7 +821,8 @@ static void colorworldlodgrass(worldlodjob &job, worldgencontext *generation)
         if(SDL_AtomicGet(&job.cancelled)) return;
         worldlodvertex &vertex = job.mesh.vertices[i];
         if(vertex.material.x != WORLD_LOD_GRASS_TOP && vertex.material.x != WORLD_LOD_GRASS_SIDE &&
-           vertex.material.x != WORLD_LOD_SAND && vertex.material.x != WORLD_LOD_DIRT && vertex.material.x != WORLD_LOD_LEAVES) continue;
+           vertex.material.x != WORLD_LOD_SAND && vertex.material.x != WORLD_LOD_DIRT && vertex.material.x != WORLD_LOD_LEAVES &&
+           vertex.material.x != WORLD_LOD_BIRCH_LEAVES) continue;
         vec color(0, 0, 0);
         if(job.key.lod >= 2)
         {
@@ -973,7 +982,7 @@ static void deleteworldlodchunk(worldlodchunk &chunk)
 }
 
 static GLuint worldlodcoldtexture = 0;
-static GLuint worldlodcoldsources[7] = {};
+static GLuint worldlodcoldsources[12] = {};
 
 static void clearworldlods()
 {
@@ -1639,16 +1648,20 @@ static GLuint worldlodtexture(const char *id, bool side = false)
     return texture->id;
 }
 
-// Seven ground textures share one sampler. Build from resolved block textures so fallback and asset changes match solid geometry.
+// Ground and species textures share one sampler; resolved block textures keep asset changes consistent with solid geometry.
 static void bindworldlodcoldtextures()
 {
-    static const char * const ids[] = { "snowy_grass", "frozen_dirt", "frozen_moss", "frozen_gravel", "snow_crust", "deep_snow", "moss" };
-    GLuint sources[7];
-    loopi(7) sources[i] = worldlodtexture(ids[i]);
+    static const char * const ids[] =
+    {
+        "snowy_grass", "frozen_dirt", "frozen_moss", "frozen_gravel", "snow_crust", "deep_snow", "moss",
+        "palm_wood", "palm_wood", "birch_wood", "birch_wood", "palm_leaves"
+    };
+    GLuint sources[12];
+    loopi(12) sources[i] = worldlodtexture(ids[i], i == 8 || i == 10);
     if(!worldlodcoldtexture || memcmp(sources, worldlodcoldsources, sizeof(sources)))
     {
-        int widths[7], heights[7], width = 1, height = 1;
-        loopi(7)
+        int widths[12], heights[12], width = 1, height = 1;
+        loopi(12)
         {
             glBindTexture(GL_TEXTURE_2D, sources[i]);
             glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &widths[i]);
@@ -1658,13 +1671,13 @@ static void bindworldlodcoldtextures()
         }
         if(!worldlodcoldtexture) glGenTextures(1, &worldlodcoldtexture);
         glBindTexture(GL_TEXTURE_2D_ARRAY, worldlodcoldtexture);
-        glTexImage3D_(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, width, height, 7, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexImage3D_(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, width, height, 12, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         GLint packalignment, unpackalignment;
         glGetIntegerv(GL_PACK_ALIGNMENT, &packalignment);
         glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackalignment);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        loopi(7)
+        loopi(12)
         {
             vector<uchar> source, layer;
             // Engine vector::setsize only truncates; pad allocates and advances the used length.

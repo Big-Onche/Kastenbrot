@@ -991,7 +991,7 @@ struct blockchiprenderer
         const char *name = shader ? shader->name : "";
         const float material = !strcmp(name, "grassclimateworldside") ? 4.0f : !strcmp(name, "grassclimateworld") ? 1.0f :
                                !strcmp(name, "sandclimateworld") ? 2.0f : !strcmp(name, "dirtclimateworld") ? 3.0f :
-                               !strcmp(name, "leafclimateworld") ? 5.0f : 0.0f;
+                               !strcmp(name, "leafclimateworld") ? 5.0f : !strcmp(name, "birchleafclimateworld") ? 7.0f : 0.0f;
         vec4 terrain(0, 0, 0, material);
         if(material > 0)
         {

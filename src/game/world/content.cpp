@@ -499,8 +499,8 @@ VARFP(leavesalpha, 0, 1, 1, updateleavesalpha());
 static bool isworldleaftexture(const cube &c)
 {
     if(c.children || isempty(c)) return false;
-    static const char * const ids[] = { "leaves", "needles", "snowy_leaves", "snowy_needles" };
-    loopi(4)
+    static const char * const ids[] = { "leaves", "needles", "snowy_leaves", "snowy_needles", "palm_leaves", "birch_leaves", "snowy_birch_leaves" };
+    loopi(sizeof(ids) / sizeof(ids[0]))
     {
         const worlddefinition *type = findworldcube(ids[i]);
         if(type && c.texture[O_TOP] == type->slot && c.texture[0] == type->sideslot) return true;
@@ -626,7 +626,7 @@ bool isworldobjecthandbreakable(int type, int index)
     return !definition || !definition->hasmining || definition->handbreakable;
 }
 
-static int loadworldtextureslot(const char *path, float texsize, bool alpha)
+static int loadworldtextureslot(const char *path, float texsize, bool alpha, bool birch = false)
 {
     const bool grassside = !alpha && !strcmp(path, "terrain/grass_dirt.png");
     defformatstring(texturepath, "%s%s", grassside ? "<grasslayers>" : "", path);
@@ -636,7 +636,7 @@ static int loadworldtextureslot(const char *path, float texsize, bool alpha)
         formatstring(command, "setshader alphaworld; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", texture, texture, texsize);
     else if(alpha)
     {
-        const char *shader = !strcmp(path, "terrain/leaves.png") ? "leafclimateworld" : "leafworld";
+        const char *shader = !strcmp(path, "terrain/leaves.png") ? (birch ? "birchleafclimateworld" : "leafclimateworld") : "leafworld";
         formatstring(command, "setshader %s; texture 0 %s; texture a %s; texscale %.9g; texalpha 1 1", shader, texture, texture, texsize);
     }
     else
@@ -913,8 +913,11 @@ static bool loadworlddefinitions(bool assets = true)
         worlddefinition &type = *worldcubedefinitions[i];
         type.errorfallback = false;
         const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles") ||
-                           !cubecasecmp(type.id, "snowy_leaves") || !cubecasecmp(type.id, "snowy_needles");
-        if(canloadworldtexture(type.cubetexture)) type.slot = loadworldtextureslot(type.cubetexture, type.texsize, alpha);
+                           !cubecasecmp(type.id, "snowy_leaves") || !cubecasecmp(type.id, "snowy_needles") ||
+                           !cubecasecmp(type.id, "palm_leaves") || !cubecasecmp(type.id, "birch_leaves") ||
+                           !cubecasecmp(type.id, "snowy_birch_leaves");
+        if(canloadworldtexture(type.cubetexture))
+            type.slot = loadworldtextureslot(type.cubetexture, type.texsize, alpha, strstr(type.id, "birch_leaves") != NULL);
         else
         {
             conoutf(CON_ERROR, "world cube %s could not load texture %s; using error cube", type.id, type.cubetexture);
@@ -923,7 +926,8 @@ static bool loadworlddefinitions(bool assets = true)
             type.slot = errorcube.slot;
         }
         if(!type.sidetexture[0]) type.sideslot = type.slot;
-        else if(canloadworldtexture(type.sidetexture)) type.sideslot = loadworldtextureslot(type.sidetexture, type.texsize, alpha);
+        else if(canloadworldtexture(type.sidetexture))
+            type.sideslot = loadworldtextureslot(type.sidetexture, type.texsize, alpha, strstr(type.id, "birch_leaves") != NULL);
         else
         {
             conoutf(CON_ERROR, "world cube %s could not load side texture %s; using error cube", type.id, type.sidetexture);
@@ -961,10 +965,12 @@ static bool loadworlddefinitions(bool assets = true)
         else if(type.bottom[0])
         {
             const bool alpha = !cubecasecmp(type.id, "leaves") || !cubecasecmp(type.id, "needles") ||
-                           !cubecasecmp(type.id, "snowy_leaves") || !cubecasecmp(type.id, "snowy_needles");
+                           !cubecasecmp(type.id, "snowy_leaves") || !cubecasecmp(type.id, "snowy_needles") ||
+                           !cubecasecmp(type.id, "palm_leaves") || !cubecasecmp(type.id, "birch_leaves") ||
+                           !cubecasecmp(type.id, "snowy_birch_leaves");
             if(canloadworldtexture(type.bottom))
             {
-                type.bottomslot = loadworldtextureslot(type.bottom, type.texsize, alpha);
+                type.bottomslot = loadworldtextureslot(type.bottom, type.texsize, alpha, strstr(type.id, "birch_leaves") != NULL);
                 copystring(type.bottomtexture, type.bottom);
             }
             else

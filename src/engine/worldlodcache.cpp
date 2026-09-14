@@ -4,7 +4,7 @@
 
 enum
 {
-    WORLD_LOD_CACHE_VERSION = 2, // bump when mesh generation, materials or climate packing changes
+    WORLD_LOD_CACHE_VERSION = 6, // bump when mesh generation, materials or climate packing changes
     WORLD_LOD_CACHE_HEADER_SIZE = 92,
     WORLD_LOD_CACHE_VERTEX_SIZE = 36,
     WORLD_LOD_CACHE_MAX_SIZE = 128 << 20

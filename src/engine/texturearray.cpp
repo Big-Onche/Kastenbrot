@@ -57,7 +57,7 @@ int blocktexturemode(const VSlot &vslot)
     if(!slot.shader || vslot.layer || vslot.detail || vslot.refractscale > 0) return -1;
     loopv(slot.sts) if(slot.sts[i].type != TEX_DIFFUSE && slot.sts[i].type != TEX_ALPHA) return -1;
     static const char *names[] = { "stdworld", "grassclimateworld", "sandclimateworld", "dirtclimateworld",
-                                  "grassclimateworldside", "leafclimateworld", "leafworld" };
+                                  "grassclimateworldside", "leafclimateworld", "leafworld", "birchleafclimateworld" };
     loopi(sizeof(names) / sizeof(names[0])) if(!strcmp(slot.shader->name, names[i])) return i;
     return -1;
 }

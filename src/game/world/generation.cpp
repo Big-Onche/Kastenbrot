@@ -560,20 +560,6 @@ static int worldcolumncubetype(const worldgencontext &ctx, int z, int size, int 
     return WORLD_TERRAIN_MIXED;
 }
 
-static bool worldtreegrowablesurface(const worldgencontext &ctx, int blockx, int blocky, int height, int biome)
-{
-    if(height < worldwaterheight(ctx, blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE))
-        return false;
-
-    const int localx = blockx * WORLD_BLOCK_SIZE,
-              localy = blocky * WORLD_BLOCK_SIZE,
-              surfacez = WORLD_GROUND_HEIGHT + height - WORLD_BLOCK_SIZE,
-              type = worldcolumncubetype(ctx, surfacez, WORLD_BLOCK_SIZE, height, biome, worldbeach(ctx, localx, localy), worldcliff(ctx, localx, localy), worldrock(ctx, localx, localy));
-
-    return type == ctx.cubetype("grass") || type == ctx.cubetype("dirt") ||
-           type == ctx.cubetype("moss") || type == ctx.cubetype("snowy_grass") ||
-           type == ctx.cubetype("frozen_dirt") || type == ctx.cubetype("frozen_moss") || type == ctx.cubetype("snow");
-}
 static bool generateworldgeology(worldgencontext &ctx, int chunkx, int chunky)
 {
     // One shared 3D field bends both contacts. Sampling a world-aligned lattice keeps chunks seamless and avoids voxel noise calls.
@@ -723,23 +709,6 @@ static bool generateworldcube(worldgencontext &ctx, cube &c, const ivec &o, int 
     }
 
     return true;
-}
-
-static uint hashworldtree(uint seed, int chunkx, int chunky, int blockx, int blocky, uint salt)
-{
-    const uint worldx = uint(chunkx) * uint(WORLD_CHUNK_BLOCKS) + uint(blockx),
-               worldy = uint(chunky) * uint(WORLD_CHUNK_BLOCKS) + uint(blocky);
-
-    uint hash = seed ^ salt;
-    hash ^= worldx * 0x9E3779B9U;
-    hash ^= worldy * 0x85EBCA6BU;
-    hash ^= hash >> 16;
-    hash *= 0x7FEB352DU;
-    hash ^= hash >> 15;
-    hash *= 0x846CA68BU;
-    hash ^= hash >> 16;
-
-    return hash;
 }
 
 static float worldtreeunit(uint hash)
@@ -1086,68 +1055,6 @@ static void addworldtreeblock(vector<ivec> &blocks, int blockx, int blocky, int 
         return;
 
     blocks.add(ivec(blockx * WORLD_BLOCK_SIZE, blocky * WORLD_BLOCK_SIZE, blockz * WORLD_BLOCK_SIZE));
-}
-
-static void addworldregulartree(vector<ivec> &wood, vector<ivec> &leaves, int blockx, int blocky, int basez, int height, uint shapehash)
-{
-    loop(z, height) addworldtreeblock(wood, blockx, blocky, basez + z);
-
-    for(int z = height - 2; z <= height; ++z)
-    {
-        const int radius = z == height ? 1 : 2;
-        for(int y = -radius; y <= radius; ++y) for(int x = -radius; x <= radius; ++x)
-        {
-            if(radius == 2 && abs(x) == 2 && abs(y) == 2 && (hashworldtree(shapehash, x, y, z, height, 0xA511E9B3U) & 1U)) continue;
-            addworldtreeblock(leaves, blockx + x, blocky + y, basez + z);
-        }
-    }
-}
-
-static void addworldpinetree(vector<ivec> &pinewood, vector<ivec> &needles, int blockx, int blocky, int basez, int height)
-{
-    loop(z, height) addworldtreeblock(pinewood, blockx, blocky, basez + z);
-    addworldtreeblock(needles, blockx, blocky, basez + height);
-
-    for(int z = 2; z < height; ++z)
-    {
-        const int fromtop = height - z, radius = min(3, 1 + fromtop / 3);
-        for(int y = -radius; y <= radius; ++y) for(int x = -radius; x <= radius; ++x)
-        {
-            if(abs(x) + abs(y) > radius + 1) continue;
-            addworldtreeblock(needles, blockx + x, blocky + y, basez + z);
-        }
-    }
-}
-
-struct worldtreecandidate
-{
-    int blockx, blocky, worldx, worldy, basez, height;
-    uint priority, shape;
-    bool pine;
-
-    worldtreecandidate(int blockx, int blocky, int worldx, int worldy, int basez, int height, uint priority, uint shape, bool pine)
-        : blockx(blockx), blocky(blocky), worldx(worldx), worldy(worldy), basez(basez), height(height),
-          priority(priority), shape(shape), pine(pine)
-    {
-    }
-};
-
-static bool worldtreecandidateallowed(const vector<worldtreecandidate> &candidates, const worldtreecandidate &candidate)
-{
-    loopv(candidates)
-    {
-        const worldtreecandidate &other = candidates[i];
-        if(other.blockx == candidate.blockx && other.blocky == candidate.blocky) continue;
-        if(abs(other.worldx - candidate.worldx) > 1 || abs(other.worldy - candidate.worldy) > 1) continue;
-        const bool lowerpriority = other.priority < candidate.priority;
-        const bool samepriority = other.priority == candidate.priority;
-        const bool lowery = other.worldy < candidate.worldy;
-        const bool samey = other.worldy == candidate.worldy;
-        const bool lowerx = other.worldx < candidate.worldx;
-
-        if(lowerpriority || (samepriority && (lowery || (samey && lowerx)))) return false;
-    }
-    return true;
 }
 
 static void subdivideworldgencube(worldgencontext &ctx, cube &c)
@@ -2135,140 +2042,70 @@ static bool placeworldice(worldgencontext &ctx, cube *root, int chunkx, int chun
 
 static bool placeworldtrees(worldgencontext &ctx, cube *root, int chunkx, int chunky)
 {
-    vector<ivec> wood, pinewood, leaves, needles;
-    vector<worldtreecandidate> candidates;
-    const int halo = 4,
-              beachmin = (ctx.settings.sealevel + min(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
-              beachmax = (ctx.settings.sealevel + max(ctx.settings.beachminheight, ctx.settings.beachmaxheight)) * WORLD_BLOCK_SIZE,
-              coasttreemax = (ctx.settings.sealevel + 2) * WORLD_BLOCK_SIZE;
-
+    vector<ivec> blocks[game::WORLD_TREE_BLOCK_COUNT];
+    const int halo = game::TREE_RADIUS;
+    for(int y = -halo; y < WORLD_CHUNK_BLOCKS + halo; ++y)
+    for(int x = -halo; x < WORLD_CHUNK_BLOCKS + halo; ++x)
     {
-        ZoneScopedN("Chunks/Select tree blocks");
-        for(int y = -halo; y < WORLD_CHUNK_BLOCKS + halo; ++y)
-        for(int x = -halo; x < WORLD_CHUNK_BLOCKS + halo; ++x)
+        if(ctx.iscanceled()) return false;
+        int base, height, species;
+        uint shape;
+        if(!ctx.generator.tree(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, base, height, shape, species)) continue;
+        const int radius = game::treeshaperadius(species);
+        for(int z = 0; z <= height; ++z) for(int oy = -radius; oy <= radius; ++oy) for(int ox = -radius; ox <= radius; ++ox)
         {
-            if(x == -halo && ctx.iscanceled()) return false;
-            const bool inside = x >= 0 && x < WORLD_CHUNK_BLOCKS && y >= 0 && y < WORLD_CHUNK_BLOCKS;
-            const int index = inside ? y * WORLD_CHUNK_BLOCKS + x : 0;
-            game::worldtectonicsample terrain;
-            const int height = inside ? ctx.heightmap[index] : generateworldheight(ctx, chunkx, chunky, x, y, &terrain),
-                      biome = inside ? ctx.materialmap[index] :
-                              ctx.generator.surfacematerial(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, height / WORLD_BLOCK_SIZE);
-            if(!inside && height < ctx.generator.surface(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y).water * WORLD_BLOCK_SIZE)
-                continue;
-
-            if(ctx.settings.coastwidth > 0 && height >= beachmin && height <= max(beachmax, coasttreemax))
-                continue;
-
-            if(inside)
-            {
-                if(!worldtreegrowablesurface(ctx, x, y, height, biome)) continue;
-            }
-            else
-            {
-                const bool growable = biome == game::WORLD_BIOME_PLAINS || biome == game::WORLD_MOSS || biome == game::WORLD_SNOWY_GRASS ||
-                                      biome == game::WORLD_FROZEN_DIRT || biome == game::WORLD_FROZEN_MOSS || biome == game::WORLD_BIOME_SNOW;
-
-                if(!growable || terrain.rockyledge > 0.22f || (generateworldcliff(ctx, chunkx, chunky, x, y, height ) & WORLD_CLIFF_ROCK) || generateworldrock( ctx, chunkx, chunky, x, y, height))
-                    continue;
-            }
-
-            const float density = ctx.generator.treedensity(chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, height / WORLD_BLOCK_SIZE);
-            const uint spawn = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0xD1B54A35U);
-
-            if(worldtreeunit(spawn) >= density) continue;
-
-            const float heightblocks = height / float(WORLD_BLOCK_SIZE);
-            const uint shape = hashworldtree(uint(ctx.seed), chunkx, chunky, x, y, 0x94D049BBU);
-
-            const int worldx = chunkx * WORLD_CHUNK_BLOCKS + x,
-                      worldy = chunky * WORLD_CHUNK_BLOCKS + y;
-
-            const vec treepos(
-                float(worldx) * game::worldclimate::BLOCK_UNITS,
-                float(worldy) * game::worldclimate::BLOCK_UNITS,
-                game::worldclimate::GROUND_UNITS + heightblocks * game::worldclimate::BLOCK_UNITS
-            );
-
-            const game::BiomeSample sample = ctx.generator.sampleBiome(treepos);
-            const float pinechance = game::treepinechance(ctx.settings, sample, uint(ctx.seed), worldx, worldy, int(heightblocks));
-            const bool pine = worldtreeunit(shape) < pinechance;
-
-            const int treeheight = game::treefinalheight(pine, sample.temperature, shape),
-                      basez = WORLD_GROUND_HEIGHT / WORLD_BLOCK_SIZE + height / WORLD_BLOCK_SIZE;
-
-            if(basez + treeheight >= WORLD_HEIGHT_BLOCKS) continue;
-
-            candidates.add(worldtreecandidate(x, y, chunkx * WORLD_CHUNK_BLOCKS + x, chunky * WORLD_CHUNK_BLOCKS + y, basez, treeheight, spawn, shape, pine));
+            const int type = game::treeshapeblock(species, height, shape, ox, oy, z);
+            if(type != game::WORLD_TREE_AIR) addworldtreeblock(blocks[type], x + ox, y + oy, base + z);
         }
     }
-
     {
-        ZoneScopedN("Chunks/Apply tree blocks");
-        loopv(candidates)
+        int types[game::WORLD_TREE_BLOCK_COUNT], textures[game::WORLD_TREE_BLOCK_COUNT];
+        for(int k = 1; k < game::WORLD_TREE_BLOCK_COUNT; ++k)
         {
-            if(!worldtreecandidateallowed(candidates, candidates[i])) continue;
-            if(candidates[i].pine) addworldpinetree(pinewood, needles, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height);
-            else addworldregulartree(wood, leaves, candidates[i].blockx, candidates[i].blocky, candidates[i].basez, candidates[i].height, candidates[i].shape);
+            types[k] = ctx.cubetype(game::treeblockname(k));
+            textures[k] = ctx.cubetextures.inrange(types[k]) ?
+                          (ctx.indexedtextures ? types[k] : ctx.cubetextures[types[k]].top) : -1;
         }
-        ZoneValue(wood.length() + pinewood.length() + leaves.length() + needles.length());
-        const int leafcube = ctx.cubetype("leaves"), needlescube = ctx.cubetype("needles"),
-                  woodcube = ctx.cubetype("wood"), pinewoodcube = ctx.cubetype("dark_wood"),
-                  leaftexture = ctx.cubetextures.inrange(leafcube) ? ctx.indexedtextures ? leafcube : ctx.cubetextures[leafcube].top : -1,
-                  needlestexture = ctx.cubetextures.inrange(needlescube) ? ctx.indexedtextures ? needlescube : ctx.cubetextures[needlescube].top : -1;
-        loopv(leaves)
+        // Foliage first, then trunks. Both LOD tiers use the same material precedence.
+        loop(pass, 2) for(int k = 1; k < game::WORLD_TREE_BLOCK_COUNT; ++k)
         {
-            cube &c = lookupworldgenblock(ctx, root, leaves[i]);
-            if(isempty(c) && c.material == MAT_AIR)
+            const bool wood = game::treewood(k);
+            if(wood != (pass != 0)) continue;
+            loopv(blocks[k])
             {
-                if(setworldcubetype(c, ctx, leafcube, leavesalpha ? MAT_ALPHA : MAT_AIR)) markworldgentreeblock(ctx, leaves[i]);
+                const ivec &p = blocks[k][i];
+                cube &c = lookupworldgenblock(ctx, root, p);
+                bool replace = isempty(c) && c.material == MAT_AIR;
+                if(wood) for(int leaf = 1; leaf < game::WORLD_TREE_BLOCK_COUNT; ++leaf)
+                    if(!game::treewood(leaf) && c.texture[0] == textures[leaf]) replace = true;
+                if(replace && setworldcubetype(c, ctx, types[k], !wood && leavesalpha ? MAT_ALPHA : MAT_AIR)) markworldgentreeblock(ctx, p);
             }
         }
-        loopv(needles)
-        {
-            cube &c = lookupworldgenblock(ctx, root, needles[i]);
-            if(isempty(c) && c.material == MAT_AIR)
-            {
-                if(setworldcubetype(c, ctx, needlescube, leavesalpha ? MAT_ALPHA : MAT_AIR)) markworldgentreeblock(ctx, needles[i]);
-            }
-        }
-        loopv(wood)
-        {
-            cube &c = lookupworldgenblock(ctx, root, wood[i]);
-            if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
-            {
-                if(setworldcubetype(c, ctx, woodcube)) markworldgentreeblock(ctx, wood[i]);
-            }
-        }
-        loopv(pinewood)
-        {
-            cube &c = lookupworldgenblock(ctx, root, pinewood[i]);
-            if((isempty(c) && c.material == MAT_AIR) || c.texture[0] == leaftexture || c.texture[0] == needlestexture)
-            {
-                if(setworldcubetype(c, ctx, pinewoodcube)) markworldgentreeblock(ctx, pinewood[i]);
-            }
-        }
-        // Accumulate only on the highest canopy cube in each column, after trunks replace foliage.
         int canopy[WORLD_CHUNK_BLOCKS][WORLD_CHUNK_BLOCKS];
         loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS) canopy[y][x] = -1;
-        const vector<ivec> *treeblocks[] = { &leaves, &needles, &wood, &pinewood };
-        loopk(4) loopv(*treeblocks[k])
+        for(int k = 1; k < game::WORLD_TREE_BLOCK_COUNT; ++k) loopv(blocks[k])
         {
-            const ivec &p = (*treeblocks[k])[i];
+            const ivec &p = blocks[k][i];
             int &top = canopy[p.y / WORLD_BLOCK_SIZE][p.x / WORLD_BLOCK_SIZE];
             top = max(top, p.z);
         }
-        loopk(2) loopv(*treeblocks[k])
+        for(int k = 1; k < game::WORLD_TREE_BLOCK_COUNT; ++k)
         {
-            const ivec &p = (*treeblocks[k])[i];
-            if(p.z != canopy[p.y / WORLD_BLOCK_SIZE][p.x / WORLD_BLOCK_SIZE]) continue;
-            cube &c = lookupworldgenblock(ctx, root, p);
-            if(c.texture[0] != (k ? needlestexture : leaftexture)) continue;
-            const int x = chunkx * WORLD_CHUNK_BLOCKS + p.x / WORLD_BLOCK_SIZE,
-                      y = chunky * WORLD_CHUNK_BLOCKS + p.y / WORLD_BLOCK_SIZE,
-                      ground = ctx.generator.height(x, y), material = ctx.generator.surfacematerial(x, y, ground);
-            if(material == game::WORLD_SNOWY_GRASS || material == game::WORLD_BIOME_SNOW)
-                setworldcubetype(c, ctx, ctx.cubetype(k ? "snowy_needles" : "snowy_leaves"), leavesalpha ? MAT_ALPHA : MAT_AIR);
+            if(game::treewood(k) || k == game::WORLD_TREE_PALM_LEAVES) continue;
+            loopv(blocks[k])
+            {
+                const ivec &p = blocks[k][i];
+                if(p.z != canopy[p.y / WORLD_BLOCK_SIZE][p.x / WORLD_BLOCK_SIZE]) continue;
+                cube &c = lookupworldgenblock(ctx, root, p);
+                if(c.texture[0] != textures[k]) continue;
+                const int x = chunkx * WORLD_CHUNK_BLOCKS + p.x / WORLD_BLOCK_SIZE,
+                          y = chunky * WORLD_CHUNK_BLOCKS + p.y / WORLD_BLOCK_SIZE,
+                          ground = ctx.generator.height(x, y), material = ctx.generator.surfacematerial(x, y, ground);
+                if(material == game::WORLD_SNOWY_GRASS || material == game::WORLD_BIOME_SNOW)
+                    setworldcubetype(c, ctx, ctx.cubetype(k == game::WORLD_TREE_NEEDLES ? "snowy_needles" :
+                                                        k == game::WORLD_TREE_BIRCH_LEAVES ? "snowy_birch_leaves" : "snowy_leaves"),
+                                     leavesalpha ? MAT_ALPHA : MAT_AIR);
+            }
         }
         const int snowcube = ctx.cubetype("snow"), snowygrasscube = ctx.cubetype("snowy_grass"), grasscube = ctx.cubetype("grass");
         loop(y, WORLD_CHUNK_BLOCKS) loop(x, WORLD_CHUNK_BLOCKS)
@@ -2762,15 +2599,20 @@ namespace game
     bool sampleworldsnow(worldgencontext *generation, int blockx, int blocky)
     {
         if(!generation || generation->iscanceled()) return false;
-        const int height = generation->generator.height(blockx, blocky),
-                  material = generation->generator.surfacematerial(blockx, blocky, height);
+        int height;
+        if(!sampleterrainheightcached(generation, blockx, blocky, height)) return false;
+        const vec position(float(blockx) * WORLD_BLOCK_SIZE, float(blocky) * WORLD_BLOCK_SIZE,
+                           float(WORLD_GROUND_HEIGHT + height * WORLD_BLOCK_SIZE));
+        // Surface snow is impossible at 3 C and above. Avoid humidity, soil and biome work for warm canopies.
+        if(generation->generator.environmentclimate.gettemperature(position) >= 3.0f) return false;
+        const int material = generation->generator.surfacematerial(blockx, blocky, height);
         return material == WORLD_SNOWY_GRASS || material == WORLD_BIOME_SNOW;
     }
 
-    bool sampleworldtree(worldgencontext *generation, int blockx, int blocky, int &base, int &height, uint &shape, bool &pine)
+    bool sampleworldtree(worldgencontext *generation, int blockx, int blocky, int &base, int &height, uint &shape, int &species)
     {
         if(!generation || generation->iscanceled()) return false;
-        return generation->generator.tree(blockx, blocky, base, height, shape, pine) && !generation->iscanceled();
+        return generation->generator.tree(blockx, blocky, base, height, shape, species) && !generation->iscanceled();
     }
 
     cube *generateworldchunk(worldgencontext *generation, int chunkx, int chunky, int &families, int &optimized, worldsectionrenderdata *renderdata)

@@ -250,21 +250,17 @@ void worldselectiontolocal(selinfo &selection)
     selection.o.y -= worldfirstchunky * WORLD_CHUNK_SIZE;
 }
 
-static void setworldleavesalpha(cube *root, bool enabled, int leaveslot, int needlesslot)
+static void setworldleavesalpha(cube *root, bool enabled, vector<int> &leafslots)
 {
     if(!root) return;
     loopi(8)
     {
         cube &c = root[i];
-        if(c.children) setworldleavesalpha(c.children, enabled, leaveslot, needlesslot);
-        else if(!isempty(c) && (c.texture[0] == leaveslot || c.texture[0] == needlesslot))
+        if(c.children) setworldleavesalpha(c.children, enabled, leafslots);
+        else if(!isempty(c) && leafslots.find(c.texture[O_TOP]) >= 0)
         {
-            bool foliage = true;
-            loopj(6) if(c.texture[j] != c.texture[0]) { foliage = false; break; }
-            if(!foliage) continue;
             if(enabled) c.material |= MAT_ALPHA;
             else c.material &= ~MAT_ALPHA;
-            // Preserve collision faces: packet mesh rebuilds do not restore c.visible on live cubes.
             c.merged = 0;
         }
     }
@@ -272,9 +268,14 @@ static void setworldleavesalpha(cube *root, bool enabled, int leaveslot, int nee
 
 static void setworldleavesalpha(cube *root, bool enabled)
 {
-    worlddefinition *leaves = findworldcube("leaves"), *needles = findworldcube("needles");
-    if(!root || (!leaves && !needles)) return;
-    setworldleavesalpha(root, enabled, leaves ? leaves->slot : -1, needles ? needles->slot : -1);
+    static const char * const ids[] =
+    {
+        "leaves", "needles", "snowy_leaves", "snowy_needles", "palm_leaves", "birch_leaves", "snowy_birch_leaves"
+    };
+    vector<int> slots;
+    loopi(sizeof(ids) / sizeof(ids[0]))
+        if(worlddefinition *type = findworldcube(ids[i])) slots.add(type->slot);
+    setworldleavesalpha(root, enabled, slots);
 }
 
 static void updateleavesalpha()

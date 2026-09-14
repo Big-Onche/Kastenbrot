@@ -61,7 +61,12 @@ namespace game
         WORLD_TREE_WOOD,
         WORLD_TREE_DARK_WOOD,
         WORLD_TREE_LEAVES,
-        WORLD_TREE_NEEDLES
+        WORLD_TREE_NEEDLES,
+        WORLD_TREE_PALM_WOOD,
+        WORLD_TREE_BIRCH_WOOD,
+        WORLD_TREE_PALM_LEAVES,
+        WORLD_TREE_BIRCH_LEAVES,
+        WORLD_TREE_BLOCK_COUNT
     };
 
     struct worldtectonicsample

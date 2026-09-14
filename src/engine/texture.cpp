@@ -559,6 +559,9 @@ Texture *loadworlditemtexture(Slot &slot)
     // Terrain grass sides store dirt in RGB and grass in alpha. Rebuild opaque item albedo from the source instead.
     if(!strncmp(texture, "<grasslayers>", 13)) texture += 13;
     const char *modifier = worlditemtexturemodifier(texture);
+    // The shared leaves asset needs the birch shader's muted, lighter palette in item previews too.
+    if(slot.shader && !strcmp(slot.shader->name, "birchleafclimateworld"))
+        modifier = "<mad:0.644962/0.938158/0.516690>";
     if(!modifier[0]) return NULL;
     defformatstring(filename, "%s%s/%s", modifier, slot.texturedir(), texture);
     Texture *result = textureload(filename, 0, true, true, true);
