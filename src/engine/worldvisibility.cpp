@@ -1112,12 +1112,28 @@ static int processworldchunkchanges(int chunkx, int chunky)
 {
     ZoneScopedN("Chunks/Process geometry changes");
     ZoneTextF("focus %d_%d", chunkx, chunky);
-    resetworldvauploadstats();
-    worldvaevictionsframe = worldvanorenderskipsframe = 0;
-    if(worldchunkstreamremaining() > 0) updateworldsectionvisibility(chunkx, chunky);
-    if(worldchunkstreamremaining() > 0) updateworldsectionresidencywanted();
+
+    {
+        ZoneScopedN("Chunks/Reset VA stats");
+        resetworldvauploadstats();
+        worldvaevictionsframe = worldvanorenderskipsframe = 0;
+    }
+
+    if(worldchunkstreamremaining() > 0)
+    {
+        ZoneScopedN("Chunks/Update section visibility");
+        updateworldsectionvisibility(chunkx, chunky);
+    }
+
+    if(worldchunkstreamremaining() > 0)
+    {
+        ZoneScopedN("Chunks/Update VA residency wanted");
+        updateworldsectionresidencywanted();
+    }
+
     Uint64 phasestart = SDL_GetPerformanceCounter();
     const Uint64 frequency = SDL_GetPerformanceFrequency();
+
     int changedcolumns = 0, unloaded = 0, unloadedsections = 0,
         unloadtarget = WORLD_MAX_COLUMN_CHANGES,
         cleanupstagelimit = chunkvastagelimit;
@@ -1126,79 +1142,239 @@ static int processworldchunkchanges(int chunkx, int chunky)
     // that radius remain cached across cave/exterior mode changes.
     {
         ZoneScopedN("Chunks/Unload columns");
+
         while(unloaded < unloadtarget && unloadedsections < cleanupstagelimit)
         {
-            if(SDL_GetPerformanceCounter() - phasestart >= worldchunkcleanupremaining || worldchunkstreamremaining() <= 0) break;
+            if(SDL_GetPerformanceCounter() - phasestart >= worldchunkcleanupremaining ||
+               worldchunkstreamremaining() <= 0)
+                break;
+
             int chunkindex, tile;
-            if(!findworldchunkunloadcolumn(chunkx, chunky, chunkindex, tile)) break;
+
+            {
+                ZoneScopedN("Chunks/Unload/Find column");
+                if(!findworldchunkunloadcolumn(chunkx, chunky, chunkindex, tile))
+                    break;
+            }
+
             worldchunk &chunk = worldchunks[chunkindex];
-            int sections[WORLD_MAX_SECTION_BATCH],
-                numsections = unmountworldchunkcolumnbatch(chunk, tile, sections,
-                    min(chunksectionbatch, cleanupstagelimit - unloadedsections));
+
+            int sections[WORLD_MAX_SECTION_BATCH], numsections = 0;
+
+            {
+                ZoneScopedN("Chunks/Unload/Unmount sections");
+
+                numsections = unmountworldchunkcolumnbatch(
+                    chunk,
+                    tile,
+                    sections,
+                    min(chunksectionbatch, cleanupstagelimit - unloadedsections)
+                );
+            }
+
             if(!numsections) break;
-            queueworldchunksectionupdates(chunk, tile, sections, numsections);
+
+            {
+                ZoneScopedN("Chunks/Unload/Queue geometry updates");
+                queueworldchunksectionupdates(chunk, tile, sections, numsections);
+            }
+
             unloadedsections += numsections;
             unloaded++;
             changedcolumns++;
         }
-        ZoneValue(unloaded);
+
+        ZoneValue(unloadedsections);
     }
-    const Uint64 cleanuptime = SDL_GetPerformanceCounter() - phasestart;
-    worldchunkcleanupremaining -= min(worldchunkcleanupremaining, cleanuptime);
+
+    {
+        ZoneScopedN("Chunks/Update cleanup budget");
+
+        const Uint64 cleanuptime = SDL_GetPerformanceCounter() - phasestart;
+        worldchunkcleanupremaining -= min(worldchunkcleanupremaining, cleanuptime);
+    }
 
     phasestart = SDL_GetPerformanceCounter();
-    int mounted = 0, mountedsections = 0, mounttarget = WORLD_MAX_COLUMN_CHANGES,
+
+    int mounted = 0, mountedsections = 0,
+        mounttarget = WORLD_MAX_COLUMN_CHANGES,
         publishstagelimit = max(chunkvastagelimit - worldchunkvaupdates.length(), 0);
+
     {
         ZoneScopedN("Chunks/Mount render sections");
+
         worldsectioncandidate candidates[WORLD_MAX_SECTION_BATCH];
-        int numcandidates = findworldchunkmountsections(chunkx, chunky, candidates,
-                                                        min(publishstagelimit,
-                                                            int(WORLD_MAX_SECTION_BATCH)));
-        loopi(numcandidates)
+        int numcandidates = 0;
+
         {
-            double elapsed = (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency;
-            int bytes = 0, vertices = 0;
-            getworldvauploadstats(bytes, vertices);
-            if(elapsed >= chunkpublishbudget || worldchunkstreamremaining() <= 0 || bytes >= chunkvauploadkb * 1024) break;
-            worldsectioncandidate &candidate = candidates[i];
-            worldchunk &chunk = worldchunks[candidate.chunkindex];
-            mountworldchunktile(chunk, candidate.section, candidate.tile);
-            if(!(chunk.mountedtiles[candidate.section] & (1U << candidate.tile))) continue;
-            worldsectionvaresidency &residency = chunk.varesidency[candidate.section][candidate.tile];
-            bool queued = false;
-            loopj(WORLD_VA_GEOMETRY_COUNT) if(residency.state[j] == PENDING_BUILD)
-            {
-                setworldsectionvaresidencystate(residency, j, PENDING_UPLOAD);
-                queued = true;
-            }
-            if(!queued) continue;
-            removeworldchunkvapendingbuild(chunk, candidate.tile, candidate.section);
-            queueworldchunksectionupdates(chunk, candidate.tile, &candidate.section, 1);
-            mountedsections++;
-            mounted++;
-            changedcolumns++;
-            if(mounted >= mounttarget) break;
+            ZoneScopedN("Chunks/Mount/Select candidates");
+
+            numcandidates = findworldchunkmountsections(
+                chunkx,
+                chunky,
+                candidates,
+                min(publishstagelimit, int(WORLD_MAX_SECTION_BATCH))
+            );
+
+            ZoneValue(numcandidates);
         }
+
+        {
+            ZoneScopedN("Chunks/Mount/Process candidates");
+
+            loopi(numcandidates)
+            {
+                double elapsed =
+                    (SDL_GetPerformanceCounter() - phasestart) *
+                    1000.0 / frequency;
+
+                int bytes = 0, vertices = 0;
+                getworldvauploadstats(bytes, vertices);
+
+                if(elapsed >= chunkpublishbudget ||
+                   worldchunkstreamremaining() <= 0 ||
+                   bytes >= chunkvauploadkb * 1024)
+                    break;
+
+                worldsectioncandidate &candidate = candidates[i];
+                worldchunk &chunk = worldchunks[candidate.chunkindex];
+
+                {
+                    ZoneScopedN("Chunks/Mount/Mount tile");
+                    mountworldchunktile(chunk, candidate.section, candidate.tile);
+                }
+
+                if(!(chunk.mountedtiles[candidate.section] &
+                     (1U << candidate.tile)))
+                    continue;
+
+                worldsectionvaresidency &residency =
+                    chunk.varesidency[candidate.section][candidate.tile];
+
+                bool queued = false;
+
+                {
+                    ZoneScopedN("Chunks/Mount/Residency transitions");
+
+                    loopj(WORLD_VA_GEOMETRY_COUNT)
+                    {
+                        if(residency.state[j] != PENDING_BUILD) continue;
+
+                        setworldsectionvaresidencystate(
+                            residency,
+                            j,
+                            PENDING_UPLOAD
+                        );
+
+                        queued = true;
+                    }
+                }
+
+                if(!queued) continue;
+
+                {
+                    ZoneScopedN("Chunks/Mount/Remove pending build");
+                    removeworldchunkvapendingbuild(
+                        chunk,
+                        candidate.tile,
+                        candidate.section
+                    );
+                }
+
+                {
+                    ZoneScopedN("Chunks/Mount/Queue geometry update");
+                    queueworldchunksectionupdates(
+                        chunk,
+                        candidate.tile,
+                        &candidate.section,
+                        1
+                    );
+                }
+
+                mountedsections++;
+                mounted++;
+                changedcolumns++;
+
+                if(mounted >= mounttarget) break;
+            }
+        }
+
         ZoneValue(mountedsections);
     }
 
-    // Safety mounts, cleanup borders, and render mounts share ONE geometry
-    // slice. Admission is bounded separately so deferred work cannot grow
-    // without limit when the renderer is slower than section selection.
-    const double remainingbudget = max(chunkpublishbudget - (SDL_GetPerformanceCounter() - phasestart) * 1000.0 / frequency, 0.0);
-    processstreaminggeometry(min(remainingbudget, worldchunkstreamremaining() * 0.9), chunkvauploadkb * 1024);
-    processworldchunkvaupdates();
+    double remainingbudget = 0.0;
+
+    {
+        ZoneScopedN("Chunks/Compute geometry budget");
+
+        remainingbudget = max(
+            chunkpublishbudget -
+            (SDL_GetPerformanceCounter() - phasestart) *
+            1000.0 / frequency,
+            0.0
+        );
+    }
+
+    {
+        ZoneScopedN("Chunks/Process streaming geometry");
+
+        processstreaminggeometry(
+            min(remainingbudget, worldchunkstreamremaining() * 0.9),
+            chunkvauploadkb * 1024
+        );
+    }
+
+    {
+        ZoneScopedN("Chunks/Process VA completions");
+        processworldchunkvaupdates();
+    }
+
     int uploadedbytes = 0, uploadedvertices = 0;
-    getworldvauploadstats(uploadedbytes, uploadedvertices);
-    TracyPlot("Chunks/Resident exterior VAs", int64_t(worldvaresidentcounts[WORLD_VA_EXTERIOR]));
-    TracyPlot("Chunks/Resident interior VAs", int64_t(worldvaresidentcounts[WORLD_VA_INTERIOR]));
-    TracyPlot("Chunks/Pending VA builds", int64_t(worldvapendingbuildcount));
-    TracyPlot("Chunks/Pending VA uploads", int64_t(worldvapendinguploadcount));
-    TracyPlot("Chunks/VA evictions", int64_t(worldvaevictionsframe));
-    TracyPlot("Chunks/NO_RENDER skips", int64_t(worldvanorenderskipsframe));
-    TracyPlot("Chunks/VA uploaded bytes", int64_t(uploadedbytes));
-    TracyPlot("Chunks/VA uploaded vertices", int64_t(uploadedvertices));
+
+    {
+        ZoneScopedN("Chunks/Collect VA stats");
+        getworldvauploadstats(uploadedbytes, uploadedvertices);
+    }
+
+#ifdef TRACY_ENABLE
+    {
+        ZoneScopedN("Chunks/Publish profiling stats");
+
+        TracyPlot("Chunks/Resident exterior VAs",
+                  int64_t(worldvaresidentcounts[WORLD_VA_EXTERIOR]));
+
+        TracyPlot("Chunks/Resident interior VAs",
+                  int64_t(worldvaresidentcounts[WORLD_VA_INTERIOR]));
+
+        TracyPlot("Chunks/Pending VA builds",
+                  int64_t(worldvapendingbuildcount));
+
+        TracyPlot("Chunks/Pending VA uploads",
+                  int64_t(worldvapendinguploadcount));
+
+        TracyPlot("Chunks/VA evictions",
+                  int64_t(worldvaevictionsframe));
+
+        TracyPlot("Chunks/NO_RENDER skips",
+                  int64_t(worldvanorenderskipsframe));
+
+        TracyPlot("Chunks/VA uploaded bytes",
+                  int64_t(uploadedbytes));
+
+        TracyPlot("Chunks/VA uploaded vertices",
+                  int64_t(uploadedvertices));
+
+        TracyPlot("Chunks/Changed columns",
+                  int64_t(changedcolumns));
+
+        TracyPlot("Chunks/Mounted sections/frame",
+                  int64_t(mountedsections));
+
+        TracyPlot("Chunks/Unloaded sections/frame",
+                  int64_t(unloadedsections));
+    }
+#endif
+
     return changedcolumns;
 }
 

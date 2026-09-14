@@ -1667,7 +1667,9 @@ namespace game
                    gethumidity(absolute) * 0.01f, transition ? (clamp(distance / 128.0f + 0.5f, 0.0f, 1.0f) * 254.0f / 255.0f) : 1.0f);
     }
 
-    static vec cachedworldclimate(const vec &absolute, bool terrain)
+    enum { CLIMATE_GRASS = 0, CLIMATE_TERRAIN, CLIMATE_WEEDS, NUM_CLIMATE_CACHES };
+
+    static vec cachedworldclimate(const vec &absolute, int kind)
     {
         // A bounded, disposable cache of the existing climate, independent of terrain residency and LOD.
         // Fixed four-metre nodes give continuous trilinear color and avoid repeated hydrology/noise queries.
@@ -1679,8 +1681,8 @@ namespace game
             uint revision;
             entry() : key(0, 0, 0), color(0, 0, 0), revision(0) {}
         };
-        static entry caches[2][CACHE_SIZE];
-        entry *cache = caches[terrain ? 1 : 0];
+        static entry caches[NUM_CLIMATE_CACHES][CACHE_SIZE];
+        entry *cache = caches[kind];
         worldgenerator &generator = getenvironmentgenerator();
         const vec grid = vec(absolute).div(float(STEP));
         const ivec base(int(floorf(grid.x)), int(floorf(grid.y)), int(floorf(grid.z)));
@@ -1697,8 +1699,12 @@ namespace game
             if(sample.revision != grassclimaterevision || sample.key != key)
             {
                 const vec position = vec(key).mul(float(STEP));
-                sample.color = terrain ? generator.terrainclimate(position) :
-                    getgrassclimatecolor(generator.environmentclimate.gettemperature(position), generator.gethumidity(position));
+                if(kind == CLIMATE_TERRAIN) sample.color = generator.terrainclimate(position);
+                else
+                {
+                    const float temperature = generator.environmentclimate.gettemperature(position), humidity = generator.gethumidity(position);
+                    sample.color = kind == CLIMATE_WEEDS ? getweedclimatecolor(temperature, humidity) : getgrassclimatecolor(temperature, humidity);
+                }
                 sample.key = key;
                 sample.revision = grassclimaterevision;
             }
@@ -1709,12 +1715,17 @@ namespace game
 
     vec getgrassworldcolor(const vec &absolute)
     {
-        return cachedworldclimate(absolute, false);
+        return cachedworldclimate(absolute, CLIMATE_GRASS);
+    }
+
+    vec getweedworldcolor(const vec &absolute)
+    {
+        return cachedworldclimate(absolute, CLIMATE_WEEDS);
     }
 
     vec getterrainworldclimate(const vec &absolute)
     {
-        return cachedworldclimate(absolute, true);
+        return cachedworldclimate(absolute, CLIMATE_TERRAIN);
     }
 
     int getworldseed()

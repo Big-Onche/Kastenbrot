@@ -11,6 +11,7 @@ namespace game
     extern vec sampleterraingenerationclimate(worldgencontext *generation, const vec &absolute, bool transition = true);
     // Main-thread rendering query, in absolute engine coordinates. RGB only; never modifies asset alpha.
     extern vec getgrassworldcolor(const vec &absolute);
+    extern vec getweedworldcolor(const vec &absolute);
     // Worker-local climate query; never accesses the main-thread environment cache.
     extern vec samplegrassgenerationcolor(worldgencontext *generation, const vec &absolute);
 }

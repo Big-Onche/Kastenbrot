@@ -22,8 +22,18 @@ namespace game
         return max(shore - width, elevation);
     }
 
-    // Albedo of white grass, indexed by Celsius (-10, 10, 30) and humidity percent (0, 50, 100).
-    // Only coloration clamps here; the physical climate retains its full range.
+    // Celsius (-10, 10, 30) and humidity percent (0, 50, 100). Only coloration clamps here.
+    inline vec interpolatevegetationcolor(const vec (&colors)[3][3], float temperatureC, float humidityPercent)
+    {
+        const float t = clamp((temperatureC + 10.0f) / 20.0f, 0.0f, 2.0f),
+                    h = clamp(humidityPercent / 50.0f, 0.0f, 2.0f);
+        const int ti = min(int(t), 1), hi = min(int(h), 1);
+        vec dry, wet;
+        dry.lerp(colors[ti][hi], colors[ti + 1][hi], t - ti);
+        wet.lerp(colors[ti][hi + 1], colors[ti + 1][hi + 1], t - ti);
+        return vec().lerp(dry, wet, h - hi).div(255.0f);
+    }
+
     inline vec getgrassclimatecolor(float temperatureC, float humidityPercent)
     {
         static const vec colors[3][3] =
@@ -33,13 +43,20 @@ namespace game
             { vec(151, 175, 55), vec(108, 190, 49), vec(58, 158, 38) },
             { vec(194, 157, 58), vec(174, 176, 51), vec(89, 154, 36) }
         };
-        const float t = clamp((temperatureC + 10.0f) / 20.0f, 0.0f, 2.0f),
-                    h = clamp(humidityPercent / 50.0f, 0.0f, 2.0f);
-        const int ti = min(int(t), 1), hi = min(int(h), 1);
-        vec dry, wet;
-        dry.lerp(colors[ti][hi], colors[ti + 1][hi], t - ti);
-        wet.lerp(colors[ti][hi + 1], colors[ti + 1][hi + 1], t - ti);
-        return vec().lerp(dry, wet, h - hi).div(255.0f);
+        return interpolatevegetationcolor(colors, temperatureC, humidityPercent);
+    }
+
+    inline vec getweedclimatecolor(float temperatureC, float humidityPercent)
+    {
+        static const vec colors[3][3] =
+        {
+            // Dry, medium, humid: cold stays pale blue-green; heat dries foliage to bright straw yellow.
+            // Moisture retains saturated greens with enough brightness for the grayscale texture's shading.
+            { vec(139, 202, 155), vec(116, 195, 144), vec(87, 181, 124) },
+            { vec(204, 199, 57), vec(99, 190, 38), vec(43, 163, 27) },
+            { vec(240, 211, 69), vec(186, 195, 43), vec(53, 160, 25) }
+        };
+        return interpolatevegetationcolor(colors, temperatureC, humidityPercent);
     }
 
     // Absolute engine coordinates: one 16-unit block is one metre; terrain datum is z = 4096.

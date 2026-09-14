@@ -346,7 +346,7 @@ static void addworldscattergeometry(const worldchunk &chunk, const worldscatteri
         // Sample the stable root once per plant, before wind; baked RGB survives origin shifts unchanged.
         vec absolute = vec(center.x, center.y, bottom).add(vec(worldchunkorigin(chunk)));
         worldpositiontoabsolute(absolute);
-        const bvec4 color(bvec::fromcolor(game::getgrassworldcolor(absolute)), 255);
+        const bvec4 color(bvec::fromcolor(game::getweedworldcolor(absolute)), 255);
         for(int i = firstvertex; i < vertices.length(); ++i) vertices[i].color = color;
     }
 }
