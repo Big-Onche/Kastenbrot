@@ -6,8 +6,7 @@ enum
     WATER_MAX_LEVEL = 7,
     WATER_DROP_SEARCH = 4,
     WATER_SOURCE_NONE = 0,
-    WATER_SOURCE_MANUAL,
-    WATER_SOURCE_NATURAL_ACTIVE
+    WATER_SOURCE_MANUAL
 };
 
 struct fluidcell
@@ -44,8 +43,7 @@ static int watersourcematerial(int sourcekind)
     switch(sourcekind)
     {
         case WATER_SOURCE_MANUAL: return MAT_WATER | MAT_WATER_SOURCE_MANUAL;
-        case WATER_SOURCE_NATURAL_ACTIVE: return MAT_WATER | MAT_WATER_SOURCE_NATURAL_ACTIVE;
-        default: return MAT_WATER;
+        default: return MAT_WATER | MAT_WATER_FLOWING;
     }
 }
 
@@ -53,7 +51,6 @@ static int watermaterialsource(int material)
 {
     if((material&MATF_VOLUME) != MAT_WATER) return WATER_SOURCE_NONE;
     if(material&MAT_WATER_SOURCE_MANUAL) return WATER_SOURCE_MANUAL;
-    if(material&MAT_WATER_SOURCE_NATURAL_ACTIVE) return WATER_SOURCE_NATURAL_ACTIVE;
     return WATER_SOURCE_NONE;
 }
 
@@ -109,13 +106,6 @@ static bool watermaterial(const ivec &absolute)
 
 int getwatercelllevel(const ivec &position, bool &falling)
 {
-    // Streamed worlds currently use static octree water. Reading its surface
-    // must not activate saved sources or enqueue fluid simulation.
-    if(getworldsectionsize())
-    {
-        falling = false;
-        return -1;
-    }
     const ivec local = ivec(position).mask(~(WATER_BLOCK_SIZE - 1));
     selinfo absolute;
     absolute.o = local;
@@ -139,7 +129,6 @@ int getwatercelllevel(const ivec &position, bool &falling)
 
 void watermaterialloaded(const ivec &position, int material)
 {
-    if(getworldsectionsize()) return;
     const int sourcekind = watermaterialsource(material);
     if(sourcekind == WATER_SOURCE_NONE) return;
     selinfo absolute;
@@ -160,7 +149,6 @@ void watermaterialloaded(const ivec &position, int material)
 
 void getflowingwatercells(vector<ivec> &cells)
 {
-    if(getworldsectionsize()) return;
     enumeratekt(fluidcells, ivec, position, fluidcell, cell,
     {
         if(!cell.source()) cells.add(position);
@@ -181,6 +169,7 @@ static bool setwatermaterial(const ivec &absolute, bool water, bool persist = tr
     waterselection(sel, absolute);
     if(!sel.validate() || !worldselectionready(sel)) return false;
     const int existingmaterial = worldcellmaterial(sel.o);
+    bool topologychanged = false;
     if(water)
     {
         if(!worldcellacceptswater(sel.o)) return false;
@@ -189,6 +178,7 @@ static bool setwatermaterial(const ivec &absolute, bool water, bool persist = tr
         changingwatermaterial = true;
         mpeditmat(material, (existingmaterial&MATF_VOLUME) == MAT_WATER ? existingmaterial : -1, sel, false, persist);
         changingwatermaterial = false;
+        topologychanged = (existingmaterial&MATF_VOLUME) != MAT_WATER;
     }
     else
     {
@@ -196,7 +186,9 @@ static bool setwatermaterial(const ivec &absolute, bool water, bool persist = tr
         changingwatermaterial = true;
         mpeditmat(MAT_AIR, existingmaterial, sel, false, persist);
         changingwatermaterial = false;
+        topologychanged = true;
     }
+    if(topologychanged) worldwaterchanged(absolute, ivec(absolute).add(WATER_BLOCK_SIZE));
     return true;
 }
 
@@ -275,30 +267,48 @@ static bool addwatercell(const ivec &position, int level, int sourcekind, bool f
 
 bool addmanualwatersource(const ivec &position)
 {
-    if(getworldsectionsize()) return setwatermaterial(position, true, true, WATER_SOURCE_MANUAL);
     fluidcell *existing = fluidcells.access(position);
     if(existing && existing->source()) return true;
     return addwatercell(position, 0, WATER_SOURCE_MANUAL, false);
 }
 
 static void removewatercell(const ivec &position);
+static void schedulewaterneighbors(const ivec &position, int delay = -1);
 
 bool removewatersource(const ivec &position)
 {
-    if(getworldsectionsize())
-    {
-        selinfo sel;
-        waterselection(sel, position);
-        if(!sel.validate() || !worldselectionready(sel) || watermaterialsource(worldcellmaterial(sel.o)) == WATER_SOURCE_NONE) return false;
-        return setwatermaterial(position, false);
-    }
     fluidcell *cell = fluidcells.access(position);
     if(!cell || !cell->source()) return false;
     removewatercell(position);
     return true;
 }
 
-static void schedulewaterneighbors(const ivec &position, int delay = -1)
+bool removebucketwater(const ivec &position)
+{
+    selinfo sel;
+    waterselection(sel, position);
+    if(!sel.validate() || !worldselectionready(sel) || !worldcellhaswater(sel.o)) return false;
+
+    selinfo absolute = sel;
+    worldselectiontoabsolute(absolute);
+    fluidcell *cell = fluidcells.access(absolute.o);
+    if(cell)
+    {
+        // Falling columns and levelled horizontal flow do not contain a full,
+        // still cube of water and therefore cannot fill a bucket.
+        if(cell->falling || watercelllevel(*cell) != 0) return false;
+        removewatercell(absolute.o);
+    }
+    else
+    {
+        if(!setwatermaterial(absolute.o, false)) return false;
+        invalidatewatercorners(absolute.o);
+        schedulewaterneighbors(absolute.o);
+    }
+    return true;
+}
+
+static void schedulewaterneighbors(const ivec &position, int delay)
 {
     static const ivec offsets[] =
     {
@@ -320,39 +330,15 @@ static void removewatercell(const ivec &position)
     schedulewaterneighbors(position);
 }
 
-static void activatenaturalwaterneighbors(const ivec &position)
-{
-    static const ivec offsets[] =
-    {
-        ivec(-WATER_BLOCK_SIZE, 0, 0), ivec(WATER_BLOCK_SIZE, 0, 0),
-        ivec(0, -WATER_BLOCK_SIZE, 0), ivec(0, WATER_BLOCK_SIZE, 0),
-        ivec(0, 0, -WATER_BLOCK_SIZE), ivec(0, 0, WATER_BLOCK_SIZE)
-    };
-    loopi(6)
-    {
-        const ivec neighbor = ivec(position).add(offsets[i]);
-        if(!fluidcells.access(neighbor) && watermaterial(neighbor))
-            addwatercell(neighbor, 0, WATER_SOURCE_NATURAL_ACTIVE, false, -1, false);
-    }
-}
-
 void watergeometryopening(const selinfo &selection)
 {
-    if(getworldsectionsize()) return;
-    selinfo absolute = selection;
-    worldselectiontoabsolute(absolute);
-    const ivec end = ivec(absolute.o).add(ivec(absolute.s).mul(absolute.grid));
-    const ivec first = ivec(absolute.o).mask(~(WATER_BLOCK_SIZE - 1));
-    const ivec last = ivec(end).sub(1).mask(~(WATER_BLOCK_SIZE - 1));
-    for(int z = first.z; z <= last.z; z += WATER_BLOCK_SIZE)
-    for(int y = first.y; y <= last.y; y += WATER_BLOCK_SIZE)
-    for(int x = first.x; x <= last.x; x += WATER_BLOCK_SIZE)
-        activatenaturalwaterneighbors(ivec(x, y, z));
+    // Static water exposed by terrain edits remains static. Only explicit
+    // manual sources (for example, a bucket placement) enter the simulation.
+    (void)selection;
 }
 
 void waterterrainchanged(const ivec &position)
 {
-    if(getworldsectionsize()) return;
     static const ivec offsets[] =
     {
         ivec(0, 0, 0), ivec(-WATER_BLOCK_SIZE, 0, 0), ivec(WATER_BLOCK_SIZE, 0, 0),
@@ -375,7 +361,7 @@ void waterterrainchanged(const ivec &position)
 
 void watermaterialchanged(const selinfo &selection, int material)
 {
-    if(getworldsectionsize() || changingwatermaterial) return;
+    if(changingwatermaterial) return;
     selinfo absolute = selection;
     worldselectiontoabsolute(absolute);
     const ivec end = ivec(absolute.o).add(ivec(absolute.s).mul(absolute.grid));
@@ -408,7 +394,6 @@ static int waterlevel(const ivec &position)
 
 static bool waterflow(const ivec &position, vec &flow)
 {
-    if(getworldsectionsize()) return false;
     const int west = waterlevel(ivec(position).add(ivec(-WATER_BLOCK_SIZE, 0, 0))),
               east = waterlevel(ivec(position).add(ivec(WATER_BLOCK_SIZE, 0, 0))),
               south = waterlevel(ivec(position).add(ivec(0, -WATER_BLOCK_SIZE, 0))),
@@ -598,25 +583,6 @@ static void updatewatercell(const ivec &position)
         return;
     }
 
-    if(!cell->source() && watersupported(position))
-    {
-        int sources = 0;
-        loopi(4)
-        {
-            fluidcell *neighbor = fluidcells.access(ivec(position).add(directions[i]));
-            if(neighbor && neighbor->source()) ++sources;
-        }
-        if(sources >= 2)
-        {
-            invalidatewatercorners(position);
-            cell->sourcekind = WATER_SOURCE_NATURAL_ACTIVE;
-            cell->falling = false;
-            cell->level = 0;
-            cell->origin = position;
-            setwatermaterial(position, true, true, WATER_SOURCE_NATURAL_ACTIVE);
-        }
-    }
-
     const int nextlevel = cell->source() ? 1 : cell->falling ? 1 : int(cell->level) + 1;
     if(nextlevel > WATER_MAX_LEVEL) return;
     const ivec floworigin = cell->origin;
@@ -647,7 +613,6 @@ static bool waterinsimulationrange(const ivec &position)
 
 void updatewatersimulation()
 {
-    if(getworldsectionsize()) return;
     ZoneScopedN("World/Water simulation");
     if(fluidupdates.empty()) return;
     const Uint64 start = SDL_GetPerformanceCounter(),

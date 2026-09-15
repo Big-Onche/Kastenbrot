@@ -617,7 +617,8 @@ namespace server
         // Packets identify the supporting face, while authoritative occupancy
         // is keyed by the adjacent cell that is actually modified.
         return action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_PLACE_SCATTER ||
-               action == WORLD_ACTION_PLACE_ITEM || action == WORLD_ACTION_BREAK_SCATTER_START;
+               action == WORLD_ACTION_PLACE_ITEM || action == WORLD_ACTION_BREAK_SCATTER_START ||
+               action == WORLD_ACTION_PLACE_WATER;
     }
 
     static ivec worldactionstatecell(const ivec &target, int action, int orient)
@@ -2124,6 +2125,30 @@ namespace server
             resetworldsnapshotcube(*voxel);
         }
         else return true;
+        dirtyserverchunk(*chunk);
+        return true;
+    }
+
+    static bool updateserverchunkwater(const ivec &cell, int action)
+    {
+        serverchunk *chunk = serverchunkforcell(cell, true);
+        if(!chunk || chunk->loading || chunk->corrupted) return false;
+        cube *voxel = serverchunkcubeat(*chunk, cell, true);
+        if(!voxel || !isempty(*voxel)) return false;
+        const int volume = voxel->material&MATF_VOLUME;
+        if(action == WORLD_ACTION_TAKE_WATER)
+        {
+            if(volume != MAT_WATER) return false;
+            voxel->material = (voxel->material&~(MATF_VOLUME|MATF_INDEX|MAT_WATER_SOURCE_MANUAL|MAT_WATER_SOURCE_NATURAL_ACTIVE)) | MAT_AIR;
+        }
+        else if(action == WORLD_ACTION_PLACE_WATER)
+        {
+            if(volume != MAT_AIR) return false;
+            voxel->material = (voxel->material&~(MATF_VOLUME|MATF_INDEX|MAT_WATER_SOURCE_MANUAL|MAT_WATER_SOURCE_NATURAL_ACTIVE)) |
+                              MAT_WATER | MAT_WATER_SOURCE_MANUAL;
+        }
+        else return false;
+        voxel->playeredited = true;
         dirtyserverchunk(*chunk);
         return true;
     }
@@ -4075,6 +4100,8 @@ namespace server
         if(action == WORLD_ACTION_PLACE_SCATTER) return type == WORLD_ITEM_SCATTER;
         if(action == WORLD_ACTION_BREAK_SCATTER_START) return type == WORLD_ITEM_SCATTER || type == WORLD_ITEM_PLACEABLE;
         if(action == WORLD_ACTION_PLACE_ITEM) return type == WORLD_ITEM_PLACEABLE;
+        if(action == WORLD_ACTION_TAKE_WATER) return !strcmp(getinventoryitemid(item), "bucket");
+        if(action == WORLD_ACTION_PLACE_WATER) return !strcmp(getinventoryitemid(item), "bucket_water");
         return false;
     }
 
@@ -4141,6 +4168,10 @@ namespace server
         if(action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_BREAK_CUBE_START)
         {
             if(!updateserverchunkblock(cell, action, item)) return false;
+        }
+        else if(action == WORLD_ACTION_TAKE_WATER || action == WORLD_ACTION_PLACE_WATER)
+        {
+            if(!updateserverchunkwater(cell, action)) return false;
         }
         else
         {
@@ -4255,6 +4286,49 @@ namespace server
                 ci.inventorycounts[slot] = 0;
                 ci.inventorydurabilities[slot] = 0;
             }
+            markinventorydirty(ci);
+        }
+        sendactionresult(ci, requestid, true);
+        sendinventory(ci);
+        return true;
+    }
+
+    static bool handlebucket(clientinfo &ci, uint requestid, int action, const ivec &target, int orient, int item, int slot)
+    {
+        const char *error = NULL;
+        if(!validnewrequest(ci, requestid, error)) return rejectaction(ci, requestid, error, requestid == ci.lastrequestid);
+        if((action != WORLD_ACTION_TAKE_WATER && action != WORLD_ACTION_PLACE_WATER) || orient < 0 || orient > 5 ||
+           !validactionitem(action, item))
+            return rejectaction(ci, requestid, "invalid bucket action", true, true);
+        if(!validactiontarget(ci, target, orient, error)) return rejectaction(ci, requestid, error, true);
+
+        const ivec cell = worldactionstatecell(target, action, orient);
+        if(action == WORLD_ACTION_PLACE_WATER)
+        {
+            if(!validactiontarget(ci, cell, orient, error)) return rejectaction(ci, requestid, error, true);
+            const cube *support = serverchunkcubeat(target);
+            if(!support || !isentirelysolid(*support)) return rejectaction(ci, requestid, "water requires a solid supporting face");
+            if(playeroccupies(cell) || serverfallingblockoccupies(cell)) return rejectaction(ci, requestid, "water placement target is occupied");
+        }
+        if(!actionrate(ci, action == WORLD_ACTION_PLACE_WATER)) return rejectaction(ci, requestid, "excessive bucket action rate", true);
+
+        if(!servercreative() &&
+           (slot < 0 || slot >= SURVIVAL_HOTBAR_SLOTS || slot != ci.selectedslot || ci.inventorycounts[slot] != 1 ||
+            ci.inventoryitems[slot] != item))
+            return rejectaction(ci, requestid, "bucket is not owned in the selected inventory slot", true, true);
+
+        const int replacement = getinventoryitemindex(action == WORLD_ACTION_TAKE_WATER ? "bucket_water" : "bucket");
+        if(replacement < 0) return rejectaction(ci, requestid, "bucket item definition is missing");
+        if(!acceptworldaction(ci, requestid, action, target, orient, item))
+            return rejectaction(ci, requestid, action == WORLD_ACTION_TAKE_WATER ? "target is not a water cube" :
+                                "water placement target is not empty");
+        setworldactionstate(cell, action, orient, item, true);
+
+        if(!servercreative())
+        {
+            ci.inventoryitems[slot] = replacement;
+            ci.inventorycounts[slot] = 1;
+            ci.inventorydurabilities[slot] = 0;
             markinventorydirty(ci);
         }
         sendactionresult(ci, requestid, true);
@@ -4507,6 +4581,8 @@ namespace server
     static bool handleworldaction(clientinfo &ci, uint requestid, int action, const ivec &target, int orient, int item, int slot)
     {
         if(action == WORLD_ACTION_PUSH_CORNER) return handlecornerpush(ci, requestid, target, orient, item, slot);
+        if(action == WORLD_ACTION_TAKE_WATER || action == WORLD_ACTION_PLACE_WATER)
+            return handlebucket(ci, requestid, action, target, orient, item, slot);
         switch(action)
         {
             case WORLD_ACTION_PLACE_CUBE:

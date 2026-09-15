@@ -730,7 +730,8 @@ static watergeometrycell lookupwatergeometrycell(const ivec &position)
     int size;
     const cube &c = lookupcube(position, 0, origin, size);
     return watergeometrycell(origin, size, (c.material & MATF_VOLUME) == MAT_WATER,
-                             isentirelysolid(c) || isclipped(c.material & MATF_VOLUME));
+                             isentirelysolid(c) || isclipped(c.material & MATF_VOLUME),
+                             c.material&(MAT_WATER_SOURCE_MANUAL|MAT_WATER_FLOWING));
 }
 
 #include "watermesh.h"

@@ -54,7 +54,7 @@ static void buildwatermeshpacket(watermeshpacket &resource, const materialsurfac
                                  bool staticwater = false)
 {
 
-    vector<waterfacepatch> faces[8], pending;
+    vector<waterfacepatch> faces[8], pending, edgepending;
     vector<int> wavesizes[4];
     loopi(count)
     {
@@ -66,6 +66,23 @@ static void buildwatermeshpacket(watermeshpacket &resource, const materialsurfac
             {
                 if(face.orient == O_TOP)
                 {
+                    // Material extraction can omit vertical liquid faces. Derive
+                    // skirts from every exposed top boundary so shallow flow is
+                    // closed at dry edges instead of rendering as a floating plane.
+                    if(cellat(ivec(face.origin).sub(ivec(0, 0, 1))).dynamic)
+                    {
+                        const int bottom = face.origin.z - 16;
+                        const waterfacepatch edges[] =
+                        {
+                            waterfacepatch(ivec(face.origin.x, face.origin.y, bottom), O_LEFT, face.csize, 16),
+                            waterfacepatch(ivec(face.origin.x + face.rsize, face.origin.y, bottom), O_RIGHT, face.csize, 16),
+                            waterfacepatch(ivec(face.origin.x, face.origin.y, bottom), O_BACK, 16, face.rsize),
+                            waterfacepatch(ivec(face.origin.x, face.origin.y + face.csize, bottom), O_FRONT, 16, face.rsize)
+                        };
+                        loopj(4) exposedwaterpatches(edges[j], cellat,
+                            [&](const waterfacepatch &edge) { faces[group + 4].add(edge); }, edgepending);
+                    }
+
                     // Fixed tessellation: camera and waves never change the index/vertex buffers.
                     for(int y = 0; y < face.csize; y += 4) for(int x = 0; x < face.rsize; x += 4)
                     {

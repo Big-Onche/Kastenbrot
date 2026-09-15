@@ -37,7 +37,8 @@ enum // cube empty-space materials
     MAT_ALPHA    = 4 << MATF_FLAG_SHIFT,  // alpha blended
 
     MAT_WATER_SOURCE_MANUAL = 8 << MATF_FLAG_SHIFT,
-    MAT_WATER_SOURCE_NATURAL_ACTIVE = 16 << MATF_FLAG_SHIFT
+    MAT_WATER_SOURCE_NATURAL_ACTIVE = 16 << MATF_FLAG_SHIFT,
+    MAT_WATER_FLOWING = 32 << MATF_FLAG_SHIFT
 };
 
 #define isliquid(mat) ((mat)==MAT_WATER || (mat)==MAT_LAVA)
@@ -318,6 +319,7 @@ extern void waterterrainchanged(const ivec &position);
 extern void watermaterialchanged(const selinfo &selection, int material);
 extern bool addmanualwatersource(const ivec &position);
 extern bool removewatersource(const ivec &position);
+extern bool removebucketwater(const ivec &position);
 extern bool worldtorchincell(const ivec &cell);
 extern bool worldplaceableblockcollisionat(const ivec &cell);
 extern void addworldtorchlights();

@@ -15,10 +15,10 @@ struct watergeometrycell
 {
     ivec origin;
     int size;
-    bool water, occludes;
+    bool water, occludes, dynamic;
 
-    watergeometrycell(const ivec &origin, int size, bool water, bool occludes)
-        : origin(origin), size(size), water(water), occludes(occludes) {}
+    watergeometrycell(const ivec &origin, int size, bool water, bool occludes, bool dynamic = false)
+        : origin(origin), size(size), water(water), occludes(occludes), dynamic(dynamic) {}
 };
 
 static inline bool waterfallpatchless(const waterfacepatch &a, const waterfacepatch &b)
@@ -44,6 +44,9 @@ static inline void mergewaterfallpatches(vector<waterfacepatch> &patches)
             waterfacepatch &previous = patches[count - 1];
             const int dim = dimension(patch.orient);
             int &height = dim == 0 ? previous.csize : previous.rsize;
+            if(previous.orient == patch.orient && previous.origin == patch.origin && previous.rsize == patch.rsize &&
+               previous.csize == patch.csize)
+                continue;
             if(previous.orient == patch.orient && previous.origin.x == patch.origin.x && previous.origin.y == patch.origin.y &&
                (dim == 0 ? previous.rsize == patch.rsize : previous.csize == patch.csize) && previous.origin.z + height == patch.origin.z)
             {

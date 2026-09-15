@@ -542,7 +542,8 @@ static void buildworldmeshpacket(worldmeshjob &job)
                 int size;
                 const cube &c = job.snapshot.at(position, 1, origin, size);
                 return watergeometrycell(origin, size, (c.material & MATF_VOLUME) == MAT_WATER,
-                                         isentirelysolid(c) || isclipped(c.material & MATF_VOLUME));
+                                         isentirelysolid(c) || isclipped(c.material & MATF_VOLUME),
+                                         c.material&(MAT_WATER_SOURCE_MANUAL|MAT_WATER_FLOWING));
             }, true);
 }
 

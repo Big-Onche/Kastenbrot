@@ -123,19 +123,16 @@ void uploadwatermeshpacket(waterresource *&attachment, watermeshpacket &packet)
     if(packet.indices.empty()) return;
     attachment = new waterresource;
     waterresource &resource = *attachment;
-    resource.staticwater = !packet.states.empty();
-    if(!resource.staticwater) resource.patches.move(packet.patches);
+    // Streamed terrain used to keep a permanently baked water state. Keep its
+    // topology, but evaluate heights on the render thread so bucket-created
+    // flow can slope and recede without rebuilding every section each step.
+    resource.staticwater = false;
+    resource.patches.move(packet.patches);
     memcpy(resource.first, packet.first, sizeof(resource.first));
     memcpy(resource.count, packet.count, sizeof(resource.count));
     uploadworldmesh(resource.vertices, GL_ARRAY_BUFFER, packet.vertices.getbuf(), packet.vertices.length() * sizeof(watermeshvertex));
     uploadworldmesh(resource.indices, GL_ELEMENT_ARRAY_BUFFER, packet.indices.getbuf(), packet.indices.length() * sizeof(uint));
-    if(resource.staticwater)
-    {
-        ZoneScopedN("Water/Upload static state");
-        ASSERT(packet.states.length() == packet.vertices.length());
-        uploadworldmesh(resource.state, GL_ARRAY_BUFFER, packet.states.getbuf(), packet.states.length() * sizeof(watermeshstate));
-    }
-    else updatewaterstate(resource);
+    updatewaterstate(resource);
 }
 
 void buildwaterresource(waterresource *&attachment, const materialsurface *surfaces, int count)

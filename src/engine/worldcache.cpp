@@ -396,7 +396,10 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     const int palette = worldsnapshotpaletteindex(snapshot, id, worldindex);
     if(palette < 0) { copystring(error, "chunk block palette exceeds ushort capacity"); return false; }
     voxel.palette = ushort(palette);
-    voxel.material = source.material;
+    // Simulated flow is reconstructed from persistent manual sources. Saving
+    // it as ordinary water would turn every reached cell into a full source
+    // after the chunk is loaded again.
+    voxel.material = source.material&MAT_WATER_FLOWING ? MAT_AIR : source.material;
     voxel.orientation = O_TOP;
     voxel.flags = empty ? WORLD_SNAPSHOT_EMPTY : solid ? WORLD_SNAPSHOT_SOLID : 0;
     if(source.playeredited) voxel.flags |= WORLD_SNAPSHOT_PLAYER_EDITED;

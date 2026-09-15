@@ -55,6 +55,7 @@ namespace game
     vector<uchar> messages;
 #ifndef STANDALONE
     static uint nextworldrequestid = 1;
+    static void transitioncreativebucket(int action);
 
     struct predictedworldaction
     {
@@ -280,6 +281,10 @@ namespace game
                 if(getworldchestconfig(item, slots)) removechestvisual(worldactionplacecell(absolutetarget, orient));
                 return true;
             }
+            case WORLD_ACTION_TAKE_WATER:
+                return removebucketwater(absolutetarget);
+            case WORLD_ACTION_PLACE_WATER:
+                return addmanualwatersource(worldactionplacecell(absolutetarget, orient));
             default:
                 return false;
         }
@@ -622,7 +627,9 @@ namespace game
         if(edit.type == N_WORLDAUTH)
         {
             if(player1 && edit.author == player1->clientnum && edit.requestid && findpredictedworldaction(edit.requestid)) return true;
-            return applyworldaction(edit.args[0], ivec(edit.args[1], edit.args[2], edit.args[3]), edit.args[4], edit.args[5]);
+            const bool applied = applyworldaction(edit.args[0], ivec(edit.args[1], edit.args[2], edit.args[3]), edit.args[4], edit.args[5]);
+            if(applied && player1 && edit.author == player1->clientnum && !m_survival) transitioncreativebucket(edit.args[0]);
+            return applied;
         }
 
         selinfo sel = edit.selection;
@@ -1278,6 +1285,31 @@ namespace game
     {
         creativehotbarslot = clamp(creativehotbarslot, 0, CREATIVE_HOTBAR_SLOTS - 1);
         return creativehotbarslot;
+    }
+
+    static int bucketreplacement(int action)
+    {
+        return getinventoryitemindex(action == WORLD_ACTION_TAKE_WATER ? "bucket_water" :
+                                     action == WORLD_ACTION_PLACE_WATER ? "bucket" : "");
+    }
+
+    static void transitioncreativebucket(int action)
+    {
+        const int replacement = bucketreplacement(action);
+        if(replacement >= 0) creativehotbar[clampcreativehotbarslot()] = replacement;
+    }
+
+    static void transitionlocalbucket(int action)
+    {
+        const int replacement = bucketreplacement(action), slot = clampcreativehotbarslot();
+        if(replacement < 0) return;
+        if(m_survival)
+        {
+            survivalitems[slot] = replacement;
+            survivalcounts[slot] = 1;
+            survivaldurabilities[slot] = 0;
+        }
+        else creativehotbar[slot] = replacement;
     }
 
     int selectedcreativeblock()
@@ -4297,6 +4329,68 @@ namespace game
         return target;
     }
 
+    static bool creativeplayeroverlap(const ivec &cell);
+
+    static bool bucketwaterhit(selinfo &hit)
+    {
+        if(!buildenabled()) return false;
+        const vec origin = camera1 ? camera1->o : player1->o;
+        vec hitpos;
+        const float reach = buildactionreach(), dist = raycubepos(origin, camdir, hitpos, reach,
+                                                                  RAY_LIQUIDMAT | RAY_SKIPFIRST, CREATIVE_GRID);
+        if(dist >= reach) return false;
+        const vec inside = vec(camdir).mul(dist + 0.05f).add(origin);
+        if(!insideworld(inside)) return false;
+        hit.o = ivec(inside).mask(~(CREATIVE_GRID - 1));
+        hit.s = ivec(1, 1, 1);
+        hit.grid = CREATIVE_GRID;
+        hit.orient = WORLD_ORIENT_TOP;
+        hit.cx = hit.cy = hit.corner = 0;
+        hit.cxs = hit.cys = 2;
+        if(!hit.validate() || (worldcellmaterial(hit.o)&MATF_VOLUME) != MAT_WATER) return false;
+        bool falling = false;
+        const int level = getwatercelllevel(ivec(hit.o).add(CREATIVE_GRID / 2), falling);
+        return level < 0 || (!falling && level == 0);
+    }
+
+    static bool usebucket()
+    {
+        const int held = selectedcreativeblock();
+        if(held < 0) return false;
+        const char *id = getinventoryitemid(held);
+        const bool empty = !strcmp(id, "bucket"), full = !strcmp(id, "bucket_water");
+        if(!empty && !full) return false;
+
+        selinfo hit;
+        int action = -1;
+        if(empty)
+        {
+            if(!bucketwaterhit(hit)) return true;
+            action = WORLD_ACTION_TAKE_WATER;
+        }
+        else
+        {
+            if(!creativehit(hit)) return true;
+            const ivec target = creativeplacecell(hit);
+            if(!insideworld(target) || !insideworld(ivec(target).add(CREATIVE_GRID - 1)) || creativeplayeroverlap(target) ||
+               worldtorchincell(target) || worldcellsolid(target) || (worldcellmaterial(target)&MATF_VOLUME) != MAT_AIR)
+                return true;
+            action = WORLD_ACTION_PLACE_WATER;
+        }
+
+        if(waitforserveredit()) sendworldaction(newworldrequestid(), action, hit.o, hit.orient, held, clampcreativehotbarslot());
+        else
+        {
+            selinfo absolute = hit;
+            worldselectiontoabsolute(absolute);
+            if(!applyworldaction(action, absolute.o, hit.orient, held)) return true;
+            transitionlocalbucket(action);
+        }
+        player1->renderplacemillis = lastmillis;
+        player1->renderplacetoggle = !player1->renderplacetoggle;
+        return true;
+    }
+
     static bool openlookedatchest()
     {
         const vec origin = camera1 ? camera1->o : player1->o;
@@ -4900,7 +4994,8 @@ namespace game
     {
         if(*down)
         {
-            if(!openlookedatchest() && !beginfooduse() && !(survivalenabled() && usesurvivalcornertool(TOOL_CORNER_PUSH_RIGHT))) creativeplace();
+            if(!usebucket() && !openlookedatchest() && !beginfooduse() &&
+               !(survivalenabled() && usesurvivalcornertool(TOOL_CORNER_PUSH_RIGHT))) creativeplace();
         }
         else stopfooduse();
     });
