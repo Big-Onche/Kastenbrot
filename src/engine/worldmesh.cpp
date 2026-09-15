@@ -131,10 +131,11 @@ struct worldmeshjob
     worldmeshsnapshot snapshot;
     worldmeshpacket packet;
     ullong revision, epoch, request;
+    bool edited;
     SDL_atomic_t cancelled;
 
-    worldmeshjob(const ivec &origin, ullong revision, ullong epoch, ullong request)
-        : snapshot(origin), revision(revision), epoch(epoch), request(request)
+    worldmeshjob(const ivec &origin, ullong revision, ullong epoch, ullong request, bool edited)
+        : snapshot(origin), revision(revision), epoch(epoch), request(request), edited(edited)
     {
         SDL_AtomicSet(&cancelled, 0);
     }
@@ -565,6 +566,37 @@ static int worldmeshworker(void *)
     }
 }
 
+static long long worldmeshsectionscore(const ivec &origin, bool edited)
+{
+    static const long long tierstride = 1LL << 60, editstride = 1LL << 59;
+    const vec *focus = player ? &player->o : camera1 ? &camera1->o : NULL;
+    if(!focus) return edited ? 0 : editstride;
+    const ivec maximum = ivec(origin).add(WORLD_SECTION_SIZE);
+    long long distance = 0;
+    loopi(3)
+    {
+        const double delta = (*focus)[i] < origin[i] ? origin[i] - (*focus)[i] :
+                             (*focus)[i] > maximum[i] ? (*focus)[i] - maximum[i] : 0;
+        distance += static_cast<long long>(delta * delta);
+    }
+    const int focuschunkx = int(floorf(focus->x / WORLD_CHUNK_SIZE)), focuschunky = int(floorf(focus->y / WORLD_CHUNK_SIZE)),
+              sectionchunkx = origin.x / WORLD_CHUNK_SIZE, sectionchunky = origin.y / WORLD_CHUNK_SIZE;
+    const bool focuschunk = sectionchunkx == focuschunkx && sectionchunky == focuschunky,
+               visible = !viewfrustumvalid() ||
+                         isvisiblebb(origin, ivec(WORLD_SECTION_SIZE, WORLD_SECTION_SIZE, WORLD_SECTION_SIZE)) < VFC_FOGGED;
+    const int tier = focuschunk ? 0 : visible ? 1 : 2;
+    return tier * tierstride + (edited ? 0 : editstride) + min(distance, editstride - 1);
+}
+
+static bool worldmeshjobpriority(const worldmeshjob *a, const worldmeshjob *b)
+{
+    const long long ascore = worldmeshsectionscore(a->snapshot.origin, a->edited),
+                    bscore = worldmeshsectionscore(b->snapshot.origin, b->edited);
+    if(ascore != bscore) return ascore < bscore;
+    const ivec &ao = a->snapshot.origin, &bo = b->snapshot.origin;
+    return ao.x != bo.x ? ao.x < bo.x : ao.y != bo.y ? ao.y < bo.y : ao.z < bo.z;
+}
+
 static void releaseworldmeshsection(worldmeshsection &section)
 {
     const ullong bytes = ullong(section.rendervertices.length()) * sizeof(vertex) + ullong(section.renderindices.length()) * sizeof(uint);
@@ -847,20 +879,37 @@ int processworldmeshpackets(double budget, int uploadlimit)
     SDL_LockMutex(worldmeshmutex);
     int outstanding = worldmeshjobs.length() + worldmeshresults.length() + (worldmeshactive ? 1 : 0);
     SDL_UnlockMutex(worldmeshmutex);
-    loop(priority, 2) loopv(worldmeshsections)
+    // Camera movement can change priorities while packets are queued. Re-sort
+    // every submission pass so only the active worker can remain stale.
+    SDL_LockMutex(worldmeshmutex);
+    worldmeshjobs.sort(worldmeshjobpriority);
+    SDL_UnlockMutex(worldmeshmutex);
+    while(outstanding < 8)
     {
-        if(outstanding >= 8 || (budget >= 0 && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget)) break;
-        worldmeshsection &section = *worldmeshsections[i];
-        if(section.edited != (priority == 0)) continue;
-        if(!section.dirty || section.pending || !worldsectionvaenabled(section.origin, WORLD_SECTION_SIZE)) continue;
+        if(budget >= 0 && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget) break;
+        worldmeshsection *best = NULL;
+        long long bestscore = LLONG_MAX;
+        loopv(worldmeshsections)
+        {
+            worldmeshsection &candidate = *worldmeshsections[i];
+            if(!candidate.dirty || candidate.pending || !worldsectionvaenabled(candidate.origin, WORLD_SECTION_SIZE)) continue;
+            const long long score = worldmeshsectionscore(candidate.origin, candidate.edited);
+            if(!best || score < bestscore)
+            {
+                best = &candidate;
+                bestscore = score;
+            }
+        }
+        if(!best) break;
+        worldmeshsection &section = *best;
         section.request = ++worldmeshrequest;
-        worldmeshjob *job = new worldmeshjob(section.origin, section.revision, worldmeshepoch, section.request);
+        worldmeshjob *job = new worldmeshjob(section.origin, section.revision, worldmeshepoch, section.request, section.edited);
         job->snapshot.capture(worldroot, job->snapshot.root, ivec(0, 0, 0), worldsize / 2);
         section.dirty = false;
         section.pending = true;
         SDL_LockMutex(worldmeshmutex);
-        if(section.edited) worldmeshjobs.insert(0, job);
-        else worldmeshjobs.add(job);
+        worldmeshjobs.add(job);
+        worldmeshjobs.sort(worldmeshjobpriority);
         section.edited = false;
         SDL_CondSignal(worldmeshcond);
         SDL_UnlockMutex(worldmeshmutex);
