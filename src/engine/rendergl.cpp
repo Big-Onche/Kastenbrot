@@ -1902,10 +1902,10 @@ void debugquad(float x, float y, float w, float h, float tx, float ty, float tw,
     HUDQUAD(x, y, x+w, y+h, tx, ty+th, tx+tw, ty);
 }
 
-VARR(fog, 16, 37500, 1000024);
+VARR(fog, 16, 35000, 1000024);
 CVARR(fogcolour, 0x8099B3);
 VAR(fogoverlay, 0, 1, 1);
-FVARP(atmofogcurve, 0.25f, 0.8f, 4.0f);
+FVARP(atmofogcurve, 0.25f, 1.35f, 4.0f);
 
 bool atmospherefogactive = false;
 
