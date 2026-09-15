@@ -183,7 +183,7 @@ namespace game
         if(species == TREE_PALM) return 7 + int((shape >> 24) % 4U);
         if(species == TREE_BIRCH) return 5 + int((shape >> 24) % 3U);
         if(species == TREE_POPLAR) return 15 + int((shape >> 24) & 1U); // Including the leafy tip: 11--12 blocks.
-        if(species == TREE_PINE) return 6 + int((shape >> 24) % 3U);
+        if(species == TREE_PINE || species == TREE_ACACIA) return 6 + int((shape >> 24) % 3U);
         else return 4 + int((shape >> 24) % 3U); // regular ones
         if(temperature <= -4.0f) return 4 + int((shape >> 24) & 1U);
         if(temperature <= 1.5f) return 5 + int((shape >> 24) % 3U);
@@ -1577,11 +1577,12 @@ namespace game
         // neighbouring height samples and pine/species calculations. Leave a margin for float summation.
         if(spawn >= density + weights[TREE_PALM] + 0.000001f) return false;
 
-        const float savanna = smoothstep(20.0f, 28.0f, sample.temperature) * (1.0f - smoothstep(35.0f, 55.0f, sample.humidity));
-        const float pine = treepinechance(settings, sample, uint(seed), x, y, height) * (1.0f - savanna),
-
+        const float savannabiome = smoothstep(0.20f, 0.55f, sample.weights[WORLD_BIOME_SAVANNA]),
+                    acaciaheat = smoothstep(27.0f, 29.0f, sample.temperature),
+                    savanna = savannabiome * acaciaheat,
+                    pine = treepinechance(settings, sample, uint(seed), x, y, height) * (1.0f - savanna),
                     open = 1.0f - smoothstep(0.7f, 2.4f, density / settings.basetreedensity),
-                    poplarhabitat = temperate * humid * open,
+                    poplarhabitat = temperate * humid * open * (1.0f - savanna),
                     left = poplarhabitat > 0 ? this->height(x - 4, y) : height,
                     right = poplarhabitat > 0 ? this->height(x + 4, y) : height,
                     down = poplarhabitat > 0 ? this->height(x, y - 4) : height,
@@ -1593,11 +1594,13 @@ namespace game
                     birch = (0.04f + 0.24f * humid) * temperate,
                     poplar = min(0.40f, temperate * humid * open * (0.12f + 0.28f * wind) * (0.35f + 0.65f * max(flat, max(basin, freshwater))));
 
-        // Birch is at most 28% of the non-pine population, even in the wettest suitable forest.
-        weights[TREE_PINE] = density * pine;
-        weights[TREE_BIRCH] = density * (1.0f - pine) * birch;
-        weights[TREE_POPLAR] = density * (1.0f - pine) * poplar;
-        weights[TREE_REGULAR] = density * (1.0f - pine) * (1.0f - birch - poplar);
+        const float normal = density * (1.0f - savanna);
+        weights[TREE_ACACIA] = density * savanna;
+        weights[TREE_PINE] = normal * pine;
+        weights[TREE_BIRCH] = normal * (1.0f - pine) * birch;
+        weights[TREE_POPLAR] = normal * (1.0f - pine) * poplar;
+        weights[TREE_REGULAR] = normal * (1.0f - pine) * max(0.0f, 1.0f - birch - poplar);
+
         return true;
     }
 
@@ -1626,12 +1629,534 @@ namespace game
 
     int treeshaperadius(int species)
     {
-        return species == TREE_PALM ? TREE_RADIUS : species == TREE_PINE ? 3 : species == TREE_POPLAR ? 1 : 2;
+        switch(species)
+        {
+            case TREE_POPLAR: return 1;
+            case TREE_PINE: return 3;
+            case TREE_ACACIA: return 6;
+            case TREE_PALM: return 5;
+        }
+        return 2;
     }
 
     int treeshapeblock(int species, int height, uint shape, int x, int y, int z)
     {
         if(z < 0 || z > height) return WORLD_TREE_AIR;
+        if(species == TREE_ACACIA)
+        {
+            // Main growth direction.
+            const int dir = (shape >> 8) & 3U;
+            const int dx = dir == 0 ? 1 : dir == 1 ? -1 : 0;
+            const int dy = dir == 2 ? 1 : dir == 3 ? -1 : 0;
+
+            // Perpendicular direction, randomly mirrored.
+            const int side = ((shape >> 10) & 1U) ? 1 : -1;
+            const int sx = dy * side;
+            const int sy = -dx * side;
+
+            // Independent deterministic shape variation.
+            const uint variant = worldtreehash(
+                shape, 0, 0, height, 0, 0xACA71A31U
+            );
+
+            /*
+                Radius distribution:
+                    40% -> radius 2
+                    30% -> radius 3-4
+                    30% -> radius 5-6
+            */
+            const uint radiusroll = variant % 100U;
+
+            int radius;
+            if(radiusroll < 40U)
+                radius = 2;
+            else if(radiusroll < 70U)
+                radius = 3 + int((variant >> 8) & 1U);
+            else
+                radius = 5 + int((variant >> 9) & 1U);
+
+            // Large acacias may have a second, lower canopy.
+            const bool doublecanopy =
+                radius > 3 &&
+                ((variant >> 11) & 1U) != 0;
+
+            /*
+                Small trees lean one block.
+                Very large trees may lean two blocks.
+            */
+            const int lean = radius >= 5 ? 2 : 1;
+
+            const int bendstart = max(2, height / 2);
+            const int trunkend = height - 1;
+            const int trunkspan = max(1, trunkend - bendstart);
+
+            /*
+                Final center of the main canopy.
+            */
+            const int tipx = dx * lean;
+            const int tipy = dy * lean;
+
+            /*
+                Main trunk.
+
+                Instead of teleporting sideways at bendstart, move progressively
+                toward the canopy center. Keep the previous position too so every
+                step stays face-connected.
+            */
+            if(z <= trunkend)
+            {
+                const int currentstep =
+                    z <= bendstart
+                        ? 0
+                        : min(
+                            lean,
+                            ((z - bendstart) * lean + trunkspan - 1) / trunkspan
+                        );
+
+                const int previousz = max(bendstart, z - 1);
+
+                const int previousstep =
+                    previousz <= bendstart
+                        ? 0
+                        : min(
+                            lean,
+                            ((previousz - bendstart) * lean + trunkspan - 1) / trunkspan
+                        );
+
+                const int tx = dx * currentstep;
+                const int ty = dy * currentstep;
+
+                const int ptx = dx * previousstep;
+                const int pty = dy * previousstep;
+
+                if((x == tx && y == ty) ||
+                   (z >= bendstart && x == ptx && y == pty))
+                {
+                    return WORLD_TREE_DARK_WOOD;
+                }
+            }
+
+            /*
+                Wide canopies receive supporting branches.
+
+                radius 2-3 : main trunk only
+                radius 4   : 1 support branch
+                radius 5-6 : 2 support branches
+            */
+            const int supports =
+                radius >= 5 ? 2 :
+                radius >= 4 ? 1 :
+                              0;
+
+            const int branchstart = max(2, height - 5);
+            const int branchend = height - 2;
+            const int branchspan = max(1, branchend - branchstart);
+
+            const int rootstep =
+                branchstart <= bendstart
+                    ? 0
+                    : min(
+                        lean,
+                        ((branchstart - bendstart) * lean + trunkspan - 1) /
+                        trunkspan
+                    );
+
+            const int rootx = dx * rootstep;
+            const int rooty = dy * rootstep;
+
+            const int supportreach = max(1, radius / 2);
+
+            /*
+                First supporting branch.
+            */
+            const int support1x = tipx + sx * supportreach;
+            const int support1y = tipy + sy * supportreach;
+
+            if(supports >= 1 && z >= branchstart && z <= branchend)
+            {
+                const int step = z - branchstart;
+                const int previous = max(0, step - 1);
+
+                const float t = float(step) / float(branchspan);
+                const float pt = float(previous) / float(branchspan);
+
+                const int bx = int(roundf(rootx + (support1x - rootx) * t));
+                const int by = int(roundf(rooty + (support1y - rooty) * t));
+
+                const int pbx = int(roundf(rootx + (support1x - rootx) * pt));
+                const int pby = int(roundf(rooty + (support1y - rooty) * pt));
+
+                // Third test bridges diagonal steps horizontally.
+                if((x == bx && y == by) ||
+                   (x == pbx && y == pby) ||
+                   (x == bx && y == pby))
+                {
+                    return WORLD_TREE_DARK_WOOD;
+                }
+            }
+
+            /*
+                Second support on the opposite side for the largest trees.
+            */
+            const int support2x = tipx - sx * supportreach;
+            const int support2y = tipy - sy * supportreach;
+
+            if(supports >= 2 && z >= branchstart && z <= branchend)
+            {
+                const int step = z - branchstart;
+                const int previous = max(0, step - 1);
+
+                const float t = float(step) / float(branchspan);
+                const float pt = float(previous) / float(branchspan);
+
+                const int bx = int(roundf(rootx + (support2x - rootx) * t));
+                const int by = int(roundf(rooty + (support2y - rooty) * t));
+
+                const int pbx = int(roundf(rootx + (support2x - rootx) * pt));
+                const int pby = int(roundf(rooty + (support2y - rooty) * pt));
+
+                if((x == bx && y == by) ||
+                   (x == pbx && y == pby) ||
+                   (x == bx && y == pby))
+                {
+                    return WORLD_TREE_DARK_WOOD;
+                }
+            }
+
+            /*
+                Secondary canopy.
+
+                It is:
+                    - only possible for radius > 3
+                    - lower than the main canopy
+                    - 2 blocks smaller
+                    - shifted sideways
+            */
+            const int secondaryradius = max(2, radius - 2);
+            const int secondaryz = height - 3;
+
+            const int secondaryoffset = 2;
+
+            const int secondaryx = tipx + sx * secondaryoffset;
+            const int secondaryy = tipy + sy * secondaryoffset;
+
+            /*
+                Give the secondary canopy its own supporting branch.
+            */
+            if(doublecanopy && secondaryz > branchstart &&
+               z >= branchstart && z <= secondaryz)
+            {
+                const int secondaryspan = secondaryz - branchstart;
+                const int step = z - branchstart;
+                const int previous = max(0, step - 1);
+
+                const float t = float(step) / float(secondaryspan);
+                const float pt = float(previous) / float(secondaryspan);
+
+                const int bx = int(roundf(rootx + (secondaryx - rootx) * t));
+                const int by = int(roundf(rooty + (secondaryy - rooty) * t));
+
+                const int pbx = int(roundf(rootx + (secondaryx - rootx) * pt));
+                const int pby = int(roundf(rooty + (secondaryy - rooty) * pt));
+
+                if((x == bx && y == by) ||
+                   (x == pbx && y == pby) ||
+                   (x == bx && y == pby))
+                {
+                    return WORLD_TREE_DARK_WOOD;
+                }
+            }
+
+            /*
+                ------------------------------------------------------------
+                MAIN CANOPY
+                ------------------------------------------------------------
+
+                Don't generate a perfect disk.
+
+                Each side gets a slightly different reach and edge cells are
+                randomly removed. This creates lobes / missing corners while
+                preserving a broad flat acacia silhouette.
+            */
+
+            const int mx = x - tipx;
+            const int my = y - tipy;
+
+            const int negxreach =
+                max(1, radius - int((variant >> 13) & 1U));
+
+            const int posxreach =
+                max(1, radius - int((variant >> 14) & 1U));
+
+            const int negyreach =
+                max(1, radius - int((variant >> 15) & 1U));
+
+            const int posyreach =
+                max(1, radius - int((variant >> 16) & 1U));
+
+            /*
+                Main broad leaf layer.
+            */
+            if(z == height - 1)
+            {
+                const int xreach = mx < 0 ? negxreach : posxreach;
+                const int yreach = my < 0 ? negyreach : posyreach;
+
+                const int ax = abs(mx);
+                const int ay = abs(my);
+
+                const int diagonalreach =
+                    radius + max(1, radius / 2);
+
+                const bool inside =
+                    ax <= xreach &&
+                    ay <= yreach &&
+                    ax + ay <= diagonalreach;
+
+                if(inside)
+                {
+                    const bool edge =
+                        ax >= xreach ||
+                        ay >= yreach ||
+                        ax + ay >= diagonalreach - 1;
+
+                    const bool supported =
+                        (ax <= 1 && ay <= 1) ||
+                        (supports >= 1 &&
+                         abs(x - support1x) + abs(y - support1y) <= 1) ||
+                        (supports >= 2 &&
+                         abs(x - support2x) + abs(y - support2y) <= 1);
+
+                    const uint leafhash =
+                        worldtreehash(
+                            shape,
+                            x,
+                            y,
+                            z,
+                            height,
+                            0xC4110F37U
+                        );
+
+                    /*
+                        Remove ~30% of the outer edge.
+
+                        Inner/supported leaves remain solid so the canopy
+                        doesn't look eaten by termites.
+                    */
+                    if(!edge ||
+                       supported ||
+                       leafhash % 100U >= 30U)
+                    {
+                        return WORLD_TREE_LEAVES;
+                    }
+                }
+            }
+
+            /*
+                Smaller upper layer.
+
+                Slightly offset relative to the main layer so the crown isn't
+                just concentric circles stacked vertically.
+            */
+            if(z == height)
+            {
+                const int topoffset =
+                    ((variant >> 17) & 1U) ? 1 : 0;
+
+                const int topx = tipx + sx * topoffset;
+                const int topy = tipy + sy * topoffset;
+
+                const int tx = x - topx;
+                const int ty = y - topy;
+
+                const int topradius = max(1, radius - 2);
+
+                const int ax = abs(tx);
+                const int ay = abs(ty);
+
+                const bool inside =
+                    ax <= topradius &&
+                    ay <= topradius &&
+                    ax + ay <= topradius + max(1, topradius / 2);
+
+                if(inside)
+                {
+                    const bool edge =
+                        ax == topradius ||
+                        ay == topradius ||
+                        ax + ay >= topradius + max(1, topradius / 2) - 1;
+
+                    const uint leafhash =
+                        worldtreehash(
+                            shape,
+                            x,
+                            y,
+                            z,
+                            height,
+                            0x7EAF311DU
+                        );
+
+                    if((!edge || leafhash % 100U >= 35U) &&
+                       !(ax == topradius && ay == topradius))
+                    {
+                        return WORLD_TREE_LEAVES;
+                    }
+                }
+            }
+
+            /*
+                Sparse underside.
+
+                This gives the canopy a little thickness without turning it
+                into a round blob.
+            */
+            if(z == height - 2)
+            {
+                const int lowradius = max(1, radius - 3);
+
+                const int ax = abs(mx);
+                const int ay = abs(my);
+
+                if(ax <= lowradius &&
+                   ay <= lowradius &&
+                   ax + ay <= lowradius + 1)
+                {
+                    const uint leafhash =
+                        worldtreehash(
+                            shape,
+                            x,
+                            y,
+                            z,
+                            height,
+                            0x10A3C91BU
+                        );
+
+                    if(leafhash % 100U >= 18U)
+                        return WORLD_TREE_LEAVES;
+                }
+
+                /*
+                    Small bunches around branch tips make the canopy look
+                    physically supported instead of hovering.
+                */
+                if(supports >= 1 &&
+                   abs(x - support1x) <= 1 &&
+                   abs(y - support1y) <= 1)
+                {
+                    return WORLD_TREE_LEAVES;
+                }
+
+                if(supports >= 2 &&
+                   abs(x - support2x) <= 1 &&
+                   abs(y - support2y) <= 1)
+                {
+                    return WORLD_TREE_LEAVES;
+                }
+            }
+
+            /*
+                ------------------------------------------------------------
+                SECONDARY CANOPY
+                ------------------------------------------------------------
+            */
+            if(doublecanopy)
+            {
+                const int bx = x - secondaryx;
+                const int by = y - secondaryy;
+
+                /*
+                    Broad lower secondary crown.
+                */
+                if(z == secondaryz)
+                {
+                    const int ax = abs(bx);
+                    const int ay = abs(by);
+
+                    const int rx =
+                        max(
+                            1,
+                            secondaryradius -
+                            int((variant >> 18) & 1U)
+                        );
+
+                    const int ry =
+                        max(
+                            1,
+                            secondaryradius -
+                            int((variant >> 19) & 1U)
+                        );
+
+                    const bool inside =
+                        ax <= rx &&
+                        ay <= ry &&
+                        ax + ay <=
+                            secondaryradius +
+                            max(1, secondaryradius / 2);
+
+                    if(inside)
+                    {
+                        const bool edge =
+                            ax >= rx ||
+                            ay >= ry ||
+                            ax + ay >=
+                                secondaryradius +
+                                max(1, secondaryradius / 2) - 1;
+
+                        const uint leafhash =
+                            worldtreehash(
+                                shape,
+                                x,
+                                y,
+                                z,
+                                height,
+                                0x52C0A1A5U
+                            );
+
+                        if(!edge || leafhash % 100U >= 35U)
+                            return WORLD_TREE_LEAVES;
+                    }
+                }
+
+                /*
+                    Smaller cap one block above the secondary canopy.
+
+                    Still below the main crown because secondaryz = height - 3.
+                */
+                if(z == secondaryz + 1)
+                {
+                    const int r =
+                        max(1, secondaryradius - 1);
+
+                    const int ax = abs(bx);
+                    const int ay = abs(by);
+
+                    if(ax <= r &&
+                       ay <= r &&
+                       ax + ay <= r + 1)
+                    {
+                        const uint leafhash =
+                            worldtreehash(
+                                shape,
+                                x,
+                                y,
+                                z,
+                                height,
+                                0x62B59D47U
+                            );
+
+                        const bool edge =
+                            ax == r ||
+                            ay == r ||
+                            ax + ay >= r + 1;
+
+                        if(!edge || leafhash % 100U >= 40U)
+                            return WORLD_TREE_LEAVES;
+                    }
+                }
+            }
+
+            return WORLD_TREE_AIR;
+        }
         if(species == TREE_PALM)
         {
             const int direction = (shape >> 8) & 3U, lean = 1 + int((shape >> 10) & 1U),
@@ -1642,15 +2167,20 @@ namespace game
             // Horizontal bridge cubes keep every stepped lean face-connected for foliage support.
             if(z < height && ((x == dx * bend && y == dy * bend) || (x == dx * previous && y == dy * previous)))
                 return WORLD_TREE_PALM_WOOD;
+
             x -= dx * lean;
             y -= dy * lean;
+
             if(z == height && abs(x) + abs(y) <= 1 + int((shape >> 12) & 1U)) return WORLD_TREE_PALM_LEAVES;
-            const int reachx = 2 + int((shape >> 13) & 1U), reachy = 2 + int((shape >> 14) & 1U),
+            const int reachx = 2 + int((shape >> 13) & 1U),
+                      reachy = 2 + int((shape >> 14) & 1U),
                       distance = max(abs(x), abs(y));
-            const bool frond = (y == 0 && abs(x) <= reachx) || (x == 0 && abs(y) <= reachy) ||
-                               (((shape >> 15) & 1U) && abs(x) <= 2 && abs(y) <= 2);
+
+            const bool frond = (y == 0 && abs(x) <= reachx) || (x == 0 && abs(y) <= reachy) || (((shape >> 15) & 1U) && abs(x) <= 2 && abs(y) <= 2);
+
             if(frond && ((distance <= 2 && z == height - 1) || (distance >= 2 && z == height - 2)))
                 return WORLD_TREE_PALM_LEAVES;
+
             return WORLD_TREE_AIR;
         }
         if(species == TREE_POPLAR)
@@ -1665,29 +2195,30 @@ namespace game
             if(z == height) return !x && !y ? WORLD_TREE_LEAVES : WORLD_TREE_AIR;
             if(z == height - 2 || z == notch)
             {
-                const bool shoulder = ((shape >> 14) & 1U) &&
-                                      (((shape >> 15) & 1U) ? !x : !y) && abs(x) + abs(y) == 1;
+                const bool shoulder = ((shape >> 14) & 1U) && (((shape >> 15) & 1U) ? !x : !y) && abs(x) + abs(y) == 1;
                 return (!x && !y) || shoulder ? WORLD_TREE_LEAVES : WORLD_TREE_AIR;
             }
             // Occasionally soften a lower tuft's corners while keeping the upper leafy cap full.
-            if(z < height - 3 && abs(x) == 1 && abs(y) == 1 &&
-               (worldtreehash(shape, x, y, z, height, 0x50F1A2B3U) & 3U) == 0) return WORLD_TREE_AIR;
+            if(z < height - 3 && abs(x) == 1 && abs(y) == 1 && (worldtreehash(shape, x, y, z, height, 0x50F1A2B3U) & 3U) == 0)
+                return WORLD_TREE_AIR;
+
             return WORLD_TREE_LEAVES;
         }
-        if(!x && !y && z < height) return species == TREE_PINE ? WORLD_TREE_DARK_WOOD :
-                                                         species == TREE_BIRCH ? WORLD_TREE_BIRCH_WOOD : WORLD_TREE_WOOD;
+        if(!x && !y && z < height) return species == TREE_PINE ? WORLD_TREE_DARK_WOOD : species == TREE_BIRCH ? WORLD_TREE_BIRCH_WOOD : WORLD_TREE_WOOD;
         if(species == TREE_PINE)
         {
             if(z == height) return !x && !y ? WORLD_TREE_NEEDLES : WORLD_TREE_AIR;
             const int radius = min(3, 1 + (height - z) / 3);
-            return z >= 2 && abs(x) <= radius && abs(y) <= radius && abs(x) + abs(y) <= radius + 1 ?
-                   WORLD_TREE_NEEDLES : WORLD_TREE_AIR;
+            return z >= 2 && abs(x) <= radius && abs(y) <= radius && abs(x) + abs(y) <= radius + 1 ? WORLD_TREE_NEEDLES : WORLD_TREE_AIR;
         }
         const int bottom = height - 2 - (species == TREE_BIRCH ? int((shape >> 11) & 1U) : 0),
                   radius = z == height ? 1 : 2;
+
         if(z < bottom || abs(x) > radius || abs(y) > radius) return WORLD_TREE_AIR;
+
         if(radius == 2 && abs(x) == 2 && abs(y) == 2 && (worldtreehash(shape, x, y, z, height, 0xA511E9B3U) & 1U))
             return WORLD_TREE_AIR;
+
         return species == TREE_BIRCH ? WORLD_TREE_BIRCH_LEAVES : WORLD_TREE_LEAVES;
     }
 
@@ -1696,15 +2227,20 @@ namespace game
         const int chunkx = x >= 0 ? x / 64 : (x - 63) / 64,
                   chunky = y >= 0 ? y / 64 : (y - 63) / 64,
                   blockx = x - chunkx * 64, blocky = y - chunky * 64;
+
         const uint spawn = worldtreehash(uint(generator.seed), chunkx, chunky, blockx, blocky, 0xD1B54A35U);
         // Bound woodland (5.32 * 1.45) plus palms before any height/hydrology query.
         // This only skips impossible candidates; it does not change spatial decisions.
-        if(generator.settings.basetreedensity <= 0 ||
-           worldtreeunit(spawn) >= min(1.0f, generator.settings.basetreedensity * 7.715f) + 0.045f) return false;
+        if(generator.settings.basetreedensity <= 0 || worldtreeunit(spawn) >= min(1.0f, generator.settings.basetreedensity * 7.715f) + 0.045f)
+            return false;
+
         const int height = generator.height(x, y);
+
         if(height < generator.surface(x, y).water) return false;
+
         const vec position(float(x) * worldclimate::BLOCK_UNITS, float(y) * worldclimate::BLOCK_UNITS,
                            worldclimate::GROUND_UNITS + float(height) * worldclimate::BLOCK_UNITS);
+
         const BiomeSample sample = generator.sampleBiome(position);
         const int material = generator.surfacematerial(x, y, height, &sample);
         if(material != WORLD_BIOME_PLAINS && material != WORLD_MOSS && material != WORLD_SNOWY_GRASS &&

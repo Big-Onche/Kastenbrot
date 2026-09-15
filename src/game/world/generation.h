@@ -42,7 +42,7 @@ struct worldsurfacesample
 namespace game
 {
     float treepinechance(const worldsettings &settings, const BiomeSample &sample, uint seed, int x, int y, int height);
-    enum worldtreespecies { TREE_REGULAR, TREE_PINE, TREE_PALM, TREE_BIRCH, TREE_POPLAR, TREE_SPECIES_COUNT };
+    enum worldtreespecies { TREE_REGULAR, TREE_PINE, TREE_PALM, TREE_BIRCH, TREE_POPLAR, TREE_ACACIA, TREE_SPECIES_COUNT };
     enum { TREE_RADIUS = 5 };
     int treefinalheight(int species, float temperature, uint shape);
     // Relative block coordinates; shared by chunk generation, snow queries and both LOD tiers.
@@ -125,8 +125,7 @@ namespace game
         int treecanopyheight(int x, int y) const;
         int treegroundmaterial(int x, int y, int height, int material) const;
         float treedensity(int x, int y, int height) const;
-        bool treeweights(int x, int y, int height, const BiomeSample &sample, float (&weights)[TREE_SPECIES_COUNT],
-                         int material = -1, float spawn = -1.0f) const;
+        bool treeweights(int x, int y, int height, const BiomeSample &sample, float (&weights)[TREE_SPECIES_COUNT], int material = -1, float spawn = -1.0f) const;
         float icecoastdistance(int x, int y) const;
         bool iceformation(int x, int y, int height, int &bottom, int &top) const;
         bool coastice(int x, int y, float temperature, float margin = 0.0f) const;
