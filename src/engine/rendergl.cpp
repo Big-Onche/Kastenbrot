@@ -14,6 +14,7 @@ VAR(glcompat, 1, 0, 0);
 // GL_EXT_timer_query
 PFNGLGETQUERYOBJECTI64VEXTPROC glGetQueryObjecti64v_  = NULL;
 PFNGLGETQUERYOBJECTUI64VEXTPROC glGetQueryObjectui64v_ = NULL;
+PFNGLQUERYCOUNTERPROC glQueryCounter_ = NULL;
 
 // GL_EXT_framebuffer_object
 PFNGLBINDRENDERBUFFERPROC           glBindRenderbuffer_           = NULL;
@@ -448,6 +449,7 @@ void gl_checkextensions()
     glEndQuery_ =                 (PFNGLENDQUERYPROC)                 getprocaddress("glEndQuery");
     glGetQueryObjectiv_ =         (PFNGLGETQUERYOBJECTIVPROC)         getprocaddress("glGetQueryObjectiv");
     glGetQueryObjectuiv_ =        (PFNGLGETQUERYOBJECTUIVPROC)        getprocaddress("glGetQueryObjectuiv");
+    glQueryCounter_ =             (PFNGLQUERYCOUNTERPROC)             getprocaddress("glQueryCounter");
 
     glCreateProgram_ =            (PFNGLCREATEPROGRAMPROC)            getprocaddress("glCreateProgram");
     glDeleteProgram_ =            (PFNGLDELETEPROGRAMPROC)            getprocaddress("glDeleteProgram");

@@ -1,4 +1,4 @@
-// Kastenbrot clouds: flat single-layer renderer streamed as deterministic world-space tiles.
+// Kastenbrot volumetricclouds: flat single-layer renderer streamed as deterministic world-space tiles.
 
 #include "engine.h"
 #include "world/weather.h"
@@ -32,71 +32,71 @@ extern float atmoplanetsize, atmoheight, atmobright, atmosunlightscale, atmosund
 extern bvec atmosunlight;
 
 // general
-VARP(clouds, 0, 1, 1);
-VARP(cloudcellsize, 16, 128, 256);
-VARP(clouddistance, 512, 32768, 32768);
-VARP(cloudrebuildmargin, 1, 8, 64);
-VARP(cloudsmoothpasses, 0, 2, 4);
-VARP(cloudsmoothkeep, 0, 3, 8);
-VARP(cloudsmoothfill, 0, 5, 8);
+VARP(volumetricclouds, 0, 1, 1);
+VARP(volumetriccloudcellsize, 16, 128, 256);
+VARP(volumetricclouddistance, 512, 32768, 32768);
+VARP(volumetriccloudrebuildmargin, 1, 8, 64);
+VARP(volumetriccloudsmoothpasses, 0, 2, 4);
+VARP(volumetriccloudsmoothkeep, 0, 3, 8);
+VARP(volumetriccloudsmoothfill, 0, 5, 8);
 
 // main cloud deck
-VARP(cloudbaseheight, 0, 6144, 16384);
-VARP(cloudheight, 16, 192, 1024);
-FVARP(clouddome, 0.0f, 0.07f, 2.0f);
-FVARP(cloudscale, 0.00005f, 0.00090f, 0.05f);
-FVARP(cloudspacing, 0.0f, 0.08f, 0.25f);
+VARP(volumetriccloudbaseheight, 0, 6144, 16384);
+VARP(volumetriccloudheight, 16, 192, 1024);
+FVARP(volumetricclouddome, 0.0f, 0.07f, 2.0f);
+FVARP(volumetriccloudscale, 0.00005f, 0.00090f, 0.05f);
+FVARP(volumetriccloudspacing, 0.0f, 0.08f, 0.25f);
 
 // wind
-FVARP(cloudwindspeed, 0.0f, 16.0f, 64.0f);
-FVARP(cloudwindangle, 0.0f, 18.0f, 360.0f);
+FVARP(volumetriccloudwindspeed, 0.0f, 16.0f, 64.0f);
+FVARP(volumetriccloudwindangle, 0.0f, 18.0f, 360.0f);
 
 // lighting: rounded side shading keeps the voxel silhouette while avoiding flat, uniformly lit slabs
-// cloudambient and cloudsunlight are the sky-light and sun-light strength controls used by the raymarched lighting model
-FVARP(cloudambient, 0.0f, 1.0f, 4.0f);
-FVARP(cloudsunlight, 0.0f, 1.5f, 4.0f);
-FVARP(cloudlightwrap, 0.0f, 0.55f, 1.0f);
-FVARP(cloudfacecontrast, 0.0f, 0.15f, 1.0f);
-FVARP(cloudrounding, 0.0f, 0.72f, 1.0f);
-FVARP(cloudrimlight, 0.0f, 0.5f, 1.0f);
-FVARP(cloudundersidedarkness, 0.0f, 0.17f, 0.75f);
+// volumetriccloudambient and volumetriccloudsunlight are the sky-light and sun-light strength controls used by the raymarched lighting model
+FVARP(volumetriccloudambient, 0.0f, 1.0f, 4.0f);
+FVARP(volumetriccloudsunlight, 0.0f, 1.5f, 4.0f);
+FVARP(volumetriccloudlightwrap, 0.0f, 0.55f, 1.0f);
+FVARP(volumetriccloudfacecontrast, 0.0f, 0.15f, 1.0f);
+FVARP(volumetriccloudrounding, 0.0f, 0.72f, 1.0f);
+FVARP(volumetriccloudrimlight, 0.0f, 0.5f, 1.0f);
+FVARP(volumetriccloudundersidedarkness, 0.0f, 0.17f, 0.75f);
 
 // fixed-cost interior depth and sunlight visibility sampling
-FVARP(cloudraymarchdepth, 0.25f, 1.5f, 8.0f);
-VARP(cloudraymarchsteps, 1, 8, 16);
-VARP(cloudsunmarchsteps, 2, 8, 16);
-FVARP(cloudselfshadow, 0.0f, 0.5f, 1.0f);
+FVARP(volumetriccloudraymarchdepth, 0.25f, 1.5f, 8.0f);
+VARP(volumetriccloudraymarchsteps, 1, 8, 16);
+VARP(volumetriccloudsunmarchsteps, 2, 8, 16);
+FVARP(volumetriccloudselfshadow, 0.0f, 0.5f, 1.0f);
 
 // finite-distance atmospheric extinction and in-scattering; driven by the same physical controls as the sky atmosphere
-FVARP(cloudscatterstrength, 0.0f, 2.0f, 4.0f);
-FVARP(cloudscatterblue, 0.0f, 1.5f, 4.0f);
+FVARP(volumetriccloudscatterstrength, 0.0f, 2.0f, 4.0f);
+FVARP(volumetriccloudscatterblue, 0.0f, 1.5f, 4.0f);
 
 // opacity
-FVARP(cloudalpha, 0.0f, 0.6f, 1.0f);
+FVARP(volumetriccloudalpha, 0.0f, 0.6f, 1.0f);
 
 // cheap depth fog while the camera occupies a cloud cell
-VAR(cloudinsidefog, 0, 1, 1);
-FVAR(cloudinsidefogdistance, 16.0f, 96.0f, 2048.0f);
-FVAR(cloudinsidefogopacity, 0.0f, 0.92f, 1.0f);
-FVAR(cloudinsidefogfade, 0.0f, 6.0f, 256.0f);
+VAR(volumetriccloudinsidefog, 0, 1, 1);
+FVAR(volumetriccloudinsidefogdistance, 16.0f, 96.0f, 2048.0f);
+FVAR(volumetriccloudinsidefogopacity, 0.0f, 0.92f, 1.0f);
+FVAR(volumetriccloudinsidefogfade, 0.0f, 6.0f, 256.0f);
 
 // post blur
-VARP(cloudpostblur, 0, 0, 1);
-FVARP(cloudrenderscale, 0.25f, 1.0f, 1.0f);
-VARP(cloudblurradius, 0, 1, 4);
-FVARP(cloudblursigma, 0.25f, 0.85f, 4.0f);
+VARP(volumetriccloudpostblur, 0, 0, 1);
+FVARP(volumetriccloudrenderscale, 0.25f, 1.0f, 1.0f);
+VARP(volumetriccloudblurradius, 0, 1, 4);
+FVARP(volumetriccloudblursigma, 0.25f, 0.85f, 4.0f);
 
 // dedicated projected cloud shadows
-VARP(cloudshadows, 0, 1, 1);
-VARP(cloudshadowdistance, 0, 4096, 16384);
-FVARP(cloudshadowalpha, 0.0f, 0.32f, 1.0f);
-VARP(cloudshadowmapsize, 64, 1024, 2048);
-FVARP(cloudshadowsoftness, 0.0f, 1.25f, 8.0f);
+VARP(volumetriccloudshadows, 0, 1, 1);
+VARP(volumetriccloudshadowdistance, 0, 4096, 16384);
+FVARP(volumetriccloudshadowalpha, 0.0f, 0.32f, 1.0f);
+VARP(volumetriccloudshadowmapsize, 64, 1024, 2048);
+FVARP(volumetriccloudshadowsoftness, 0.0f, 1.25f, 8.0f);
 
 // time-of-day colours
-CVARP(clouddaycolor, 0xFFFDFC);
-CVARP(cloudsunsetcolor, 0xFFD2B8);
-CVARP(cloudnightcolor, 0x303B58);
+CVARP(volumetricclouddaycolor, 0xFFFDFC);
+CVARP(volumetriccloudsunsetcolor, 0xFFD2B8);
+CVARP(volumetriccloudnightcolor, 0x303B58);
 
 namespace
 {
@@ -221,15 +221,15 @@ namespace
     static uint cloudsettingshash(int seed)
     {
         uint hash = mixhash(uint(seed));
-        addhash(hash, uint(cloudcellsize));
-        addhash(hash, uint(cloudsmoothpasses));
-        addhash(hash, uint(cloudsmoothkeep));
-        addhash(hash, uint(cloudsmoothfill));
-        addhash(hash, uint(cloudbaseheight));
-        addhash(hash, uint(cloudheight));
-        addhash(hash, hashfloat(clouddome));
-        addhash(hash, hashfloat(cloudscale));
-        addhash(hash, hashfloat(cloudspacing));
+        addhash(hash, uint(volumetriccloudcellsize));
+        addhash(hash, uint(volumetriccloudsmoothpasses));
+        addhash(hash, uint(volumetriccloudsmoothkeep));
+        addhash(hash, uint(volumetriccloudsmoothfill));
+        addhash(hash, uint(volumetriccloudbaseheight));
+        addhash(hash, uint(volumetriccloudheight));
+        addhash(hash, hashfloat(volumetricclouddome));
+        addhash(hash, hashfloat(volumetriccloudscale));
+        addhash(hash, hashfloat(volumetriccloudspacing));
         return hash;
     }
 
@@ -242,26 +242,26 @@ namespace
         cloudnoise.SetFractalType(FastNoiseLite::FractalType_FBm);
         cloudnoise.SetFractalOctaves(3);
         cloudnoise.SetFractalGain(0.46f);
-        cloudnoise.SetFrequency(cloudscale);
+        cloudnoise.SetFrequency(volumetriccloudscale);
     }
 
     static bool rawcloudcell(float cloudspacex, float cloudspacey, float cloudcoverage)
     {
         const float shape = 0.5f + 0.5f * cloudnoise.GetNoise(cloudspacex, cloudspacey);
-        const float threshold = clamp(1.0f - cloudcoverage + cloudspacing, 0.0f, 1.0f);
+        const float threshold = clamp(1.0f - cloudcoverage + volumetriccloudspacing, 0.0f, 1.0f);
         return shape > threshold;
     }
 
     static void smoothcloudmask(cloudmask &mask)
     {
-        if(cloudsmoothpasses <= 0) return;
+        if(volumetriccloudsmoothpasses <= 0) return;
 
         const int total = mask.stride * mask.stride;
         vector<uchar> next;
         next.growbuf(total);
         loopi(total) next.add(CLOUD_EMPTY);
 
-        for(int pass = 0; pass < cloudsmoothpasses; ++pass)
+        for(int pass = 0; pass < volumetriccloudsmoothpasses; ++pass)
         {
             memcpy(next.getbuf(), mask.cells.getbuf(), total * sizeof(uchar));
             for(int y = 0; y < mask.size; ++y) for(int x = 0; x < mask.size; ++x)
@@ -273,7 +273,7 @@ namespace
                     if(mask.get(x + ox, y + oy) != CLOUD_EMPTY) ++neighbors;
                 }
                 const bool current = mask.get(x, y) != CLOUD_EMPTY;
-                const bool filled = current ? neighbors >= cloudsmoothkeep : neighbors >= cloudsmoothfill;
+                const bool filled = current ? neighbors >= volumetriccloudsmoothkeep : neighbors >= volumetriccloudsmoothfill;
                 next[(y + 1) * mask.stride + x + 1] = filled ? CLOUD_FAIR : CLOUD_EMPTY;
             }
             memcpy(mask.cells.getbuf(), next.getbuf(), total * sizeof(uchar));
@@ -328,10 +328,10 @@ namespace
     {
         ZoneScopedN("Clouds/MeshTile");
         const int size = mask.size;
-        const float cell = float(cloudcellsize);
-        const float z0 = float(cloudbaseheight);
-        const float z1 = z0 + cloudheight;
-        const int meshstep = clouddome > 0.0f ? 4 : size;
+        const float cell = float(volumetriccloudcellsize);
+        const float z0 = float(volumetriccloudbaseheight);
+        const float z1 = z0 + volumetriccloudheight;
+        const int meshstep = volumetricclouddome > 0.0f ? 4 : size;
 
         // Greedy top/bottom rectangles.
         vector<uchar> topmask;
@@ -477,7 +477,7 @@ namespace
 
     static void buildcloudtile(cloudtile &tile)
     {
-        const int halo = cloudsmoothpasses + 1;
+        const int halo = volumetriccloudsmoothpasses + 1;
         const int masksize = CLOUD_TILE_CELLS + 2 * halo;
         const int origincellx = tile.tx * CLOUD_TILE_CELLS;
         const int origincelly = tile.ty * CLOUD_TILE_CELLS;
@@ -488,8 +488,8 @@ namespace
         // their borders.
         for(int y = -1; y <= masksize; ++y) for(int x = -1; x <= masksize; ++x)
         {
-            const float cloudspacex = (origincellx + x - halo + 0.5f) * cloudcellsize;
-            const float cloudspacey = (origincelly + y - halo + 0.5f) * cloudcellsize;
+            const float cloudspacex = (origincellx + x - halo + 0.5f) * volumetriccloudcellsize;
+            const float cloudspacey = (origincelly + y - halo + 0.5f) * volumetriccloudcellsize;
             const float cloudcoverage = game::weather::samplecoverage(cloudspacex, cloudspacey);
             expanded.cell(x, y) = rawcloudcell(cloudspacex, cloudspacey, cloudcoverage) ? CLOUD_FAIR : CLOUD_EMPTY;
         }
@@ -552,22 +552,22 @@ namespace
 
     static vec cloudrenderoffset(const cloudtile &tile)
     {
-        const double ox = double(tile.tx) * CLOUD_TILE_CELLS * cloudcellsize;
-        const double oy = double(tile.ty) * CLOUD_TILE_CELLS * cloudcellsize;
+        const double ox = double(tile.tx) * CLOUD_TILE_CELLS * volumetriccloudcellsize;
+        const double oy = double(tile.ty) * CLOUD_TILE_CELLS * volumetriccloudcellsize;
         return vec(float(ox + cloudwind.x - cloudworldorigin.x), float(oy + cloudwind.y - cloudworldorigin.y), 0.0f);
     }
 
     static bool cloudtilebounds(const cloudtile &tile, vec &center, float &radius, float distance)
     {
         if(!tile.built || !tile.vbo || !tile.numverts) return false;
-        const float span = CLOUD_TILE_CELLS * cloudcellsize;
+        const float span = CLOUD_TILE_CELLS * volumetriccloudcellsize;
         const float halfspan = span * 0.5f;
-        const float z0 = float(cloudbaseheight);
-        const float z1 = z0 + cloudheight;
+        const float z0 = float(volumetriccloudbaseheight);
+        const float z1 = z0 + volumetriccloudheight;
         const vec offset = cloudrenderoffset(tile);
         const float centerx = offset.x + halfspan, centery = offset.y + halfspan;
         const float dx = centerx - camera1->o.x, dy = centery - camera1->o.y;
-        const float domecoefficient = clouddome * max(z0, 0.0f) / max(float(clouddistance * clouddistance), 1.0f);
+        const float domecoefficient = volumetricclouddome * max(z0, 0.0f) / max(float(volumetricclouddistance * volumetricclouddistance), 1.0f);
         const float farthestdistance = sqrtf(dx * dx + dy * dy) + SQRT2 * halfspan;
         const float maxdomedrop = domecoefficient * farthestdistance * farthestdistance;
         const float halfheight = (z1 - (z0 - maxdomedrop)) * 0.5f;
@@ -625,9 +625,9 @@ namespace
 
         const float day = clamp((sunlightscale - 0.08f) / 0.72f, 0.0f, 1.0f);
         const float sunset = 4.0f * day * (1.0f - day);
-        const float cell = max(float(cloudcellsize), 1.0f);
+        const float cell = max(float(volumetriccloudcellsize), 1.0f);
         const float span = max(CLOUD_TILE_MASK_CELLS * cell, 1.0f);
-        const float domecoefficient = clouddome * max(float(cloudbaseheight), 0.0f) / max(float(clouddistance * clouddistance), 1.0f);
+        const float domecoefficient = volumetricclouddome * max(float(volumetriccloudbaseheight), 0.0f) / max(float(volumetricclouddistance * volumetricclouddistance), 1.0f);
         const vec offset = vec(cloudrenderoffset(tile)).sub(vec(cell, cell, 0.0f));
 
         const float earthradius = 6371e3f, earthairheight = 8.4e3f, earthhazeheight = 1.25e3f;
@@ -641,21 +641,21 @@ namespace
         const vec betao = vec(ozone).mul(1.5e-7f / M_LN2 * atmoozone);
         vec atmosuncolor = !atmosunlight.iszero() ? atmosunlight.tocolor() : vec(1.0f, 0.98f, 0.92f);
         atmosuncolor.mul(atmosunlightscale);
-        const vec atmosunscale = vec(atmosuncolor).mul(ldrscale).pow(hdrgamma).mul(atmobright * 16);
+        const vec atmosunscale = vec(atmosuncolor).mul(ldrscale).pow(hdrgamma).mul(atmobright * 16 * getsolareclipsevisibility());
 
         LOCALPARAM(cloudsundir, sunlightdir);
-        LOCALPARAM(cloudsuncolor, vec(sunlight.tocolor()).mul(sunlightscale));
+        LOCALPARAM(cloudsuncolor, vec(sunlight.tocolor()).mul(sunlightscale * getsolareclipsevisibility()));
         LOCALPARAM(cloudambientcolor, vec(ambient.tocolor()).mul(ambientscale));
         LOCALPARAM(cloudcamera, camera1->o);
-        LOCALPARAM(clouddaytint, clouddaycolor.tocolor());
-        LOCALPARAM(cloudsunsettint, cloudsunsetcolor.tocolor());
-        LOCALPARAM(cloudnighttint, cloudnightcolor.tocolor());
-        LOCALPARAMF(cloudlighting, cloudambient, cloudsunlight, cloudundersidedarkness, cloudinsidepenetration() >= 0.0f ? 1.0f : 0.0f);
-        LOCALPARAMF(cloudappearance, cloudlightwrap, cloudfacecontrast, cloudrounding, cloudrimlight);
-        LOCALPARAMF(cloudgeometry, float(cloudbaseheight), float(cloudbaseheight + cloudheight), 1.0f / max(float(cloudheight), 1.0f), cell);
+        LOCALPARAM(clouddaytint, volumetricclouddaycolor.tocolor());
+        LOCALPARAM(cloudsunsettint, volumetriccloudsunsetcolor.tocolor());
+        LOCALPARAM(cloudnighttint, volumetriccloudnightcolor.tocolor());
+        LOCALPARAMF(cloudlighting, volumetriccloudambient, volumetriccloudsunlight, volumetriccloudundersidedarkness, cloudinsidepenetration() >= 0.0f ? 1.0f : 0.0f);
+        LOCALPARAMF(cloudappearance, volumetriccloudlightwrap, volumetriccloudfacecontrast, volumetriccloudrounding, volumetriccloudrimlight);
+        LOCALPARAMF(cloudgeometry, float(volumetriccloudbaseheight), float(volumetriccloudbaseheight + volumetriccloudheight), 1.0f / max(float(volumetriccloudheight), 1.0f), cell);
         LOCALPARAMF(cloudvolume, offset.x, offset.y, 1.0f / span, span);
         LOCALPARAMF(clouddomeparams, domecoefficient, 0.0f, 0.0f, 0.0f);
-        LOCALPARAMF(cloudraymarch, cloudraymarchdepth * cell, float(cloudraymarchsteps), float(cloudsunmarchsteps), cloudselfshadow);
+        LOCALPARAMF(cloudraymarch, volumetriccloudraymarchdepth * cell, float(volumetriccloudraymarchsteps), float(volumetriccloudsunmarchsteps), volumetriccloudselfshadow);
         LOCALPARAMF(atmosphereparams, planetradius, 1 + 100e3f * atmoheight / planetradius, earthairheight * atmoheight / planetradius,
                     earthhazeheight * atmoheight / planetradius);
         LOCALPARAMF(ozoneparams, 25e3f * atmoheight / planetradius, 15e3f * atmoheight / planetradius);
@@ -664,7 +664,7 @@ namespace
         LOCALPARAM(betamie, betam);
         LOCALPARAM(betaozone, betao);
         LOCALPARAM(atmospheresunlight, atmosunscale);
-        LOCALPARAMF(cloudscatterparams, atmo ? cloudscatterstrength : 0.0f, cloudscatterblue, 0.0f, 0.0f);
+        LOCALPARAMF(cloudscatterparams, atmo ? volumetriccloudscatterstrength : 0.0f, volumetriccloudscatterblue, 0.0f, 0.0f);
         LOCALPARAMF(cloudscreenparams, cloudscreenx, cloudscreeny, 1.0f / max(cloudscreenw, 1.0f), 1.0f / max(cloudscreenh, 1.0f));
         LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudrenderalpha);
     }
@@ -683,7 +683,7 @@ namespace
             cloudtile &tile = *cloudtiles[i];
             vec center;
             float radius;
-            if(!cloudtilebounds(tile, center, radius, float(clouddistance))) continue;
+            if(!cloudtilebounds(tile, center, radius, float(volumetricclouddistance))) continue;
             if(isvisiblesphere(radius, center) == VFC_NOT_VISIBLE) continue;
 
             if(sorted) updatecloudfaceorder(tile);
@@ -706,11 +706,11 @@ namespace
 
     static int drawcloudsurface(GLenum depthfunc)
     {
-        if(cloudalpha <= 0.0f) return 0;
+        if(volumetriccloudalpha <= 0.0f) return 0;
 
         glDepthFunc(depthfunc);
 
-        // cloudalpha is resolved in the shader against the captured scene. Geometry itself remains opaque and writes depth normally.
+        // volumetriccloudalpha is resolved in the shader against the captured scene. Geometry itself remains opaque and writes depth normally.
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
         return drawcloudgeometry();
@@ -861,12 +861,12 @@ namespace
 
     static float cloudinsidepenetration()
     {
-        if(!clouds || !camera1) return -1.0f;
+        if(!volumetricclouds || !camera1) return -1.0f;
 
-        const float z0 = float(cloudbaseheight), z1 = z0 + cloudheight;
+        const float z0 = float(volumetriccloudbaseheight), z1 = z0 + volumetriccloudheight;
         if(camera1->o.z <= z0 || camera1->o.z >= z1) return -1.0f;
 
-        const float cell = max(float(cloudcellsize), 1.0f);
+        const float cell = max(float(volumetriccloudcellsize), 1.0f);
         vec absolute = camera1->o;
         worldpositiontoabsolute(absolute);
         const double gridx = (double(absolute.x) - cloudwind.x) / cell, gridy = (double(absolute.y) - cloudwind.y) / cell;
@@ -885,11 +885,11 @@ namespace
 
     static float cloudinsideamount()
     {
-        if(!cloudinsidefog || cloudinsidefogopacity <= 0.0f) return 0.0f;
+        if(!volumetriccloudinsidefog || volumetriccloudinsidefogopacity <= 0.0f) return 0.0f;
 
         const float penetration = cloudinsidepenetration();
         if(penetration < 0.0f) return 0.0f;
-        return cloudinsidefogfade > 0.0f ? clamp(penetration / cloudinsidefogfade, 0.0f, 1.0f) : 1.0f;
+        return volumetriccloudinsidefogfade > 0.0f ? clamp(penetration / volumetriccloudinsidefogfade, 0.0f, 1.0f) : 1.0f;
     }
 
 
@@ -918,7 +918,7 @@ namespace
 
     static bool setupcloudshadowtarget()
     {
-        const int size = clamp(cloudshadowmapsize, 64, 2048);
+        const int size = clamp(volumetriccloudshadowmapsize, 64, 2048);
         if(cloudshadowfbo[0] && cloudshadowfbo[1] && cloudshadowrt == size) return true;
 
         cleanupcloudshadowtarget();
@@ -956,15 +956,15 @@ namespace
 
     static void cloudshadowblurweights(float weights[5])
     {
-        if(cloudshadowsoftness <= 0.0f)
+        if(volumetriccloudshadowsoftness <= 0.0f)
         {
             weights[0] = 1.0f;
             for(int i = 1; i < 5; ++i) weights[i] = 0.0f;
             return;
         }
 
-        const int radius = clamp(int(ceilf(cloudshadowsoftness)), 1, 4);
-        const float sigma = max(cloudshadowsoftness * 0.65f, 0.35f);
+        const int radius = clamp(int(ceilf(volumetriccloudshadowsoftness)), 1, 4);
+        const float sigma = max(volumetriccloudshadowsoftness * 0.65f, 0.35f);
         float total = 0.0f;
 
         for(int i = 0; i < 5; ++i)
@@ -979,7 +979,7 @@ namespace
 
     static void blurcloudshadowtarget()
     {
-        if(cloudshadowsoftness <= 0.0f || !cloudshadowfbo[0] || !cloudshadowfbo[1]) return;
+        if(volumetriccloudshadowsoftness <= 0.0f || !cloudshadowfbo[0] || !cloudshadowfbo[1]) return;
 
         Shader *shader = lookupshaderbyname("cloudshadowblur");
         if(!shader) return;
@@ -989,7 +989,7 @@ namespace
 
         // Above 4.0, spread the fixed 9-tap kernel farther apart instead of adding
         // more taps. This keeps the cost fixed while still allowing very soft shadows.
-        const float spread = max(cloudshadowsoftness / 4.0f, 1.0f);
+        const float spread = max(volumetriccloudshadowsoftness / 4.0f, 1.0f);
         const float texel = spread / max(float(cloudshadowrt), 1.0f);
 
         glDisable(GL_DEPTH_TEST);
@@ -1018,13 +1018,13 @@ namespace
 
     static bool updatecloudshadowmask()
     {
-        if(!cloudshadows || cloudshadowalpha <= 0.0f || cloudtiles.empty()) return false;
+        if(!volumetriccloudshadows || volumetriccloudshadowalpha <= 0.0f || cloudtiles.empty()) return false;
         if(!setupcloudshadowtarget()) return false;
 
         const bool stale =
             cloudshadowmasktilesetversion != cloudtilesetversion ||
-            cloudshadowmaskmapsize != cloudshadowmapsize ||
-            cloudshadowmasksoftness != cloudshadowsoftness;
+            cloudshadowmaskmapsize != volumetriccloudshadowmapsize ||
+            cloudshadowmasksoftness != volumetriccloudshadowsoftness;
 
         if(!stale) return cloudshadowtex[0] != 0;
 
@@ -1044,11 +1044,11 @@ namespace
 
         bool anygeometry = false;
         float minx = FLT_MAX, miny = FLT_MAX, maxx = -FLT_MAX, maxy = -FLT_MAX;
-        const float tilespan = CLOUD_TILE_CELLS * float(cloudcellsize);
+        const float tilespan = CLOUD_TILE_CELLS * float(volumetriccloudcellsize);
         loopv(cloudtiles) if(cloudtiles[i]->built && cloudtiles[i]->numverts)
         {
-            const float tilex = float(double(cloudtiles[i]->tx) * CLOUD_TILE_CELLS * cloudcellsize);
-            const float tiley = float(double(cloudtiles[i]->ty) * CLOUD_TILE_CELLS * cloudcellsize);
+            const float tilex = float(double(cloudtiles[i]->tx) * CLOUD_TILE_CELLS * volumetriccloudcellsize);
+            const float tiley = float(double(cloudtiles[i]->ty) * CLOUD_TILE_CELLS * volumetriccloudcellsize);
             minx = min(minx, tilex);
             miny = min(miny, tiley);
             maxx = max(maxx, tilex + tilespan);
@@ -1062,15 +1062,15 @@ namespace
             if(!shader) return false;
 
             shader->set();
-            cloudshadoworigin = vec(minx, miny, float(cloudbaseheight));
+            cloudshadoworigin = vec(minx, miny, float(volumetriccloudbaseheight));
             cloudshadowspanx = max(maxx - minx, 1.0f);
             cloudshadowspany = max(maxy - miny, 1.0f);
             loopv(cloudtiles)
             {
                 cloudtile &tile = *cloudtiles[i];
                 if(!tile.built || !tile.numverts) continue;
-                const float tilex = float(double(tile.tx) * CLOUD_TILE_CELLS * cloudcellsize);
-                const float tiley = float(double(tile.ty) * CLOUD_TILE_CELLS * cloudcellsize);
+                const float tilex = float(double(tile.tx) * CLOUD_TILE_CELLS * volumetriccloudcellsize);
+                const float tiley = float(double(tile.ty) * CLOUD_TILE_CELLS * volumetriccloudcellsize);
                 LOCALPARAMF(cloudshadowmaskparams, 1.0f / cloudshadowspanx, 1.0f / cloudshadowspany,
                             (tilex - minx) / cloudshadowspanx, (tiley - miny) / cloudshadowspany);
                 enablecloudvertexformat(tile);
@@ -1083,14 +1083,14 @@ namespace
         }
 
         cloudshadowmasktilesetversion = cloudtilesetversion;
-        cloudshadowmaskmapsize = cloudshadowmapsize;
-        cloudshadowmasksoftness = cloudshadowsoftness;
+        cloudshadowmaskmapsize = volumetriccloudshadowmapsize;
+        cloudshadowmasksoftness = volumetriccloudshadowsoftness;
         return true;
     }
 
     static void drawcloudshadowoverlay(GLuint framebuffer, const GLint viewport[4])
     {
-        if(!cloudshadows || cloudshadowalpha <= 0.0f || !cloudshadowdistance || !camera1) return;
+        if(!volumetriccloudshadows || volumetriccloudshadowalpha <= 0.0f || !volumetriccloudshadowdistance || !camera1) return;
 
         const float direct = clamp((sunlightscale - 0.06f) / 0.34f, 0.0f, 1.0f);
         if(direct <= 0.03f) return;
@@ -1111,7 +1111,7 @@ namespace
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
         // Multiplicative blend: the shader outputs 1.0 in lit pixels and a value
-        // below 1.0 under clouds. This leaves the existing opaque lighting intact
+        // below 1.0 under volumetricclouds. This leaves the existing opaque lighting intact
         // except for the cloud attenuation.
         glEnable(GL_BLEND);
         glBlendFunc(GL_ZERO, GL_SRC_COLOR);
@@ -1124,7 +1124,7 @@ namespace
         LOCALPARAM(cloudshadoworigin, shadoworigin);
         LOCALPARAM(cloudsundir, sunlightdir);
         LOCALPARAM(camera, camera1->o);
-        LOCALPARAMF(cloudshadowparams, 1.0f / cloudshadowspanx, cloudshadowalpha * direct, float(cloudshadowdistance),
+        LOCALPARAMF(cloudshadowparams, 1.0f / cloudshadowspanx, volumetriccloudshadowalpha * direct, float(volumetriccloudshadowdistance),
                     1.0f / cloudshadowspany);
 
         glActiveTexture_(GL_TEXTURE0);
@@ -1143,8 +1143,8 @@ namespace
 
     static void cloudblurweights(float weights[5])
     {
-        const int radius = clamp(cloudblurradius, 0, 4);
-        const float sigma = max(cloudblursigma, 0.01f);
+        const int radius = clamp(volumetriccloudblurradius, 0, 4);
+        const float sigma = max(volumetriccloudblursigma, 0.01f);
         float total = 0.0f;
         for(int i = 0; i < 5; ++i)
         {
@@ -1162,7 +1162,7 @@ namespace
 
     static void blurcloudtarget()
     {
-        if(!cloudpostblur || cloudblurradius <= 0 || !cloudfbo[0] || !cloudfbo[1]) return;
+        if(!volumetriccloudpostblur || volumetriccloudblurradius <= 0 || !cloudfbo[0] || !cloudfbo[1]) return;
         Shader *shader = lookupshaderbyname("cloudblur");
         if(!shader) return;
 
@@ -1213,7 +1213,7 @@ namespace
 
 void updateclouds()
 {
-    if(!clouds || !camera1) return;
+    if(!volumetricclouds || !camera1) return;
     if(lastcloudframe == lastmillis) return;
     ZoneScopedN("Clouds/Stream");
 
@@ -1234,18 +1234,18 @@ void updateclouds()
 
     const double weathermillis = game::weather::gettimemillis();
     const float seconds = float(weathermillis / 1000.0);
-    const float angle = game::weather::getwindangle(cloudwindangle) * RAD;
+    const float angle = game::weather::getwindangle(volumetriccloudwindangle) * RAD;
     const vec direction(cosf(angle), sinf(angle), 0.0f);
-    cloudwind = vec(direction).mul(game::weather::getcloudspeed(cloudwindspeed) * seconds);
+    cloudwind = vec(direction).mul(game::weather::getcloudspeed(volumetriccloudwindspeed) * seconds);
 
     vec absolute = camera1->o;
     worldpositiontoabsolute(absolute);
     cloudworldorigin = vec(absolute).sub(camera1->o);
 
-    const double cell = max(double(cloudcellsize), 1.0);
+    const double cell = max(double(volumetriccloudcellsize), 1.0);
     const double cloudx = (double(absolute.x) - cloudwind.x) / cell;
     const double cloudy = (double(absolute.y) - cloudwind.y) / cell;
-    const double radius = double(clouddistance) / cell;
+    const double radius = double(volumetricclouddistance) / cell;
     const double keepspan = radius + CLOUD_TILE_HYSTERESIS * CLOUD_TILE_CELLS;
     const int centertx = int(floor(cloudx / CLOUD_TILE_CELLS)), centerty = int(floor(cloudy / CLOUD_TILE_CELLS));
     const int tileradius = int(ceil(radius / CLOUD_TILE_CELLS)) + 1;
@@ -1285,7 +1285,7 @@ void updateclouds()
 
 void renderclouds()
 {
-    if(!clouds || !camera1) return;
+    if(!volumetricclouds || !camera1) return;
 
     const bool camerainside = cloudinsidepenetration() >= 0.0f;
 
@@ -1329,10 +1329,10 @@ void renderclouds()
     // project the low-resolution cloud shadow mask onto the already-lit opaque scene
     drawcloudshadowoverlay(GLuint(oldfb), oldviewport);
 
-    cloudrenderalpha = cloudalpha;
-    if(cloudalpha > 0.0f && cloudalpha < 1.0f && !capturecloudscene(GLuint(oldfb), oldviewport)) cloudrenderalpha = 1.0f;
+    cloudrenderalpha = volumetriccloudalpha;
+    if(volumetriccloudalpha > 0.0f && volumetriccloudalpha < 1.0f && !capturecloudscene(GLuint(oldfb), oldviewport)) cloudrenderalpha = 1.0f;
 
-    if(!cloudpostblur || cloudblurradius <= 0)
+    if(!volumetriccloudpostblur || volumetriccloudblurradius <= 0)
     {
         cloudscreenx = float(oldviewport[0]);
         cloudscreeny = float(oldviewport[1]);
@@ -1354,8 +1354,8 @@ void renderclouds()
     }
     else
     {
-        const int rtw = max(int(ceilf(oldviewport[2] * cloudrenderscale)), 1);
-        const int rth = max(int(ceilf(oldviewport[3] * cloudrenderscale)), 1);
+        const int rtw = max(int(ceilf(oldviewport[2] * volumetriccloudrenderscale)), 1);
+        const int rth = max(int(ceilf(oldviewport[3] * volumetriccloudrenderscale)), 1);
 
         if(setupcloudtarget(rtw, rth))
         {
@@ -1446,8 +1446,8 @@ void rendercloudfog()
 
     const float day = clamp((sunlightscale - 0.08f) / 0.72f, 0.0f, 1.0f);
     const float sunset = 4.0f * day * (1.0f - day);
-    vec fogcolor(cloudnightcolor.tocolor());
-    fogcolor.lerp(clouddaycolor.tocolor(), day).lerp(cloudsunsetcolor.tocolor(), sunset * 0.35f).mul(ldrscale);
+    vec fogcolor(volumetriccloudnightcolor.tocolor());
+    fogcolor.lerp(volumetricclouddaycolor.tocolor(), day).lerp(volumetriccloudsunsetcolor.tocolor(), sunset * 0.35f).mul(ldrscale);
 
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
@@ -1459,7 +1459,7 @@ void rendercloudfog()
     shader->set();
     LOCALPARAM(camera, camera1->o);
     LOCALPARAM(cloudfogcolor, fogcolor);
-    LOCALPARAMF(cloudfogparams, 1.0f / max(cloudinsidefogdistance, 1.0f), cloudinsidefogopacity * inside, 0.0f, 0.0f);
+    LOCALPARAMF(cloudfogparams, 1.0f / max(volumetriccloudinsidefogdistance, 1.0f), volumetriccloudinsidefogopacity * inside, 0.0f, 0.0f);
 
     glActiveTexture_(GL_TEXTURE3);
     bindgdepth();

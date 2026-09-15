@@ -47,6 +47,8 @@ extern bvec ambient, sunlight;
 extern float ambientscale, sunlightscale;
 extern float sunlightyaw, sunlightpitch;
 extern vec sunlightdir;
+extern bool getatmospheremoon(vec &direction, float &halfangle);
+extern float getsolareclipsevisibility();
 extern int fullbright, fullbrightlevel;
 
 extern void clearlights();

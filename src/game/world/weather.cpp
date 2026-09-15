@@ -62,7 +62,7 @@ VAR(weatherprecipitationsnowgroundtime, 0, 1500, 30000);
 VAR(weatherprecipitationsnowgroundfade, 100, 4000, 30000);
 
 extern int mainmenu;
-extern float cloudwindspeed, cloudwindangle;
+extern float volumetriccloudwindspeed, volumetriccloudwindangle;
 
 namespace game
 {
@@ -212,8 +212,8 @@ namespace game
             static float sampleadvectedweather(float x, float y)
             {
                 const float seconds = float(gettimemillis() / 1000.0);
-                const float angle = getwindangle(cloudwindangle) * RAD;
-                const float distance = getcloudspeed(cloudwindspeed) * seconds;
+                const float angle = getwindangle(volumetriccloudwindangle) * RAD;
+                const float distance = getcloudspeed(volumetriccloudwindspeed) * seconds;
                 return sampleweather(x - cosf(angle) * distance, y - sinf(angle) * distance);
             }
 
@@ -450,7 +450,7 @@ namespace game
             const int count = raincount + snowcount;
             if(count <= 0) return;
 
-            const float windangle = getwindangle(cloudwindangle) * RAD;
+            const float windangle = getwindangle(volumetriccloudwindangle) * RAD;
             const vec wind(cosf(windangle) * weatherprecipitationwind, sinf(windangle) * weatherprecipitationwind, 0.0f);
             loopi(count)
             {

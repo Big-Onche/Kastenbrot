@@ -5,7 +5,7 @@
 #include "world/generation.h"
 
 extern int mainmenu;
-extern float cloudwindspeed;
+extern float volumetriccloudwindspeed;
 extern bool sampleworldcolumnroof(const ivec &position, int &roof);
 extern bool sampleworldsolid(const ivec &position, int &bottom);
 namespace sound { extern int soundchans; }
@@ -280,7 +280,7 @@ namespace game
                 int desiredCount = 0;
                 waiting = 0;
                 float daylight = smooth(0.5f + 2 * sinf((environment::getdayprogress() - 0.25f) * 2 * M_PI));
-                float wind = clamp(fabsf(weather::getcloudspeed(cloudwindspeed)) / ambientwindscale, 0.0f, 1.0f);
+                float wind = clamp(fabsf(weather::getcloudspeed(volumetriccloudwindspeed)) / ambientwindscale, 0.0f, 1.0f);
                 // Round-robin families reserve coverage for caves and waves even near a busy surface.
                 int nearest[11][8];
                 float distances[11][8];
