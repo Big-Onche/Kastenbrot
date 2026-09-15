@@ -27,9 +27,9 @@ extern bvec ambient, sunlight;
 extern float ambientscale, sunlightscale;
 extern vec sunlightdir;
 extern int atmo;
-extern float atmoplanetsize, atmoheight, atmobright, atmosunlightscale, atmosundisksize, atmosundiskcorona, atmohaze, atmodensity, atmoozone,
-             hdrgamma;
+extern float atmoplanetsize, atmoheight, atmobright, atmosunlightscale, atmosundisksize, atmosundiskcorona, atmohaze, atmodensity, atmoozone, hdrgamma;
 extern bvec atmosunlight;
+extern int worldloddistance;
 
 // general
 VARP(volumetricclouds, 0, 1, 1);
@@ -88,7 +88,6 @@ FVARP(volumetriccloudblursigma, 0.25f, 0.85f, 4.0f);
 
 // dedicated projected cloud shadows
 VARP(volumetriccloudshadows, 0, 1, 1);
-VARP(volumetriccloudshadowdistance, 0, 4096, 16384);
 FVARP(volumetriccloudshadowalpha, 0.0f, 0.32f, 1.0f);
 VARP(volumetriccloudshadowmapsize, 64, 1024, 2048);
 FVARP(volumetriccloudshadowsoftness, 0.0f, 1.25f, 8.0f);
@@ -1098,7 +1097,7 @@ namespace
 
     static void drawcloudshadowoverlay(GLuint framebuffer, const GLint viewport[4])
     {
-        if(!volumetriccloudshadows || volumetriccloudshadowalpha <= 0.0f || !volumetriccloudshadowdistance || !camera1) return;
+        if(!volumetriccloudshadows || volumetriccloudshadowalpha <= 0.0f || !camera1) return;
 
         const float direct = clamp((sunlightscale - 0.06f) / 0.34f, 0.0f, 1.0f);
         if(direct <= 0.03f) return;
@@ -1132,8 +1131,7 @@ namespace
         LOCALPARAM(cloudshadoworigin, shadoworigin);
         LOCALPARAM(cloudsundir, sunlightdir);
         LOCALPARAM(camera, camera1->o);
-        LOCALPARAMF(cloudshadowparams, 1.0f / cloudshadowspanx, volumetriccloudshadowalpha * direct, float(volumetriccloudshadowdistance),
-                    1.0f / cloudshadowspany);
+        LOCALPARAMF(cloudshadowparams, 1.0f / cloudshadowspanx, volumetriccloudshadowalpha * direct, float(worldloddistance * 16), 1.0f / cloudshadowspany);
 
         glActiveTexture_(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, cloudshadowtex[0]);
