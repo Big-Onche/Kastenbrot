@@ -840,6 +840,7 @@ extern void drawskybox(bool clear = false);
 extern bool getatmospheremoon(vec &direction, float &halfangle);
 extern float getsolareclipsevisibility();
 extern void atmosphereDebugView();
+extern bool bindatmospherebackground(int tmu, vec2 &size);
 extern bool hasskybox();
 extern bool limitsky();
 extern bool renderexplicitsky(bool outline = false);

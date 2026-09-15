@@ -189,6 +189,7 @@ namespace
     static GLuint cloudscenefbo = 0, cloudscenetex = 0;
     static int cloudscenew = 0, cloudsceneh = 0;
     static float cloudscreenx = 0.0f, cloudscreeny = 0.0f, cloudscreenw = 1.0f, cloudscreenh = 1.0f, cloudrenderalpha = 1.0f;
+    static vec4 cloudatmospherebackground(0, 0, 0, 0);
 
     static float cloudinsidepenetration();
 
@@ -667,6 +668,8 @@ namespace
         LOCALPARAMF(cloudscatterparams, atmo ? volumetriccloudscatterstrength : 0.0f, volumetriccloudscatterblue, 0.0f, 0.0f);
         LOCALPARAMF(cloudscreenparams, cloudscreenx, cloudscreeny, 1.0f / max(cloudscreenw, 1.0f), 1.0f / max(cloudscreenh, 1.0f));
         LOCALPARAMF(cloudtime, day, sunset, 2.0f * ldrscale, cloudrenderalpha);
+        LOCALPARAMF(cloudskydepth, farplane*0.999f);
+        LOCALPARAM(cloudatmosphereparams, cloudatmospherebackground);
     }
 
     static int drawcloudgeometry(bool sorted = false)
@@ -674,8 +677,13 @@ namespace
         Shader *shader = lookupshaderbyname("cloud");
         if(!shader || !camera1) return 0;
 
+        vec2 atmosphereSize(0, 0);
+        bool hasAtmosphereBackground = bindatmospherebackground(4, atmosphereSize);
+        cloudatmospherebackground = vec4(atmosphereSize.x, atmosphereSize.y, hasAtmosphereBackground ? 1.0f : 0.0f, 0.0f);
         glActiveTexture_(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, cloudscenetex);
+        glActiveTexture_(GL_TEXTURE3);
+        bindgdepth();
         glActiveTexture_(GL_TEXTURE0);
         int renderedverts = 0;
         loopv(cloudtiles)

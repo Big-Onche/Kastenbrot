@@ -759,7 +759,7 @@ FVARR(atmocelestialminvisibility, 0, 0.15f, 1);
 FVARR(atmoalpha, 0, 1, 1);
 
 // global sky values
-FVAR(skyoffset, -360, 0, 360);
+FVAR(skyoffset, -360, 180, 360);
 FVARR(skylatitude, -90, 45, 90);
 FVARR(skydate, -365250, 0, 365250); // whole local-solar days since 2000-01-01
 FVARR(skytime, 0, 0, 24); // local solar hours; the fixed reference longitude is zero
@@ -1140,6 +1140,17 @@ static void ensureAtmosphereRenderTarget()
     glFramebufferTexture2D_(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE, atmosphereRenderTex, 0);
     if(glCheckFramebufferStatus_(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) fatal("Failed allocating atmosphere render target!");
     glBindFramebuffer_(GL_FRAMEBUFFER, previousFBO);
+}
+
+bool bindatmospherebackground(int tmu, vec2 &size)
+{
+    if(!atmo || (haveskyfaces() && atmoalpha >= 1.0f) || !atmosphereRenderTex || atmosphereRenderWidth <= 0 || atmosphereRenderHeight <= 0)
+        return false;
+
+    size = vec2(float(atmosphereRenderWidth), float(atmosphereRenderHeight));
+    glActiveTexture_(GL_TEXTURE0 + tmu);
+    glBindTexture(GL_TEXTURE_RECTANGLE, atmosphereRenderTex);
+    return true;
 }
 
 static void pollAtmosphereDebugTimer()
