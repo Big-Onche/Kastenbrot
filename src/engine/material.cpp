@@ -735,6 +735,25 @@ static watergeometrycell lookupwatergeometrycell(const ivec &position)
 
 #include "watermesh.h"
 
+float getwatermeshsurfaceheight(float x, float y, int top)
+{
+    if(getworldsectionsize() <= 0) return top - WATER_OFFSET;
+    const int x0 = int(floorf(x / 4.0f)) * 4, y0 = int(floorf(y / 4.0f)) * 4;
+    const watergeometrycell source = lookupwatergeometrycell(ivec(int(floorf(x)), int(floorf(y)), top - 1));
+    const int wavemask = source.water ? source.size - 1 : 15;
+    const float time = fmod(float(lastmillis / 600.0f / (2 * M_PI)), 1.0f), wavescale = 59.0f / 23.0f / (2 * M_PI);
+    auto height = [&](int px, int py)
+    {
+        float phase = float((px & wavemask) * (py & wavemask)) * wavescale + time;
+        phase -= floorf(phase) + 0.5f;
+        const float wave = 0.4f * phase * (8.0f - fabsf(phase) * 16.0f) * (vertwater && drawtex != DRAWTEX_MINIMAP ? 1.0f : 0.0f) - WATER_OFFSET;
+        return top - staticwaterborderdrop(ivec(px, py, top), lookupwatergeometrycell) + wave;
+    };
+    const float u = (x - x0) / 4.0f, v = (y - y0) / 4.0f,
+                h0 = height(x0, y0), h1 = height(x0 + 4, y0), h2 = height(x0 + 4, y0 + 4), h3 = height(x0, y0 + 4);
+    return u >= v ? h0 * (1 - u) + h1 * (u - v) + h2 * v : h0 * (1 - v) + h2 * u + h3 * (v - u);
+}
+
 static void invalidatewaterresources(const ivec *minimum, const ivec *maximum, bool topology)
 {
     const vector<worldmeshsection *> &sections = getworldmeshsections();

@@ -579,6 +579,7 @@ extern int optimizematsurfs(materialsurface *matbuf, int matsurfs);
 extern int getwatermateriallevel(const materialsurface &m, bool &falling);
 extern float getwatermaterialdrop(const materialsurface &m);
 extern float getwatercornerdrop(int x, int y, int z);
+extern float getwatermeshsurfaceheight(float x, float y, int top);
 extern void invalidatewatergeometry();
 extern void invalidatewatercorners();
 extern void invalidatewatercorners(const ivec &absolute);

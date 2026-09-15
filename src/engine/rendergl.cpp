@@ -2259,12 +2259,17 @@ void drawcubemap(int size, const vec &o, float yaw, float pitch, const cubemapsi
     setviewcell(camera1->o);
 
     float fogmargin = 1 + WATER_AMPLITUDE + nearplane;
-    int fogmat = lookupmaterial(vec(camera1->o.x, camera1->o.y, camera1->o.z - fogmargin))&(MATF_VOLUME|MATF_INDEX), abovemat = MAT_AIR;
+    vec fogposition(camera1->o.x, camera1->o.y, camera1->o.z - fogmargin);
+    const int cameramat = lookupmaterial(camera1->o) & (MATF_VOLUME | MATF_INDEX);
+    int fogmat = cameramat, abovemat = MAT_AIR;
+    if((fogmat & MATF_VOLUME) != MAT_WATER) fogmat = lookupmaterial(fogposition) & (MATF_VOLUME | MATF_INDEX);
+    else fogposition.z = camera1->o.z;
     float fogbelow = 0;
     if(isliquid(fogmat&MATF_VOLUME))
     {
-        float z = findsurface(fogmat, vec(camera1->o.x, camera1->o.y, camera1->o.z - fogmargin), abovemat) - WATER_OFFSET;
-        if(camera1->o.z < z + fogmargin)
+        const int top = int(findsurface(fogmat, fogposition, abovemat));
+        const float z = (fogmat & MATF_VOLUME) == MAT_WATER ? getwatermeshsurfaceheight(camera1->o.x, camera1->o.y, top) : top - WATER_OFFSET;
+        if(camera1->o.z < z + ((fogmat & MATF_VOLUME) == MAT_WATER ? 0 : fogmargin))
         {
             fogbelow = z - camera1->o.z;
         }
@@ -2485,11 +2490,16 @@ void gl_drawview()
     if(scalefbo) { vieww = gw; viewh = gh; }
 
     float fogmargin = 1 + WATER_AMPLITUDE + nearplane;
-    fogmat = lookupmaterial(vec(camera1->o.x, camera1->o.y, camera1->o.z - fogmargin))&(MATF_VOLUME|MATF_INDEX);
+    vec fogposition(camera1->o.x, camera1->o.y, camera1->o.z - fogmargin);
+    const int cameramat = lookupmaterial(camera1->o) & (MATF_VOLUME | MATF_INDEX);
+    fogmat = cameramat;
+    if((fogmat & MATF_VOLUME) != MAT_WATER) fogmat = lookupmaterial(fogposition) & (MATF_VOLUME | MATF_INDEX);
+    else fogposition.z = camera1->o.z;
     if(isliquid(fogmat&MATF_VOLUME))
     {
-        float z = findsurface(fogmat, vec(camera1->o.x, camera1->o.y, camera1->o.z - fogmargin), abovemat) - WATER_OFFSET;
-        if(camera1->o.z < z + fogmargin)
+        const int top = int(findsurface(fogmat, fogposition, abovemat));
+        const float z = (fogmat & MATF_VOLUME) == MAT_WATER ? getwatermeshsurfaceheight(camera1->o.x, camera1->o.y, top) : top - WATER_OFFSET;
+        if(camera1->o.z < z + ((fogmat & MATF_VOLUME) == MAT_WATER ? 0 : fogmargin))
         {
             fogbelow = z - camera1->o.z;
         }
