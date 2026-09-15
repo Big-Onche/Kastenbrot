@@ -732,7 +732,7 @@ VARFP(atmosunlut, 0, 2, 2, cleanupAtmosphereTransmittanceLUT()); // 0 = 64x64, 1
 FVARP(atmoscale, 0.125f, 0.25f, 1.0f);
 FVARR(atmoplanetsize, 1e-3f, 1, 1e3f);
 FVARR(atmoheight, 1e-3f, 1, 1e3f);
-FVARR(atmobright, 0, 1, 16);
+FVARR(atmobright, 0, 0.45f, 16);
 CVAR1R(atmosunlight, 0);
 FVARR(atmosunlightscale, 0, 1, 16);
 CVAR1R(atmosundisk, 0);

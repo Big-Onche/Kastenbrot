@@ -72,7 +72,7 @@ FVARP(volumetriccloudscatterstrength, 0.0f, 2.0f, 4.0f);
 FVARP(volumetriccloudscatterblue, 0.0f, 1.5f, 4.0f);
 
 // opacity
-FVARP(volumetriccloudalpha, 0.0f, 0.6f, 1.0f);
+FVARR(volumetriccloudalpha, 0.0f, 0.6f, 1.0f);
 
 // cheap depth fog while the camera occupies a cloud cell
 VAR(volumetriccloudinsidefog, 0, 1, 1);

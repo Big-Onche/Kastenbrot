@@ -383,6 +383,8 @@ static void linkglslprogram(Shader &s, bool msg = true)
             GLint loc = glGetUniformLocation_(s.program, texnames[i]);
             if(loc != -1) glUniform1i_(loc, i);
         }
+        GLint atmospherefogtexloc = glGetUniformLocation_(s.program, "atmospherefogtex");
+        if(atmospherefogtexloc != -1) glUniform1i_(atmospherefogtexloc, hwtexunits > 16 ? 16 : 0);
         if(s.type & SHADER_WORLD) bindworldtexlocs(s);
         loopv(s.defaultparams)
         {

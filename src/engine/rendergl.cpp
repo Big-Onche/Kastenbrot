@@ -1902,9 +1902,12 @@ void debugquad(float x, float y, float w, float h, float tx, float ty, float tw,
     HUDQUAD(x, y, x+w, y+h, tx, ty+th, tx+tw, ty);
 }
 
-VARR(fog, 16, 20000, 1000024);
+VARR(fog, 16, 37500, 1000024);
 CVARR(fogcolour, 0x8099B3);
 VAR(fogoverlay, 0, 1, 1);
+FVARP(atmofogcurve, 0.25f, 0.8f, 4.0f);
+
+bool atmospherefogactive = false;
 
 static float findsurface(int fogmat, const vec &v, int &abovemat)
 {
@@ -1993,6 +1996,8 @@ float calcfogcull()
 
 void setfog(int fogmat, float below = 0, float blend = 1, int abovemat = MAT_AIR)
 {
+    extern int atmo;
+    atmospherefogactive = atmo && (fogmat&MATF_VOLUME) == MAT_AIR;
     float start = 0, end = 0;
     float logscale = 256, logblend = log(1 + (logscale - 1)*blend) / log(logscale);
 

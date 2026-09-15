@@ -5951,6 +5951,15 @@ void shadesky()
     glViewport(0, 0, vieww, viewh);
 
     drawskybox((hdrclear > 0 ? hdrclear-- : msaalight) > 0);
+
+    extern bool atmospherefogactive;
+    extern float atmofogcurve;
+    vec2 atmospheresize(0, 0);
+    static const int atmospherefogunit = 16;
+    bool haveatmosphere = atmospherefogactive && hwtexunits > atmospherefogunit && bindatmospherebackground(atmospherefogunit, atmospheresize);
+    GLOBALPARAMF(atmospherefogparams, haveatmosphere ? 1.0f : 0.0f, atmofogcurve,
+                 atmospheresize.x/max(float(vieww), 1.0f), atmospheresize.y/max(float(viewh), 1.0f));
+    glActiveTexture_(GL_TEXTURE0);
 }
 
 void shadegbuffer()
