@@ -188,6 +188,9 @@ namespace game
 
     static void removegamecube(selinfo selection, bool local, int item)
     {
+#ifndef STANDALONE
+        begingeometryeditbatch();
+#endif
         const int worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
         const ivec origin = glassblockselection(selection.o).o;
         if(isglasscubeindex(worldindex) || isglasspaneindex(worldindex) || (worldcellmaterial(origin)&MATF_VOLUME) == MAT_GLASS)
@@ -198,11 +201,15 @@ namespace game
         }
         else mpdelcube(selection, local);
         updateglasspaneneighbors(origin);
+#ifndef STANDALONE
+        endgeometryeditbatch();
+#endif
     }
 
     static void paintworldcube(int worldindex, const selinfo &selection, bool local, int paneaxis = 0)
     {
 #ifndef STANDALONE
+        begingeometryeditbatch();
         markworldcubeplayeredited(selection);
         loopi(6)
         {
@@ -227,6 +234,7 @@ namespace game
             markworldcubeplayeredited(block);
         }
         updateglasspaneneighbors(glassblockselection(selection.o).o);
+        endgeometryeditbatch();
 #else
         (void)worldindex;
         (void)selection;

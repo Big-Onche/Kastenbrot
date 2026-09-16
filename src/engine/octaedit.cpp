@@ -568,6 +568,14 @@ void tryedit()
 
 static bool haschanged = false;
 static streaminggeometryqueue streaminggeometry, editinggeometry;
+static int geometryeditbatchdepth = 0;
+static bool geometryeditbatchchanged = false;
+static ivec geometryeditbatchmin(0, 0, 0), geometryeditbatchmax(0, 0, 0);
+
+void begingeometryeditbatch()
+{
+    ++geometryeditbatchdepth;
+}
 
 void resetgeometrychanges()
 {
@@ -841,6 +849,21 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
 
 void changed(const ivec &bbmin, const ivec &bbmax, bool commit)
 {
+    if(geometryeditbatchdepth > 0)
+    {
+        if(!geometryeditbatchchanged)
+        {
+            geometryeditbatchmin = bbmin;
+            geometryeditbatchmax = bbmax;
+            geometryeditbatchchanged = true;
+        }
+        else
+        {
+            geometryeditbatchmin.min(bbmin);
+            geometryeditbatchmax.max(bbmax);
+        }
+        return;
+    }
     markworldchunksdirty(bbmin, bbmax);
     changedgeometry(bbmin, bbmax, commit);
 }
@@ -865,8 +888,16 @@ void changed(const block3 &sel, bool commit)
 {
     if(sel.s.iszero()) return;
     const ivec bbmax = ivec(sel.s).mul(sel.grid).add(sel.o);
-    markworldchunksdirty(sel.o, bbmax);
-    changedgeometry(sel.o, bbmax, commit);
+    changed(sel.o, bbmax, commit);
+}
+
+void endgeometryeditbatch()
+{
+    if(geometryeditbatchdepth <= 0) return;
+    if(--geometryeditbatchdepth || !geometryeditbatchchanged) return;
+    const ivec bbmin = geometryeditbatchmin, bbmax = geometryeditbatchmax;
+    geometryeditbatchchanged = false;
+    changed(bbmin, bbmax, true);
 }
 
 //////////// copy and undo /////////////

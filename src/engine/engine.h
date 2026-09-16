@@ -438,6 +438,8 @@ extern void rendertexturepanel(int w, int h);
 extern void addundo(undoblock *u);
 extern void commitchanges(bool force = false);
 extern void resetgeometrychanges();
+extern void begingeometryeditbatch();
+extern void endgeometryeditbatch();
 // Streaming mesh ownership is smaller than CPU/collision section ownership.
 extern int vatilesize;
 extern int processstreaminggeometry(double budget, int uploadlimit, bool editsonly = false);
