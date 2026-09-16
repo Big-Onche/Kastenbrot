@@ -11,6 +11,16 @@
 // visibility, ranges and draw submissions by the 64 packets used by 8^3 tiles.
 static const int WORLD_MESH_TILE_SIZE = WORLD_BLOCK_SIZE * 16;
 
+static ivec worldmeshsectionorigin(const ivec &origin)
+{
+    return ivec(origin).mask(~(WORLD_SECTION_SIZE - 1));
+}
+
+static bool worldmeshtileenabled(const ivec &origin)
+{
+    return worldsectionvaenabled(worldmeshsectionorigin(origin), WORLD_SECTION_SIZE);
+}
+
 struct worldmeshtexture
 {
     int index;
@@ -747,7 +757,7 @@ static void dirtyworldmeshregion(const ivec &minimum, const ivec &maximum, bool 
         worldmeshsection **owner = worldmeshowners.access(origin);
         if(!owner)
         {
-            if(!worldsectionvaenabled(origin, size)) continue;
+            if(!worldmeshtileenabled(origin)) continue;
             worldmeshsection *section = new worldmeshsection(origin);
             section->edited = edited;
             worldmeshsections.add(section);
@@ -818,7 +828,7 @@ int processworldmeshpackets(double budget, int uploadlimit, bool editsonly)
         {
             worldmeshsection &section = **owner;
             section.pending = false;
-            if(job->epoch == worldmeshepoch && job->revision == section.revision && worldsectionvaenabled(section.origin, WORLD_SECTION_SIZE))
+            if(job->epoch == worldmeshepoch && job->revision == section.revision && worldmeshtileenabled(section.origin))
             {
                 ZoneScopedN("WorldMesh/Publish packet");
                 // Resolve mutable climate settings once, never during drawing.
@@ -921,8 +931,7 @@ int processworldmeshpackets(double budget, int uploadlimit, bool editsonly)
         loopv(worldmeshsections)
         {
             worldmeshsection &candidate = *worldmeshsections[i];
-            if(!candidate.dirty || candidate.pending || (editsonly && !candidate.edited) ||
-               !worldsectionvaenabled(candidate.origin, WORLD_SECTION_SIZE)) continue;
+            if(!candidate.dirty || candidate.pending || (editsonly && !candidate.edited) || !worldmeshtileenabled(candidate.origin)) continue;
             const long long score = worldmeshsectionscore(candidate.origin, candidate.edited);
             if(!best || score < bestscore)
             {
@@ -976,7 +985,7 @@ int processworldmeshpackets(double budget, int uploadlimit, bool editsonly)
         ++submitted;
     }
     bool idle = outstanding == 0;
-    if(idle) loopv(worldmeshsections) if(worldmeshsections[i]->dirty && worldsectionvaenabled(worldmeshsections[i]->origin, WORLD_SECTION_SIZE))
+    if(idle) loopv(worldmeshsections) if(worldmeshsections[i]->dirty && worldmeshtileenabled(worldmeshsections[i]->origin))
     {
         idle = false;
         break;
@@ -1032,7 +1041,7 @@ bool worldmeshsectionvisible(const worldmeshsection &section)
 {
     // Residency and cave visibility are still selected at section granularity;
     // the packet bounds below provide the finer frustum test.
-    return section.published && worldsectionvavisible(section.origin, WORLD_SECTION_SIZE) &&
+    return section.published && worldsectionvavisible(worldmeshsectionorigin(section.origin), WORLD_SECTION_SIZE) &&
            isvisiblebb(section.minimum, ivec(section.maximum).sub(section.minimum)) < VFC_FOGGED;
 }
 
