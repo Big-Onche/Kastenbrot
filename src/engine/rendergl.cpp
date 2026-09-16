@@ -2,6 +2,9 @@
 
 #include "engine.h"
 
+// Keep this visible when client-only builds reuse an older engine.h.gch.
+namespace game { extern void rendertransparentavatar(); }
+
 bool hasVAO = false, hasTR = false, hasTSW = false, hasPBO = false, hasFBO = false, hasAFBO = false, hasDS = false, hasTF = false, hasCBF = false, hasS3TC = false, hasFXT1 = false, hasLATC = false, hasRGTC = false, hasAF = false, hasFBB = false, hasFBMS = false, hasTMS = false, hasMSS = false, hasFBMSBS = false, hasUBO = false, hasMBR = false, hasDB2 = false, hasDBB = false, hasTG = false, hasTQ = false, hasPF = false, hasTRG = false, hasTI = false, hasHFV = false, hasHFP = false, hasDBT = false, hasDC = false, hasDBGO = false, hasEGPU4 = false, hasGPU4 = false, hasGPU5 = false, hasBFE = false, hasEAL = false, hasCR = false, hasOQ2 = false, hasES2 = false, hasES3 = false, hasCB = false, hasCI = false, hasTS = false;
 bool mesa = false, intel = false, amd = false, nvidia = false;
 
@@ -1592,6 +1595,21 @@ void renderavatar()
     enableavatarmask();
     game::renderavatar();
     disableavatarmask();
+
+    projmatrix = oldprojmatrix;
+    setcamprojmatrix(false);
+}
+
+void rendertransparentavatar()
+{
+    if(isthirdperson()) return;
+
+    matrix4 oldprojmatrix = nojittermatrix;
+    projmatrix.perspective(curavatarfov, aspect, nearplane, farplane);
+    projmatrix.scalez(avatardepth);
+    setcamprojmatrix(false);
+
+    game::rendertransparentavatar();
 
     projmatrix = oldprojmatrix;
     setcamprojmatrix(false);

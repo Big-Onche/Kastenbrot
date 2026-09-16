@@ -5670,6 +5670,23 @@ namespace game
     ICOMMAND(creativeblockcount, "", (), intret(numinventoryitems()));
     ICOMMAND(creativecubecount, "", (), intret(numworldcubes()));
     ICOMMAND(creativeblockiscube, "i", (int *index), intret(getworlditemtype(*index) == WORLD_ITEM_CUBE ? 1 : 0));
+    ICOMMAND(creativeblockisglass, "i", (int *index),
+    {
+        const int worldindex = getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworlditemindex(*index) : -1;
+        intret(isglasscubeindex(worldindex) || isglasspaneindex(worldindex) ? 1 : 0);
+    });
+    ICOMMAND(creativeblockisglasspane, "i", (int *index),
+    {
+        const int worldindex = getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworlditemindex(*index) : -1;
+        intret(isglasspaneindex(worldindex) ? 1 : 0);
+    });
+    ICOMMAND(creativeblockglassquality, "i", (int *index),
+    {
+        const int worldindex = getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworlditemindex(*index) : -1;
+        const int panequality = glasspanequality(worldindex);
+        const int cubematerial = glasscubematerial(worldindex);
+        intret(panequality >= 0 ? panequality : cubematerial == MAT_AIR ? 0 : cubematerial&MATF_INDEX);
+    });
     ICOMMAND(creativeblockslot, "iiN", (int *index, int *face, int *numargs),
     {
         const int worldindex = getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworlditemindex(*index) : 0;

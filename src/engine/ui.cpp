@@ -3264,6 +3264,68 @@ namespace UI
         }
     };
 
+    struct GlassViewer : CubeViewer
+    {
+        bool pane;
+        int quality;
+
+        void setup(int topindex_, int sideindex_, bool pane_, int quality_, float minw_ = 0, float minh_ = 0)
+        {
+            CubeViewer::setup(topindex_, sideindex_, minw_, minh_);
+            pane = pane_;
+            quality = clamp(quality_, 0, 3);
+        }
+
+        static const char *typestr() { return "#GlassViewer"; }
+        const char *gettype() const { return typestr(); }
+
+        void draw(float sx, float sy)
+        {
+            VSlot &top = lookupvslot(topindex, false), &side = lookupvslot(sideindex, false);
+            changedraw(CHANGE_SHADER | CHANGE_COLOR);
+            SETSHADER(hudglass);
+            const float opacity = quality == 0 ? (pane ? 0.30f : 0.38f) : quality == 1 ? (pane ? 0.22f : 0.29f) :
+                                  quality == 2 ? (pane ? 0.13f : 0.19f) : 0.34f,
+                        distortion = quality == 0 ? 1.55f : quality == 1 ? 0.82f : quality == 2 ? 0.20f : 0.72f,
+                        gloss = quality == 0 ? 0.18f : quality == 1 ? 0.48f : quality == 2 ? 0.88f : 0.58f,
+                        normalizedquality = min(quality, 2) * 0.5f;
+            LOCALPARAMF(glasspreviewparams, opacity, distortion, gloss, normalizedquality);
+            if(pane)
+            {
+                // A broad front with narrow top/right edges reads as a thin,
+                // upright square while retaining the inventory's isometric view.
+                const float panelw = min(w, h) * 0.68f, halfw = panelw * 0.5f, depth = panelw * 0.20f,
+                            panelh = panelw * 0.82f, thickness = max(panelw * 0.055f, min(w, h) * 0.025f),
+                            x = sx + w * 0.5f, y = sy + (h - panelh - depth) * 0.5f;
+                const vec2 tl(x - halfw, y + depth), tr(x + halfw, y), br(x + halfw, y + panelh),
+                           bl(x - halfw, y + depth + panelh);
+                const vec2 topface[4] = { vec2(tl.x, tl.y - thickness), vec2(tr.x, tr.y - thickness), tr, tl },
+                           edgeface[4] = { tr, vec2(tr.x + thickness, tr.y + thickness * 0.5f),
+                                          vec2(br.x + thickness, br.y + thickness * 0.5f), br },
+                           frontface[4] = { tl, tr, br, bl };
+                previewface(top, topface, 0.92f);
+                previewface(side, edgeface, 0.62f);
+                previewface(side, frontface, 0.86f);
+            }
+            else
+            {
+                const float topdepthratio = 0.28f, sideheightratio = 0.5f, cubeheightratio = topdepthratio * 2 + sideheightratio;
+                const float cubew = min(w, h / cubeheightratio) * 0.9f, halfw = cubew / 2, topdepth = cubew * topdepthratio,
+                            sideheight = cubew * sideheightratio,
+                            x = sx + w / 2, y = sy + (h - topdepth * 2 - sideheight) / 2;
+                const vec2 peak(x, y), left(x - halfw, y + topdepth), center(x, y + topdepth * 2), right(x + halfw, y + topdepth),
+                           bottomleft(x - halfw, y + topdepth + sideheight), bottom(x, y + topdepth * 2 + sideheight),
+                           bottomright(x + halfw, y + topdepth + sideheight);
+                const vec2 leftface[4] = { left, center, bottom, bottomleft }, rightface[4] = { center, right, bottomright, bottom },
+                           topface[4] = { peak, right, center, left };
+                previewface(side, leftface, 0.78f);
+                previewface(side, rightface, 0.62f);
+                previewface(top, topface, 1.0f);
+            }
+            Object::draw(sx, sy);
+        }
+    };
+
     ICOMMAND(newui, "ssss", (char *name, char *contents, char *onshow, char *onhide),
     {
         Window *window = windows.find(name, NULL);
@@ -3679,6 +3741,9 @@ namespace UI
 
     ICOMMAND(uicubeview, "iiffe", (int *topindex, int *sideindex, float *minw, float *minh, uint *children),
         BUILD(CubeViewer, o, o->setup(*topindex, *sideindex, *minw, *minh), children));
+
+    ICOMMAND(uiglassview, "iiiiffe", (int *topindex, int *sideindex, int *pane, int *quality, float *minw, float *minh, uint *children),
+        BUILD(GlassViewer, o, o->setup(*topindex, *sideindex, *pane != 0, *quality, *minw, *minh), children));
 
     FVARP(uisensitivity, 1e-4f, 1, 1e4f);
 

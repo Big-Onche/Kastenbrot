@@ -1,5 +1,9 @@
 #include "engine.h"
 
+// Keep these visible when client-only builds reuse an older engine.h.gch.
+extern void rendertransparentavatar();
+namespace game { extern bool hastransparentavatar(); }
+
 int gw = -1, gh = -1, bloomw = -1, bloomh = -1, lasthdraccum = 0;
 GLuint gfbo = 0, gdepthtex = 0, gcolortex = 0, gnormaltex = 0, gglowtex = 0, gdepthrb = 0, gstencilrb = 0;
 bool gdepthinit = false;
@@ -5018,11 +5022,12 @@ void rendertransparent(int fogmat, float fogbelow, int abovemat, bool cloudsbefo
         ZoneScopedN("Render/Transparent/Find models");
         hasmodels = transmdlsx1 < transmdlsx2 && transmdlsy1 < transmdlsy2;
     }
+    const bool hasavatar = game::hastransparentavatar();
 
     const bool usewaterfogmask =
         (hasmats & 4) && (fogmat & MATF_VOLUME) == MAT_WATER;
 
-    if(!fogmat && !hasalphavas && !hasmats && !hasmodels)
+    if(!fogmat && !hasalphavas && !hasmats && !hasmodels && !hasavatar)
     {
         ZoneScopedN("Render/Transparent/Early out");
 
@@ -5170,7 +5175,7 @@ void rendertransparent(int fogmat, float fogbelow, int abovemat, bool cloudsbefo
         );
     }
 
-    if(!hasalphavas && !hasmats && !hasmodels)
+    if(!hasalphavas && !hasmats && !hasmodels && !hasavatar)
     {
         ZoneScopedN("Render/Transparent/Post fog early out");
 
@@ -5423,19 +5428,23 @@ void rendertransparent(int fogmat, float fogbelow, int abovemat, bool cloudsbefo
         {
             ZoneScopedN("Render/Transparent/Models prepare");
 
-            if(!hasmodels)
+            if(!hasmodels && !hasavatar)
                 continue;
 
-            sx1 = transmdlsx1;
-            sy1 = transmdlsy1;
-            sx2 = transmdlsx2;
-            sy2 = transmdlsy2;
-
-            memcpy(
-                tiles,
-                transmdltiles,
-                sizeof(tiles)
-            );
+            if(hasavatar)
+            {
+                sx1 = sy1 = -1;
+                sx2 = sy2 = 1;
+                memset(tiles, 0xFF, sizeof(tiles));
+            }
+            else
+            {
+                sx1 = transmdlsx1;
+                sy1 = transmdlsy1;
+                sx2 = transmdlsx2;
+                sy2 = transmdlsy2;
+                memcpy(tiles, transmdltiles, sizeof(tiles));
+            }
 
             break;
         }
@@ -5595,6 +5604,7 @@ void rendertransparent(int fogmat, float fogbelow, int abovemat, bool cloudsbefo
             rendertransparentmodelbatches(
                 layer + 1
             );
+            rendertransparentavatar();
 
             break;
         }

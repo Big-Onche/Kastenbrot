@@ -133,6 +133,8 @@ namespace game
     extern void renderitemspriteshadows();
     extern void rendercreativetarget();
     extern void renderavatar();
+    extern bool hastransparentavatar();
+    extern void rendertransparentavatar();
     extern void renderplayerpreview(int model, int color, int team, int weap);
     extern int numanims();
     extern void findanims(const char *pattern, vector<int> &anims);

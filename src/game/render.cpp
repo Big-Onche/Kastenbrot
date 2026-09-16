@@ -396,6 +396,10 @@ namespace game
 
     static const char * const heldcubemodel = "game/heldcube";
     static const char * const worldheldcubemodel = "game/heldcube/world";
+    static const char * const heldglassmodel = "game/heldglass";
+    static const char * const worldheldglassmodel = "game/heldglass/world";
+    static const char * const heldpanemodel = "game/heldpane";
+    static const char * const worldheldpanemodel = "game/heldpane/world";
 
     // The torso is recentered on the hips; its tags define every articulated joint.
     static const float HIP_HEIGHT = 11.25f;
@@ -422,6 +426,10 @@ namespace game
         loopi(NUM_PLAYER_PARTS) preloadmodel(playermodels[i]);
         preloadmodel(heldcubemodel);
         preloadmodel(worldheldcubemodel);
+        preloadmodel(heldglassmodel);
+        preloadmodel(worldheldglassmodel);
+        preloadmodel(heldpanemodel);
+        preloadmodel(worldheldpanemodel);
         preloaditemsprites();
         textureload("media/interface/hud/heart.png", 3, true, true, true);
     }
@@ -888,6 +896,9 @@ namespace game
         float yaw, pitch, roll;
     };
 
+    static int transparentavataritem = -1;
+    static helditempose transparentavatarpose;
+
     static bool hudrightarmpose(gameent *d, helditempose &arm, helditempose &item)
     {
         const float speed = horizontalmeterspersecond(d),
@@ -957,6 +968,36 @@ namespace game
         return tagged;
     }
 
+    enum
+    {
+        HELD_GLASS_NONE = 0,
+        HELD_GLASS_CUBE,
+        HELD_GLASS_BRICK,
+        HELD_GLASS_PANE_LOW,
+        HELD_GLASS_PANE_AVERAGE,
+        HELD_GLASS_PANE_HIGH
+    };
+
+    static int heldglasstype(int selected)
+    {
+        static const int glasscube = getworldcubeidindex("glass"),
+                         glassbrick = getworldcubeidindex("glass_brick"),
+                         glasspane = getworldcubeidindex("glass_pane"),
+                         glasspaneaverage = getworldcubeidindex("glass_pane_average"),
+                         glasspanehigh = getworldcubeidindex("glass_pane_high");
+        if(selected == glasscube) return HELD_GLASS_CUBE;
+        if(selected == glassbrick) return HELD_GLASS_BRICK;
+        if(selected == glasspane) return HELD_GLASS_PANE_LOW;
+        if(selected == glasspaneaverage) return HELD_GLASS_PANE_AVERAGE;
+        if(selected == glasspanehigh) return HELD_GLASS_PANE_HIGH;
+        return HELD_GLASS_NONE;
+    }
+
+    static bool isheldglassitem(int selected)
+    {
+        return selected >= 0 && getworlditemtype(selected) == WORLD_ITEM_CUBE && heldglasstype(getworlditemindex(selected)) != HELD_GLASS_NONE;
+    }
+
     static void renderheldcube(gameent *d, int selected, const helditempose &pose, int flags, float size, bool hud)
     {
         string toptexture, sidetexture, bottomtexture;
@@ -970,7 +1011,22 @@ namespace game
             modelskinoverride("bottom", bottomtexture)
         };
 
-        rendermodelwithskins(hud ? heldcubemodel : worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP, pose.origin, pose.yaw, pose.pitch, pose.roll, flags, d, skins, 3, size);
+        const int glasstype = heldglasstype(selected);
+        if(glasstype != HELD_GLASS_NONE)
+        {
+            const bool pane = glasstype >= HELD_GLASS_PANE_LOW;
+            const char *model = pane ? (hud ? heldpanemodel : worldheldpanemodel) : (hud ? heldglassmodel : worldheldglassmodel);
+            const float opacity = glasstype == HELD_GLASS_PANE_HIGH ? 0.72f :
+                                  glasstype == HELD_GLASS_PANE_AVERAGE ? 0.55f :
+                                  glasstype == HELD_GLASS_PANE_LOW ? 0.38f :
+                                  glasstype == HELD_GLASS_BRICK ? 0.62f : 0.42f;
+            flags |= MDL_FORCETRANSPARENT | MDL_NOSHADOW;
+            rendermodelwithskins(model, ANIM_MAPMODEL | ANIM_LOOP, pose.origin, pose.yaw, pose.pitch, pose.roll, flags, d, skins, 3, size,
+                                 vec4(1, 1, 1, opacity));
+        }
+        else
+            rendermodelwithskins(hud ? heldcubemodel : worldheldcubemodel, ANIM_MAPMODEL | ANIM_LOOP, pose.origin, pose.yaw, pose.pitch,
+                                 pose.roll, flags, d, skins, 3, size);
     }
 
     static void renderheldmodel(gameent *d, const char *model, const helditempose &pose, int flags, float size)
@@ -1037,6 +1093,7 @@ namespace game
 
     void renderavatar()
     {
+        transparentavataritem = -1;
         if(!hudgun || editmode || (!m_creative && !m_survival) || !player1 || player1->state != CS_ALIVE)
             return;
 
@@ -1046,7 +1103,26 @@ namespace game
         const int flags = MDL_NOBATCH | MDL_NOSHADOW;
         rendermodel(playermodels[PART_RIGHT_ARM], ANIM_MAPMODEL | ANIM_LOOP, arm.origin, arm.yaw, arm.pitch, arm.roll, flags, player1);
 
-        if(tagged && selected >= 0) renderhelditem(player1, selected, item.origin, item.yaw, item.pitch, item.roll, flags, true);
+        if(tagged && isheldglassitem(selected))
+        {
+            transparentavataritem = selected;
+            transparentavatarpose = item;
+        }
+        else if(tagged && selected >= 0) renderhelditem(player1, selected, item.origin, item.yaw, item.pitch, item.roll, flags, true);
+    }
+
+    bool hastransparentavatar()
+    {
+        return transparentavataritem >= 0 && !isthirdperson();
+    }
+
+    void rendertransparentavatar()
+    {
+        if(!hastransparentavatar()) return;
+        const int flags = MDL_NOBATCH | MDL_NOSHADOW | MDL_FORCETRANSPARENT;
+        renderhelditem(player1, transparentavataritem, transparentavatarpose.origin, transparentavatarpose.yaw, transparentavatarpose.pitch,
+                       transparentavatarpose.roll, flags, true);
+        transparentavataritem = -1;
     }
 
     void renderplayerpreview(int model, int color, int team, int weap) {}

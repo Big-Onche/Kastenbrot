@@ -185,6 +185,7 @@ extern float calcfogdensity(float dist);
 extern float calcfogcull();
 extern void writecrosshairs(stream *f);
 extern void renderavatar();
+extern void rendertransparentavatar();
 
 namespace modelpreview
 {
