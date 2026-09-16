@@ -69,16 +69,21 @@ static bool saveworldchunksnapshots()
         return false;
     }
     int queued = 0;
+    bool success = true;
     loopv(worldchunks)
     {
         worldchunk &chunk = worldchunks[i];
         if(chunk.loading || !chunk.root) continue;
         if(chunk.saving) continue;
-        if(!queueworldchunksave(chunk)) return false;
+        if(!queueworldchunksave(chunk))
+        {
+            success = false;
+            continue;
+        }
         ++queued;
     }
     conoutf("queued %d authoritative chunk snapshots for %s", queued, worldfolder);
-    return true;
+    return success;
 }
 static int activeworldchunk = -1;
 static int worldfirstchunkx = 0, worldfirstchunky = 0;
@@ -313,6 +318,8 @@ static cube *prepareworldchunk(worldchunkjob &job);
 static int worldchunkloader(void *);
 static bool startworldchunkloader();
 static void shutdownworldchunkloader();
+static void cancelworldchunkgeneration();
+static void runworldchunksavejob(worldchunksavejob *job);
 static void updateworldscatterers();
 static void clearworldscattererentities();
 static void clearworldscattermeshes();
@@ -1678,7 +1685,7 @@ static int worldchunkloader(void *)
     for(;;)
     {
         SDL_LockMutex(worldchunkmutex);
-        while(worldchunkjobs.empty() && worldchunksavejobs.empty() && !stopworldchunkthread)
+        while((worldchunkjobs.empty() || flushingworldchunksaves) && worldchunksavejobs.empty() && !stopworldchunkthread)
             SDL_CondWait(worldchunkcond, worldchunkmutex);
         if(stopworldchunkthread)
         {
@@ -1687,7 +1694,7 @@ static int worldchunkloader(void *)
         }
         worldchunkjob *job = NULL;
         worldchunksavejob *savejob = NULL;
-        if(!worldchunkjobs.empty() && (!flushingworldchunksaves || worldchunksavejobs.empty()))
+        if(!flushingworldchunksaves && !worldchunkjobs.empty())
         {
             int best = 0, bestscore = worldchunkjobscore(*worldchunkjobs[0]);
             loopv(worldchunkjobs) if(i)
@@ -1711,15 +1718,7 @@ static int worldchunkloader(void *)
 
         if(savejob)
         {
-            {
-                ZoneScopedN("Chunks/Worker save snapshot");
-                ZoneTextF("%d_%d", savejob->x, savejob->y);
-                savejob->success = writeworldchunksnapshot(savejob->folder, savejob->x, savejob->y, savejob->revision, savejob->playeredited,
-                                                           savejob->compress, savejob->root, savejob->renderdata, savejob->scatter, savejob->gameplay,
-                                                           savejob->error);
-                freeocta(savejob->root);
-                savejob->root = NULL;
-            }
+            runworldchunksavejob(savejob);
             SDL_LockMutex(worldchunkmutex);
             worldchunksaveactivejobs.removeobj(savejob);
             worldchunksaveresults.add(savejob);
@@ -1784,6 +1783,16 @@ static int worldchunkloader(void *)
         TracyPlot("Chunks/Ready results", int64_t(worldchunkresults.length()));
         SDL_UnlockMutex(worldchunkmutex);
     }
+}
+
+static void runworldchunksavejob(worldchunksavejob *job)
+{
+    ZoneScopedN("Chunks/Save snapshot");
+    ZoneTextF("%d_%d", job->x, job->y);
+    job->success = writeworldchunksnapshot(job->folder, job->x, job->y, job->revision, job->playeredited, job->compress, job->root,
+                                           job->renderdata, job->scatter, job->gameplay, job->error);
+    freeocta(job->root);
+    job->root = NULL;
 }
 
 static bool startworldchunkloader()
@@ -1868,6 +1877,16 @@ static void shutdownworldchunkloader()
     worldchunkmutex = NULL;
     stopworldchunkthread = false;
     flushingworldchunksaves = false;
+}
+
+static void cancelworldchunkgeneration()
+{
+    if(!worldchunkmutex) return;
+    SDL_LockMutex(worldchunkmutex);
+    loopv(worldchunkjobs) SDL_AtomicSet(&worldchunkjobs[i]->cancelled, 1);
+    loopv(worldchunkactivejobs) SDL_AtomicSet(&worldchunkactivejobs[i]->cancelled, 1);
+    SDL_CondBroadcast(worldchunkcond);
+    SDL_UnlockMutex(worldchunkmutex);
 }
 
 static void setworldchunkgenerationstopped(bool stopped)
@@ -2432,14 +2451,33 @@ static bool flushworldchunksaves()
     {
         processworldchunksaveresults();
         SDL_LockMutex(worldchunkmutex);
-        const bool pending = !worldchunksavejobs.empty() || !worldchunksaveactivejobs.empty() || !worldchunksaveresults.empty();
-        if(pending) SDL_CondWaitTimeout(worldchunkcond, worldchunkmutex, 10);
+        worldchunksavejob *job = worldchunksavejobs.empty() ? NULL : worldchunksavejobs.remove(0);
+        if(job)
+        {
+            worldchunksaveactivejobs.add(job);
+            TracyPlot("Chunks/Queued saves", int64_t(worldchunksavejobs.length()));
+            TracyPlot("Chunks/Active saves", int64_t(worldchunksaveactivejobs.length()));
+        }
+        const bool pending = job || !worldchunksaveactivejobs.empty() || !worldchunksaveresults.empty();
+        if(!job && pending) SDL_CondWaitTimeout(worldchunkcond, worldchunkmutex, 10);
         SDL_UnlockMutex(worldchunkmutex);
+        if(job)
+        {
+            runworldchunksavejob(job);
+            SDL_LockMutex(worldchunkmutex);
+            worldchunksaveactivejobs.removeobj(job);
+            worldchunksaveresults.add(job);
+            TracyPlot("Chunks/Active saves", int64_t(worldchunksaveactivejobs.length()));
+            TracyPlot("Chunks/Ready saves", int64_t(worldchunksaveresults.length()));
+            SDL_CondBroadcast(worldchunkcond);
+            SDL_UnlockMutex(worldchunkmutex);
+        }
         if(!pending) break;
     }
     processworldchunksaveresults();
     SDL_LockMutex(worldchunkmutex);
     flushingworldchunksaves = false;
+    SDL_CondBroadcast(worldchunkcond);
     SDL_UnlockMutex(worldchunkmutex);
     const bool success = !worldchunksavefailure;
     worldchunksavefailure = false;

@@ -278,6 +278,15 @@ static bool writeworldsnapshotfile(const char *filename, const vector<uchar> &co
     return true;
 }
 
+static bool validateworldsnapshotchecksum(const vector<uchar> &contents);
+
+static bool validateworldsnapshotfile(const char *filename, const vector<uchar> &expected)
+{
+    vector<uchar> contents;
+    return readworldsnapshotfile(filename, contents) && contents.length() == expected.length() &&
+           !memcmp(contents.getbuf(), expected.getbuf(), expected.length()) && validateworldsnapshotchecksum(contents);
+}
+
 static const cube &worldsnapshotcubeat(const cube *root, const ivec &position, int &size)
 {
     int scale = WORLD_CHUNK_SCALE - 1;
@@ -631,6 +640,11 @@ static bool writeworldchunksnapshot(const char *folder, int x, int y, uint revis
     if(!writeworldsnapshotfile(voxname, vox, compress) || !writeworldsnapshotfile(datname, dat, compress))
     {
         copystring(error, "could not write authoritative .vox/.dat chunk files");
+        return false;
+    }
+    if(!validateworldsnapshotfile(voxname, vox) || !validateworldsnapshotfile(datname, dat))
+    {
+        copystring(error, "authoritative chunk failed read-back validation");
         return false;
     }
     return true;

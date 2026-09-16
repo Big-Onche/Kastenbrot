@@ -382,6 +382,8 @@ struct worldsnapshotmetadata
     }
 };
 
+static bool loadworldmetadata(const char *folder, worldsnapshotmetadata &metadata);
+
 static bool saveworldmetadata()
 {
     if(!worldfolder[0]) return false;
@@ -423,6 +425,12 @@ static bool saveworldmetadata()
     {
         remove(temporarypath);
         conoutf(CON_ERROR, "could not write world metadata %s", name);
+        return false;
+    }
+    worldsnapshotmetadata verified;
+    if(!loadworldmetadata(worldfolder, verified))
+    {
+        conoutf(CON_ERROR, "world metadata %s failed read-back validation", name);
         return false;
     }
     return true;
@@ -497,11 +505,11 @@ static bool loadworldmetadata(const char *folder, worldsnapshotmetadata &metadat
 
 static bool saveactiveworld()
 {
-    if(!saveworldchunksnapshots()) return false;
-    if(!game::savelocalpassivenpcs(worldfolder)) return false;
-    if(!saveworldmetadata()) return false;
-    conoutf("queued local world save for %s", worldfolder);
-    return true;
+    bool success = saveworldchunksnapshots();
+    if(!game::savelocalpassivenpcs(worldfolder)) success = false;
+    if(!saveworldmetadata()) success = false;
+    if(success) conoutf("queued local world save for %s", worldfolder);
+    return success;
 }
 
 static void saveworld()
@@ -705,10 +713,16 @@ void startnetworkworld(int seed)
 
 void closeproceduralworld()
 {
+    // Leaving a world never publishes in-flight generation. Cancel it first,
+    // then let the main thread help drain saves so persistence cannot be
+    // starved behind CPU-heavy generation jobs in the shared worker pool.
+    cancelworldchunkgeneration();
     flushworldchunksaves();
     if(worldfolder[0] && game::islocalworld())
     {
-        if(!saveactiveworld() || !flushworldchunksaves()) conoutf(CON_ERROR, "local world %s could not be saved completely", worldfolder);
+        const bool queued = saveactiveworld();
+        const bool saved = flushworldchunksaves();
+        if(!queued || !saved) conoutf(CON_ERROR, "local world %s could not be saved completely", worldfolder);
     }
     game::resetfurnaces();
     game::resetchests();
