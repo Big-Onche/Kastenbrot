@@ -35,7 +35,8 @@ worlddefinition::worlddefinition(const char *id)
       itemstackset(false), cubetextureset(false),
       scattermodelset(false),
       placeablemodelset(false), hardnessset(false), tooltierset(false), toolspeedset(false), explicitdrops(false), errorfallback(false), fall(false),
-      placeableblockcollision(false), heldflipx(false), heldflipy(false), handbreakable(true), supportdecay(false), supportpersistentonplace(false)
+      placeableblockcollision(false), heldflipx(false), heldflipy(false), handbreakable(true), supportdecay(false), supportpersistentonplace(false),
+      acceptspaneconnection(false)
 {
     copystring(this->id, id);
     variantbase[0] = varianthost[0] = '\0';
@@ -284,6 +285,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "texsize")) return "worlddef_texsize";
         if(!strcmp(command, "falling")) return "worlddef_falling";
         if(!strcmp(command, "footstep")) return "worlddef_footstep";
+        if(!strcmp(command, "paneconnection")) return "worlddef_paneconnection";
     }
     else if(component == WORLDDEF_SCATTER || component == WORLDDEF_PLACEABLE)
     {
@@ -854,6 +856,7 @@ ICOMMANDS("worlddef_side", "s", (char *value), copystring(currentworlddefinition
 ICOMMANDS("worlddef_bottom", "s", (char *value), copystring(currentworlddefinition->bottom, value));
 ICOMMANDS("worlddef_texsize", "f", (float *value), currentworlddefinition->texsize = *value);
 ICOMMANDS("worlddef_falling", "i", (int *value), currentworlddefinition->fall = *value != 0);
+ICOMMANDS("worlddef_paneconnection", "i", (int *value), currentworlddefinition->acceptspaneconnection = *value != 0);
 ICOMMANDS("worlddef_miningsound", "si", (char *sound, int *variants),
 {
     copystring(currentworlddefinition->miningsound, sound);

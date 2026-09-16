@@ -125,6 +125,14 @@ bool isworldcubesolidat(const ivec &position)
     return !isempty(c) && isentirelysolid(c);
 }
 
+bool isworldcubeoccupiedat(const ivec &position)
+{
+    ivec origin;
+    int size;
+    const cube &c = lookupcube(position, 0, origin, size);
+    return !isempty(c) || (c.material&MATF_VOLUME) == MAT_GLASS;
+}
+
 const char *getworldcubename(int index)
 {
     index = validworldcubeindex(index);
@@ -297,6 +305,11 @@ bool getworldcubesupportpersistentonplace(int index)
 {
     return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->hassupport &&
            worldcubedefinitions[index]->supportpersistentonplace;
+}
+
+bool getworldcubeacceptspaneconnection(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->acceptspaneconnection;
 }
 
 int getinventoryitemindex(const char *id)
@@ -1278,6 +1291,11 @@ bool getworldcubesupportpersistentonplace(int index)
            worldcubedefinitions[index]->supportpersistentonplace;
 }
 
+bool getworldcubeacceptspaneconnection(int index)
+{
+    return worldcubedefinitions.inrange(index) && worldcubedefinitions[index]->acceptspaneconnection;
+}
+
 const char *getworldcubename(int index)
 {
     return worldcubedefinitions.inrange(index) ? worldcubedefinitions[index]->id : "";
@@ -1411,6 +1429,12 @@ int getworldcubefaceslot(int index, int orient)
 }
 
 bool isworldcubesolidat(const ivec &position)
+{
+    (void)position;
+    return false;
+}
+
+bool isworldcubeoccupiedat(const ivec &position)
 {
     (void)position;
     return false;

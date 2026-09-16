@@ -6,7 +6,7 @@ extern int compresschunks;
 
 enum
 {
-    WORLD_SNAPSHOT_VOX_VERSION = 3,
+    WORLD_SNAPSHOT_VOX_VERSION = 4,
     WORLD_SNAPSHOT_DAT_VERSION = 3,
     WORLD_SNAPSHOT_COMPRESSION_VERSION = 1,
     WORLD_SNAPSHOT_MAX_FILE_SIZE = 512 << 20,
@@ -14,9 +14,9 @@ enum
     WORLD_SNAPSHOT_EMPTY = 1 << 0,
     WORLD_SNAPSHOT_SOLID = 1 << 1,
     WORLD_SNAPSHOT_PLAYER_EDITED = 1 << 2,
+    WORLD_SNAPSHOT_GLASS_PANE = 1 << 3,
     WORLD_SNAPSHOT_SCATTER = 1
 };
-
 
 struct worldsnapshotvoxel
 {
@@ -305,14 +305,20 @@ static void copyworldsnapshotcube(const cube &source, cube &destination)
     }
 }
 
+static int worldsnapshotpanetype(const cube &c, int &normalaxis);
+
 static bool normalizeworldsnapshotcube(cube &c, int size, string &error)
 {
     if(size <= WORLD_BLOCK_SIZE)
     {
         if(c.children)
         {
-            copystring(error, "chunk contains sub-voxel octree state");
-            return false;
+            int normalaxis = 0;
+            if(size != WORLD_BLOCK_SIZE || worldsnapshotpanetype(c, normalaxis) < 0)
+            {
+                copystring(error, "chunk contains sub-voxel octree state");
+                return false;
+            }
         }
         return true;
     }
@@ -375,19 +381,56 @@ static int worldsnapshotcubeindex(const cube &source)
 #endif
 }
 
+static int worldsnapshotpanetype(const cube &c, int &normalaxis)
+{
+    if(c.children)
+    {
+        int type = -1;
+        loopi(8)
+        {
+            int childaxis = normalaxis, childtype = worldsnapshotpanetype(c.children[i], childaxis);
+            if(childtype < 0 || (type >= 0 && childtype != type)) return -1;
+            type = childtype;
+            normalaxis = childaxis;
+        }
+        return type;
+    }
+    const int type = worldsnapshotcubeindex(c);
+    if(type < 0 || strcmp(getworldcubename(type), "glass_pane")) return -1;
+    if((c.material&MATF_VOLUME) == MAT_GLASS) normalaxis = clamp(int(c.material&MATF_INDEX), 0, 1);
+    return type;
+}
+
 static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snapshot, int x, int y, int z, worldsnapshotvoxel &voxel, string &error)
 {
     int size;
     const cube &source = worldsnapshotcubeat(root, ivec(x * WORLD_BLOCK_SIZE, y * WORLD_BLOCK_SIZE, z * WORLD_BLOCK_SIZE), size);
+    int panenormalaxis = 0;
+    const int paneindex = source.children ? worldsnapshotpanetype(source, panenormalaxis) : -1;
     if(source.children)
     {
-        formatstring(error, "voxel at %d %d %d contains sub-voxel octree state", x, y, z);
-        return false;
+        if(paneindex < 0)
+        {
+            formatstring(error, "voxel at %d %d %d contains sub-voxel octree state", x, y, z);
+            return false;
+        }
+        const int palette = worldsnapshotpaletteindex(snapshot, getworldcubename(paneindex), paneindex);
+        if(palette < 0) { copystring(error, "chunk block palette exceeds ushort capacity"); return false; }
+        voxel.palette = ushort(palette);
+        voxel.material = MAT_GLASS | MAT_CLIP | panenormalaxis;
+        voxel.orientation = uchar(panenormalaxis * 2);
+        voxel.flags = WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_GLASS_PANE;
+        if(source.playeredited) voxel.flags |= WORLD_SNAPSHOT_PLAYER_EDITED;
+        memset(voxel.edges, 0, sizeof(voxel.edges));
+        return true;
     }
     const bool empty = isempty(source), solid = isentirelysolid(source);
     ASSERT(size <= WORLD_BLOCK_SIZE || empty || solid);
-    const int worldindex = empty ? -1 : worldsnapshotcubeindex(source);
-    const char *id = empty ? "air" : worldindex >= 0 ? getworldcubename(worldindex) : NULL;
+    const int textureindex = worldsnapshotcubeindex(source);
+    const bool glassblock = empty && (source.material&MATF_VOLUME) == MAT_GLASS && textureindex >= 0 &&
+                            (!strcmp(getworldcubename(textureindex), "glass") || !strcmp(getworldcubename(textureindex), "glass_pane"));
+    const int worldindex = empty && !glassblock ? -1 : textureindex;
+    const char *id = empty && !glassblock ? "air" : worldindex >= 0 ? getworldcubename(worldindex) : NULL;
     if(!id || !id[0])
     {
         formatstring(error, "voxel at %d %d %d has no stable block string ID", x, y, z);
@@ -400,8 +443,10 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     // it as ordinary water would turn every reached cell into a full source
     // after the chunk is loaded again.
     voxel.material = source.material&MAT_WATER_FLOWING ? MAT_AIR : source.material;
-    voxel.orientation = O_TOP;
+    const bool glasspane = glassblock && !strcmp(id, "glass_pane");
+    voxel.orientation = glasspane ? uchar(clamp(int(source.material&MATF_INDEX), 0, 1) * 2) : O_TOP;
     voxel.flags = empty ? WORLD_SNAPSHOT_EMPTY : solid ? WORLD_SNAPSHOT_SOLID : 0;
+    if(glasspane) voxel.flags |= WORLD_SNAPSHOT_GLASS_PANE;
     if(source.playeredited) voxel.flags |= WORLD_SNAPSHOT_PLAYER_EDITED;
     if(empty) memset(voxel.edges, 0, sizeof(voxel.edges));
     else if(solid) memset(voxel.edges, 0x80, sizeof(voxel.edges));
@@ -575,7 +620,7 @@ static bool deserializeworldsnapshotvox(const vector<uchar> &contents, int x, in
     uint revision;
     uchar playeredited;
     ushort width, depth, height, palettesize;
-    if(!reader.read(magic, 4) || memcmp(magic, "CCVX", 4) || !reader.readuint(version) || (version != 2 && version != WORLD_SNAPSHOT_VOX_VERSION) ||
+    if(!reader.read(magic, 4) || memcmp(magic, "CCVX", 4) || !reader.readuint(version) || (version < 2 || version > WORLD_SNAPSHOT_VOX_VERSION) ||
        !reader.readuint(storedx) || !reader.readuint(storedy) || int(storedx) != x || int(storedy) != y || !reader.readushort(width) ||
        !reader.readushort(depth) || !reader.readushort(height) || width != WORLD_CHUNK_BLOCKS || depth != WORLD_CHUNK_BLOCKS ||
        height != WORLD_HEIGHT_BLOCKS || !reader.readushort(palettesize) || !palettesize || !reader.readuint(columns) ||
@@ -625,7 +670,8 @@ static bool deserializeworldsnapshotvox(const vector<uchar> &contents, int x, in
             uchar orientation, flags, edges[12];
             if(!reader.readushort(length) || !length || z + length > WORLD_HEIGHT_BLOCKS || !reader.readushort(palette) || palette >= palettesize ||
                !reader.readbyte(orientation) || !reader.readbyte(flags) ||
-               flags & ~(WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_SOLID | (version >= 3 ? WORLD_SNAPSHOT_PLAYER_EDITED : 0)) ||
+               flags & ~(WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_SOLID | (version >= 3 ? WORLD_SNAPSHOT_PLAYER_EDITED : 0) |
+                         (version >= 4 ? WORLD_SNAPSHOT_GLASS_PANE : 0)) ||
                ((flags & WORLD_SNAPSHOT_EMPTY) && (flags & WORLD_SNAPSHOT_SOLID)) || !reader.readushort(material) ||
                !reader.read(edges, sizeof(edges)) || orientation < O_LEFT || orientation > O_TOP)
             {
@@ -678,7 +724,101 @@ static bool deserializeworldsnapshotdat(const vector<uchar> &contents, int x, in
     return reader.finished();
 }
 
-static void buildworldsnapshotcube(cube &destination, const ivec &origin, int size, const worldchunksnapshot &snapshot,const vector<worldsnapshotvoxel> &voxels)
+static bool worldsnapshotpaneconnectable(const worldchunksnapshot &snapshot, const vector<worldsnapshotvoxel> &voxels, int x, int y, int z)
+{
+    if(x < 0 || x >= WORLD_CHUNK_BLOCKS || y < 0 || y >= WORLD_CHUNK_BLOCKS || z < 0 || z >= WORLD_HEIGHT_BLOCKS) return false;
+    const worldsnapshotvoxel &voxel = voxels[(y * WORLD_CHUNK_BLOCKS + x) * WORLD_HEIGHT_BLOCKS + z];
+    if(!(voxel.flags & WORLD_SNAPSHOT_EMPTY)) return true;
+    const worldsnapshotpaletteentry &entry = snapshot.palette[voxel.palette];
+    return !strcmp(entry.id, "glass") || !strcmp(entry.id, "glass_pane") || getworldcubeacceptspaneconnection(entry.worldindex);
+}
+
+static uint worldsnapshotpaneconnections(const worldchunksnapshot &snapshot, const vector<worldsnapshotvoxel> &voxels, int x, int y, int z)
+{
+    static const int axes[4] = { 1, 0, 1, 0 }, signs[4] = { -1, 1, 1, -1 };
+    uint connections = 0;
+    loopi(4)
+    {
+        int position[3] = { x, y, z };
+        position[axes[i]] += signs[i];
+        if(worldsnapshotpaneconnectable(snapshot, voxels, position[0], position[1], position[2])) connections |= 1U << i;
+    }
+    return connections;
+}
+
+static bool worldsnapshotboxintersects(const ivec &origin, int size, const ivec &boxorigin, const ivec &boxsize)
+{
+    loopi(3) if(origin[i] >= boxorigin[i] + boxsize[i] || origin[i] + size <= boxorigin[i]) return false;
+    return true;
+}
+
+static bool worldsnapshotboxcontains(const ivec &origin, int size, const ivec &boxorigin, const ivec &boxsize)
+{
+    loopi(3) if(origin[i] < boxorigin[i] || origin[i] + size > boxorigin[i] + boxsize[i]) return false;
+    return true;
+}
+
+static void buildworldsnapshotpane(cube &destination, const ivec &origin, int size, int worldindex, int normalaxis, uint connections,
+                                   bool playeredited)
+{
+    static const int thickness = 2, halfthickness = thickness / 2;
+    static const int axes[4] = { 1, 0, 1, 0 }, signs[4] = { -1, 1, 1, -1 };
+    const int center = WORLD_BLOCK_SIZE / 2, start = center - halfthickness;
+    ivec boxorigins[5], boxsizes[5];
+    int boxes = 0;
+    normalaxis = clamp(normalaxis, 0, 1);
+    if(!connections)
+    {
+        boxorigins[boxes] = ivec(0, 0, 0);
+        boxsizes[boxes] = ivec(WORLD_BLOCK_SIZE, WORLD_BLOCK_SIZE, WORLD_BLOCK_SIZE);
+        boxorigins[boxes][normalaxis] = start;
+        boxsizes[boxes][normalaxis] = thickness;
+        ++boxes;
+    }
+    else
+    {
+        boxorigins[boxes] = ivec(start, start, 0);
+        boxsizes[boxes++] = ivec(thickness, thickness, WORLD_BLOCK_SIZE);
+        loopi(4) if(connections & (1U << i))
+        {
+            const int axis = axes[i], thinaxis = 1 - axis;
+            boxorigins[boxes] = ivec(0, 0, 0);
+            boxsizes[boxes] = ivec(WORLD_BLOCK_SIZE, WORLD_BLOCK_SIZE, WORLD_BLOCK_SIZE);
+            boxorigins[boxes][thinaxis] = start;
+            boxsizes[boxes][thinaxis] = thickness;
+            boxsizes[boxes][axis] = center + halfthickness;
+            if(signs[i] > 0) boxorigins[boxes][axis] = start;
+            ++boxes;
+        }
+    }
+
+    bool intersects = false, contained = false;
+    loopi(boxes)
+    {
+        intersects |= worldsnapshotboxintersects(origin, size, boxorigins[i], boxsizes[i]);
+        contained |= worldsnapshotboxcontains(origin, size, boxorigins[i], boxsizes[i]);
+    }
+    resetworldsnapshotcube(destination);
+    destination.playeredited = playeredited;
+#if defined(STANDALONE) || defined(WORLD_SNAPSHOT_SERVER_CODEC)
+    loopi(6) destination.texture[i] = ushort(worldindex);
+#else
+    loopi(6) destination.texture[i] = getworldcubefaceslot(worldindex, i);
+#endif
+    if(contained || size == 1)
+    {
+        if(intersects) destination.material = MAT_GLASS | MAT_CLIP | normalaxis;
+        return;
+    }
+    if(!intersects) return;
+    const int childsize = size >> 1;
+    destination.children = allocworldsnapshotfamily();
+    loopi(8) buildworldsnapshotpane(destination.children[i], ivec(i, origin, childsize), childsize, worldindex, normalaxis, connections,
+                                    playeredited);
+}
+
+static void buildworldsnapshotcube(cube &destination, const ivec &origin, int size, const worldchunksnapshot &snapshot,
+                                   const vector<worldsnapshotvoxel> &voxels)
 {
     resetworldsnapshotcube(destination);
     if(origin.x >= WORLD_CHUNK_SIZE || origin.y >= WORLD_CHUNK_SIZE || origin.z >= WORLD_MAP_SIZE) return;
@@ -690,6 +830,12 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
         destination.playeredited = (voxel.flags & WORLD_SNAPSHOT_PLAYER_EDITED) != 0;
         memcpy(destination.edges, voxel.edges, sizeof(destination.edges));
         const int worldindex = snapshot.palette[voxel.palette].worldindex;
+        if((voxel.flags & WORLD_SNAPSHOT_GLASS_PANE) && worldindex >= 0)
+        {
+            buildworldsnapshotpane(destination, ivec(0, 0, 0), WORLD_BLOCK_SIZE, worldindex, clamp(int(voxel.orientation) / 2, 0, 1),
+                                   worldsnapshotpaneconnections(snapshot, voxels, x, y, z), destination.playeredited);
+            return;
+        }
         if(worldindex >= 0)
         {
 #if defined(STANDALONE) || defined(WORLD_SNAPSHOT_SERVER_CODEC)

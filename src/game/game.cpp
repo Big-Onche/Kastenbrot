@@ -23,7 +23,131 @@ const gamemodeinfo gamemodes[3] =
 
 namespace game
 {
-    static void paintworldcube(int worldindex, const selinfo &selection, bool local)
+    enum
+    {
+        CREATIVE_GRID = 16,
+        CREATIVE_REACH = CREATIVE_GRID * 8
+    };
+
+    static const int GLASS_PANE_THICKNESS = 2;
+    static const int GLASS_PANE_HALF_THICKNESS = GLASS_PANE_THICKNESS / 2;
+    enum
+    {
+        PANE_NORTH = 1 << 0,
+        PANE_EAST = 1 << 1,
+        PANE_SOUTH = 1 << 2,
+        PANE_WEST = 1 << 3,
+        GLASS_PANE_DIRECTIONS = 4
+    };
+    static const int glasspaneaxes[GLASS_PANE_DIRECTIONS] = { 1, 0, 1, 0 };
+    static const int glasspanesigns[GLASS_PANE_DIRECTIONS] = { -1, 1, 1, -1 };
+
+    static bool isglasscubeindex(int worldindex) { return worldindex == getworldcubeidindex("glass"); }
+    static bool isglasspaneindex(int worldindex) { return worldindex == getworldcubeidindex("glass_pane"); }
+
+    static selinfo glassblockselection(const ivec &origin)
+    {
+        selinfo selection;
+        selection.o = ivec(origin).mask(~(CREATIVE_GRID - 1));
+        selection.s = ivec(1, 1, 1);
+        selection.grid = CREATIVE_GRID;
+        selection.orient = WORLD_ORIENT_TOP;
+        selection.cx = selection.cy = selection.corner = 0;
+        selection.cxs = selection.cys = 2;
+        return selection;
+    }
+
+    static bool canconnectglasspane(const ivec &origin)
+    {
+        const ivec center = ivec(origin).add(CREATIVE_GRID / 2);
+        const int index = getworldcubeindexat(center, WORLD_ORIENT_TOP);
+        return isworldcubeoccupiedat(center) || getworldcubeacceptspaneconnection(index);
+    }
+
+    static uint glasspaneconnections(const ivec &origin)
+    {
+        uint connections = 0;
+        loopi(GLASS_PANE_DIRECTIONS)
+        {
+            ivec neighbor(origin);
+            neighbor[glasspaneaxes[i]] += glasspanesigns[i] * CREATIVE_GRID;
+            if(insideworld(ivec(neighbor).add(CREATIVE_GRID / 2)) && canconnectglasspane(neighbor)) connections |= 1U << i;
+        }
+        return connections;
+    }
+
+    static void addglasspanebox(const ivec &origin, const ivec &offset, const ivec &size, int material)
+    {
+        selinfo box = glassblockselection(origin);
+        box.grid = 1;
+        box.o.add(offset);
+        box.s = size;
+        mpeditmat(material, -1, box, false);
+    }
+
+    static void addglasspanematerial(const ivec &origin, int normalaxis, uint connections)
+    {
+        const int center = CREATIVE_GRID / 2, start = center - GLASS_PANE_HALF_THICKNESS;
+        normalaxis = clamp(normalaxis, 0, 1);
+        const int material = MAT_GLASS + normalaxis;
+        if(!connections)
+        {
+            ivec offset(0, 0, 0), size(CREATIVE_GRID, CREATIVE_GRID, CREATIVE_GRID);
+            offset[normalaxis] = start;
+            size[normalaxis] = GLASS_PANE_THICKNESS;
+            addglasspanebox(origin, offset, size, material);
+            return;
+        }
+
+        addglasspanebox(origin, ivec(start, start, 0), ivec(GLASS_PANE_THICKNESS, GLASS_PANE_THICKNESS, CREATIVE_GRID), material);
+
+        loopi(GLASS_PANE_DIRECTIONS) if(connections & (1U << i))
+        {
+            const int axis = glasspaneaxes[i], thinaxis = 1 - axis;
+            ivec offset(0, 0, 0), size(CREATIVE_GRID, CREATIVE_GRID, CREATIVE_GRID);
+            offset[thinaxis] = start;
+            size[thinaxis] = GLASS_PANE_THICKNESS;
+            size[axis] = center + GLASS_PANE_HALF_THICKNESS;
+            if(glasspanesigns[i] > 0) offset[axis] = start;
+            addglasspanebox(origin, offset, size, material);
+        }
+    }
+
+    static void rebuildglasspane(const ivec &origin, int normalaxis)
+    {
+        selinfo block = glassblockselection(origin);
+        mpdelcube(block, false);
+        mpeditmat(MAT_AIR, -1, block, false);
+        addglasspanematerial(block.o, clamp(normalaxis, 0, 1), glasspaneconnections(block.o));
+    }
+
+    static void updateglasspaneneighbors(const ivec &origin)
+    {
+        loopi(GLASS_PANE_DIRECTIONS)
+        {
+            ivec neighbor(origin);
+            neighbor[glasspaneaxes[i]] += glasspanesigns[i] * CREATIVE_GRID;
+            const ivec center = ivec(neighbor).add(CREATIVE_GRID / 2);
+            if(!insideworld(center) || !isglasspaneindex(getworldcubeindexat(center, WORLD_ORIENT_TOP))) continue;
+            rebuildglasspane(neighbor, worldcellmaterial(center)&MATF_INDEX);
+        }
+    }
+
+    static void removegamecube(selinfo selection, bool local, int item)
+    {
+        const int worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
+        const ivec origin = glassblockselection(selection.o).o;
+        if(isglasscubeindex(worldindex) || isglasspaneindex(worldindex))
+        {
+            selection = glassblockselection(origin);
+            mpeditmat(MAT_AIR, -1, selection, false);
+            mpdelcube(selection, local);
+        }
+        else mpdelcube(selection, local);
+        updateglasspaneneighbors(origin);
+    }
+
+    static void paintworldcube(int worldindex, const selinfo &selection, bool local, int paneaxis = 0)
     {
 #ifndef STANDALONE
         markworldcubeplayeredited(selection);
@@ -38,6 +162,15 @@ namespace game
             selinfo ice = selection;
             mpeditmat(MAT_ALPHA, -1, ice, local);
         }
+        else if(isglasscubeindex(worldindex) || isglasspaneindex(worldindex))
+        {
+            selinfo block = glassblockselection(selection.o);
+            mpdelcube(block, false);
+            mpeditmat(MAT_AIR, -1, block, false);
+            if(isglasspaneindex(worldindex)) addglasspanematerial(block.o, clamp(paneaxis, 0, 1), glasspaneconnections(block.o));
+            else mpeditmat(MAT_GLASS, -1, block, false);
+        }
+        updateglasspaneneighbors(glassblockselection(selection.o).o);
 #else
         (void)worldindex;
         (void)selection;
@@ -244,7 +377,7 @@ namespace game
                 worldactionselection(placed, placedorigin, orient);
                 if(!worldselectionready(placed)) return false;
                 mpeditface(-1, 1, sel, false);
-                paintworldcube(type, placed, false);
+                paintworldcube(type, placed, false, packed / 6);
                 waterterrainchanged(absoluteplacedorigin);
                 if(!waitforserveredit())
                 {
@@ -264,7 +397,7 @@ namespace game
                 return true;
             }
             case WORLD_ACTION_BREAK_CUBE_START:
-                mpdelcube(sel, false);
+                removegamecube(sel, false, item);
                 waterterrainchanged(absolutetarget);
                 if(!waitforserveredit())
                 {
@@ -298,7 +431,7 @@ namespace game
             selinfo sel;
             worldactionselection(sel, target, prediction.orient);
             worldselectiontolocal(sel);
-            mpdelcube(sel, false);
+            removegamecube(sel, false, prediction.item);
             waterterrainchanged(target);
         }
         else if(prediction.action == WORLD_ACTION_PLACE_SCATTER || prediction.action == WORLD_ACTION_PLACE_ITEM)
@@ -1067,12 +1200,6 @@ namespace game
 #endif
     }
     float abovegameplayhud(int w, int h) { return 1.0f; }
-
-    enum
-    {
-        CREATIVE_GRID = 16,
-        CREATIVE_REACH = CREATIVE_GRID * 8
-    };
 
     enum
     {
@@ -4493,6 +4620,13 @@ namespace game
            creativeplayeroverlap(target) || worldtorchincell(target))
             return;
 
+        int placementorient = hit.orient;
+        if(isglasspaneindex(worldindex))
+        {
+            const int axis = fabsf(camdir.x) >= fabsf(camdir.y) ? 0 : 1;
+            placementorient += axis * 6;
+        }
+
         // Extrude exactly one 16-unit voxel, then deliberately paint every face.
         selinfo placed = hit;
         placed.o = target;
@@ -4500,7 +4634,7 @@ namespace game
         if(!waitforserveredit())
         {
             mpeditface(-1, 1, hit, true);
-            paintworldcube(worldindex, placed, true);
+            paintworldcube(worldindex, placed, true, placementorient / 6);
             selinfo absolute = placed;
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
@@ -4513,11 +4647,11 @@ namespace game
             // mpeditface advances hit.o to the placed cell, while the protocol carries the support cell.
             const ivec support = hit.o;
             mpeditface(-1, 1, hit, false);
-            paintworldcube(worldindex, placed, false);
+            paintworldcube(worldindex, placed, false, placementorient / 6);
             selinfo absolute = placed;
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
-            predictworldaction(WORLD_ACTION_PLACE_CUBE, support, hit.orient, selected, clampcreativehotbarslot());
+            predictworldaction(WORLD_ACTION_PLACE_CUBE, support, placementorient, selected, clampcreativehotbarslot());
         }
         if(m_survival) consumesurvivalitem();
         player1->renderplacemillis = lastmillis;
@@ -4561,9 +4695,10 @@ namespace game
             }
             return;
         }
+        const int cubeitem = getworldcubeitem(getworldcubeindexat(ivec(target.cube.o).add(target.cube.grid / 2), target.cube.orient));
         if(!waitforserveredit())
         {
-            mpdelcube(target.cube, true);
+            removegamecube(target.cube, true, cubeitem);
             breaklocalcactusabove(target.cube.o);
             selinfo absolute = target.cube;
             worldselectiontoabsolute(absolute);
@@ -4574,8 +4709,8 @@ namespace game
         }
         else
         {
-            const int item = getworldcubeitem(getworldcubeindexat(ivec(target.cube.o).add(target.cube.grid / 2), target.cube.orient));
-            mpdelcube(target.cube, false);
+            const int item = cubeitem;
+            removegamecube(target.cube, false, item);
             selinfo absolute = target.cube;
             worldselectiontoabsolute(absolute);
             waterterrainchanged(absolute.o);
@@ -4892,7 +5027,7 @@ namespace game
                 selinfo absolute = survivalbreaktarget.cube;
                 worldselectiontoabsolute(absolute);
                 removelocalfurnace(absolute.o);
-                mpdelcube(survivalbreaktarget.cube, true);
+                removegamecube(survivalbreaktarget.cube, true, item);
                 breaklocalcactusabove(survivalbreaktarget.cube.o);
                 waterterrainchanged(absolute.o);
                 queuefallblockcheck(ivec(absolute.o).add(ivec(0, 0, CREATIVE_GRID)));
@@ -4901,7 +5036,7 @@ namespace game
             }
             else
             {
-                mpdelcube(survivalbreaktarget.cube, false);
+                removegamecube(survivalbreaktarget.cube, false, item);
                 selinfo absolute = survivalbreaktarget.cube;
                 worldselectiontoabsolute(absolute);
                 waterterrainchanged(absolute.o);

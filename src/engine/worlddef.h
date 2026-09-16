@@ -52,7 +52,7 @@ struct worlddefinition
     bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasfood, hassupport, hasequipment;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
     bool explicitdrops, errorfallback, fall, placeableblockcollision, heldflipx, heldflipy, handbreakable, supportdecay,
-         supportpersistentonplace;
+         supportpersistentonplace, acceptspaneconnection;
 
     worlddefinition(const char *id = "");
 };

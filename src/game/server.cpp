@@ -2100,7 +2100,7 @@ namespace server
         chunk->dat.setsize(0);
     }
 
-    static bool updateserverchunkblock(const ivec &cell, int action, int item)
+    static bool updateserverchunkblock(const ivec &cell, int action, int item, int orient = WORLD_ORIENT_TOP)
     {
         serverchunk *chunk = serverchunkforcell(cell, true);
         if(!chunk || chunk->loading || chunk->corrupted) return false;
@@ -2113,9 +2113,18 @@ namespace server
             freeworldsnapshotfamily(voxel->children);
             voxel->children = NULL;
             voxel->ext = NULL;
-            voxel->material = worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
+            const bool glass = worldindex == getworldcubeidindex("glass"), pane = worldindex == getworldcubeidindex("glass_pane");
+            voxel->material = glass || pane ? MAT_GLASS | MAT_CLIP | (pane ? clamp(orient / 6, 0, 1) : 0) :
+                              worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
             voxel->visible = voxel->merged = 0;
-            solidfaces(*voxel);
+            if(glass || pane)
+            {
+                emptyfaces(*voxel);
+            }
+            else
+            {
+                solidfaces(*voxel);
+            }
             voxel->playeredited = true;
             loopi(6) voxel->texture[i] = ushort(worldindex);
         }
@@ -4167,7 +4176,7 @@ namespace server
         const ivec cell = worldactionstatecell(target, action, worldmountorient(orient));
         if(action == WORLD_ACTION_PLACE_CUBE || action == WORLD_ACTION_BREAK_CUBE_START)
         {
-            if(!updateserverchunkblock(cell, action, item)) return false;
+            if(!updateserverchunkblock(cell, action, item, orient)) return false;
         }
         else if(action == WORLD_ACTION_TAKE_WATER || action == WORLD_ACTION_PLACE_WATER)
         {
@@ -4221,8 +4230,10 @@ namespace server
         const int packed = orient;
         orient = worldmountorient(orient);
         int chestslots = 0;
-        const bool chest = action == WORLD_ACTION_PLACE_ITEM && getworldchestconfig(item, chestslots);
-        if(packed < 0 || packed >= 24 || (!chest && packed != orient) || (chest && orient != WORLD_ORIENT_TOP))
+        const bool chest = action == WORLD_ACTION_PLACE_ITEM && getworldchestconfig(item, chestslots),
+                   pane = action == WORLD_ACTION_PLACE_CUBE && getworlditemindex(item) == getworldcubeidindex("glass_pane");
+        if(packed < 0 || packed >= 24 || (!chest && !pane && packed != orient) || (pane && packed >= 12) ||
+           (chest && orient != WORLD_ORIENT_TOP))
             return rejectaction(ci, requestid, "invalid placement orientation", true, true);
         if(!validactiontarget(ci, support, orient, error)) return rejectaction(ci, requestid, error, true);
         const ivec occupied = worldactionstatecell(support, action, orient);
