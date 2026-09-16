@@ -1114,7 +1114,9 @@ static void readyworldsectioncollision(cube &c)
     // Detached/generated leaves have no renderer face classification yet.
     // Enable collision conservatively until meshing computes exact visibility.
     // This needs no neighbour queries or geometry uploads on the mount path.
-    else if(!isempty(c)) c.visible = 0x80 | 0x3F;
+    // Glass panes are empty octree geometry carrying MAT_CLIP, so they need the
+    // same collision-face initialization as solid leaves after being loaded.
+    else if(!isempty(c) || (c.material&MATF_CLIP) == MAT_CLIP) c.visible = 0x80 | 0x3F;
 }
 
 static bool worldchunkneedsinterior(const worldchunk &chunk)
