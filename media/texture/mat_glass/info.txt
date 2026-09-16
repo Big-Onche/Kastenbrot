@@ -1,3 +1,6 @@
+Author: Nieb - CC0 https://creativecommons.org/publicdomain/zero/1.0/
+average_quality.png
+
 To the extent possible under law, "Nieb" has waived all copyright and related or
 neighboring rights to these works. These works are published from: United States.
 
@@ -18,3 +21,7 @@ https://creativecommons.org/publicdomain/zero/1.0/legalcode
 *    purposes, all without asking permission.                                     *
 *                                                                                 *
 ***********************************************************************************
+
+Author: BIG-Onche - CC-BY-SA https://creativecommons.org/licenses/by-sa/4.0/deed
+low_quality.png
+high_quality.png

@@ -305,6 +305,14 @@ static void copyworldsnapshotcube(const cube &source, cube &destination)
     }
 }
 
+static int worldsnapshotpanequality(const char *id)
+{
+    if(!strcmp(id, "glass_pane")) return 0;
+    if(!strcmp(id, "glass_pane_average")) return 1;
+    if(!strcmp(id, "glass_pane_high")) return 2;
+    return -1;
+}
+
 static int worldsnapshotpanetype(const cube &c, int &normalaxis);
 
 static bool normalizeworldsnapshotcube(cube &c, int size, string &error)
@@ -396,8 +404,10 @@ static int worldsnapshotpanetype(const cube &c, int &normalaxis)
         return type;
     }
     const int type = worldsnapshotcubeindex(c);
-    if(type < 0 || strcmp(getworldcubename(type), "glass_pane")) return -1;
-    if((c.material&MATF_VOLUME) == MAT_GLASS) normalaxis = clamp(int(c.material&MATF_INDEX), 0, 1);
+    const int quality = type >= 0 ? worldsnapshotpanequality(getworldcubename(type)) : -1;
+    if(quality < 0) return -1;
+    if((c.material&MATF_VOLUME) == MAT_GLASS)
+        normalaxis = c.material&MAT_GLASS_PANE_AXIS || (quality == 0 && (c.material&MATF_INDEX) == 1) ? 1 : 0;
     return type;
 }
 
@@ -417,7 +427,8 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
         const int palette = worldsnapshotpaletteindex(snapshot, getworldcubename(paneindex), paneindex);
         if(palette < 0) { copystring(error, "chunk block palette exceeds ushort capacity"); return false; }
         voxel.palette = ushort(palette);
-        voxel.material = MAT_GLASS | MAT_CLIP | panenormalaxis;
+        voxel.material = MAT_GLASS | MAT_CLIP | worldsnapshotpanequality(getworldcubename(paneindex)) |
+                         (panenormalaxis ? MAT_GLASS_PANE_AXIS : 0);
         voxel.orientation = uchar(panenormalaxis * 2);
         voxel.flags = WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_GLASS_PANE;
         if(source.playeredited) voxel.flags |= WORLD_SNAPSHOT_PLAYER_EDITED;
@@ -428,7 +439,8 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     ASSERT(size <= WORLD_BLOCK_SIZE || empty || solid);
     const int textureindex = worldsnapshotcubeindex(source);
     const bool glassblock = empty && (source.material&MATF_VOLUME) == MAT_GLASS && textureindex >= 0 &&
-                            (!strcmp(getworldcubename(textureindex), "glass") || !strcmp(getworldcubename(textureindex), "glass_pane"));
+                            (!strcmp(getworldcubename(textureindex), "glass") ||
+                             worldsnapshotpanequality(getworldcubename(textureindex)) >= 0);
     const int worldindex = empty && !glassblock ? -1 : textureindex;
     const char *id = empty && !glassblock ? "air" : worldindex >= 0 ? getworldcubename(worldindex) : NULL;
     if(!id || !id[0])
@@ -443,8 +455,10 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     // it as ordinary water would turn every reached cell into a full source
     // after the chunk is loaded again.
     voxel.material = source.material&MAT_WATER_FLOWING ? MAT_AIR : source.material;
-    const bool glasspane = glassblock && !strcmp(id, "glass_pane");
-    voxel.orientation = glasspane ? uchar(clamp(int(source.material&MATF_INDEX), 0, 1) * 2) : O_TOP;
+    const int panequality = glassblock ? worldsnapshotpanequality(id) : -1;
+    const bool glasspane = panequality >= 0;
+    voxel.orientation = glasspane ? uchar((source.material&MAT_GLASS_PANE_AXIS ||
+                                            (panequality == 0 && (source.material&MATF_INDEX) == 1) ? 1 : 0) * 2) : O_TOP;
     voxel.flags = empty ? WORLD_SNAPSHOT_EMPTY : solid ? WORLD_SNAPSHOT_SOLID : 0;
     if(glasspane) voxel.flags |= WORLD_SNAPSHOT_GLASS_PANE;
     if(source.playeredited) voxel.flags |= WORLD_SNAPSHOT_PLAYER_EDITED;
@@ -730,7 +744,7 @@ static bool worldsnapshotpaneconnectable(const worldchunksnapshot &snapshot, con
     const worldsnapshotvoxel &voxel = voxels[(y * WORLD_CHUNK_BLOCKS + x) * WORLD_HEIGHT_BLOCKS + z];
     if(!(voxel.flags & WORLD_SNAPSHOT_EMPTY)) return true;
     const worldsnapshotpaletteentry &entry = snapshot.palette[voxel.palette];
-    return !strcmp(entry.id, "glass") || !strcmp(entry.id, "glass_pane") || getworldcubeacceptspaneconnection(entry.worldindex);
+    return !strcmp(entry.id, "glass") || worldsnapshotpanequality(entry.id) >= 0 || getworldcubeacceptspaneconnection(entry.worldindex);
 }
 
 static uint worldsnapshotpaneconnections(const worldchunksnapshot &snapshot, const vector<worldsnapshotvoxel> &voxels, int x, int y, int z)
@@ -758,8 +772,8 @@ static bool worldsnapshotboxcontains(const ivec &origin, int size, const ivec &b
     return true;
 }
 
-static void buildworldsnapshotpane(cube &destination, const ivec &origin, int size, int worldindex, int normalaxis, uint connections,
-                                   bool playeredited)
+static void buildworldsnapshotpane(cube &destination, const ivec &origin, int size, int worldindex, int normalaxis, int quality,
+                                   uint connections, bool playeredited)
 {
     static const int thickness = 2, halfthickness = thickness / 2;
     static const int axes[4] = { 1, 0, 1, 0 }, signs[4] = { -1, 1, 1, -1 };
@@ -808,14 +822,15 @@ static void buildworldsnapshotpane(cube &destination, const ivec &origin, int si
 #endif
     if(contained || size == 1)
     {
-        if(intersects) destination.material = MAT_GLASS | MAT_CLIP | normalaxis;
+        if(intersects)
+            destination.material = MAT_GLASS | MAT_CLIP | clamp(quality, 0, 2) | (normalaxis ? MAT_GLASS_PANE_AXIS : 0);
         return;
     }
     if(!intersects) return;
     const int childsize = size >> 1;
     destination.children = allocworldsnapshotfamily();
-    loopi(8) buildworldsnapshotpane(destination.children[i], ivec(i, origin, childsize), childsize, worldindex, normalaxis, connections,
-                                    playeredited);
+    loopi(8) buildworldsnapshotpane(destination.children[i], ivec(i, origin, childsize), childsize, worldindex, normalaxis, quality,
+                                    connections, playeredited);
 }
 
 static void buildworldsnapshotcube(cube &destination, const ivec &origin, int size, const worldchunksnapshot &snapshot,
@@ -834,7 +849,9 @@ static void buildworldsnapshotcube(cube &destination, const ivec &origin, int si
         if((voxel.flags & WORLD_SNAPSHOT_GLASS_PANE) && worldindex >= 0)
         {
             buildworldsnapshotpane(destination, ivec(0, 0, 0), WORLD_BLOCK_SIZE, worldindex, clamp(int(voxel.orientation) / 2, 0, 1),
-                                   worldsnapshotpaneconnections(snapshot, voxels, x, y, z), destination.playeredited);
+                                   worldsnapshotpanequality(snapshot.palette[voxel.palette].id),
+                                   worldsnapshotpaneconnections(snapshot, voxels, x, y, z),
+                                   destination.playeredited);
             return;
         }
         if(worldindex >= 0)

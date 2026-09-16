@@ -38,7 +38,11 @@ enum // cube empty-space materials
 
     MAT_WATER_SOURCE_MANUAL = 8 << MATF_FLAG_SHIFT,
     MAT_WATER_SOURCE_NATURAL_ACTIVE = 16 << MATF_FLAG_SHIFT,
-    MAT_WATER_FLOWING = 32 << MATF_FLAG_SHIFT
+    MAT_WATER_FLOWING = 32 << MATF_FLAG_SHIFT,
+
+    // Pane placement metadata. Material rendering masks this bit out, so it
+    // does not prevent adjacent panes of the same quality from being merged.
+    MAT_GLASS_PANE_AXIS = 64 << MATF_FLAG_SHIFT
 };
 
 #define isliquid(mat) ((mat)==MAT_WATER || (mat)==MAT_LAVA)

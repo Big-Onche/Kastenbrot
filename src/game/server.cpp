@@ -2100,6 +2100,14 @@ namespace server
         chunk->dat.setsize(0);
     }
 
+    static int serverglasspanequality(int worldindex)
+    {
+        if(worldindex == getworldcubeidindex("glass_pane")) return 0;
+        if(worldindex == getworldcubeidindex("glass_pane_average")) return 1;
+        if(worldindex == getworldcubeidindex("glass_pane_high")) return 2;
+        return -1;
+    }
+
     static bool updateserverchunkblock(const ivec &cell, int action, int item, int orient = WORLD_ORIENT_TOP)
     {
         serverchunk *chunk = serverchunkforcell(cell, true);
@@ -2113,8 +2121,10 @@ namespace server
             freeworldsnapshotfamily(voxel->children);
             voxel->children = NULL;
             voxel->ext = NULL;
-            const bool glass = worldindex == getworldcubeidindex("glass"), pane = worldindex == getworldcubeidindex("glass_pane");
-            voxel->material = glass || pane ? MAT_GLASS | MAT_CLIP | (pane ? clamp(orient / 6, 0, 1) : 0) :
+            const int panequality = serverglasspanequality(worldindex);
+            const bool glass = worldindex == getworldcubeidindex("glass"), pane = panequality >= 0;
+            voxel->material = glass || pane ? MAT_GLASS | MAT_CLIP | (pane ? panequality : 0) |
+                                                     (pane && clamp(orient / 6, 0, 1) ? MAT_GLASS_PANE_AXIS : 0) :
                               worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
             voxel->visible = voxel->merged = 0;
             if(glass || pane)
@@ -4231,7 +4241,7 @@ namespace server
         orient = worldmountorient(orient);
         int chestslots = 0;
         const bool chest = action == WORLD_ACTION_PLACE_ITEM && getworldchestconfig(item, chestslots),
-                   pane = action == WORLD_ACTION_PLACE_CUBE && getworlditemindex(item) == getworldcubeidindex("glass_pane");
+                   pane = action == WORLD_ACTION_PLACE_CUBE && serverglasspanequality(getworlditemindex(item)) >= 0;
         if(packed < 0 || packed >= 24 || (!chest && !pane && packed != orient) || (pane && packed >= 12) ||
            (chest && orient != WORLD_ORIENT_TOP))
             return rejectaction(ci, requestid, "invalid placement orientation", true, true);

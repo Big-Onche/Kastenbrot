@@ -859,6 +859,8 @@ int processworldmeshpackets(double budget, int uploadlimit)
                 section.ranges.move(job->packet.ranges);
                 section.materials.setsize(0);
                 section.materials.move(job->packet.materials);
+                if(!section.materials.empty())
+                    section.materials.shrink(optimizematsurfs(section.materials.getbuf(), section.materials.length()));
                 setupworldmeshmaterials(section.materials.getbuf(), section.materials.length());
                 uploadwatermeshpacket(section.water, job->packet.water);
                 section.minimum = job->packet.minimum;
