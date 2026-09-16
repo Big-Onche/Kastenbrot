@@ -1126,6 +1126,87 @@ static void readyworldsectioncollision(cube &c)
     else if(!isempty(c) || (c.material&MATF_CLIP) == MAT_CLIP) c.visible = 0x80 | 0x3F;
 }
 
+struct biomelutstate
+{
+    float weights[game::WORLD_BIOME_COUNT];
+    int primary, secondary, updatemillis;
+    bool initialized;
+
+    biomelutstate() : primary(game::WORLD_BIOME_PLAINS), secondary(game::WORLD_BIOME_PLAINS), updatemillis(0), initialized(false)
+    {
+        memset(weights, 0, sizeof(weights));
+    }
+};
+
+static biomelutstate camerabiomelut;
+
+void getbiomelutparams(vec4 &biomes)
+{
+    game::BiomeSample sample = {};
+    if(camera1)
+    {
+        vec absolute(camera1->o);
+        worldpositiontoabsolute(absolute);
+        sample = game::getenvironmentgenerator().sampleBiome(absolute);
+    }
+    else
+    {
+        sample.primary = sample.secondary = game::WORLD_BIOME_PLAINS;
+        sample.weights[game::WORLD_BIOME_PLAINS] = 1.0f;
+    }
+
+    const int elapsed = camerabiomelut.updatemillis ? max(totalmillis - camerabiomelut.updatemillis, 0) : 0;
+    camerabiomelut.updatemillis = totalmillis;
+    if(!camerabiomelut.initialized)
+    {
+        loopi(game::WORLD_BIOME_COUNT) camerabiomelut.weights[i] = sample.weights[i];
+        camerabiomelut.initialized = true;
+    }
+    else
+    {
+        // A 350 ms exponential response smooths contributions rather than biome slots, so a 50/50 ordering swap is continuous.
+        const float blend = 1.0f - expf(-float(elapsed) / 350.0f);
+        loopi(game::WORLD_BIOME_COUNT) camerabiomelut.weights[i] += (sample.weights[i] - camerabiomelut.weights[i]) * blend;
+    }
+
+    camerabiomelut.primary = camerabiomelut.secondary = game::WORLD_BIOME_PLAINS;
+    float primaryweight = -1.0f, secondaryweight = -1.0f;
+    loopi(game::WORLD_BIOME_COUNT)
+    {
+        const float weight = camerabiomelut.weights[i];
+        if(weight > primaryweight)
+        {
+            camerabiomelut.secondary = camerabiomelut.primary;
+            secondaryweight = primaryweight;
+            camerabiomelut.primary = i;
+            primaryweight = weight;
+        }
+        else if(weight > secondaryweight)
+        {
+            camerabiomelut.secondary = i;
+            secondaryweight = weight;
+        }
+    }
+    const float sum = primaryweight + secondaryweight;
+    if(sum > 0.0001f)
+    {
+        primaryweight /= sum;
+        secondaryweight /= sum;
+    }
+    else
+    {
+        primaryweight = 1.0f;
+        secondaryweight = 0.0f;
+    }
+    biomes = vec4(float(camerabiomelut.primary), float(camerabiomelut.secondary), primaryweight, secondaryweight);
+}
+
+VARP(debugbiomelut, 0, 0, 1);
+ICOMMAND(getdebugbiomelutprimary, "", (), result(game::biomeName(camerabiomelut.primary)));
+ICOMMAND(getdebugbiomelutsecondary, "", (), result(game::biomeName(camerabiomelut.secondary)));
+ICOMMAND(getdebugbiomelutprimaryweight, "", (), floatret(camerabiomelut.weights[camerabiomelut.primary]));
+ICOMMAND(getdebugbiomelutsecondaryweight, "", (), floatret(camerabiomelut.weights[camerabiomelut.secondary]));
+
 static bool worldchunkneedsinterior(const worldchunk &chunk)
 {
     loop(section, WORLD_SECTION_LAYERS) loop(tile, WORLD_SECTION_TILES)

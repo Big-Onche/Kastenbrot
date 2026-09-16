@@ -3,6 +3,7 @@
 // Keep these visible when client-only builds reuse an older engine.h.gch.
 extern void rendertransparentavatar();
 namespace game { extern bool hastransparentavatar(); }
+extern void getbiomelutparams(vec4 &biomes);
 
 int gw = -1, gh = -1, bloomw = -1, bloomh = -1, lasthdraccum = 0;
 GLuint gfbo = 0, gdepthtex = 0, gcolortex = 0, gnormaltex = 0, gglowtex = 0, gdepthrb = 0, gstencilrb = 0;
@@ -959,6 +960,8 @@ FVARR(hdrbright, 1e-4f, 1.0f, 1e4f);
 FVAR(hdrsaturate, 1e-3f, 0.85f, 1e3f);
 FVAR(hdrminexposure, 0, 0.03f, 1);
 FVAR(hdrmaxexposure, 0, 0.3f, 1);
+VARP(biomelut, 0, 1, 1);
+FVARP(biomelutstrength, 0.0f, 0.5f, 2.0f);
 VARFP(gscale, 25, 100, 100, cleanupgbuffer());
 VARFP(gscalecubic, 0, 0, 1, cleanupgbuffer());
 VARFP(gscalenearest, 0, 0, 1, cleanupgbuffer());
@@ -1029,6 +1032,10 @@ void processhdr(GLuint outfbo, int aa)
     timer *hdrtimer = begintimer("hdr processing");
 
     GLOBALPARAMF(hdrparams, hdrbright, hdrsaturate, bloomthreshold, bloomscale);
+    vec4 biomegrade;
+    getbiomelutparams(biomegrade);
+    GLOBALPARAM(biomegrade, biomegrade);
+    GLOBALPARAMF(biomelutparams, biomelut ? biomelutstrength : 0.0f, 0.0f);
 
     GLuint b0fbo = bloomfbo[1], b0tex = bloomtex[1], b1fbo =  bloomfbo[0], b1tex = bloomtex[0], ptex = hdrtex;
     int b0w = max(vieww/4, bloomw), b0h = max(viewh/4, bloomh), b1w = max(vieww/2, bloomw), b1h = max(viewh/2, bloomh),
