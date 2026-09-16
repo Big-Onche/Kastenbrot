@@ -343,10 +343,17 @@ float rayent(const vec &o, const vec &ray, float radius, int mode, int size, int
     return dist;
 }
 
-float raycubepos(const vec &o, const vec &ray, vec &hitpos, float radius, int mode, int size)
+float raycubepos(const vec &o, const vec &ray, vec &hitpos, float radius, int mode, int size, int *orient)
 {
     hitpos = ray;
     float dist = raycube(o, ray, radius, mode, size);
+    if(orient)
+    {
+        int axis = 0;
+        if(fabsf(hitsurface.y) > fabsf(hitsurface[axis])) axis = 1;
+        if(fabsf(hitsurface.z) > fabsf(hitsurface[axis])) axis = 2;
+        *orient = hitsurface.iszero() ? -1 : axis * 2 + (hitsurface[axis] > 0 ? 1 : 0);
+    }
     if(radius>0 && dist>=radius) dist = radius;
     hitpos.mul(dist).add(o);
     return dist;

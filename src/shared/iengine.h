@@ -54,7 +54,7 @@ enum
 };
 
 extern float raycube   (const vec &o, const vec &ray,     float radius = 0, int mode = RAY_CLIPMAT, int size = 0, extentity *t = 0);
-extern float raycubepos(const vec &o, const vec &ray, vec &hit, float radius = 0, int mode = RAY_CLIPMAT, int size = 0);
+extern float raycubepos(const vec &o, const vec &ray, vec &hit, float radius = 0, int mode = RAY_CLIPMAT, int size = 0, int *orient = NULL);
 extern float rayfloor  (const vec &o, vec &floor, int mode = 0, float radius = 0);
 extern bool  raycubelos(const vec &o, const vec &dest, vec &hitpos);
 

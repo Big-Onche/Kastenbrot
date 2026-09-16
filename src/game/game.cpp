@@ -4362,8 +4362,9 @@ namespace game
         const vec origin = camera1 ? camera1->o : player1->o;
         vec hitpos;
         const float reach = buildactionreach();
+        int surfaceorient = -1;
         float dist = raycubepos(origin, camdir, hitpos, reach,
-                                RAY_CLIPMAT | RAY_SKIPFIRST, CREATIVE_GRID);
+                                RAY_CLIPMAT | RAY_SKIPFIRST, CREATIVE_GRID, &surfaceorient);
         // Cactus models occupy air cells, so the terrain ray alone cannot select their top for stacking.
         if(!strcmp(getinventoryitemid(selectedcreativeblock()), "cactus"))
         {
@@ -4394,9 +4395,12 @@ namespace game
         hit.cx = hit.cy = hit.corner = 0;
         hit.cxs = hit.cys = 2;
 
-        float boxdist = 0;
-        if(!rayboxintersect(vec(hit.o), vec(CREATIVE_GRID), origin, camdir, boxdist, hit.orient))
-            return false;
+        hit.orient = surfaceorient;
+        if(hit.orient < WORLD_ORIENT_LEFT || hit.orient > WORLD_ORIENT_TOP)
+        {
+            float boxdist = 0;
+            if(!rayboxintersect(vec(hit.o), vec(CREATIVE_GRID), origin, camdir, boxdist, hit.orient)) return false;
+        }
         return hit.validate();
     }
 
