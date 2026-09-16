@@ -777,6 +777,7 @@ static void buildworldsnapshotpane(cube &destination, const ivec &origin, int si
     }
     else
     {
+        if(!(connections & (connections - 1))) connections |= (connections << 2 | connections >> 2) & 0xF;
         boxorigins[boxes] = ivec(start, start, 0);
         boxsizes[boxes++] = ivec(thickness, thickness, WORLD_BLOCK_SIZE);
         loopi(4) if(connections & (1U << i))

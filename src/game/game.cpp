@@ -98,6 +98,7 @@ namespace game
             addglasspanebox(origin, offset, size, material);
             return;
         }
+        if(!(connections & (connections - 1))) connections |= (connections << 2 | connections >> 2) & 0xF;
 
         addglasspanebox(origin, ivec(start, start, 0), ivec(GLASS_PANE_THICKNESS, GLASS_PANE_THICKNESS, CREATIVE_GRID), material);
 
