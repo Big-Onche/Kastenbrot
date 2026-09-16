@@ -57,6 +57,23 @@ namespace game
         return selection;
     }
 
+    static void paintglassblocktextures(int worldindex, const selinfo &selection)
+    {
+        loopi(6)
+        {
+            selinfo face = selection;
+            face.orient = i;
+            mpedittex(getworldcubefaceslot(worldindex, i), 0, face, false);
+        }
+    }
+
+    static bool isglasspaneat(const ivec &origin)
+    {
+        const ivec center = ivec(origin).add(CREATIVE_GRID / 2);
+        const int index = getworldcubeindexat(center, WORLD_ORIENT_TOP);
+        return isglasspaneindex(index) || (!isglasscubeindex(index) && (worldcellmaterial(origin)&MATF_VOLUME) == MAT_GLASS);
+    }
+
     static bool canconnectglasspane(const ivec &origin)
     {
         const ivec center = ivec(origin).add(CREATIVE_GRID / 2);
@@ -119,6 +136,7 @@ namespace game
         selinfo block = glassblockselection(origin);
         mpdelcube(block, false);
         mpeditmat(MAT_AIR, -1, block, false);
+        paintglassblocktextures(getworldcubeidindex("glass_pane"), block);
         addglasspanematerial(block.o, clamp(normalaxis, 0, 1), glasspaneconnections(block.o));
     }
 
@@ -129,8 +147,8 @@ namespace game
             ivec neighbor(origin);
             neighbor[glasspaneaxes[i]] += glasspanesigns[i] * CREATIVE_GRID;
             const ivec center = ivec(neighbor).add(CREATIVE_GRID / 2);
-            if(!insideworld(center) || !isglasspaneindex(getworldcubeindexat(center, WORLD_ORIENT_TOP))) continue;
-            rebuildglasspane(neighbor, worldcellmaterial(center)&MATF_INDEX);
+            if(!insideworld(center) || !isglasspaneat(neighbor)) continue;
+            rebuildglasspane(neighbor, worldcellmaterial(neighbor)&MATF_INDEX);
         }
     }
 
@@ -138,7 +156,7 @@ namespace game
     {
         const int worldindex = getworlditemtype(item) == WORLD_ITEM_CUBE ? getworlditemindex(item) : -1;
         const ivec origin = glassblockselection(selection.o).o;
-        if(isglasscubeindex(worldindex) || isglasspaneindex(worldindex))
+        if(isglasscubeindex(worldindex) || isglasspaneindex(worldindex) || (worldcellmaterial(origin)&MATF_VOLUME) == MAT_GLASS)
         {
             selection = glassblockselection(origin);
             mpeditmat(MAT_AIR, -1, selection, false);
@@ -168,6 +186,7 @@ namespace game
             selinfo block = glassblockselection(selection.o);
             mpdelcube(block, false);
             mpeditmat(MAT_AIR, -1, block, false);
+            paintglassblocktextures(worldindex, block);
             if(isglasspaneindex(worldindex)) addglasspanematerial(block.o, clamp(paneaxis, 0, 1), glasspaneconnections(block.o));
             else mpeditmat(MAT_GLASS, -1, block, false);
         }
