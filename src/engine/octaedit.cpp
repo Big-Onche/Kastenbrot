@@ -640,7 +640,7 @@ bool streaminggeometrypending(const ivec &sectionorigin)
 
 int processstreaminggeometry(double budget, int uploadlimit, bool editsonly)
 {
-    if(worldmeshpackets && getworldsectionsize()) return processworldmeshpackets(budget, uploadlimit);
+    if(worldmeshpackets && getworldsectionsize()) return processworldmeshpackets(budget, uploadlimit, editsonly);
     if((!editinggeometry.length() && (editsonly || !streaminggeometry.length())) || budget == 0) return 0;
     ZoneScopedN("Geometry/Stream mesh tiles");
     const Uint64 start = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
@@ -811,6 +811,9 @@ void changedgeometry(const ivec &bbmin, const ivec &bbmax, bool commit)
             invalidatelocalambient(bbmin, bbmax);
             readyeditcollision(dirtymin, dirtymax, worldroot, ivec(0, 0, 0), worldsize / 2);
             resetclipplanes();
+            // Submit the high-priority edit now. The worker can build the small
+            // affected packet while the rest of this frame continues.
+            if(commit) processstreaminggeometry(1, INT_MAX, true);
             return;
         }
         editinggeometry.changed(bbmin, bbmax, sectionsize, worldsize);

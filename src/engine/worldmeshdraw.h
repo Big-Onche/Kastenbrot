@@ -290,11 +290,26 @@ void renderworldmeshgeometry(int side, bool shadow, bool rsm, bool refractmask)
                 worldmeshcsmmasks.add(calcbbcsmsplits(section.minimum, section.maximum));
             }
         }
+        const int sectionsize = getworldsectionsize();
+        ivec visibilitysection(-1, -1, -1);
+        bool sectionvisible = false;
         loopv(worldmeshcommandsections)
         {
             const worldmeshsection &section = *worldmeshcommandsections[i];
-            const bool visible = cascade ? (worldmeshcsmmasks[i] & (1 << shadowside)) != 0 :
-                                 shadow || rsm ? worldmeshshadowvisible(section) : worldmeshsectionvisible(section);
+            bool visible;
+            if(cascade) visible = (worldmeshcsmmasks[i] & (1 << shadowside)) != 0;
+            else if(shadow || rsm) visible = worldmeshshadowvisible(section);
+            else
+            {
+                const ivec ownerorigin = ivec(section.origin).mask(~(sectionsize - 1));
+                if(ownerorigin != visibilitysection)
+                {
+                    visibilitysection = ownerorigin;
+                    sectionvisible = worldsectionvavisible(ownerorigin, sectionsize);
+                }
+                visible = section.published && sectionvisible &&
+                          isvisiblebb(section.minimum, ivec(section.maximum).sub(section.minimum)) < VFC_FOGGED;
+            }
             worldmeshcommandvisibility[i] = visible;
             if(visible && statpass == WORLDMESH_GBUFFER && !drawtex)
             {

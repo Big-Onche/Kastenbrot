@@ -108,7 +108,7 @@ extern void clearworldmeshpackets();
 extern int worldmeshpackets;
 extern void dirtyworldmeshpackets(const ivec &minimum, const ivec &maximum, bool edited = false);
 extern void discardworldmeshsection(const ivec &origin);
-extern int processworldmeshpackets(double budget, int uploadlimit);
+extern int processworldmeshpackets(double budget, int uploadlimit, bool editsonly = false);
 extern bool worldmeshpacketpending(const ivec &origin);
 extern const vector<worldmeshsection *> &getworldmeshsections();
 extern ullong getworldmeshgeneration();

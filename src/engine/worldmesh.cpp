@@ -6,6 +6,11 @@
 #include "worldmesh.h"
 #include "watermeshbuild.h"
 
+// Streaming residency remains section-based. Splitting a 32^3-block section
+// into eight 16^3-block packets keeps edits local without multiplying render
+// visibility, ranges and draw submissions by the 64 packets used by 8^3 tiles.
+static const int WORLD_MESH_TILE_SIZE = WORLD_BLOCK_SIZE * 16;
+
 struct worldmeshtexture
 {
     int index;
@@ -64,7 +69,7 @@ struct worldmeshsnapshot
 
     void capture(const cube *source, cube *destination, const ivec &co, int size)
     {
-        const ivec minimum = ivec(origin).sub(WORLD_BLOCK_SIZE), maximum = ivec(origin).add(WORLD_SECTION_SIZE + WORLD_BLOCK_SIZE);
+        const ivec minimum = ivec(origin).sub(WORLD_BLOCK_SIZE), maximum = ivec(origin).add(WORLD_MESH_TILE_SIZE + WORLD_BLOCK_SIZE);
         loopi(8)
         {
             const ivec o(i, co, size);
@@ -83,7 +88,7 @@ struct worldmeshsnapshot
                 dst.children = new cube[8]();
                 capture(src.children, dst.children, o, size / 2);
             }
-            else if(o.x < origin.x + WORLD_SECTION_SIZE && o.y < origin.y + WORLD_SECTION_SIZE && o.z < origin.z + WORLD_SECTION_SIZE &&
+            else if(o.x < origin.x + WORLD_MESH_TILE_SIZE && o.y < origin.y + WORLD_MESH_TILE_SIZE && o.z < origin.z + WORLD_MESH_TILE_SIZE &&
                     o.x + size > origin.x && o.y + size > origin.y && o.z + size > origin.z && !isempty(src))
                 loopj(6) texture(src.texture[j]);
         }
@@ -219,7 +224,7 @@ static void collectworldmeshsolidface(worldmeshjob &job, const cube &c, const iv
 static void collectworldmeshfaces(worldmeshjob &job, const cube *family, const ivec &origin, int size, vector<worldmeshface> &faces)
 {
     const ivec &minimum = job.snapshot.origin;
-    const ivec maximum = ivec(minimum).add(WORLD_SECTION_SIZE);
+    const ivec maximum = ivec(minimum).add(WORLD_MESH_TILE_SIZE);
     loopi(8)
     {
         if(SDL_AtomicGet(&job.cancelled)) return;
@@ -298,7 +303,7 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
     loop(plane, 6)
     {
         const int dim = dimension(plane);
-        const float boundary = job.snapshot.origin[dim] + (dimcoord(plane) ? WORLD_SECTION_SIZE : 0);
+        const float boundary = job.snapshot.origin[dim] + (dimcoord(plane) ? WORLD_MESH_TILE_SIZE : 0);
         int output = 0;
         loopi(count)
         {
@@ -343,7 +348,7 @@ static void emitworldmeshtriangle(worldmeshjob &job, const worldmeshface &face, 
     {
         loopi(face.count) { minimum.min(face.position[i]); maximum.max(face.position[i]); }
         minimum.max(vec(job.snapshot.origin));
-        maximum.min(vec(ivec(job.snapshot.origin).add(WORLD_SECTION_SIZE)));
+        maximum.min(vec(ivec(job.snapshot.origin).add(WORLD_MESH_TILE_SIZE)));
     }
     vec tangent(texture->tangent[face.orient]);
     tangent.project(normal);
@@ -480,13 +485,13 @@ static void buildworldmeshpacket(worldmeshjob &job)
     // Rasterize only occupied face planes. Unit precision also handles edit-mode
     // cubes smaller than a terrain block; shaped faces never enter this mask.
     vector<uchar> mask;
-    mask.pad(WORLD_SECTION_SIZE * WORLD_SECTION_SIZE);
+    mask.pad(WORLD_MESH_TILE_SIZE * WORLD_MESH_TILE_SIZE);
     for(int first = 0; first < faces.length();)
     {
         if(SDL_AtomicGet(&job.cancelled)) return;
         const worldmeshface &face = faces[first];
         if(!face.axis) { emitworldmeshface(job, face); ++first; continue; }
-        const int dim = dimension(face.orient), row = R[dim], col = C[dim], side = WORLD_SECTION_SIZE;
+        const int dim = dimension(face.orient), row = R[dim], col = C[dim], side = WORLD_MESH_TILE_SIZE;
         const ivec &origin = job.snapshot.origin;
         if(face.position[0][dim] < origin[dim] || face.position[0][dim] > origin[dim] + side) { ++first; continue; }
         memset(mask.getbuf(), 0, mask.length());
@@ -534,7 +539,7 @@ static void buildworldmeshpacket(worldmeshjob &job)
     compactworldmeshvertices(job.packet);
     // Integer culling bounds must contain the small opaque face overlaps.
     job.packet.minimum = ivec(job.snapshot.origin).sub(1);
-    job.packet.maximum = ivec(job.snapshot.origin).add(WORLD_SECTION_SIZE + 1);
+    job.packet.maximum = ivec(job.snapshot.origin).add(WORLD_MESH_TILE_SIZE + 1);
     if(!SDL_AtomicGet(&job.cancelled))
         buildwatermeshpacket(job.packet.water, job.packet.materials.getbuf(), job.packet.materials.length(),
             [&](const ivec &position)
@@ -571,7 +576,7 @@ static long long worldmeshsectionscore(const ivec &origin, bool edited)
     static const long long tierstride = 1LL << 60, editstride = 1LL << 59;
     const vec *focus = player ? &player->o : camera1 ? &camera1->o : NULL;
     if(!focus) return edited ? 0 : editstride;
-    const ivec maximum = ivec(origin).add(WORLD_SECTION_SIZE);
+    const ivec maximum = ivec(origin).add(WORLD_MESH_TILE_SIZE);
     long long distance = 0;
     loopi(3)
     {
@@ -583,7 +588,7 @@ static long long worldmeshsectionscore(const ivec &origin, bool edited)
               sectionchunkx = origin.x / WORLD_CHUNK_SIZE, sectionchunky = origin.y / WORLD_CHUNK_SIZE;
     const bool focuschunk = sectionchunkx == focuschunkx && sectionchunky == focuschunky,
                visible = !viewfrustumvalid() ||
-                         isvisiblebb(origin, ivec(WORLD_SECTION_SIZE, WORLD_SECTION_SIZE, WORLD_SECTION_SIZE)) < VFC_FOGGED;
+                         isvisiblebb(origin, ivec(WORLD_MESH_TILE_SIZE, WORLD_MESH_TILE_SIZE, WORLD_MESH_TILE_SIZE)) < VFC_FOGGED;
     const int tier = focuschunk ? 0 : visible ? 1 : 2;
     return tier * tierstride + (edited ? 0 : editstride) + min(distance, editstride - 1);
 }
@@ -693,26 +698,48 @@ static void compactworldmeshpages(Uint64 start, double budget, int uploadlimit, 
 
 void discardworldmeshsection(const ivec &origin)
 {
-    worldmeshsection **owner = worldmeshowners.access(origin);
-    if(!owner) return;
-    worldmeshsection *section = *owner;
+    vector<worldmeshsection *> removed;
+    const ivec maximum = ivec(origin).add(WORLD_SECTION_SIZE);
+    for(int z = origin.z; z < maximum.z; z += WORLD_MESH_TILE_SIZE)
+        for(int y = origin.y; y < maximum.y; y += WORLD_MESH_TILE_SIZE)
+            for(int x = origin.x; x < maximum.x; x += WORLD_MESH_TILE_SIZE)
+            {
+                const ivec tileorigin(x, y, z);
+                worldmeshsection **owner = worldmeshowners.access(tileorigin);
+                if(!owner) continue;
+                worldmeshsection *section = *owner;
+                worldmeshowners.remove(tileorigin);
+                worldmeshsections.removeobj(section);
+                releaseworldmeshsection(*section);
+                removed.add(section);
+            }
+    if(removed.empty()) return;
     ++worldmeshgeneration;
-    worldmeshowners.remove(origin);
-    worldmeshsections.removeobj(section);
-    releaseworldmeshsection(*section);
-    delete section;
     if(worldmeshmutex)
     {
         SDL_LockMutex(worldmeshmutex);
-        if(worldmeshactive && worldmeshactive->snapshot.origin == origin) SDL_AtomicSet(&worldmeshactive->cancelled, 1);
-        loopv(worldmeshjobs) if(worldmeshjobs[i]->snapshot.origin == origin) SDL_AtomicSet(&worldmeshjobs[i]->cancelled, 1);
+        if(worldmeshactive)
+        {
+            const ivec &joborigin = worldmeshactive->snapshot.origin;
+            if(joborigin.x >= origin.x && joborigin.y >= origin.y && joborigin.z >= origin.z &&
+               joborigin.x < maximum.x && joborigin.y < maximum.y && joborigin.z < maximum.z)
+                SDL_AtomicSet(&worldmeshactive->cancelled, 1);
+        }
+        loopv(worldmeshjobs)
+        {
+            const ivec &joborigin = worldmeshjobs[i]->snapshot.origin;
+            if(joborigin.x >= origin.x && joborigin.y >= origin.y && joborigin.z >= origin.z &&
+               joborigin.x < maximum.x && joborigin.y < maximum.y && joborigin.z < maximum.z)
+                SDL_AtomicSet(&worldmeshjobs[i]->cancelled, 1);
+        }
         SDL_UnlockMutex(worldmeshmutex);
     }
+    removed.deletecontents();
 }
 
 static void dirtyworldmeshregion(const ivec &minimum, const ivec &maximum, bool edited = false)
 {
-    const int size = WORLD_SECTION_SIZE;
+    const int size = WORLD_MESH_TILE_SIZE;
     const ivec lo = ivec(minimum).max(0).mask(~(size - 1)), hi = ivec(maximum).min(worldsize);
     for(int z = lo.z; z < hi.z; z += size) for(int y = lo.y; y < hi.y; y += size) for(int x = lo.x; x < hi.x; x += size)
     {
@@ -760,7 +787,7 @@ void dirtyworldmeshpackets(const ivec &minimum, const ivec &maximum, bool edited
     }
 }
 
-int processworldmeshpackets(double budget, int uploadlimit)
+int processworldmeshpackets(double budget, int uploadlimit, bool editsonly)
 {
     if(!worldmeshpackets || !getworldsectionsize() || budget == 0 || uploadlimit <= 0) return 0;
     if(!worldmeshthread)
@@ -806,7 +833,7 @@ int processworldmeshpackets(double budget, int uploadlimit)
                     if(range.alpha) section.alphapasses |= 2 | (slot.alphaback ? 1 : 0) | (slot.refractscale > 0 ? 4 : 0);
                     range.envmap = slot.slot->shader->type & SHADER_ENVMAP ?
                                    (slot.slot->texmask & (1 << TEX_ENVMAP) ? EMID_CUSTOM :
-                                    closestenvmap(range.orient, section.origin, WORLD_SECTION_SIZE)) : EMID_NONE;
+                                    closestenvmap(range.orient, section.origin, WORLD_MESH_TILE_SIZE)) : EMID_NONE;
                     const int mode = blocktexturemode(slot);
                     ushort textureLayer = 0;
                     if(!range.alpha && mode >= 0 && !slot.slot->sts.empty())
@@ -886,15 +913,16 @@ int processworldmeshpackets(double budget, int uploadlimit)
     SDL_LockMutex(worldmeshmutex);
     worldmeshjobs.sort(worldmeshjobpriority);
     SDL_UnlockMutex(worldmeshmutex);
-    while(outstanding < 8)
+    int submitted = 0;
+    for(;;)
     {
-        if(budget >= 0 && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget) break;
         worldmeshsection *best = NULL;
         long long bestscore = LLONG_MAX;
         loopv(worldmeshsections)
         {
             worldmeshsection &candidate = *worldmeshsections[i];
-            if(!candidate.dirty || candidate.pending || !worldsectionvaenabled(candidate.origin, WORLD_SECTION_SIZE)) continue;
+            if(!candidate.dirty || candidate.pending || (editsonly && !candidate.edited) ||
+               !worldsectionvaenabled(candidate.origin, WORLD_SECTION_SIZE)) continue;
             const long long score = worldmeshsectionscore(candidate.origin, candidate.edited);
             if(!best || score < bestscore)
             {
@@ -903,6 +931,35 @@ int processworldmeshpackets(double budget, int uploadlimit)
             }
         }
         if(!best) break;
+        if(outstanding >= 8)
+        {
+            // Do not leave a direct edit behind speculative streaming work.
+            // Return the lowest-priority queued job to the dirty pool and put
+            // the edited tile at the front of the worker queue.
+            if(!best->edited) break;
+            worldmeshjob *evicted = NULL;
+            SDL_LockMutex(worldmeshmutex);
+            for(int i = worldmeshjobs.length() - 1; i >= 0; --i) if(!worldmeshjobs[i]->edited)
+            {
+                evicted = worldmeshjobs[i];
+                worldmeshjobs.remove(i);
+                break;
+            }
+            SDL_UnlockMutex(worldmeshmutex);
+            if(!evicted) break;
+            worldmeshsection **owner = worldmeshowners.access(evicted->snapshot.origin);
+            if(owner && (*owner)->request == evicted->request)
+            {
+                (*owner)->pending = false;
+                (*owner)->dirty = true;
+            }
+            delete evicted;
+            --outstanding;
+        }
+        // An edit-triggered kick must enqueue at least its first small packet,
+        // even when thread startup consumed the caller's one-millisecond slice.
+        if(budget >= 0 && (SDL_GetPerformanceCounter() - start) * 1000.0 / frequency >= budget && !(editsonly && best->edited) &&
+           (!best->edited || submitted)) break;
         worldmeshsection &section = *best;
         section.request = ++worldmeshrequest;
         worldmeshjob *job = new worldmeshjob(section.origin, section.revision, worldmeshepoch, section.request, section.edited);
@@ -916,6 +973,7 @@ int processworldmeshpackets(double budget, int uploadlimit)
         SDL_CondSignal(worldmeshcond);
         SDL_UnlockMutex(worldmeshmutex);
         ++outstanding;
+        ++submitted;
     }
     bool idle = outstanding == 0;
     if(idle) loopv(worldmeshsections) if(worldmeshsections[i]->dirty && worldsectionvaenabled(worldmeshsections[i]->origin, WORLD_SECTION_SIZE))
@@ -932,8 +990,15 @@ int processworldmeshpackets(double budget, int uploadlimit)
 
 bool worldmeshpacketpending(const ivec &origin)
 {
-    worldmeshsection **owner = worldmeshowners.access(origin);
-    return owner && ((*owner)->dirty || (*owner)->pending);
+    const ivec sectionorigin = ivec(origin).mask(~(WORLD_SECTION_SIZE - 1)), maximum = ivec(sectionorigin).add(WORLD_SECTION_SIZE);
+    for(int z = sectionorigin.z; z < maximum.z; z += WORLD_MESH_TILE_SIZE)
+        for(int y = sectionorigin.y; y < maximum.y; y += WORLD_MESH_TILE_SIZE)
+            for(int x = sectionorigin.x; x < maximum.x; x += WORLD_MESH_TILE_SIZE)
+            {
+                worldmeshsection **owner = worldmeshowners.access(ivec(x, y, z));
+                if(owner && ((*owner)->dirty || (*owner)->pending)) return true;
+            }
+    return false;
 }
 
 const vector<worldmeshsection *> &getworldmeshsections()
@@ -965,6 +1030,8 @@ void queueworldmeshworld()
 
 bool worldmeshsectionvisible(const worldmeshsection &section)
 {
+    // Residency and cave visibility are still selected at section granularity;
+    // the packet bounds below provide the finer frustum test.
     return section.published && worldsectionvavisible(section.origin, WORLD_SECTION_SIZE) &&
            isvisiblebb(section.minimum, ivec(section.maximum).sub(section.minimum)) < VFC_FOGGED;
 }
