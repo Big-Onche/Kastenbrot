@@ -2108,6 +2108,13 @@ namespace server
         return -1;
     }
 
+    static int serverglasscubematerial(int worldindex)
+    {
+        if(worldindex == getworldcubeidindex("glass")) return MAT_GLASS;
+        if(worldindex == getworldcubeidindex("glass_brick")) return MAT_GLASS + 3;
+        return MAT_AIR;
+    }
+
     static bool updateserverchunkblock(const ivec &cell, int action, int item, int orient = WORLD_ORIENT_TOP)
     {
         serverchunk *chunk = serverchunkforcell(cell, true);
@@ -2122,9 +2129,10 @@ namespace server
             voxel->children = NULL;
             voxel->ext = NULL;
             const int panequality = serverglasspanequality(worldindex);
-            const bool glass = worldindex == getworldcubeidindex("glass"), pane = panequality >= 0;
-            voxel->material = glass || pane ? MAT_GLASS | MAT_CLIP | (pane ? MAT_GLASS_PANE | panequality : 0) |
-                                                     (pane && clamp(orient / 6, 0, 1) ? MAT_GLASS_PANE_AXIS : 0) :
+            const int glassmaterial = serverglasscubematerial(worldindex);
+            const bool glass = glassmaterial != MAT_AIR, pane = panequality >= 0;
+            voxel->material = glass || pane ? (glass ? glassmaterial : MAT_GLASS | MAT_GLASS_PANE | panequality |
+                                                     (clamp(orient / 6, 0, 1) ? MAT_GLASS_PANE_AXIS : 0)) | MAT_CLIP :
                               worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
             voxel->visible = voxel->merged = 0;
             if(glass || pane)
@@ -2231,7 +2239,8 @@ namespace server
                     static const char *paneids[] = { "glass_pane", "glass_pane_average", "glass_pane_high" };
                     return getworldcubeitem(getworldcubeidindex(paneids[clamp(int(voxel->material&MATF_INDEX), 0, 2)]));
                 }
-                loopi(6) if(voxel->texture[i] != voxel->texture[0]) return getworldcubeitem(getworldcubeidindex("glass"));
+                loopi(6) if(voxel->texture[i] != voxel->texture[0])
+                    return getworldcubeitem(getworldcubeidindex((voxel->material&MATF_INDEX) == 3 ? "glass_brick" : "glass"));
             }
             loopi(6) if(voxel->texture[i] != voxel->texture[0]) return -1;
             return getworldcubeitem(int(voxel->texture[0]));

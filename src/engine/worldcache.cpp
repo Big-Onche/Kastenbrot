@@ -470,7 +470,7 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     if(source.material&MAT_GLASS_PANE) panequality = clamp(int(source.material&MATF_INDEX), 0, 2);
     const bool glasspane = glassblock && panequality >= 0;
     const int worldindex = empty && !glassblock ? -1 : glasspane ? worldsnapshotpaneworldindex(panequality) :
-                           glassblock ? getworldcubeidindex("glass") : textureindex;
+                           glassblock ? getworldcubeidindex((source.material&MATF_INDEX) == 3 ? "glass_brick" : "glass") : textureindex;
     const char *id = empty && !glassblock ? "air" : worldindex >= 0 ? getworldcubename(worldindex) : NULL;
     if(!id || !id[0])
     {
@@ -778,7 +778,8 @@ static bool worldsnapshotpaneconnectable(const worldchunksnapshot &snapshot, con
     const worldsnapshotvoxel &voxel = voxels[(y * WORLD_CHUNK_BLOCKS + x) * WORLD_HEIGHT_BLOCKS + z];
     if(!(voxel.flags & WORLD_SNAPSHOT_EMPTY)) return true;
     const worldsnapshotpaletteentry &entry = snapshot.palette[voxel.palette];
-    return !strcmp(entry.id, "glass") || worldsnapshotpanequality(entry.id) >= 0 || getworldcubeacceptspaneconnection(entry.worldindex);
+    return !strcmp(entry.id, "glass") || !strcmp(entry.id, "glass_brick") || worldsnapshotpanequality(entry.id) >= 0 ||
+           getworldcubeacceptspaneconnection(entry.worldindex);
 }
 
 static uint worldsnapshotpaneconnections(const worldchunksnapshot &snapshot, const vector<worldsnapshotvoxel> &voxels, int x, int y, int z)

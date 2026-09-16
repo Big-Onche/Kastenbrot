@@ -42,7 +42,14 @@ namespace game
     static const int glasspaneaxes[GLASS_PANE_DIRECTIONS] = { 1, 0, 1, 0 };
     static const int glasspanesigns[GLASS_PANE_DIRECTIONS] = { -1, 1, 1, -1 };
 
-    static bool isglasscubeindex(int worldindex) { return worldindex == getworldcubeidindex("glass"); }
+    static int glasscubematerial(int worldindex)
+    {
+        if(worldindex == getworldcubeidindex("glass")) return MAT_GLASS;
+        if(worldindex == getworldcubeidindex("glass_brick")) return MAT_GLASS + 3;
+        return MAT_AIR;
+    }
+
+    static bool isglasscubeindex(int worldindex) { return glasscubematerial(worldindex) != MAT_AIR; }
 
     static int glasspanequality(int worldindex)
     {
@@ -216,7 +223,7 @@ namespace game
             paintglassblocktextures(worldindex, block);
             if(isglasspaneindex(worldindex))
                 addglasspanematerial(block.o, clamp(paneaxis, 0, 1), glasspanequality(worldindex), glasspaneconnections(block.o));
-            else mpeditmat(MAT_GLASS, -1, block, false);
+            else mpeditmat(glasscubematerial(worldindex), -1, block, false);
             markworldcubeplayeredited(block);
         }
         updateglasspaneneighbors(glassblockselection(selection.o).o);
