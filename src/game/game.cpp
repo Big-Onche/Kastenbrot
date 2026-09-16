@@ -86,7 +86,9 @@ namespace game
     {
         const ivec center = ivec(origin).add(CREATIVE_GRID / 2);
         const int index = getworldcubeindexat(center, WORLD_ORIENT_TOP);
-        return isglasspaneindex(index) || (!isglasscubeindex(index) && (worldcellmaterial(origin)&MATF_VOLUME) == MAT_GLASS);
+        const int material = worldcellmaterial(origin);
+        return isglasspaneindex(index) || (material&MAT_GLASS_PANE) != 0 ||
+               (!isglasscubeindex(index) && (material&MATF_VOLUME) == MAT_GLASS);
     }
 
     static bool canconnectglasspane(const ivec &origin)
@@ -121,7 +123,7 @@ namespace game
     {
         const int center = CREATIVE_GRID / 2, start = center - GLASS_PANE_HALF_THICKNESS;
         normalaxis = clamp(normalaxis, 0, 1);
-        const int material = MAT_GLASS | clamp(quality, 0, 2) | (normalaxis ? MAT_GLASS_PANE_AXIS : 0);
+        const int material = MAT_GLASS | MAT_GLASS_PANE | clamp(quality, 0, 2) | (normalaxis ? MAT_GLASS_PANE_AXIS : 0);
         if(!connections)
         {
             ivec offset(0, 0, 0), size(CREATIVE_GRID, CREATIVE_GRID, CREATIVE_GRID);
@@ -151,7 +153,7 @@ namespace game
         const int material = worldcellmaterial(origin);
         int worldindex = getworldcubeindexat(ivec(origin).add(CREATIVE_GRID / 2), WORLD_ORIENT_TOP);
         int quality = glasspanequality(worldindex);
-        const int normalaxis = material&MAT_GLASS_PANE_AXIS || (quality == 0 && (material&MATF_INDEX) == 1) ? 1 : 0;
+        const int normalaxis = (material&MAT_GLASS_PANE_AXIS) || (quality == 0 && (material&MATF_INDEX) == 1) ? 1 : 0;
         if(quality < 0)
         {
             quality = clamp(int(material&MATF_INDEX), 0, 2);
@@ -162,6 +164,7 @@ namespace game
         mpeditmat(MAT_AIR, -1, block, false);
         paintglassblocktextures(worldindex, block);
         addglasspanematerial(block.o, normalaxis, quality, glasspaneconnections(block.o));
+        markworldcubeplayeredited(block);
     }
 
     static void updateglasspaneneighbors(const ivec &origin)
@@ -214,6 +217,7 @@ namespace game
             if(isglasspaneindex(worldindex))
                 addglasspanematerial(block.o, clamp(paneaxis, 0, 1), glasspanequality(worldindex), glasspaneconnections(block.o));
             else mpeditmat(MAT_GLASS, -1, block, false);
+            markworldcubeplayeredited(block);
         }
         updateglasspaneneighbors(glassblockselection(selection.o).o);
 #else

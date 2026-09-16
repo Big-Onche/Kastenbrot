@@ -313,6 +313,14 @@ static int worldsnapshotpanequality(const char *id)
     return -1;
 }
 
+static int worldsnapshotpaneworldindex(int quality)
+{
+    static const char *ids[] = { "glass_pane", "glass_pane_average", "glass_pane_high" };
+    return getworldcubeidindex(ids[clamp(quality, 0, int(sizeof(ids) / sizeof(ids[0])) - 1)]);
+}
+
+enum { WORLD_SNAPSHOT_PANE_INVALID = -1, WORLD_SNAPSHOT_PANE_EMPTY = -2 };
+
 static int worldsnapshotpanetype(const cube &c, int &normalaxis);
 
 static bool normalizeworldsnapshotcube(cube &c, int size, string &error)
@@ -393,21 +401,31 @@ static int worldsnapshotpanetype(const cube &c, int &normalaxis)
 {
     if(c.children)
     {
-        int type = -1;
+        int type = WORLD_SNAPSHOT_PANE_EMPTY;
         loopi(8)
         {
             int childaxis = normalaxis, childtype = worldsnapshotpanetype(c.children[i], childaxis);
-            if(childtype < 0 || (type >= 0 && childtype != type)) return -1;
+            if(childtype == WORLD_SNAPSHOT_PANE_INVALID || (childtype >= 0 && type >= 0 && childtype != type))
+                return WORLD_SNAPSHOT_PANE_INVALID;
+            if(childtype == WORLD_SNAPSHOT_PANE_EMPTY) continue;
             type = childtype;
             normalaxis = childaxis;
         }
         return type;
     }
-    const int type = worldsnapshotcubeindex(c);
-    const int quality = type >= 0 ? worldsnapshotpanequality(getworldcubename(type)) : -1;
-    if(quality < 0) return -1;
-    if((c.material&MATF_VOLUME) == MAT_GLASS)
-        normalaxis = c.material&MAT_GLASS_PANE_AXIS || (quality == 0 && (c.material&MATF_INDEX) == 1) ? 1 : 0;
+    // Pane construction necessarily leaves empty octants around the thin
+    // material. Remipping is free to discard their placeholder textures, so
+    // they cannot participate in pane identity validation.
+    if(isempty(c) && c.material == MAT_AIR) return WORLD_SNAPSHOT_PANE_EMPTY;
+    if((c.material&MATF_VOLUME) != MAT_GLASS) return WORLD_SNAPSHOT_PANE_INVALID;
+    int type = worldsnapshotcubeindex(c), quality = type >= 0 ? worldsnapshotpanequality(getworldcubename(type)) : -1;
+    if(c.material&MAT_GLASS_PANE)
+    {
+        quality = clamp(int(c.material&MATF_INDEX), 0, 2);
+        type = worldsnapshotpaneworldindex(quality);
+    }
+    if(quality < 0) return WORLD_SNAPSHOT_PANE_INVALID;
+    normalaxis = (c.material&MAT_GLASS_PANE_AXIS) || (quality == 0 && (c.material&MATF_INDEX) == 1) ? 1 : 0;
     return type;
 }
 
@@ -427,7 +445,7 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
         const int palette = worldsnapshotpaletteindex(snapshot, getworldcubename(paneindex), paneindex);
         if(palette < 0) { copystring(error, "chunk block palette exceeds ushort capacity"); return false; }
         voxel.palette = ushort(palette);
-        voxel.material = MAT_GLASS | MAT_CLIP | worldsnapshotpanequality(getworldcubename(paneindex)) |
+        voxel.material = MAT_GLASS | MAT_CLIP | MAT_GLASS_PANE | worldsnapshotpanequality(getworldcubename(paneindex)) |
                          (panenormalaxis ? MAT_GLASS_PANE_AXIS : 0);
         voxel.orientation = uchar(panenormalaxis * 2);
         voxel.flags = WORLD_SNAPSHOT_EMPTY | WORLD_SNAPSHOT_GLASS_PANE;
@@ -438,10 +456,12 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     const bool empty = isempty(source), solid = isentirelysolid(source);
     ASSERT(size <= WORLD_BLOCK_SIZE || empty || solid);
     const int textureindex = worldsnapshotcubeindex(source);
-    const bool glassblock = empty && (source.material&MATF_VOLUME) == MAT_GLASS && textureindex >= 0 &&
-                            (!strcmp(getworldcubename(textureindex), "glass") ||
-                             worldsnapshotpanequality(getworldcubename(textureindex)) >= 0);
-    const int worldindex = empty && !glassblock ? -1 : textureindex;
+    const bool glassblock = empty && (source.material&MATF_VOLUME) == MAT_GLASS;
+    int panequality = textureindex >= 0 ? worldsnapshotpanequality(getworldcubename(textureindex)) : -1;
+    if(source.material&MAT_GLASS_PANE) panequality = clamp(int(source.material&MATF_INDEX), 0, 2);
+    const bool glasspane = glassblock && panequality >= 0;
+    const int worldindex = empty && !glassblock ? -1 : glasspane ? worldsnapshotpaneworldindex(panequality) :
+                           glassblock ? getworldcubeidindex("glass") : textureindex;
     const char *id = empty && !glassblock ? "air" : worldindex >= 0 ? getworldcubename(worldindex) : NULL;
     if(!id || !id[0])
     {
@@ -454,10 +474,10 @@ static bool captureworldsnapshotvoxel(const cube *root, worldchunksnapshot &snap
     // Simulated flow is reconstructed from persistent manual sources. Saving
     // it as ordinary water would turn every reached cell into a full source
     // after the chunk is loaded again.
-    voxel.material = source.material&MAT_WATER_FLOWING ? MAT_AIR : source.material;
-    const int panequality = glassblock ? worldsnapshotpanequality(id) : -1;
-    const bool glasspane = panequality >= 0;
-    voxel.orientation = glasspane ? uchar((source.material&MAT_GLASS_PANE_AXIS ||
+    voxel.material = source.material&MAT_WATER_FLOWING ? MAT_AIR : glasspane ?
+                     MAT_GLASS | MAT_CLIP | MAT_GLASS_PANE | panequality |
+                     (source.material&MAT_GLASS_PANE_AXIS ? MAT_GLASS_PANE_AXIS : 0) : source.material;
+    voxel.orientation = glasspane ? uchar(((source.material&MAT_GLASS_PANE_AXIS) ||
                                             (panequality == 0 && (source.material&MATF_INDEX) == 1) ? 1 : 0) * 2) : O_TOP;
     voxel.flags = empty ? WORLD_SNAPSHOT_EMPTY : solid ? WORLD_SNAPSHOT_SOLID : 0;
     if(glasspane) voxel.flags |= WORLD_SNAPSHOT_GLASS_PANE;
@@ -823,7 +843,8 @@ static void buildworldsnapshotpane(cube &destination, const ivec &origin, int si
     if(contained || size == 1)
     {
         if(intersects)
-            destination.material = MAT_GLASS | MAT_CLIP | clamp(quality, 0, 2) | (normalaxis ? MAT_GLASS_PANE_AXIS : 0);
+            destination.material = MAT_GLASS | MAT_CLIP | MAT_GLASS_PANE | clamp(quality, 0, 2) |
+                                   (normalaxis ? MAT_GLASS_PANE_AXIS : 0);
         return;
     }
     if(!intersects) return;

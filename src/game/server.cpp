@@ -2123,7 +2123,7 @@ namespace server
             voxel->ext = NULL;
             const int panequality = serverglasspanequality(worldindex);
             const bool glass = worldindex == getworldcubeidindex("glass"), pane = panequality >= 0;
-            voxel->material = glass || pane ? MAT_GLASS | MAT_CLIP | (pane ? panequality : 0) |
+            voxel->material = glass || pane ? MAT_GLASS | MAT_CLIP | (pane ? MAT_GLASS_PANE | panequality : 0) |
                                                      (pane && clamp(orient / 6, 0, 1) ? MAT_GLASS_PANE_AXIS : 0) :
                               worldindex == getworldcubeidindex("ice") ? MAT_ALPHA : MAT_AIR;
             voxel->visible = voxel->merged = 0;
@@ -2223,7 +2223,16 @@ namespace server
         serverchunkforcell(cell, true);
         if(const cube *voxel = serverchunkcubeat(cell))
         {
-            if(isempty(*voxel)) return -1;
+            if(isempty(*voxel) && (voxel->material&MATF_VOLUME) != MAT_GLASS) return -1;
+            if((voxel->material&MATF_VOLUME) == MAT_GLASS)
+            {
+                if(voxel->material&MAT_GLASS_PANE)
+                {
+                    static const char *paneids[] = { "glass_pane", "glass_pane_average", "glass_pane_high" };
+                    return getworldcubeitem(getworldcubeidindex(paneids[clamp(int(voxel->material&MATF_INDEX), 0, 2)]));
+                }
+                loopi(6) if(voxel->texture[i] != voxel->texture[0]) return getworldcubeitem(getworldcubeidindex("glass"));
+            }
             loopi(6) if(voxel->texture[i] != voxel->texture[0]) return -1;
             return getworldcubeitem(int(voxel->texture[0]));
         }
@@ -2241,7 +2250,7 @@ namespace server
     static bool serverblocksolid(const ivec &cell)
     {
         if(cell.z < 0 || cell.z >= 8192) return cell.z < 0;
-        if(const cube *voxel = serverchunkcubeat(cell)) return !isempty(*voxel);
+        if(const cube *voxel = serverchunkcubeat(cell)) return !isempty(*voxel) || (voxel->material&MATF_VOLUME) == MAT_GLASS;
         return cell.z < serverbasesurface(cell.x + SERVER_WORLD_BLOCK_SIZE / 2, cell.y + SERVER_WORLD_BLOCK_SIZE / 2);
     }
 
