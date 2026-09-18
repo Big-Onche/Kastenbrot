@@ -259,8 +259,10 @@ namespace game
         uint requestid;
         int action, orient, item, yaw;
         ivec target;
+        doorinstance door;
+        bool hasdoor;
 
-        predictedworldaction() : requestid(0), action(-1), orient(0), item(-1), yaw(0), target(0, 0, 0) {}
+        predictedworldaction() : requestid(0), action(-1), orient(0), item(-1), yaw(0), target(0, 0, 0), hasdoor(false) {}
     };
 
     static vector<predictedworldaction *> predictedworldactions;
@@ -406,7 +408,9 @@ namespace game
     }
 
     static int worldmountorient(int orient) { return ((orient % 6) + 6) % 6; }
-    static int worldplaceyaw(int orient) { return clamp(orient / 6, 0, 3) * 90; }
+    static int worldplaceyaw(int orient) { return (orient / 6) % 4 * 90; }
+    static int worldplacedepth(int orient) { return (orient / 24) % 3; }
+    static bool worldplacehingeright(int orient) { return (orient / 72) % 2 != 0; }
 
     static bool applyworldscatteraction(int item, const ivec &support, int orient, bool place)
     {
@@ -456,8 +460,11 @@ namespace game
             case WORLD_ACTION_PLACE_ITEM:
             {
                 if(getworlditemtype(item) != WORLD_ITEM_PLACEABLE || !applyworldscatteraction(item, target, orient, true)) return false;
+                const ivec placedtarget = worldactionplacecell(absolutetarget, orient);
                 int slots = 0;
-                if(getworldchestconfig(item, slots)) setchestvisual(worldactionplacecell(absolutetarget, orient), worldplaceyaw(packed));
+                if(getworldchestconfig(item, slots)) setchestvisual(placedtarget, worldplaceyaw(packed));
+                if(getworlddoorconfig(item)) addlocaldoor(doorinstance(placedtarget, item, worldplaceyaw(packed), worldplacedepth(packed),
+                                                                     worldplacehingeright(packed)));
                 return true;
             }
             case WORLD_ACTION_BREAK_CUBE_START:
@@ -476,6 +483,7 @@ namespace game
                    !applyworldscatteraction(item, target, orient, false)) return false;
                 int slots = 0;
                 if(getworldchestconfig(item, slots)) removechestvisual(worldactionplacecell(absolutetarget, orient));
+                if(getworlddoorconfig(item)) removelocaldoor(worldactionplacecell(absolutetarget, orient));
                 return true;
             }
             case WORLD_ACTION_TAKE_WATER:
@@ -507,6 +515,7 @@ namespace game
             editworldscatter(getworlditemindex(prediction.item), sel.o, orient, false);
             int slots = 0;
             if(getworldchestconfig(prediction.item, slots)) removechestvisual(worldactionplacecell(prediction.target, orient));
+            if(getworlddoorconfig(prediction.item)) removelocaldoor(worldactionplacecell(prediction.target, orient));
         }
         else if(prediction.action == WORLD_ACTION_BREAK_CUBE_START)
         {
@@ -528,6 +537,7 @@ namespace game
                 int slots = 0;
                 if(getworldchestconfig(prediction.item, slots))
                     setchestvisual(worldactionplacecell(prediction.target, prediction.orient), prediction.yaw);
+                if(prediction.hasdoor) addlocaldoor(prediction.door);
             }
         }
     }
@@ -674,6 +684,7 @@ namespace game
         resetlocalsupportblocks();
         resetfurnaces();
         resetchests();
+        resetdoors();
         nextworldrequestid = 1;
         resetsurvivalinventory();
         receiveserversettings(5000, 250, 1024, 128, 4000, 128);
@@ -1458,6 +1469,8 @@ namespace game
         int slots = 0;
         if(getworldchestconfig(item, slots))
             prediction->yaw = getchestyaw(worldactionplacecell(absolutetarget, worldmountorient(orient)));
+        if(getworlddoorconfig(item))
+            prediction->hasdoor = getlocaldoor(worldactionplacecell(absolutetarget, worldmountorient(orient)), prediction->door);
         predictedworldactions.add(prediction);
     }
 
@@ -2401,11 +2414,12 @@ namespace game
     }
 
     bool capturechunkdata(int chunkx, int chunky, const vector<furnaceinstance *> &furnaces, const vector<chestinstance *> &chests,
+                          const vector<doorinstance *> &doors,
                           const vector<uchar> &npcdata, const vector<chunkfallingblockstate> &falling,
                           const vector<chunkdropstate> &drops, vector<uchar> &data)
     {
         data.setsize(0);
-        localchunkdataputuint(data, 2);
+        localchunkdataputuint(data, 3);
         int furnacecount = 0;
         loopv(furnaces) if(localchunkcontains(furnaces[i]->target, chunkx, chunky)) ++furnacecount;
         localchunkdataputuint(data, uint(furnacecount));
@@ -2438,6 +2452,22 @@ namespace game
             if(!localchunkdataputstring(data, getinventoryitemid(chest.worlditem))) return false;
             localchunkdataputuint(data, uint(chest.yaw));
             loopj(CHEST_SLOTS_MAX) if(!localchunkdataputstack(data, chest.items[j], chest.counts[j], chest.durabilities[j])) return false;
+        }
+        int doorcount = 0;
+        loopv(doors) if(localchunkcontains(doors[i]->target, chunkx, chunky)) ++doorcount;
+        localchunkdataputuint(data, uint(doorcount));
+        loopv(doors) if(localchunkcontains(doors[i]->target, chunkx, chunky))
+        {
+            const doorinstance &door = *doors[i];
+            localchunkdataputuint(data, uint(door.target.x));
+            localchunkdataputuint(data, uint(door.target.y));
+            localchunkdataputuint(data, uint(door.target.z));
+            if(!localchunkdataputstring(data, getinventoryitemid(door.worlditem))) return false;
+            localchunkdataputuint(data, uint(door.yaw));
+            localchunkdataputuint(data, uint(door.depth));
+            localchunkdataputuint(data, door.hingright ? 1U : 0U);
+            localchunkdataputuint(data, door.open ? 1U : 0U);
+            localchunkdataputuint(data, uint(door.swing));
         }
         localchunkdataputuint(data, uint(npcdata.length()));
         if(!npcdata.empty()) data.put(npcdata.getbuf(), npcdata.length());
@@ -2505,7 +2535,7 @@ namespace game
             drop.position = position;
         }
         loopv(pendinglocaldrops) if(localchunkcontains(pendinglocaldrops[i].position, chunkx, chunky)) drops.add(pendinglocaldrops[i]);
-        return capturechunkdata(chunkx, chunky, localfurnaces, localchests, npcdata, falling, drops, data);
+        return capturechunkdata(chunkx, chunky, localfurnaces, localchests, getlocaldoors(), npcdata, falling, drops, data);
     }
 #endif
 
@@ -2522,7 +2552,7 @@ namespace game
             return true;
         };
         const auto skipstack = [&]() { return reader.readstring(value, sizeof(value)) && skipuints(2); };
-        if(!reader.readuint(version) || version != 2 || !reader.readuint(count) || count > 100000U) return false;
+        if(!reader.readuint(version) || (version != 2 && version != 3) || !reader.readuint(count) || count > 100000U) return false;
         loopi(count)
         {
             if(!skipuints(3) || !reader.readstring(value, sizeof(value))) return false;
@@ -2535,18 +2565,23 @@ namespace game
             if(!skipuints(3) || !reader.readstring(value, sizeof(value)) || !skipuints(1)) return false;
             loopj(CHEST_SLOTS_MAX) if(!skipstack()) return false;
         }
+        if(version >= 3)
+        {
+            if(!reader.readuint(count) || count > 100000U) return false;
+            loopi(count) if(!skipuints(3) || !reader.readstring(value, sizeof(value)) || !skipuints(5)) return false;
+        }
         uint bytes;
         return reader.readuint(bytes) && bytes >= 8 && bytes <= uint(reader.end - reader.position) &&
                reader.readuint(version) && version == 1;
     }
 
     bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
-                         vector<chestinstance *> &chests, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
+                         vector<chestinstance *> &chests, vector<doorinstance *> &doors, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
                          vector<chunkdropstate> &drops)
     {
         localchunkdatareader reader(data, length);
         uint version, furnacecount, chestcount;
-        if(!reader.readuint(version) || version != 2 || !reader.readuint(furnacecount) || furnacecount > 100000U) return false;
+        if(!reader.readuint(version) || (version != 2 && version != 3) || !reader.readuint(furnacecount) || furnacecount > 100000U) return false;
         loopi(furnacecount)
         {
             ivec target;
@@ -2590,6 +2625,24 @@ namespace game
                 ok = localchunkdatareadstack(reader, chest->items[j], chest->counts[j], chest->durabilities[j], INT_MAX);
             if(!ok) { delete chest; return false; }
             chests.add(chest);
+        }
+        if(version >= 3)
+        {
+            uint doorcount;
+            if(!reader.readuint(doorcount) || doorcount > 100000U) return false;
+            loopi(doorcount)
+            {
+                ivec target;
+                string worlditemid;
+                int yaw, depth, hingright, open, swing;
+                if(!reader.readint(target.x) || !reader.readint(target.y) || !reader.readint(target.z) ||
+                   !reader.readstring(worlditemid, sizeof(worlditemid)) || !reader.readint(yaw) || !reader.readint(depth) ||
+                   !reader.readint(hingright) || !reader.readint(open) || !reader.readint(swing) || !localchunkcontains(target, chunkx, chunky)) return false;
+                const int worlditem = getinventoryitemindex(worlditemid);
+                if(!getworlddoorconfig(worlditem) || yaw < 0 || yaw >= 360 || yaw % 90 || depth < 0 || depth > 2 ||
+                   (hingright != 0 && hingright != 1) || (open != 0 && open != 1) || (swing != -1 && swing != 1)) return false;
+                doors.add(new doorinstance(target, worlditem, yaw, depth, hingright != 0, open != 0, swing));
+            }
         }
         uint npclength;
         if(!reader.readuint(npclength) || npclength > uint(reader.end - reader.position)) return false;
@@ -2635,13 +2688,15 @@ namespace game
     {
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
+        vector<doorinstance *> doors;
         vector<uchar> npcdata;
         vector<chunkfallingblockstate> falling;
         vector<chunkdropstate> drops;
-        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata, falling, drops))
+        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, doors, npcdata, falling, drops))
         {
             furnaces.deletecontents();
             chests.deletecontents();
+            doors.deletecontents();
             return false;
         }
 #ifndef STANDALONE
@@ -2649,6 +2704,7 @@ namespace game
         {
             furnaces.deletecontents();
             chests.deletecontents();
+            doors.deletecontents();
             return false;
         }
 #endif
@@ -2666,6 +2722,8 @@ namespace game
             setchestvisual(chests[i]->target, chests[i]->yaw);
         }
         chests.setsize(0);
+        loopv(doors) addlocaldoor(*doors[i]);
+        doors.deletecontents();
         for(int i = fallingblocks.length() - 1; i >= 0; --i)
             if(!fallingblocks[i]->replicated && localchunkcontains(fallingblocks[i]->o, chunkx, chunky)) delete fallingblocks.remove(i);
         loopv(falling)
@@ -2704,6 +2762,8 @@ namespace game
 
     bool haslocalchunkdynamicstate(int chunkx, int chunky)
     {
+        const vector<doorinstance *> &doors = getlocaldoors();
+        loopv(doors) if(localchunkcontains(doors[i]->target, chunkx, chunky)) return true;
         loopv(fallingblocks)
             if(!fallingblocks[i]->replicated && fallingblocks[i]->item >= 0 && localchunkcontains(fallingblocks[i]->o, chunkx, chunky)) return true;
         loopv(worlddrops)
@@ -2721,10 +2781,11 @@ namespace game
         if(!file) return false;
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
+        vector<doorinstance *> doors;
         vector<uchar> npcdata;
         vector<chunkfallingblockstate> falling;
         vector<chunkdropstate> drops;
-        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, npcdata, falling, drops)) return false;
+        if(!decodechunkdata(chunkx, chunky, data, length, furnaces, chests, doors, npcdata, falling, drops)) return false;
         bool ok = true;
         loopv(furnaces) if(ok)
         {
@@ -2753,6 +2814,10 @@ namespace game
                 ok = file->printf("slot %d %s %d durability %d\n", j, getinventoryitemid(chest.items[j]), chest.counts[j],
                                   chest.durabilities[j]) > 0;
         }
+        loopv(doors) if(ok)
+            ok = file->printf("\ndoor %d %d %d %s yaw %d depth %d hinge %s open %d swing %d\n", doors[i]->target.x,
+                              doors[i]->target.y, doors[i]->target.z, getinventoryitemid(doors[i]->worlditem), doors[i]->yaw,
+                              doors[i]->depth, doors[i]->hingright ? "right" : "left", doors[i]->open ? 1 : 0, doors[i]->swing) > 0;
         loopv(falling) if(ok)
             ok = file->printf("\nfalling %s origin %d %d %d position %.9g %.9g %.9g velocity %.9g\n",
                               getinventoryitemid(falling[i].item), falling[i].origin.x, falling[i].origin.y, falling[i].origin.z,
@@ -2766,6 +2831,7 @@ namespace game
 #endif
         furnaces.deletecontents();
         chests.deletecontents();
+        doors.deletecontents();
         return ok;
     }
 
@@ -4603,6 +4669,19 @@ namespace game
         return creativehit(hit) && openworldchest(hit);
     }
 
+    static bool openlookedatdoor()
+    {
+        const vec origin = camera1 ? camera1->o : player1->o;
+        ivec target;
+        if(!getworlddoorhit(origin, camdir, buildactionreach(), target)) return false;
+        selinfo selection;
+        worldactionselection(selection, target, WORLD_ORIENT_TOP);
+        worldselectiontoabsolute(selection);
+        if(waitforserveredit()) addmsg(N_DOORACTION, "ri4", int(newworldrequestid()), selection.o.x, selection.o.y, selection.o.z);
+        else interactlocaldoor(selection.o, player1->o);
+        return true;
+    }
+
     static bool creativeplayeroverlap(const ivec &cell)
     {
         if(!player1) return false;
@@ -4642,7 +4721,8 @@ namespace game
     static void creativeplace()
     {
         selinfo hit;
-        if(!creativehit(hit)) return;
+        vec hitpoint;
+        if(!creativehit(hit, &hitpoint)) return;
         if(openworldfurnace(hit)) return;
         if(opencraftingtable(hit)) return;
 
@@ -4655,12 +4735,33 @@ namespace game
                 return;
             int actionorient = hit.orient, chestslots = 0;
             const bool chest = type == WORLD_ITEM_PLACEABLE && getworldchestconfig(selected, chestslots);
-            if(chest && hit.orient != WORLD_ORIENT_TOP) return;
-            if(getworldplaceableblockcollision(worldindex) && creativeplayeroverlap(worldactionplacecell(hit.o, hit.orient))) return;
-            if(chest)
+            const bool door = type == WORLD_ITEM_PLACEABLE && getworlddoorconfig(selected);
+            if((chest || door) && hit.orient != WORLD_ORIENT_TOP) return;
+            const ivec placedcell = worldactionplacecell(hit.o, hit.orient);
+            selinfo absoluteplaced;
+            worldactionselection(absoluteplaced, placedcell, hit.orient);
+            worldselectiontoabsolute(absoluteplaced);
+            if(dooroccupiescell(absoluteplaced.o) ||
+               ((getworldplaceableblockcollision(worldindex) || door) && creativeplayeroverlap(placedcell))) return;
+            if(chest || door)
             {
                 const int yaw = player1 ? (int(floor((player1->yaw + 45.0f) / 90.0f)) % 4 + 4) % 4 : 0;
                 actionorient += yaw * 6;
+                if(door)
+                {
+                    const ivec upper = ivec(placedcell).add(ivec(0, 0, CREATIVE_GRID));
+                    selinfo absoluteupper;
+                    worldactionselection(absoluteupper, upper, WORLD_ORIENT_TOP);
+                    worldselectiontoabsolute(absoluteupper);
+                    if(!insideworld(upper) || worldcellsolid(upper) || (worldcellmaterial(upper)&MATF_VOLUME) != MAT_AIR ||
+                       getworldscatterindexat(ivec(upper).sub(ivec(0, 0, CREATIVE_GRID)), WORLD_ORIENT_TOP) >= 0 ||
+                       dooroccupiescell(absoluteupper.o) || creativeplayeroverlap(upper)) return;
+                    const float radians = yaw * 90.0f * RAD;
+                    const vec normal(-sinf(radians), cosf(radians), 0), center = vec(placedcell).add(vec(8, 8, 0));
+                    const float offset = vec(hitpoint).sub(center).dot(normal);
+                    const int depth = offset < -8.0f / 3.0f ? 0 : offset > 8.0f / 3.0f ? 2 : 1;
+                    actionorient += depth * 24 + 72; // all newly placed doors hinge on the player's right
+                }
             }
             if(!editworldscatter(worldindex, hit.o, hit.orient, true)) return;
             if(chest)
@@ -4672,6 +4773,11 @@ namespace game
                 setchestvisual(chesttarget, chestyaw);
                 if(!waitforserveredit() && !findlocalchest(chesttarget))
                     localchests.add(new chestinstance(chesttarget, selected, chestslots, chestyaw));
+            }
+            if(door)
+            {
+                const ivec doortarget = absoluteplaced.o;
+                addlocaldoor(doorinstance(doortarget, selected, worldplaceyaw(actionorient), worldplacedepth(actionorient), true));
             }
             if(waitforserveredit())
                 predictworldaction(type == WORLD_ITEM_PLACEABLE ? WORLD_ACTION_PLACE_ITEM : WORLD_ACTION_PLACE_SCATTER,
@@ -4749,16 +4855,33 @@ namespace game
             const ivec support = target.scattersupport;
             if(type >= 0)
             {
+                const int item = getworldscatteritem(type);
+                selinfo absoluteselection;
+                worldactionselection(absoluteselection, support, mountorient);
+                worldselectiontoabsolute(absoluteselection);
+                const ivec placedtarget = worldactionplacecell(absoluteselection.o, mountorient);
+                doorinstance saveddoor;
+                const bool hasdoor = getworlddoorconfig(item) && getlocaldoor(placedtarget, saveddoor);
                 if(!waitforserveredit())
                 {
-                    if(scatteredittrigger(type, support, mountorient, false)) breaklocalcactusabove(worldactionplacecell(support, mountorient));
+                    if(scatteredittrigger(type, support, mountorient, false))
+                    {
+                        if(hasdoor) removelocaldoor(placedtarget);
+                        breaklocalcactusabove(worldactionplacecell(support, mountorient));
+                    }
                 }
                 else
                 {
                     if(!editworldscatter(type, support, mountorient, false)) return;
-                    predictworldaction(WORLD_ACTION_BREAK_SCATTER_START, support, mountorient, getworldscatteritem(type), -1);
+                    predictworldaction(WORLD_ACTION_BREAK_SCATTER_START, support, mountorient, item, -1);
+                    if(hasdoor)
+                    {
+                        predictedworldactions.last()->door = saveddoor;
+                        predictedworldactions.last()->hasdoor = true;
+                        removelocaldoor(placedtarget);
+                    }
                     sendworldaction(predictedworldactions.last()->requestid, WORLD_ACTION_BREAK_COMPLETE,
-                                    support, mountorient, getworldscatteritem(type), -1);
+                                    support, mountorient, item, -1);
                 }
             }
             return;
@@ -5048,6 +5171,12 @@ namespace game
             if(type >= 0)
             {
                 item = getworldscatteritem(type);
+                selinfo doorselection;
+                worldactionselection(doorselection, support, mountorient);
+                worldselectiontoabsolute(doorselection);
+                const ivec placedtarget = worldactionplacecell(doorselection.o, mountorient);
+                doorinstance saveddoor;
+                const bool hasdoor = getworlddoorconfig(item) && getlocaldoor(placedtarget, saveddoor);
                 bool removed = false;
                 if(!waitforserveredit()) removed = scatteredittrigger(type, support, mountorient, false);
                 else
@@ -5059,12 +5188,18 @@ namespace game
                         worldactionselection(absolute, support, mountorient);
                         worldselectiontoabsolute(absolute);
                         addpredictedworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_SCATTER_START, absolute.o, mountorient, item);
+                        if(hasdoor)
+                        {
+                            predictedworldactions.last()->door = saveddoor;
+                            predictedworldactions.last()->hasdoor = true;
+                        }
                         sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_COMPLETE, support, mountorient, item, -1);
                     }
                     else sendworldaction(survivalbreakrequestid, WORLD_ACTION_BREAK_CANCEL, support, mountorient, item, -1);
                 }
                 if(removed)
                 {
+                    if(hasdoor) removelocaldoor(placedtarget);
                     breaklocalcactusabove(worldactionplacecell(support, mountorient));
                     int chestslots = 0;
                     if(getworldchestconfig(item, chestslots))
@@ -5197,7 +5332,7 @@ namespace game
     {
         if(*down)
         {
-            if(!usebucket() && !openlookedatchest() && !beginfooduse() &&
+            if(!usebucket() && !openlookedatdoor() && !openlookedatchest() && !beginfooduse() &&
                !(survivalenabled() && usesurvivalcornertool(TOOL_CORNER_PUSH_RIGHT))) creativeplace();
         }
         else stopfooduse();
@@ -5670,6 +5805,7 @@ namespace game
     ICOMMAND(creativeblockcount, "", (), intret(numinventoryitems()));
     ICOMMAND(creativecubecount, "", (), intret(numworldcubes()));
     ICOMMAND(creativeblockiscube, "i", (int *index), intret(getworlditemtype(*index) == WORLD_ITEM_CUBE ? 1 : 0));
+    ICOMMAND(creativeblockisdoor, "i", (int *index), intret(getworlddoorconfig(*index) ? 1 : 0));
     ICOMMAND(creativeblockisglass, "i", (int *index),
     {
         const int worldindex = getworlditemtype(*index) == WORLD_ITEM_CUBE ? getworlditemindex(*index) : -1;

@@ -417,6 +417,7 @@ namespace server
     static vector<serversupportcheck> serversupportchecks;
     static vector<furnaceinstance *> serverfurnaces;
     static vector<chestinstance *> serverchests;
+    static vector<doorinstance *> serverdoors;
     static uint nextdropid = 1;
     static uint nextfallblockid = 1;
     static serverworldaction *findworldaction(const ivec &target, int action);
@@ -630,7 +631,9 @@ namespace server
     }
 
     static int worldmountorient(int orient) { return ((orient % 6) + 6) % 6; }
-    static int worldplaceyaw(int orient) { return clamp(orient / 6, 0, 3) * 90; }
+    static int worldplaceyaw(int orient) { return (orient / 6) % 4 * 90; }
+    static int worldplacedepth(int orient) { return (orient / 24) % 3; }
+    static bool worldplacehingeright(int orient) { return (orient / 72) % 2 != 0; }
 
     static void loadserverstate()
     {
@@ -643,6 +646,7 @@ namespace server
         serversupportchecks.setsize(0);
         serverfurnaces.deletecontents();
         serverchests.deletecontents();
+        serverdoors.deletecontents();
         serverdeadpassivenpcs.setsize(0);
         nextdropid = 1;
         nextfallblockid = 1;
@@ -837,20 +841,24 @@ namespace server
     {
         vector<furnaceinstance *> furnaces;
         vector<chestinstance *> chests;
+        vector<doorinstance *> doors;
         vector<uchar> npcdata;
         vector<chunkfallingblockstate> falling;
         vector<chunkdropstate> drops;
-        if(!game::decodechunkdata(job.x, job.y, job.gameplay.getbuf(), job.gameplay.length(), furnaces, chests, npcdata, falling, drops) ||
+        if(!game::decodechunkdata(job.x, job.y, job.gameplay.getbuf(), job.gameplay.length(), furnaces, chests, doors, npcdata, falling, drops) ||
            !restoreserverchunknpcs(job.x, job.y, npcdata))
         {
             furnaces.deletecontents();
             chests.deletecontents();
+            doors.deletecontents();
             return false;
         }
         loopv(furnaces) serverfurnaces.add(furnaces[i]);
         furnaces.setsize(0);
         loopv(chests) serverchests.add(chests[i]);
         chests.setsize(0);
+        loopv(doors) serverdoors.add(doors[i]);
+        doors.setsize(0);
         loopv(falling)
         {
             const chunkfallingblockstate &saved = falling[i];
@@ -923,7 +931,7 @@ namespace server
             copystring(drop.ownerid, source.ownerid);
         }
         if(!captureserverchunknpcs(chunk.x, chunk.y, npcdata) ||
-           !game::capturechunkdata(chunk.x, chunk.y, serverfurnaces, serverchests, npcdata, falling, drops, chunk.gameplay)) return false;
+           !game::capturechunkdata(chunk.x, chunk.y, serverfurnaces, serverchests, serverdoors, npcdata, falling, drops, chunk.gameplay)) return false;
         serverchunkjob *job = new serverchunkjob(SERVER_CHUNK_SAVE, chunk.x, chunk.y);
         job->revision = chunk.revision;
         job->storageversion = chunk.storageversion;
@@ -959,12 +967,13 @@ namespace server
                 {
                     vector<furnaceinstance *> furnaces;
                     vector<chestinstance *> chests;
+                    vector<doorinstance *> doors;
                     vector<uchar> npcdata;
                     vector<chunkfallingblockstate> falling;
                     vector<chunkdropstate> drops;
                     serverchunkdataputuint(npcdata, 1);
                     serverchunkdataputuint(npcdata, 0);
-                    job->success = game::capturechunkdata(job->x, job->y, furnaces, chests, npcdata, falling, drops, job->gameplay);
+                    job->success = game::capturechunkdata(job->x, job->y, furnaces, chests, doors, npcdata, falling, drops, job->gameplay);
                     chunk->corrupted = !job->success;
                     if(!job->success) copystring(job->error, "could not initialize chunk gameplay data");
                 }
@@ -2106,6 +2115,59 @@ namespace server
         if(worldindex == getworldcubeidindex("glass_pane_average")) return 1;
         if(worldindex == getworldcubeidindex("glass_pane_high")) return 2;
         return -1;
+    }
+
+    static void removeserverdoor(const ivec &target)
+    {
+        loopv(serverdoors) if(serverdoors[i]->target == target)
+        {
+            delete serverdoors.remove(i);
+            dirtyservergameplaycell(target);
+            return;
+        }
+    }
+
+    static doorinstance *findserverdoor(const ivec &target)
+    {
+        loopv(serverdoors) if(serverdoors[i]->target == target) return serverdoors[i];
+        return NULL;
+    }
+
+    static bool serverdooroccupies(const ivec &cell, const ivec *ignore = NULL)
+    {
+        loopv(serverdoors)
+        {
+            const doorinstance &door = *serverdoors[i];
+            if(ignore && door.target == *ignore) continue;
+            if(cell == door.target || cell == ivec(door.target).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE))) return true;
+        }
+        return false;
+    }
+
+    static bool doorblockvalid(const doorinstance &door)
+    {
+        serverworldaction *state = findworldaction(door.target, WORLD_ACTION_PLACE_ITEM);
+        return state && state->action == WORLD_ACTION_PLACE_ITEM && state->item == door.worlditem && getworlddoorconfig(state->item);
+    }
+
+    static void senddoorstate(const doorinstance &door)
+    {
+        packetbuf p(MAXTRANS, ENET_PACKET_FLAG_RELIABLE);
+        putint(p, N_DOORSTATE);
+        putint(p, door.target.x); putint(p, door.target.y); putint(p, door.target.z);
+        putpersistentid(p, getinventoryitempersistentid(door.worlditem));
+        putint(p, door.yaw); putint(p, door.depth); putint(p, door.hingright ? 1 : 0);
+        putint(p, door.open ? 1 : 0); putint(p, door.swing);
+        ENetPacket *packet = p.finalize();
+        packet->referenceCount++;
+        const float range = max(dynamicentsmaxdistance, 1) * 16.0f;
+        loopv(clients)
+        {
+            clientinfo *recipient = clients[i];
+            if(!recipient || !recipient->connected || !recipient->worldready || !recipient->hasposition) continue;
+            if(vec(door.target).add(vec(8, 8, 16)).dist(recipient->o) <= range) sendpacket(recipient->clientnum, 1, packet);
+        }
+        if(--packet->referenceCount == 0) enet_packet_destroy(packet);
     }
 
     static int serverglasscubematerial(int worldindex)
@@ -4259,16 +4321,29 @@ namespace server
         orient = worldmountorient(orient);
         int chestslots = 0;
         const bool chest = action == WORLD_ACTION_PLACE_ITEM && getworldchestconfig(item, chestslots),
+                   door = action == WORLD_ACTION_PLACE_ITEM && getworlddoorconfig(item),
                    pane = action == WORLD_ACTION_PLACE_CUBE && serverglasspanequality(getworlditemindex(item)) >= 0;
-        if(packed < 0 || packed >= 24 || (!chest && !pane && packed != orient) || (pane && packed >= 12) ||
-           (chest && orient != WORLD_ORIENT_TOP))
+        if(packed < 0 || packed >= (door ? 144 : 24) || (!chest && !door && !pane && packed != orient) || (pane && packed >= 12) ||
+           ((chest || door) && orient != WORLD_ORIENT_TOP) || (door && !worldplacehingeright(packed)))
             return rejectaction(ci, requestid, "invalid placement orientation", true, true);
         if(!validactiontarget(ci, support, orient, error)) return rejectaction(ci, requestid, error, true);
         const ivec occupied = worldactionstatecell(support, action, orient);
         if(!validactiontarget(ci, occupied, orient, error)) return rejectaction(ci, requestid, error, true);
         if(!actionrate(ci, true)) return rejectaction(ci, requestid, "excessive placement rate", true);
-        if((action != WORLD_ACTION_PLACE_ITEM || chest) && (playeroccupies(occupied) || serverfallingblockoccupies(occupied)))
+        if(serverdooroccupies(occupied) || ((action != WORLD_ACTION_PLACE_ITEM || chest || door) &&
+           (playeroccupies(occupied) || serverfallingblockoccupies(occupied))))
             return rejectaction(ci, requestid, "");
+        if(door)
+        {
+            const ivec upper = ivec(occupied).add(ivec(0, 0, SERVER_WORLD_BLOCK_SIZE));
+            const cube *uppercube = serverchunkcubeat(upper);
+            const serverworldaction uppercubeaction = *findworldaction(upper, WORLD_ACTION_PLACE_CUBE),
+                                    upperscatter = *findworldaction(upper, WORLD_ACTION_PLACE_ITEM);
+            if(!uppercube || !isempty(*uppercube) || uppercube->material != MAT_AIR || uppercubeaction.action == WORLD_ACTION_PLACE_CUBE ||
+               upperscatter.action == WORLD_ACTION_PLACE_ITEM || upperscatter.action == WORLD_ACTION_PLACE_SCATTER || serverdooroccupies(upper) ||
+               playeroccupies(upper) || serverfallingblockoccupies(upper))
+                return rejectaction(ci, requestid, "a door requires two clear vertical cells");
+        }
         const serverworldaction cubestate = *findworldaction(occupied, WORLD_ACTION_PLACE_CUBE),
                                 scatterstate = *findworldaction(occupied, WORLD_ACTION_PLACE_SCATTER);
         const serverworldaction *state = cubestate.action == WORLD_ACTION_PLACE_CUBE ? &cubestate
@@ -4316,6 +4391,13 @@ namespace server
         {
             serverchests.add(new chestinstance(occupied, item, chestslots, worldplaceyaw(packed)));
             dirtyservergameplaycell(occupied);
+        }
+        if(door && !findserverdoor(occupied))
+        {
+            doorinstance *placed = new doorinstance(occupied, item, worldplaceyaw(packed), worldplacedepth(packed), true, false, 1);
+            serverdoors.add(placed);
+            dirtyservergameplaycell(occupied);
+            senddoorstate(*placed);
         }
         if(!servercreative())
         {
@@ -4587,6 +4669,7 @@ namespace server
         setworldactionstate(occupied, action, ci.breakorient, item);
         removeserverfurnace(occupied, &ci);
         removeserverchest(occupied, &ci);
+        removeserverdoor(occupied);
         if(!servercreative() && ci.breakdropeligible) addworlddrops(&ci, requestid, action, target, ci.breakorient, item);
         // Each dependent segment gets its own persisted/broadcast edit and drop; clients never mint these drops.
         for(ivec support = occupied; support.z + SERVER_WORLD_BLOCK_SIZE < SERVER_WORLD_MAP_SIZE; support.z += SERVER_WORLD_BLOCK_SIZE)
@@ -5060,6 +5143,27 @@ namespace server
         sendactionresult(ci, requestid, true);
         sendinventory(ci);
         syncchestviewers(*chest);
+        return true;
+    }
+
+    static bool handledooraction(clientinfo &ci, uint requestid, const ivec &target)
+    {
+        const char *error = NULL;
+        if(!validnewrequest(ci, requestid, error)) return rejectaction(ci, requestid, error, requestid == ci.lastrequestid);
+        doorinstance *door = findserverdoor(target);
+        if(!door || !doorblockvalid(*door)) return rejectaction(ci, requestid, "the requested door does not exist");
+        const vec center = vec(target).add(vec(8, 8, 16));
+        if(!ci.hasposition || center.dist(ci.o) > 144.0f) return rejectaction(ci, requestid, "the door is out of reach");
+        if(!door->open)
+        {
+            const float radians = door->yaw * RAD;
+            const vec normal(-sinf(radians), cosf(radians), 0), playeroffset = vec(ci.o).sub(center);
+            door->swing = playeroffset.dot(normal) >= 0 ? -1 : 1;
+        }
+        door->open = !door->open;
+        dirtyservergameplaycell(target);
+        senddoorstate(*door);
+        sendactionresult(ci, requestid, true);
         return true;
     }
 
@@ -5825,6 +5929,16 @@ namespace server
                     if(ci && ci->connected && !p.overread()) handlechestaction(*ci, requestid, action, first, second, third, fourth);
                     break;
                 }
+                case N_DOORACTION:
+                {
+                    clientinfo *ci = getinfo(sender);
+                    const uint requestid = uint(getint(p));
+                    ivec target;
+                    target.x = getint(p); target.y = getint(p); target.z = getint(p);
+                    if(ci && ci->connected && ci->worldready && !ci->dead && !p.overread()) handledooraction(*ci, requestid, target);
+                    else if(ci && ci->connected) rejectaction(*ci, requestid, "door interaction is currently unavailable");
+                    break;
+                }
                 case N_WORLDACTION:
                 {
                     clientinfo *ci = getinfo(sender);
@@ -6103,12 +6217,19 @@ namespace server
         }
     }
 
+    static void updateserverdoors()
+    {
+        for(int i = serverdoors.length() - 1; i >= 0; --i)
+            if(!doorblockvalid(*serverdoors[i])) removeserverdoor(serverdoors[i]->target);
+    }
+
     void serverupdate()
     {
         if(!serverworldinitialized) return;
         updateserverchunkrequests();
         updateserverfurnaces();
         updateserverchests();
+        updateserverdoors();
         updateserverfallingblocks();
         updateserversupportblocks();
         updateservernpcs();

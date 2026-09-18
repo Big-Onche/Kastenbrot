@@ -599,6 +599,11 @@ bool getworldchestconfig(int item, int &slots)
     return false;
 }
 
+bool getworlddoorconfig(int item)
+{
+    return inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->hasdoor;
+}
+
 int getinventorytoolcornerpush(int index)
 {
     return isinventorytool(index) ? inventoryitemdefinitions[index]->toolcornerpush : TOOL_CORNER_PUSH_NONE;
@@ -1268,6 +1273,11 @@ bool getworldchestconfig(int item, int &slots)
     }
     slots = 0;
     return false;
+}
+
+bool getworlddoorconfig(int item)
+{
+    return inventoryitemdefinitions.inrange(item) && inventoryitemdefinitions[item]->hasdoor;
 }
 
 bool getworldcubefall(int index)

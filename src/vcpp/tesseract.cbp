@@ -243,6 +243,7 @@
 		<Unit filename="../game/ambient.cpp" />
 		<Unit filename="../game/ambient.h" />
 		<Unit filename="../game/client.cpp" />
+		<Unit filename="../game/door.cpp" />
 		<Unit filename="../game/entities.cpp" />
 		<Unit filename="../game/game.cpp" />
 		<Unit filename="../game/game.h">

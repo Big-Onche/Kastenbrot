@@ -70,7 +70,7 @@ enum
     N_INVENTORYSTATE, N_INVENTORYACTION, N_CRAFTSTATE, N_CRAFTACTION, N_WORLDACTION, N_WORLDAUTH, N_ACTIONRESULT,
     N_BREAKSTATE, N_DROPSETTINGS, N_DROPSPAWN, N_DROPDELETE, N_DROPPICKUP,
     N_FALLBLOCKSPAWN, N_FALLBLOCKUPDATE, N_FALLBLOCKDELETE,
-    N_FURNACESTATE, N_FURNACEACTION, N_CHESTSTATE, N_CHESTACTION, N_CHESTANIM,
+    N_FURNACESTATE, N_FURNACEACTION, N_CHESTSTATE, N_CHESTACTION, N_CHESTANIM, N_DOORSTATE, N_DOORACTION,
     N_NPCSPAWN, N_NPCDESPAWN, N_NPCSNAPSHOT, N_NPCEVENT, N_NPCATTACK,
     N_PLAYERSTATE, N_RESPAWN, N_FOODACTION, N_FOODSTATE,
     NUMMSG
@@ -166,7 +166,7 @@ static const int msgsizes[] =
     N_INVENTORYSTATE, 0, N_INVENTORYACTION, 5, N_CRAFTSTATE, 0, N_CRAFTACTION, 7, N_WORLDACTION, 9, N_WORLDAUTH, 7,
     N_ACTIONRESULT, 0, N_BREAKSTATE, 10, N_DROPSETTINGS, 6, N_DROPSPAWN, 11, N_DROPDELETE, 3, N_DROPPICKUP, 6,
     N_FALLBLOCKSPAWN, 7, N_FALLBLOCKUPDATE, 7, N_FALLBLOCKDELETE, 2,
-    N_FURNACESTATE, 0, N_FURNACEACTION, 7, N_CHESTSTATE, 0, N_CHESTACTION, 7, N_CHESTANIM, 5,
+    N_FURNACESTATE, 0, N_FURNACEACTION, 7, N_CHESTSTATE, 0, N_CHESTACTION, 7, N_CHESTANIM, 5, N_DOORSTATE, 0, N_DOORACTION, 5,
     N_NPCSPAWN, 0, N_NPCDESPAWN, 3, N_NPCSNAPSHOT, 11, N_NPCEVENT, 0, N_NPCATTACK, 4,
     N_PLAYERSTATE, 10, N_RESPAWN, 1, N_FOODACTION, 2, N_FOODSTATE, 6,
     -1
@@ -175,7 +175,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 37
+#define PROTOCOL_VERSION 38
 
 enum
 {
@@ -658,6 +658,15 @@ namespace game
     extern int getchestyaw(const ivec &target);
     extern void resetfurnaces();
     extern void resetchests();
+    extern void resetdoors();
+    extern void receivedoorstate(const doorinstance &door, bool animate = true);
+    extern void addlocaldoor(const doorinstance &door);
+    extern void removelocaldoor(const ivec &target);
+    extern const vector<doorinstance *> &getlocaldoors();
+    extern bool getdoortransform(const ivec &target, vec &position, int &yaw);
+    extern bool dooroccupiescell(const ivec &cell, const ivec *ignore = NULL);
+    extern bool interactlocaldoor(const ivec &target, const vec &playerposition);
+    extern bool getlocaldoor(const ivec &target, doorinstance &door);
     extern bool savelocalfurnaces(const char *world);
     extern bool loadlocalfurnaces(const char *world);
     extern bool savelocalchests(const char *world);
@@ -667,10 +676,11 @@ namespace game
     extern bool haslocalchunkdynamicstate(int chunkx, int chunky);
     extern bool debuglocalchunkdata(stream *file, int chunkx, int chunky, const uchar *data, int length);
     extern bool capturechunkdata(int chunkx, int chunky, const vector<furnaceinstance *> &furnaces, const vector<chestinstance *> &chests,
+                                 const vector<doorinstance *> &doors,
                                  const vector<uchar> &npcdata, const vector<chunkfallingblockstate> &falling,
                                  const vector<chunkdropstate> &drops, vector<uchar> &data);
     extern bool decodechunkdata(int chunkx, int chunky, const uchar *data, int length, vector<furnaceinstance *> &furnaces,
-                                vector<chestinstance *> &chests, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
+                                vector<chestinstance *> &chests, vector<doorinstance *> &doors, vector<uchar> &npcdata, vector<chunkfallingblockstate> &falling,
                                 vector<chunkdropstate> &drops);
     extern bool capturelocalchunknpcs(int chunkx, int chunky, vector<uchar> &data);
     extern bool restorelocalchunknpcs(int chunkx, int chunky, const uchar *data, int length, bool merge);

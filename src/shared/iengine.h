@@ -278,6 +278,29 @@ struct chestinstance
 extern bool getworldchestconfig(int item, int &slots);
 extern void updateworldchestanimations();
 
+struct doorinstance
+{
+    ivec target;
+    int worlditem, yaw, depth, swing;
+    bool hingright, open;
+#ifndef STANDALONE
+    float fromangle;
+    int started;
+#endif
+
+    doorinstance(const ivec &target = ivec(0, 0, 0), int worlditem = -1, int yaw = 0, int depth = 1, bool hingright = true,
+                 bool open = false, int swing = 1)
+        : target(target), worlditem(worlditem), yaw(yaw), depth(depth), swing(swing), hingright(hingright), open(open)
+#ifndef STANDALONE
+          , fromangle(open ? 90.0f * swing : 0.0f), started(0)
+#endif
+    {
+    }
+};
+extern bool getworlddoorconfig(int item);
+extern void updateworlddooranimations();
+extern bool getworlddoorhit(const vec &origin, const vec &direction, float reach, ivec &target);
+
 enum { CRAFT_GRID_MAX = 9 };
 struct craftmatch
 {

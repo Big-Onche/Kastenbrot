@@ -43,6 +43,9 @@
     <ClCompile Include="..\game\game.cpp">
       <Filter>game</Filter>
     </ClCompile>
+    <ClCompile Include="..\game\door.cpp">
+      <Filter>game</Filter>
+    </ClCompile>
     <ClCompile Include="..\game\mining.cpp">
       <Filter>game</Filter>
     </ClCompile>

@@ -2947,14 +2947,16 @@ namespace UI
     {
         char *name;
         int anim;
+        float fixedyaw;
 
-        ModelPreview() : name(NULL) {}
+        ModelPreview() : name(NULL), fixedyaw(-1) {}
         ~ModelPreview() { delete[] name; }
 
-        void setup(const char *name_, const char *animspec, float minw_, float minh_)
+        void setup(const char *name_, const char *animspec, float minw_, float minh_, float fixedyaw_ = -1)
         {
             Preview::setup(minw_, minh_);
             SETSTR(name, name_);
+            fixedyaw = fixedyaw_;
 
             anim = ANIM_ALL;
             if(animspec[0])
@@ -2994,6 +2996,7 @@ namespace UI
                 m->boundbox(center, radius);
                 float yaw;
                 vec o = calcmodelpreviewpos(radius, yaw).sub(center);
+                if(fixedyaw >= 0) yaw = fixedyaw;
                 rendermodel(name, anim, o, yaw, 0, 0, 0, 0, NULL, NULL, 0);
             }
             if(clipstack.length()) clipstack.last().scissor();
@@ -3726,6 +3729,9 @@ namespace UI
 
     ICOMMAND(uimodelpreview, "ssffe", (char *model, char *animspec, float *minw, float *minh, uint *children),
         BUILD(ModelPreview, o, o->setup(model, animspec, *minw, *minh), children));
+
+    ICOMMAND(uiangledmodelpreview, "ssfffe", (char *model, char *animspec, float *yaw, float *minw, float *minh, uint *children),
+        BUILD(ModelPreview, o, o->setup(model, animspec, *minw, *minh, *yaw), children));
 
     ICOMMAND(uiplayerpreview, "iiiiffe", (int *model, int *color, int *team, int *weapon, float *minw, float *minh, uint *children),
         BUILD(PlayerPreview, o, o->setup(*model, *color, *team, *weapon, *minw, *minh), children));

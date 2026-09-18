@@ -540,6 +540,7 @@ static void createworld(const char *requestedname)
     game::resetsurvivalinventory();
     game::resetfurnaces();
     game::resetchests();
+    game::resetdoors();
     game::resetnpcs();
     game::resetlocalpassivenpcstates();
     game::beginlocalworld();
@@ -618,6 +619,7 @@ static void loadworldcommand(const char *requested)
     game::resetsurvivalinventory();
     game::resetfurnaces();
     game::resetchests();
+    game::resetdoors();
     game::resetnpcs();
     game::resetlocalpassivenpcstates();
     game::beginlocalworld();
@@ -675,6 +677,7 @@ void startnetworkworld(int seed)
 {
     game::resetfurnaces();
     game::resetchests();
+    game::resetdoors();
     game::loadworldseed(seed);
     if(!emptymap(WORLD_RUNTIME_SCALE, true, "network/0_0", true, false)) return;
     worldfolder[0] = '\0';
@@ -726,6 +729,7 @@ void closeproceduralworld()
     }
     game::resetfurnaces();
     game::resetchests();
+    game::resetdoors();
     clearworldchunks();
     resetmap();
     freeocta(worldroot);

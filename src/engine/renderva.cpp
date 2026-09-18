@@ -743,6 +743,8 @@ void rendermapmodels()
     static int skipoq = 0;
     bool doquery = !drawtex && oqfrags && oqmm;
     const vector<extentity *> &ents = entities::getents();
+    vector<uchar> renderedmapmodels;
+    loopv(ents) renderedmapmodels.add(0);
     findvisiblemms(ents, doquery);
 
     int visibleNodes = 0, visibleEntities = 0, immediateQueryNodes = 0, hiddenNodes = 0, hiddenQueryNodes = 0;
@@ -766,9 +768,17 @@ void rendermapmodels()
                 }
             }
             rendermapmodel(e);
+            renderedmapmodels[oe->mapmodels[i]] = 1;
             e.flags &= ~EF_RENDER;
         }
         if(rendered && oe->query) endmodelquery();
+    }
+    // Runtime chunk remeshing can leave valid entities outside the current VA mapmodel lists. Render those through the same
+    // culling/batching path so both edit-mode mapmodels and procedural placeables remain visible while VAs are replaced.
+    loopv(ents) if(!renderedmapmodels[i] && ents[i]->type == ET_MAPMODEL && !(ents[i]->flags&EF_NOVIS))
+    {
+        rendermapmodel(*ents[i]);
+        ++visibleEntities;
     }
     rendermapmodelbatches();
     clearbatchedmapmodels();

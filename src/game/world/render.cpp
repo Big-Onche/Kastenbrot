@@ -15,12 +15,12 @@ struct worldgrasscandidate
     ivec key;
     vec position;
     int model, yaw, pitch, roll;
-    bool matched;
+    bool matched, collide;
 
     worldgrasscandidate(const ivec &key, const vec &position, int model,
-                        int yaw, int pitch, int roll)
+                        int yaw, int pitch, int roll, bool collide = false)
         : key(key), position(position), model(model), yaw(yaw),
-          pitch(pitch), roll(roll), matched(false) {}
+          pitch(pitch), roll(roll), matched(false), collide(collide) {}
 };
 
 VARP(staticentsmaxdistance, 0, 256, 1024);
@@ -174,10 +174,11 @@ static void worldscattertransform(const worldchunk &chunk, const worldscatterins
         if(scatter.orient == O_TOP)
         {
             const int item = getworldscatteritem(scatter.type);
+            const ivec target(chunk.x * WORLD_CHUNK_SIZE + scatter.x, chunk.y * WORLD_CHUNK_SIZE + scatter.y, scatter.z);
+            if(getworlddoorconfig(item) && game::getdoortransform(target, position, yaw)) return;
             int slots = 0;
             if(getworldchestconfig(item, slots))
             {
-                const ivec target(chunk.x * WORLD_CHUNK_SIZE + scatter.x, chunk.y * WORLD_CHUNK_SIZE + scatter.y, scatter.z);
                 yaw = game::getchestyaw(target);
                 pitch = int(game::getchestlidangle(target) + 0.5f);
             }
@@ -800,7 +801,7 @@ static void updateworldscatterers()
             const float dx = position.x - focus->x, dy = position.y - focus->y;
             if(dx * dx + dy * dy > radiussquared) continue;
             candidates.add(worldgrasscandidate(worldscatterkey(chunk, scatter), position, worldscatterdefinitions[scatter.type]->mapmodel, yaw, pitch,
-                                                roll));
+                                                roll, getworlddoorconfig(getworldscatteritem(scatter.type))));
             if(candidates.length() >= staticentsmaxamount) break;
         }
         if(candidates.length() >= staticentsmaxamount) break;
@@ -819,7 +820,8 @@ static void updateworldscatterers()
             continue;
         }
         worldgrasscandidate &candidate = candidates[*candidateindex];
-        if(!updateworldmapmodelentity(active.id, candidate.position, candidate.model, candidate.yaw, candidate.pitch, candidate.roll))
+        if(!updateworldmapmodelentity(active.id, candidate.position, candidate.model, candidate.yaw, candidate.pitch, candidate.roll,
+                                      candidate.collide))
         {
             destroyworldmapmodelentity(active.id);
             worldgrassentities.removeunordered(i);
@@ -830,13 +832,19 @@ static void updateworldscatterers()
 
     loopv(candidates) if(!candidates[i].matched)
     {
-        int id = createworldmapmodelentity(candidates[i].position, candidates[i].model, candidates[i].yaw, candidates[i].pitch, candidates[i].roll);
+        int id = createworldmapmodelentity(candidates[i].position, candidates[i].model, candidates[i].yaw, candidates[i].pitch, candidates[i].roll,
+                                           candidates[i].collide);
         if(id < 0) break;
         worldgrassentities.add(worldgrassentity(candidates[i].key, id));
     }
 }
 
 void updateworldchestanimations()
+{
+    updateworldscatterers();
+}
+
+void updateworlddooranimations()
 {
     updateworldscatterers();
 }
@@ -1085,6 +1093,30 @@ bool getworldchesthit(const vec &origin, const vec &direction, float reach, int 
             orient = scatter.orient;
             support = ivec(worldchunkorigin(chunk)).add(ivec(scatter.x, scatter.y, scatter.z))
                 .sub(ivec(worldorientnormal(orient)).mul(WORLD_BLOCK_SIZE));
+            found = true;
+        }
+    }
+    return found;
+}
+
+bool getworlddoorhit(const vec &origin, const vec &direction, float reach, ivec &target)
+{
+    float closest = reach;
+    bool found = false;
+    loopv(worldchunks)
+    {
+        const worldchunk &chunk = worldchunks[i];
+        if(chunk.loading || !chunk.root || !worldchunkmounted(chunk)) continue;
+        loopvj(chunk.scatter)
+        {
+            const worldscatterinstance &scatter = chunk.scatter[j];
+            if(!worldscattermounted(chunk, scatter) || !getworlddoorconfig(getworldscatteritem(scatter.type))) continue;
+            vec center, radius;
+            worldscatterlogicalbox(chunk, scatter, center, radius);
+            float distance = 0;
+            if(!worldrayboxdistance(vec(center).sub(radius), vec(radius).mul(2), origin, direction, closest, distance)) continue;
+            closest = distance;
+            target = ivec(worldchunkorigin(chunk)).add(ivec(scatter.x, scatter.y, scatter.z));
             found = true;
         }
     }

@@ -49,7 +49,7 @@ struct worlddefinition
     uint equipmentmask;
     vector<worlddropdefinition> drops;
     bvec gialbedo;
-    bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasfood, hassupport, hasequipment;
+    bool hasitem, hasheld, hascube, scatter, placeable, hasmining, hastool, hasfurnace, haschest, hasdoor, hasfood, hassupport, hasequipment;
     bool itemstackset, cubetextureset, scattermodelset, placeablemodelset, hardnessset, tooltierset, toolspeedset;
     bool explicitdrops, errorfallback, fall, placeableblockcollision, heldflipx, heldflipy, handbreakable, supportdecay,
          supportpersistentonplace, acceptspaneconnection;

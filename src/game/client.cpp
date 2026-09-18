@@ -1106,6 +1106,23 @@ namespace game
                 if(!p.overread()) receivechestanimation(target, open);
                 break;
             }
+            case N_DOORSTATE:
+            {
+                ivec target;
+                target.x = getint(p); target.y = getint(p); target.z = getint(p);
+                const ullong worlditemid = getpersistentid(p);
+                const int worlditem = worlditemid ? getinventoryitempersistentindex(worlditemid) : -1,
+                          yaw = getint(p), depth = getint(p), hingright = getint(p), open = getint(p), swing = getint(p);
+                if(!getworlddoorconfig(worlditem) || yaw < 0 || yaw >= 360 || yaw % 90 || depth < 0 || depth > 2 ||
+                   (hingright != 0 && hingright != 1) || (open != 0 && open != 1) || (swing != -1 && swing != 1))
+                {
+                    conoutf(CON_ERROR, "server sent an invalid door state");
+                    disconnect();
+                    return;
+                }
+                if(!p.overread()) receivedoorstate(doorinstance(target, worlditem, yaw, depth, hingright != 0, open != 0, swing));
+                break;
+            }
             case N_ACTIONRESULT:
             {
                 const uint requestid = uint(getint(p));

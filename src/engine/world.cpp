@@ -267,7 +267,7 @@ bool isworldmapmodelentity(int id, int model)
            (model < 0 || ents[id]->attr1 == model);
 }
 
-int createworldmapmodelentity(const vec &o, int model, int yaw, int pitch, int roll)
+int createworldmapmodelentity(const vec &o, int model, int yaw, int pitch, int roll, bool collide)
 {
     if(!mapmodels.inrange(model) || model > SHRT_MAX || !loadmapmodel(model)) return -1;
     vector<extentity *> &ents = entities::getents();
@@ -289,18 +289,19 @@ int createworldmapmodelentity(const vec &o, int model, int yaw, int pitch, int r
     e.attr5 = 0;
     e.type = ET_MAPMODEL;
     e.reserved = WORLD_MAPMODEL_RESERVED;
-    e.flags = EF_NOCOLLIDE;
+    e.flags = collide ? 0 : EF_NOCOLLIDE;
     e.attached = NULL;
     addentity(id);
     return id;
 }
 
-bool updateworldmapmodelentity(int id, const vec &o, int model, int yaw, int pitch, int roll)
+bool updateworldmapmodelentity(int id, const vec &o, int model, int yaw, int pitch, int roll, bool collide)
 {
     if(!isworldmapmodelentity(id, -1) || !mapmodels.inrange(model) || model > SHRT_MAX || !loadmapmodel(model))
         return false;
     extentity &e = *entities::getents()[id];
-    if(e.attr1 == model && e.attr2 == yaw && e.attr3 == pitch && e.attr4 == roll && e.o.x == o.x && e.o.y == o.y && e.o.z == o.z)
+    const int flags = collide ? 0 : EF_NOCOLLIDE;
+    if(e.attr1 == model && e.attr2 == yaw && e.attr3 == pitch && e.attr4 == roll && e.o.x == o.x && e.o.y == o.y && e.o.z == o.z && e.flags == flags)
         return true;
     removeentity(id);
     e.o = o;
@@ -309,6 +310,7 @@ bool updateworldmapmodelentity(int id, const vec &o, int model, int yaw, int pit
     e.attr3 = pitch;
     e.attr4 = roll;
     e.attr5 = 0;
+    e.flags = flags;
     addentity(id);
     return true;
 }

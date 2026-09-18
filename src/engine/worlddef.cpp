@@ -30,7 +30,7 @@ worlddefinition::worlddefinition(const char *id)
       toolcornerpush(TOOL_CORNER_PUSH_NONE),
       supportdistance(0), equipmentcapacity(0), equipmentmask(0), gialbedo(0, 0, 0), hasitem(false),
       hasheld(false), hascube(false),
-      scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), haschest(false), hasfood(false), hassupport(false),
+      scatter(false), placeable(false), hasmining(false), hastool(false), hasfurnace(false), haschest(false), hasdoor(false), hasfood(false), hassupport(false),
       hasequipment(false),
       itemstackset(false), cubetextureset(false),
       scattermodelset(false),
@@ -58,7 +58,7 @@ static worlddefinition *currentworlddefinition = NULL;
 enum
 {
     WORLDDEF_NONE = 0, WORLDDEF_ITEM, WORLDDEF_HELD, WORLDDEF_CUBE, WORLDDEF_SCATTER, WORLDDEF_PLACEABLE, WORLDDEF_MINING, WORLDDEF_TOOL,
-    WORLDDEF_FURNACE, WORLDDEF_CHEST, WORLDDEF_FOOD, WORLDDEF_SUPPORT, WORLDDEF_EQUIPMENT,
+    WORLDDEF_FURNACE, WORLDDEF_CHEST, WORLDDEF_DOOR, WORLDDEF_FOOD, WORLDDEF_SUPPORT, WORLDDEF_EQUIPMENT,
     MATERIAL_DEFINITION, TOOL_FAMILY_DEFINITION, TOOL_OVERRIDE_DEFINITION
 };
 static int currentworldcomponent = WORLDDEF_NONE, worlddefinitionerrors = 0;
@@ -259,6 +259,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
         if(!strcmp(command, "tool")) return "worlddef_tool";
         if(!strcmp(command, "furnace")) return "worlddef_furnace";
         if(!strcmp(command, "chest")) return "worlddef_chest";
+        if(!strcmp(command, "door")) return "worlddef_door";
         if(!strcmp(command, "food")) return "worlddef_food";
         if(!strcmp(command, "support")) return "worlddef_support";
         if(!strcmp(command, "equipment")) return "worlddef_equipment";
@@ -323,6 +324,7 @@ static const char *worlddefinitioncommand(const char *command, int component)
     {
         if(!strcmp(command, "slots")) return "worlddef_chestslots";
     }
+    else if(component == WORLDDEF_DOOR) return NULL;
     else if(component == WORLDDEF_FOOD)
     {
         if(!strcmp(command, "health")) return "worlddef_foodhealth";
@@ -811,6 +813,13 @@ ICOMMANDS("worlddef_chest", "S", (char *body),
     endworldcomponent();
 });
 
+ICOMMANDS("worlddef_door", "S", (char *body),
+{
+    if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_DOOR, currentworlddefinition->hasdoor, "door")) return;
+    executeworlddefinitionbody(body, WORLDDEF_DOOR);
+    endworldcomponent();
+});
+
 ICOMMANDS("worlddef_food", "S", (char *body),
 {
     if(!currentworlddefinition || !beginworldcomponent(WORLDDEF_FOOD, currentworlddefinition->hasfood, "food")) return;
@@ -1280,6 +1289,11 @@ bool resolveworlddefinitionregistry()
            definition.chestslots > CHEST_SLOTS_MAX))
         {
             conoutf(CON_ERROR, "worlddef \"%s\": chest requires a placeable item and 1-%d slots", definition.id, CHEST_SLOTS_MAX);
+            ++worlddefinitionerrors;
+        }
+        if(definition.hasdoor && (!definition.hasitem || !definition.placeable || definition.haschest))
+        {
+            conoutf(CON_ERROR, "worlddef \"%s\": door requires a non-chest placeable item", definition.id);
             ++worlddefinitionerrors;
         }
         if(definition.hasfood && (!definition.hasitem || definition.foodhealth <= 0 || definition.foodtime <= 0))

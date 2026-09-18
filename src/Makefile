@@ -122,6 +122,7 @@ CLIENT_OBJS= \
 	game/ambient.o \
 	game/entities.o \
 	game/world/environment.o \
+	game/door.o \
 	game/game.o \
 	game/mining.o \
 	game/npc.o \
@@ -167,6 +168,7 @@ SERVER_OBJS= \
 	standalone/engine/worlddef.o \
 	standalone/engine/worldio.o \
 	standalone/game/entities.o \
+	standalone/game/door.o \
 	standalone/game/game.o \
 	standalone/game/mining.o \
 	standalone/game/npc.o \
