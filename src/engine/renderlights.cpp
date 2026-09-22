@@ -2133,6 +2133,15 @@ struct cascadedshadowmap
 
 cascadedshadowmap csm;
 
+bool bindcsmdepth(int tmu)
+{
+    if(!csm.rendered || !csm.depthtex || csm.size <= 0 || csm.layers <= 0) return false;
+    csm.bindparams();
+    glActiveTexture_(GL_TEXTURE0 + tmu);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, csm.depthtex);
+    return true;
+}
+
 void cascadedshadowmap::cleanup()
 {
     if(depthtex) glDeleteTextures(1, &depthtex);
@@ -6028,6 +6037,8 @@ bool debuglights()
 {
     if(debugcsm) viewcsm();
     else if(debugshadowatlas) viewshadowatlas();
+    else if(godrays::geometry::debugview()) {}
+    else if(godrays::crepuscular::debugview()) {}
     else if(debugao) viewao();
     else if(debugbloom) viewbloom();
     else if(debugdepth) viewdepth();
@@ -6042,6 +6053,7 @@ bool debuglights()
 
 void cleanuplights()
 {
+    godrays::geometry::cleanup();
     cleanuplocalambient();
     cleanupgbuffer();
     cleanupbloom();

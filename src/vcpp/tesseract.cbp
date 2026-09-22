@@ -160,6 +160,7 @@
 		<Unit filename="../engine/blend.cpp" />
 		<Unit filename="../engine/client.cpp" />
 		<Unit filename="../engine/cloud.cpp" />
+		<Unit filename="../engine/godrays.cpp" />
 		<Unit filename="../engine/command.cpp" />
 		<Unit filename="../engine/console.cpp" />
 		<Unit filename="../engine/dynlight.cpp" />

@@ -671,9 +671,9 @@ namespace
         LOCALPARAM(cloudatmosphereparams, cloudatmospherebackground);
     }
 
-    static int drawcloudgeometry(bool sorted = false)
+    static int drawcloudgeometry(bool sorted = false, Shader *shader = NULL, bool bindscenedepth = true)
     {
-        Shader *shader = lookupshaderbyname("cloud");
+        if(!shader) shader = lookupshaderbyname("cloud");
         if(!shader || !camera1) return 0;
 
         vec2 atmosphereSize(0, 0);
@@ -681,8 +681,11 @@ namespace
         cloudatmospherebackground = vec4(atmosphereSize.x, atmosphereSize.y, hasAtmosphereBackground ? 1.0f : 0.0f, 0.0f);
         glActiveTexture_(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, cloudscenetex);
-        glActiveTexture_(GL_TEXTURE3);
-        bindgdepth();
+        if(bindscenedepth)
+        {
+            glActiveTexture_(GL_TEXTURE3);
+            bindgdepth();
+        }
         glActiveTexture_(GL_TEXTURE0);
         int renderedverts = 0;
         loopv(cloudtiles)
@@ -1335,6 +1338,23 @@ void renderclouds()
     // project the low-resolution cloud shadow mask onto the already-lit opaque scene
     drawcloudshadowoverlay(GLuint(oldfb), oldviewport);
 
+    if(volumetriccloudalpha > 0.0f && godrays::crepuscular::beginsource())
+    {
+        glDisable(GL_BLEND);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        if(camerainside) glDisable(GL_CULL_FACE); else glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CW);
+        drawcloudgeometry(false, useshaderbyname("cloudraysource"), false);
+        godrays::crepuscular::render(GLuint(oldfb), sunlight.tocolor());
+    }
+
     cloudrenderalpha = volumetriccloudalpha;
     if(volumetriccloudalpha > 0.0f && volumetriccloudalpha < 1.0f && !capturecloudscene(GLuint(oldfb), oldviewport)) cloudrenderalpha = 1.0f;
 
@@ -1478,6 +1498,7 @@ void rendercloudfog()
 
 void cleanupclouds()
 {
+    godrays::crepuscular::cleanup();
     clearcloudtiles();
     cleanupcloudscene();
     cleanupcloudtarget();

@@ -320,6 +320,7 @@ extern void clearshadowcache();
 
 extern void rendervolumetric();
 extern void cleanupvolumetric();
+extern bool bindcsmdepth(int tmu = 0);
 
 extern void findshadowvas(bool transparent = false);
 extern void findshadowmms();
@@ -377,6 +378,7 @@ extern matrix4 worldmatrix, screenmatrix;
 extern int transparentlayer;
 
 extern int gw, gh, gdepthformat, ghasstencil;
+extern int csmshadowmap, csmsplits;
 extern GLuint gdepthtex, gcolortex, gnormaltex, gglowtex, gdepthrb, gstencilrb;
 extern int msaasamples, msaalight;
 extern GLuint msdepthtex, mscolortex, msnormaltex, msglowtex, msdepthrb, msstencilrb;
@@ -906,6 +908,25 @@ extern void updateclouds();
 extern void renderclouds();
 extern void rendercloudfog();
 extern void cleanupclouds();
+
+namespace godrays
+{
+    namespace geometry
+    {
+        extern void render();
+        extern bool debugview();
+        extern void cleanup();
+    }
+
+    namespace crepuscular
+    {
+        extern bool enabled();
+        extern bool beginsource();
+        extern void render(GLuint targetfbo, const vec &raytint);
+        extern bool debugview();
+        extern void cleanup();
+    }
+}
 
 // blendmap
 extern int blendpaintmode;

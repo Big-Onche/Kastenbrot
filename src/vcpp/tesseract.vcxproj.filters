@@ -76,6 +76,9 @@
     <ClCompile Include="..\engine\cloud.cpp">
       <Filter>engine</Filter>
     </ClCompile>
+    <ClCompile Include="..\engine\godrays.cpp">
+      <Filter>engine</Filter>
+    </ClCompile>
     <ClCompile Include="..\engine\light.cpp">
       <Filter>engine</Filter>
     </ClCompile>

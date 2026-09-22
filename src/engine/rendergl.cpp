@@ -2616,6 +2616,9 @@ void gl_drawview()
         GLERROR;
     }
 
+    godrays::geometry::render();
+    GLERROR;
+
     if(fogmat) setfog(fogmat, fogbelow, 1, abovemat);
 
     rendervolumetric();
