@@ -487,7 +487,7 @@ extern void mpeditent(int i, const vec &o, int type, int attr1, int attr2, int a
 extern vec getselpos();
 extern int getworldsize();
 extern void updateworldchunks(bool force = false);
-extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, const uchar *voxdata, int voxlength, const uchar *datdata, int datlength);
+extern bool receivenetworkworldchunk(int chunkx, int chunky, uint revision, ullong cachehash, const uchar *voxdata, int voxlength, const uchar *datdata, int datlength);
 extern int getmapversion();
 extern void renderentcone(const extentity &e, const vec &dir, float radius, float angle);
 extern void renderentarrow(const extentity &e, const vec &dir, float radius);
@@ -834,7 +834,8 @@ extern bool requestmasterf(const char *fmt, ...) PRINTFARGS(1, 2);
 extern bool isdedicatedserver();
 
 #ifndef STANDALONE
-extern void startnetworkworld(int seed, const vec *initialposition);
+extern void startnetworkworld(int seed, const vec *initialposition, const char *cachefolder);
+extern bool finishnetworkworld(const vec *initialposition);
 extern bool getpreparedworldspawn(vec &position, float &yaw, float &pitch);
 extern void worldpositiontoabsolute(vec &position);
 extern void worldpositiontolocal(vec &position);

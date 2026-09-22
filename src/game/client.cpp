@@ -32,11 +32,12 @@ namespace game
     static bool playeridentitiesloaded = false, playeridentitiescorrupt = false,
                 currentidentitycreated = false;
 
-    bool pendingnetworkworld = false, pendingnetworkreset = false,
+    bool pendingnetworkworld = false, pendingnetworkstarted = false, pendingnetworkreset = false,
          pendingnetworkfrozen = false, pendingnetworkrestoreposition = false;
     int pendingnetworkseed = 0, pendingnetworktime = 0, pendingnetworkyaw = 0, pendingnetworkpitch = 0, pendingnetworkphysstate = PHYS_FALL;
     float pendingnetworkfalldistance = 0;
     vec pendingnetworkposition, pendingnetworkvelocity, pendingnetworkfalling;
+    string pendingnetworkcachefolder = "";
 
     void resetclientreceive()
     {
@@ -44,7 +45,8 @@ namespace game
         currentserverid[0] = '\0';
         currentidentity = NULL;
         currentidentitycreated = false;
-        pendingnetworkworld = pendingnetworkreset = pendingnetworkrestoreposition = false;
+        pendingnetworkworld = pendingnetworkstarted = pendingnetworkreset = pendingnetworkrestoreposition = false;
+        pendingnetworkcachefolder[0] = '\0';
         pendingnetworkvelocity = pendingnetworkfalling = vec(0, 0, 0);
         pendingnetworkfalldistance = 0;
         pendingnetworkphysstate = PHYS_FALL;
@@ -53,10 +55,10 @@ namespace game
         authoritativerevision = authoritativerequestid = synchronizedrevision = 0;
     }
 
-    void requestworldchunk(int chunkx, int chunky)
+    void requestworldchunk(int chunkx, int chunky, ullong cachehash)
     {
-        if(!connected || !m_mp(gamemode) || pendingnetworkworld) return;
-        addmsg(N_CHUNKREQUEST, "ri2", chunkx, chunky);
+        if(!connected || !m_mp(gamemode)) return;
+        addmsg(N_CHUNKREQUEST, "ri4", chunkx, chunky, int(uint(cachehash)), int(uint(cachehash >> 32)));
     }
 
     static bool validhex(const char *value, int minlen, int maxlen)
@@ -437,13 +439,14 @@ namespace game
             {
                 const int chunkx = getint(p), chunky = getint(p);
                 const uint revision = uint(getint(p));
+                const ullong cachehash = ullong(uint(getint(p))) | ullong(uint(getint(p))) << 32;
                 const int voxlength = getint(p), datlength = getint(p);
                 if(voxlength <= 0 || datlength <= 0 || voxlength > p.remaining()) return;
                 ucharbuf vox = p.subbuf(voxlength);
                 if(datlength > p.remaining()) return;
                 ucharbuf dat = p.subbuf(datlength);
                 if(p.overread() || p.remaining() ||
-                   !receivenetworkworldchunk(chunkx, chunky, revision, vox.buf, vox.maxlen, dat.buf, dat.maxlen))
+                   !receivenetworkworldchunk(chunkx, chunky, revision, cachehash, vox.buf, vox.maxlen, dat.buf, dat.maxlen))
                     conoutf(CON_ERROR, "rejected authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
                 else conoutf(CON_DEBUG, "applied authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
             }
@@ -622,6 +625,7 @@ namespace game
             case N_WORLDSTATE:
             {
                 pendingnetworkseed = getint(p);
+                formatstring(pendingnetworkcachefolder, "cache/%s_%08x", currentserverid, uint(pendingnetworkseed));
                 synchronizedrevision = uint(getint(p));
                 pendingnetworktime = getint(p);
                 pendingnetworkfrozen = getint(p) != 0;
@@ -673,6 +677,7 @@ namespace game
                 authoritativeauthor = -1;
                 authoritativerevision = authoritativerequestid = 0;
                 pendingnetworkworld = true;
+                pendingnetworkstarted = false;
                 break;
             }
             case N_NPCSPAWN:

@@ -514,7 +514,7 @@ static bool saveactiveworld()
 
 static void saveworld()
 {
-    if(worldchunks.empty() || activeworldchunk < 0)
+    if(!game::islocalworld() || worldchunks.empty() || activeworldchunk < 0)
     {
         conoutf(CON_ERROR, "no local world is active; use newworld first");
         return;
@@ -673,62 +673,63 @@ static void loadworldcommand(const char *requested)
 
 ICOMMAND(loadworld, "s", (char *name), loadworldcommand(name));
 
-void startnetworkworld(int seed, const vec *initialposition)
+static int networkworldseed = 0, networkentrychunkx = 0, networkentrychunky = 0;
+
+void startnetworkworld(int seed, const vec *initialposition, const char *cachefolder)
 {
     game::resetfurnaces();
     game::resetchests();
     game::resetdoors();
     game::loadworldseed(seed);
+    networkworldseed = seed;
     if(!emptymap(WORLD_RUNTIME_SCALE, true, "network/0_0", true, false)) return;
-    worldfolder[0] = '\0';
-    worldfirstchunkx = worldfirstchunky = -WORLD_RUNTIME_CENTER;
+    copystring(worldfolder, cachefolder ? cachefolder : "");
+    networkentrychunkx = initialposition ? int(floor(double(initialposition->x) / WORLD_CHUNK_SIZE)) : 0;
+    networkentrychunky = initialposition ? int(floor(double(initialposition->y) / WORLD_CHUNK_SIZE)) : 0;
+    worldfirstchunkx = networkentrychunkx - WORLD_RUNTIME_CENTER;
+    worldfirstchunky = networkentrychunky - WORLD_RUNTIME_CENTER;
     if(!loadworlddefinitions()) return;
     game::weather::update(game::weather::getseed(seed));
 
     freeocta(worldroot);
-    worldroot = NULL;
-    activeworldchunk = worldchunks.length();
-    {
-        worldsectionrenderdata renderdata;
-        worldchunk &chunk = worldchunks.add(worldchunk(0, 0, game::generateworldchunk(0, 0, &renderdata)));
-        indexworldchunk(worldchunks.length() - 1);
-        chunk.renderdata = renderdata;
-        game::generateworldscatter(chunk.root, 0, 0, chunk.scatter);
-    }
-    loadinitialworldchunks(0, 0);
-
-    // A returning multiplayer player can be restored many chunks away from
-    // the world spawn. Prepare that chunk synchronously before physics resumes;
-    // otherwise the restored player falls through the empty runtime octree
-    // while streaming catches up.
-    if(initialposition)
-    {
-        const int chunkx = int(floor(double(initialposition->x) / WORLD_CHUNK_SIZE)),
-                  chunky = int(floor(double(initialposition->y) / WORLD_CHUNK_SIZE));
-        if(chunkx || chunky)
-        {
-            int generated = 0;
-            const int destination = acquireworldchunkblocking(chunkx, chunky, generated);
-            if(!worldchunks.inrange(destination) || !worldchunks[destination].root)
-                conoutf(CON_ERROR, "could not prepare restored player chunk %d_%d", chunkx, chunky);
-        }
-    }
-
     setvar("mapscale", WORLD_RUNTIME_SCALE, true, false);
     setvar("mapsize", WORLD_RUNTIME_SIZE, true, false);
     worldroot = newcubes(F_EMPTY);
     if(player)
     {
-        player->o = vec(WORLD_RUNTIME_CENTER * WORLD_CHUNK_SIZE + WORLD_CHUNK_SIZE / 2,
-                        WORLD_RUNTIME_CENTER * WORLD_CHUNK_SIZE + WORLD_CHUNK_SIZE / 2,
-                        WORLD_GROUND_HEIGHT + player->eyeheight + 1);
+        const double absolutex = initialposition ? initialposition->x : double(networkentrychunkx) * WORLD_CHUNK_SIZE + WORLD_CHUNK_SIZE / 2,
+                     absolutey = initialposition ? initialposition->y : double(networkentrychunky) * WORLD_CHUNK_SIZE + WORLD_CHUNK_SIZE / 2;
+        player->o = vec(float(absolutex - double(worldfirstchunkx) * WORLD_CHUNK_SIZE),
+                        float(absolutey - double(worldfirstchunky) * WORLD_CHUNK_SIZE),
+                        initialposition ? initialposition->z : WORLD_GROUND_HEIGHT + player->eyeheight + 1);
     }
     preparedworldspawn = false;
+    int generated = 0;
+    activeworldchunk = acquireworldchunkblocking(networkentrychunkx, networkentrychunky, generated);
+    updateworldchunks(true);
+    conoutf("waiting for authoritative world chunks from the server (cache %s)", worldfolder[0] ? worldfolder : "disabled");
+}
+
+bool finishnetworkworld(const vec *initialposition)
+{
+    const int destination = findworldchunk(networkentrychunkx, networkentrychunky);
+    if(!worldchunks.inrange(destination) || !worldchunks[destination].root || worldchunks[destination].loading) return false;
+    activeworldchunk = destination;
     worldspawnmetadata spawn;
-    if(!prepareworldspawn(spawn)) return;
+    if(initialposition)
+    {
+        spawn.valid = true;
+        spawn.x = initialposition->x;
+        spawn.y = initialposition->y;
+        spawn.z = initialposition->z;
+        spawn.yaw = player ? player->yaw : 0;
+        spawn.pitch = player ? player->pitch : 0;
+    }
+    if(!prepareworldspawn(spawn)) return false;
     updateworldchunks(true);
     applypreparedworldspawn();
-    conoutf("joined authoritative world with seed %d", seed);
+    conoutf("joined authoritative world with seed %d", networkworldseed);
+    return true;
 }
 
 void closeproceduralworld()

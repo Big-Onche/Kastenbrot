@@ -159,7 +159,7 @@ static const int msgsizes[] =
     N_UNDO, 0, N_REDO, 0, N_NEWMAP, 2, N_GETMAP, 1, N_SENDMAP, 0,
     N_CLIPBOARD, 0, N_EDITVAR, 0, N_EDITSCATTER, 16, N_EDITAUTHOR, 4,
     N_WORLDSTATE, 31, N_WORLDREADY, 6, N_WORLDSYNC, 2, N_WORLDTIME, 3, N_WEATHERSTATE, 5,
-    N_CHUNKREQUEST, 3, N_CHUNKDATA, 0,
+    N_CHUNKREQUEST, 5, N_CHUNKDATA, 0,
     N_SETPRIVILEGE, 3, N_SETMASTER, 0, N_SERVERCOMMAND, 0,
     N_SERVERIDENTITY, 0, N_IDENTITYLOGIN, 0, N_IDENTITYREGISTER, 0, N_IDENTITYCHALLENGE, 0,
     N_IDENTITYRESPONSE, 0, N_IDENTITYSUCCESS, 0, N_IDENTITYFAILURE, 0, N_IDENTITYREVOKED, 0,
@@ -175,7 +175,7 @@ static const int msgsizes[] =
 #define TESSERACT_SERVER_PORT 42000
 #define TESSERACT_LANINFO_PORT 41998
 #define TESSERACT_MASTER_PORT 41999
-#define PROTOCOL_VERSION 38
+#define PROTOCOL_VERSION 39
 
 enum
 {
@@ -712,11 +712,12 @@ namespace game
     extern bool heldtorchemitterposition(gameent *d, vec &position);
     extern bool heldtorchworldemitterposition(gameent *d, vec &position);
     extern void resetclientreceive();
-    extern bool pendingnetworkworld, pendingnetworkreset, pendingnetworkfrozen,
+    extern bool pendingnetworkworld, pendingnetworkstarted, pendingnetworkreset, pendingnetworkfrozen,
                 pendingnetworkrestoreposition;
     extern int pendingnetworkseed, pendingnetworktime, pendingnetworkyaw, pendingnetworkpitch, pendingnetworkphysstate;
     extern float pendingnetworkfalldistance;
     extern vec pendingnetworkposition, pendingnetworkvelocity, pendingnetworkfalling;
+    extern string pendingnetworkcachefolder;
 
 #endif
 }

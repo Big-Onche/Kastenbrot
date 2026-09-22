@@ -149,6 +149,7 @@ struct worldchunk
     worldsectionrenderdata renderdata;
     worldsectionvaresidency varesidency[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES];
     uint varesidencydirtytiles[WORLD_SECTION_LAYERS], request, revision, savedrevision, savingrevision;
+    ullong cachehash;
     int varesidencylod, evictsince, residencycursor;
     uint residencyepoch, residencyviewepoch;
     uint visibilityepoch, visibilitypublication;
@@ -156,7 +157,7 @@ struct worldchunk
     bool varesidencydirty, scattermeshesregistered, placeablesregistered, loading, generating, saving, corrupted, playeredited, npcdirty;
 
     worldchunk(int x, int y, cube *root, bool loading = false)
-        : x(x), y(y), root(root), request(0), revision(root ? 1 : 0), savedrevision(0), savingrevision(0), varesidencylod(-1),
+        : x(x), y(y), root(root), request(0), revision(root ? 1 : 0), savedrevision(0), savingrevision(0), cachehash(0), varesidencylod(-1),
           evictsince(-1), residencycursor(0), residencyepoch(0), residencyviewepoch(0), visibilityepoch(0), visibilitypublication(0),
           retiregeometry(false),
           varesidencydirty(true), scattermeshesregistered(false), placeablesregistered(false), loading(loading), generating(false), saving(false),
@@ -202,7 +203,8 @@ struct worldchunkjob
     uint portalcellmasks[WORLD_SECTION_LAYERS][WORLD_SECTION_TILES][WORLD_SECTION_FACE_COUNT][WORLD_SECTION_FACE_WORDS];
     worldsectionrenderdata renderdata;
     uint epoch, request, snapshotrevision;
-    bool remip, leavesalpha, sectionstatesready, checksnapshot, snapshotplayeredited;
+    ullong snapshotcachehash;
+    bool remip, leavesalpha, sectionstatesready, checksnapshot, snapshotplayeredited, networkonly;
     int snapshotresult;
     SDL_atomic_t cancelled;
     cube *root, *saveroot;

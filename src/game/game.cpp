@@ -970,13 +970,25 @@ namespace game
             const float savedfalldistance = pendingnetworkfalldistance;
             const int savedphysstate = pendingnetworkphysstate;
             const int savedyaw = pendingnetworkyaw, savedpitch = pendingnetworkpitch;
-            pendingnetworkreset = pendingnetworkrestoreposition = false;
 
             // Keep the server lighting active for the entire network-world load.
             // startmap() sees pendingnetworkworld and preserves this authoritative
             // time instead of briefly installing the local default lighting.
             environment::synctime(timemillis, frozen);
-            startnetworkworld(seed, restoreposition ? &savedposition : NULL);
+            if(!pendingnetworkstarted)
+            {
+                startnetworkworld(seed, restoreposition ? &savedposition : NULL, pendingnetworkcachefolder);
+                pendingnetworkstarted = true;
+            }
+            if(!finishnetworkworld(restoreposition ? &savedposition : NULL))
+            {
+                // The initial chunk request is queued while the world is pending.
+                // Keep both halves of the connection alive until it arrives.
+                gets2c();
+                flushclient();
+                return;
+            }
+            pendingnetworkreset = pendingnetworkrestoreposition = false;
             if(restoreposition && player1)
             {
                 vec restored = savedposition;
@@ -989,19 +1001,12 @@ namespace game
                 updateworldchunks(true);
             }
             environment::synctime(timemillis, frozen);
-            pendingnetworkworld = false;
+            pendingnetworkworld = pendingnetworkstarted = false;
             vec worldspawn;
             float worldspawnyaw = 0, worldspawnpitch = 0;
             if(getpreparedworldspawn(worldspawn, worldspawnyaw, worldspawnpitch))
                 addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF), int(worldspawnyaw), int(worldspawnpitch));
             else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
-            requestworldchunk(0, 0);
-            if(restoreposition)
-            {
-                int chunkx = 0, chunky = 0;
-                worldpositiontochunk(savedposition, chunkx, chunky);
-                if(chunkx || chunky) requestworldchunk(chunkx, chunky);
-            }
         }
         {
             ZoneScopedN("World/Environment");

@@ -269,6 +269,7 @@ namespace server
     {
         int x, y, saveafter;
         uint revision, serializedrevision, storageversion;
+        ullong cachehash;
         cube *root;
         worldsectionrenderdata renderdata;
         vector<worldscatterinstance> scatter;
@@ -276,7 +277,7 @@ namespace server
         bool loading, saving, dirty, playeredited, corrupted;
 
         serverchunk(int x, int y)
-            : x(x), y(y), saveafter(0), revision(1), serializedrevision(0), storageversion(1), root(NULL), loading(true), saving(false), dirty(false),
+            : x(x), y(y), saveafter(0), revision(1), serializedrevision(0), storageversion(1), cachehash(0), root(NULL), loading(true), saving(false), dirty(false),
               playeredited(false), corrupted(false)
         {
         }
@@ -290,16 +291,17 @@ namespace server
     {
         int type, x, y;
         uint revision, storageversion;
+        ullong cachehash;
         cube *root;
         worldsectionrenderdata renderdata;
         vector<worldscatterinstance> scatter;
         vector<uchar> gameplay, vox, dat;
-        bool playeredited, success, missing, compress;
+        bool playeredited, success, missing, rewrite;
         string error;
 
         serverchunkjob(int type, int x, int y)
-            : type(type), x(x), y(y), revision(1), storageversion(1), root(NULL), playeredited(false), success(false), missing(false),
-              compress(compresschunks != 0)
+            : type(type), x(x), y(y), revision(1), storageversion(1), cachehash(0), root(NULL), playeredited(false), success(false), missing(false),
+              rewrite(false)
         {
             error[0] = '\0';
         }
@@ -310,7 +312,8 @@ namespace server
     struct serverchunkrequest
     {
         int clientnum, x, y;
-        serverchunkrequest(int clientnum, int x, int y) : clientnum(clientnum), x(x), y(y) {}
+        ullong cachehash;
+        serverchunkrequest(int clientnum, int x, int y, ullong cachehash) : clientnum(clientnum), x(x), y(y), cachehash(cachehash) {}
     };
 
     struct serverchunkdelivery
@@ -681,6 +684,22 @@ namespace server
         if(!folder[0]) copystring(folder, "multiplayer", length);
     }
 
+    static bool prepareserverchunkpayload(serverchunkjob &job)
+    {
+        vector<uchar> voxstored, datstored;
+        if(!encodeworldsnapshotfile(job.vox, voxstored, true) || !encodeworldsnapshotfile(job.dat, datstored, true))
+        {
+            copystring(job.error, "could not compress authoritative chunk payload");
+            return false;
+        }
+        job.vox.setsize(0);
+        job.dat.setsize(0);
+        job.vox.move(voxstored);
+        job.dat.move(datstored);
+        job.cachehash = worldchunksnapshotbytehash(job.vox, job.dat);
+        return true;
+    }
+
     static int serverchunkworker(void *)
     {
         for(;;)
@@ -699,9 +718,22 @@ namespace server
             serverchunkfolder(folder, sizeof(folder));
             if(job->type == SERVER_CHUNK_LOAD)
             {
-                const worldsnapshotloadresult loaded = loadworldchunksnapshotdata(folder, job->x, job->y, job->root, job->scatter,
-                                                                                  job->renderdata, job->gameplay, job->error, &job->revision,
-                                                                                  &job->playeredited, &job->vox, &job->dat);
+                worldsnapshotloadresult loaded = loadworldchunksnapshotdata(folder, job->x, job->y, job->root, job->scatter,
+                                                                             job->renderdata, job->gameplay, job->error, &job->revision,
+                                                                             &job->playeredited, &job->vox, &job->dat, true, NULL,
+                                                                             &job->rewrite);
+                if(loaded == WORLD_SNAPSHOT_INVALID)
+                {
+                    conoutf(CON_WARN, "authoritative chunk %d_%d is unreadable (%s); regenerating it", job->x, job->y,
+                            job->error[0] ? job->error : "invalid snapshot");
+                    job->error[0] = '\0';
+                    job->root = NULL;
+                    job->scatter.setsize(0);
+                    job->gameplay.setsize(0);
+                    job->vox.setsize(0);
+                    job->dat.setsize(0);
+                    loaded = WORLD_SNAPSHOT_MISSING;
+                }
                 if(loaded == WORLD_SNAPSHOT_MISSING)
                 {
                     job->missing = true;
@@ -715,19 +747,23 @@ namespace server
                     job->success = job->root != NULL;
                     if(!job->success && !job->error[0]) copystring(job->error, "world generation failed");
                 }
-                else if(loaded == WORLD_SNAPSHOT_LOADED) job->success = true;
+                else if(loaded == WORLD_SNAPSHOT_LOADED)
+                {
+                    job->success = true;
+                    if(!prepareserverchunkpayload(*job)) job->success = false;
+                }
             }
             else
             {
                 job->success = serializeworldchunksnapshot(job->root, job->x, job->y, job->revision, job->playeredited, job->renderdata,
                                                            job->scatter, job->gameplay, job->vox, job->dat, job->error);
+                if(job->success) job->success = prepareserverchunkpayload(*job);
                 if(job->success)
                 {
                     string voxname, datname;
                     worldchunksnapshotfilename(voxname, sizeof(voxname), folder, job->x, job->y, "vox");
                     worldchunksnapshotfilename(datname, sizeof(datname), folder, job->x, job->y, "dat");
-                    job->success = writeworldsnapshotfile(voxname, job->vox, job->compress) &&
-                                   writeworldsnapshotfile(datname, job->dat, job->compress);
+                    job->success = writeworldsnapshotstoredfile(voxname, job->vox) && writeworldsnapshotstoredfile(datname, job->dat);
                     if(!job->success) copystring(job->error, "could not write .vox/.dat chunk set");
                 }
             }
@@ -976,6 +1012,7 @@ namespace server
                     job->success = game::capturechunkdata(job->x, job->y, furnaces, chests, doors, npcdata, falling, drops, job->gameplay);
                     chunk->corrupted = !job->success;
                     if(!job->success) copystring(job->error, "could not initialize chunk gameplay data");
+                    else job->rewrite = true;
                 }
                 if(job->success && !restoreserverchunkgameplay(*job))
                 {
@@ -994,8 +1031,9 @@ namespace server
                     chunk->gameplay.move(job->gameplay);
                     chunk->vox.move(job->vox);
                     chunk->dat.move(job->dat);
+                    chunk->cachehash = job->cachehash;
                     chunk->serializedrevision = chunk->vox.empty() ? 0 : chunk->revision;
-                    if(job->missing) chunk->dirty = true;
+                    if(job->missing || job->rewrite) chunk->dirty = true;
                 }
             }
             else
@@ -1005,6 +1043,7 @@ namespace server
                 {
                     chunk->vox.move(job->vox);
                     chunk->dat.move(job->dat);
+                    chunk->cachehash = job->cachehash;
                     chunk->serializedrevision = job->revision;
                     if(chunk->storageversion == job->storageversion) chunk->dirty = false;
                 }
@@ -1046,10 +1085,11 @@ namespace server
 
     static void sendserverchunk(clientinfo &ci, serverchunk &chunk)
     {
-        if(!chunk.playeredited || chunk.serializedrevision != chunk.revision || chunk.vox.empty() || chunk.dat.empty()) return;
+        if(chunk.serializedrevision != chunk.revision || !chunk.cachehash || chunk.vox.empty() || chunk.dat.empty()) return;
         packetbuf packet(MAXTRANS + chunk.vox.length() + chunk.dat.length(), ENET_PACKET_FLAG_RELIABLE);
         putint(packet, N_CHUNKDATA);
         putint(packet, chunk.x); putint(packet, chunk.y); putint(packet, int(chunk.revision));
+        putint(packet, int(uint(chunk.cachehash))); putint(packet, int(uint(chunk.cachehash >> 32)));
         putint(packet, chunk.vox.length()); putint(packet, chunk.dat.length());
         packet.put(chunk.vox.getbuf(), chunk.vox.length());
         packet.put(chunk.dat.getbuf(), chunk.dat.length());
@@ -1075,7 +1115,7 @@ namespace server
         {
             serverchunkrequest request = serverchunkrequests[i];
             clientinfo *ci = clients.inrange(request.clientnum) ? clients[request.clientnum] : NULL;
-            if(!ci || !ci->connected || !ci->worldready || !serverchunkinrange(*ci, request.x, request.y))
+            if(!ci || !ci->connected || !serverchunkinrange(*ci, request.x, request.y))
             {
                 serverchunkrequests.remove(i);
                 continue;
@@ -1089,7 +1129,8 @@ namespace server
                 continue;
             }
             serverchunkrequests.remove(i);
-            sendserverchunk(*ci, *chunk);
+            if(request.cachehash == chunk->cachehash) markserverchunkdelivered(ci->clientnum, chunk->x, chunk->y, chunk->revision);
+            else sendserverchunk(*ci, *chunk);
         }
         loopv(serverchunks) if(serverchunks[i]->dirty && !serverchunks[i]->saving && totalmillis >= serverchunks[i]->saveafter)
             queueserverchunksave(*serverchunks[i]);
@@ -2093,6 +2134,7 @@ namespace server
         chunk.playeredited = chunk.dirty = true;
         chunk.saveafter = totalmillis;
         chunk.serializedrevision = 0;
+        chunk.cachehash = 0;
         chunk.vox.setsize(0);
         chunk.dat.setsize(0);
     }
@@ -2105,6 +2147,7 @@ namespace server
         ++chunk->storageversion;
         chunk->dirty = true;
         chunk->serializedrevision = 0;
+        chunk->cachehash = 0;
         chunk->vox.setsize(0);
         chunk->dat.setsize(0);
     }
@@ -5972,7 +6015,8 @@ namespace server
                 {
                     clientinfo *ci = getinfo(sender);
                     const int chunkx = getint(p), chunky = getint(p);
-                    if(ci && ci->connected && ci->worldready && !p.overread() && serverchunkinrange(*ci, chunkx, chunky))
+                    const ullong cachehash = ullong(uint(getint(p))) | ullong(uint(getint(p))) << 32;
+                    if(ci && ci->connected && !p.overread() && serverchunkinrange(*ci, chunkx, chunky))
                     {
                         bool duplicate = false;
                         loopv(serverchunkrequests) if(serverchunkrequests[i].clientnum == sender && serverchunkrequests[i].x == chunkx &&
@@ -5981,7 +6025,7 @@ namespace server
                             duplicate = true;
                             break;
                         }
-                        if(!duplicate) serverchunkrequests.add(serverchunkrequest(sender, chunkx, chunky));
+                        if(!duplicate) serverchunkrequests.add(serverchunkrequest(sender, chunkx, chunky, cachehash));
                     }
                     break;
                 }
