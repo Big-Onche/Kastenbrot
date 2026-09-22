@@ -448,7 +448,7 @@ namespace game
                 if(p.overread() || p.remaining() ||
                    !receivenetworkworldchunk(chunkx, chunky, revision, cachehash, vox.buf, vox.maxlen, dat.buf, dat.maxlen))
                     conoutf(CON_ERROR, "rejected authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
-                else conoutf(CON_DEBUG, "applied authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
+                else conoutf(CON_DEBUG, "queued authoritative chunk %d_%d revision %u", chunkx, chunky, revision);
             }
             return;
         }

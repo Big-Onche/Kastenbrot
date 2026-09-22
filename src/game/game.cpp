@@ -980,6 +980,7 @@ namespace game
                 startnetworkworld(seed, restoreposition ? &savedposition : NULL, pendingnetworkcachefolder);
                 pendingnetworkstarted = true;
             }
+            updateworldchunks();
             if(!finishnetworkworld(restoreposition ? &savedposition : NULL))
             {
                 // The initial chunk request is queued while the world is pending.

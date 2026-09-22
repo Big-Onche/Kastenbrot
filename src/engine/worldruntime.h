@@ -204,12 +204,12 @@ struct worldchunkjob
     worldsectionrenderdata renderdata;
     uint epoch, request, snapshotrevision;
     ullong snapshotcachehash;
-    bool remip, leavesalpha, sectionstatesready, checksnapshot, snapshotplayeredited, networkonly;
+    bool remip, leavesalpha, sectionstatesready, checksnapshot, snapshotplayeredited, networkonly, networkpayload, networkcachefailed;
     int snapshotresult;
     SDL_atomic_t cancelled;
     cube *root, *saveroot;
     vector<worldscatterinstance> scatter;
-    vector<uchar> gameplay;
+    vector<uchar> gameplay, networkvox, networkdat;
     vector<uchar> naturalnpcs;
     string folder, snapshoterror;
     worldgencontext *generation;
