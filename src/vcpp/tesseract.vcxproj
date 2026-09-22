@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -438,12 +438,6 @@
     <ClInclude Include="..\shared\tools.h" />
     <ClInclude Include="..\game\game.h" />
     <ClInclude Include="..\game\mining.h" />
-    <ClInclude Include="..\game\world\weather.h" />
-    <ClInclude Include="..\game\world\climate.h" />
-    <ClInclude Include="..\game\world\hydrology.h" />
-    <ClInclude Include="..\game\world\environment.h" />
-    <ClInclude Include="..\game\world\world.h" />
-    <ClInclude Include="..\game\world\generation.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\include\tracy\public\TracyClient.cpp">
@@ -1197,4 +1191,71 @@
       <UserProperties DevPartner_IsInstrumented="0" />
     </VisualStudio>
   </ProjectExtensions>
+  <ItemGroup>
+    <ClCompile Include="..\game\world\biomes.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_biomes.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\caves.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_caves.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\climate.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_climate.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\geology.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_geology.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\hydrology.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_hydrology.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\ice.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_ice.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\lava.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_lava.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\npcs.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_npcs.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\octree.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_octree.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\ores.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_ores.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\scatter.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_scatter.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\snow.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_snow.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\spawn.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_spawn.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\surface.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_surface.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\terrain.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_terrain.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\game\world\trees.cpp">
+      <PrecompiledHeaderFile>game.h</PrecompiledHeaderFile>
+      <ObjectFileName>$(IntDir)game_world_trees.obj</ObjectFileName>
+    </ClCompile>
+    <ClInclude Include="..\game\world.h" />
+  </ItemGroup>
 </Project>

@@ -1,11 +1,10 @@
 // worldio.cpp: loading & saving of maps and savegames
 
 #include "engine.h"
-#include "world/grasscolor.h"
+#include "../game/world.h"
 #include "worlddef.h"
 #ifndef STANDALONE
-#include "world/generation.h"
-#include "world/weather.h"
+#include "../game/world.h"
 #include "worldruntime.h"
 #include "acoustics.h"
 #endif

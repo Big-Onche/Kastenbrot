@@ -3,7 +3,6 @@
 
 #include "cube.h"
 #include "mining.h"
-#include "world/environment.h"
 
 #define DMF 16.0f
 #define DNF 100.0f
@@ -727,5 +726,7 @@ namespace server
     extern int msgsizelookup(int msg);
     extern void resetservernpcs();
 }
+
+#include "world.h"
 
 #endif

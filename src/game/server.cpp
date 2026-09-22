@@ -1,6 +1,6 @@
 #include "game.h"
 #include <errno.h>
-#include "world/generation.h"
+#include "../game/world.h"
 #include "worldcube.h"
 #include "../engine/world.h"
 #include "worlddef.h"

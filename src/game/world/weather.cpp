@@ -1,6 +1,5 @@
 #include "game.h"
-#include "world/weather.h"
-#include "world/generation.h"
+#include "../game/world.h"
 
 #ifdef SQRT3
 #pragma push_macro("SQRT3")

@@ -1,3 +1,5 @@
+#ifndef __ENGINE_WORLD_H__
+#define __ENGINE_WORLD_H__
 
 enum                            // hardcoded texture numbers
 {
@@ -39,3 +41,5 @@ struct vertex
     ushort textureLayer = 0, textureMode = 0;
     ushort textureSource = 0, textureReserved = 0;
 };
+
+#endif

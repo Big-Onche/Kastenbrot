@@ -86,6 +86,22 @@
 		D1FCB19618832C7600AFC227 /* tools.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB18D18832C7600AFC227 /* tools.cpp */; };
 		D1FCB19718832C7600AFC227 /* zip.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D1FCB18F18832C7600AFC227 /* zip.cpp */; };
 		B70D000000000000000000F1 /* weather.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B70D00000000000000000001 /* weather.cpp */; };
+		C0DE20260922000000000002 /* biomes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000001 /* biomes.cpp */; };
+		C0DE20260922000000000102 /* caves.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000101 /* caves.cpp */; };
+		C0DE20260922000000000202 /* climate.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000201 /* climate.cpp */; };
+		C0DE20260922000000000302 /* geology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000301 /* geology.cpp */; };
+		C0DE20260922000000000402 /* hydrology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000401 /* hydrology.cpp */; };
+		C0DE20260922000000000502 /* ice.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000501 /* ice.cpp */; };
+		C0DE20260922000000000602 /* lava.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000601 /* lava.cpp */; };
+		C0DE20260922000000000702 /* npcs.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000701 /* npcs.cpp */; };
+		C0DE20260922000000000802 /* octree.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000801 /* octree.cpp */; };
+		C0DE20260922000000000902 /* ores.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000901 /* ores.cpp */; };
+		C0DE20260922000000000A02 /* scatter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000A01 /* scatter.cpp */; };
+		C0DE20260922000000000B02 /* snow.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000B01 /* snow.cpp */; };
+		C0DE20260922000000000C02 /* spawn.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000C01 /* spawn.cpp */; };
+		C0DE20260922000000000D02 /* surface.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000D01 /* surface.cpp */; };
+		C0DE20260922000000000E02 /* terrain.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000E01 /* terrain.cpp */; };
+		C0DE20260922000000000F02 /* trees.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C0DE20260922000000000F01 /* trees.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -204,7 +220,6 @@
 		A1B2C3D4E5F60718293A4B5C /* world.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = world.cpp; sourceTree = "<group>"; };
 		F00000000000000000000015 /* content.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = content.cpp; sourceTree = "<group>"; };
 		F00000000000000000000016 /* generation.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = generation.cpp; sourceTree = "<group>"; };
-		F00000000000000000000017 /* generation.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = generation.h; sourceTree = "<group>"; };
 		F00000000000000000000018 /* render.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = render.cpp; sourceTree = "<group>"; };
 		D1FCB13418832B7500AFC227 /* waypoint.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = waypoint.cpp; sourceTree = "<group>"; };
 		D1FCB13518832B7500AFC227 /* weapon.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = weapon.cpp; sourceTree = "<group>"; };
@@ -228,10 +243,22 @@
 		D1FCB18E18832C7600AFC227 /* tools.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = tools.h; sourceTree = "<group>"; };
 		D1FCB18F18832C7600AFC227 /* zip.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = zip.cpp; sourceTree = "<group>"; };
 		B70D00000000000000000001 /* weather.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = weather.cpp; sourceTree = "<group>"; };
-		B70D00000000000000000002 /* weather.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = weather.h; sourceTree = "<group>"; };
-		B70D00000000000000000003 /* climate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = climate.h; sourceTree = "<group>"; };
-		B70D00000000000000000004 /* hydrology.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = hydrology.h; sourceTree = "<group>"; };
-		B70D00000000000000000005 /* environment.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = environment.h; sourceTree = "<group>"; };
+		C0DE20260922000000000001 /* biomes.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = biomes.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000101 /* caves.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = caves.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000201 /* climate.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = climate.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000301 /* geology.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = geology.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000401 /* hydrology.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = hydrology.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000501 /* ice.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ice.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000601 /* lava.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = lava.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000701 /* npcs.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = npcs.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000801 /* octree.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = octree.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000901 /* ores.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ores.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000A01 /* scatter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = scatter.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000B01 /* snow.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = snow.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000C01 /* spawn.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = spawn.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000D01 /* surface.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = surface.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000E01 /* terrain.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = terrain.cpp; sourceTree = "<group>"; };
+		C0DE20260922000000000F01 /* trees.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = trees.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -450,6 +477,7 @@
 				A8B1000218832B7500AFC227 /* ambient.cpp */,
 				D1FCB12E18832B7500AFC227 /* game.cpp */,
 				D00D000218832B7500AFC227 /* door.cpp */,
+				A1B2C3D4E5F60718293A4B5E /* world.h */,
 				B70D000000000000000000F0 /* world */,
 				D1FCB12F18832B7500AFC227 /* game.h */,
 				E17A000418832B7500AFC227 /* mining.cpp */,
@@ -493,18 +521,28 @@
 		B70D000000000000000000F0 /* world */ = {
 			isa = PBXGroup;
 			children = (
-				B70D00000000000000000003 /* climate.h */,
 				F00000000000000000000015 /* content.cpp */,
 				E17A000218832B7500AFC227 /* environment.cpp */,
-				B70D00000000000000000005 /* environment.h */,
 				F00000000000000000000016 /* generation.cpp */,
-				F00000000000000000000017 /* generation.h */,
-				B70D00000000000000000004 /* hydrology.h */,
 				F00000000000000000000018 /* render.cpp */,
 				B70D00000000000000000001 /* weather.cpp */,
-				B70D00000000000000000002 /* weather.h */,
+				C0DE20260922000000000001 /* biomes.cpp */,
+				C0DE20260922000000000101 /* caves.cpp */,
+				C0DE20260922000000000201 /* climate.cpp */,
+				C0DE20260922000000000301 /* geology.cpp */,
+				C0DE20260922000000000401 /* hydrology.cpp */,
+				C0DE20260922000000000501 /* ice.cpp */,
+				C0DE20260922000000000601 /* lava.cpp */,
+				C0DE20260922000000000701 /* npcs.cpp */,
+				C0DE20260922000000000801 /* octree.cpp */,
+				C0DE20260922000000000901 /* ores.cpp */,
+				C0DE20260922000000000A01 /* scatter.cpp */,
+				C0DE20260922000000000B01 /* snow.cpp */,
+				C0DE20260922000000000C01 /* spawn.cpp */,
+				C0DE20260922000000000D01 /* surface.cpp */,
+				C0DE20260922000000000E01 /* terrain.cpp */,
+				C0DE20260922000000000F01 /* trees.cpp */,
 				A1B2C3D4E5F60718293A4B5C /* world.cpp */,
-				A1B2C3D4E5F60718293A4B5E /* world.h */,
 			);
 			path = world;
 			sourceTree = "<group>";
@@ -632,6 +670,22 @@
 				D1FCB17318832B7500AFC227 /* render.cpp in Sources */,
 				D1FCB17418832B7500AFC227 /* scoreboard.cpp in Sources */,
 				D1FCB17518832B7500AFC227 /* server.cpp in Sources */,
+				C0DE20260922000000000002 /* biomes.cpp in Sources */,
+				C0DE20260922000000000102 /* caves.cpp in Sources */,
+				C0DE20260922000000000202 /* climate.cpp in Sources */,
+				C0DE20260922000000000302 /* geology.cpp in Sources */,
+				C0DE20260922000000000402 /* hydrology.cpp in Sources */,
+				C0DE20260922000000000502 /* ice.cpp in Sources */,
+				C0DE20260922000000000602 /* lava.cpp in Sources */,
+				C0DE20260922000000000702 /* npcs.cpp in Sources */,
+				C0DE20260922000000000802 /* octree.cpp in Sources */,
+				C0DE20260922000000000902 /* ores.cpp in Sources */,
+				C0DE20260922000000000A02 /* scatter.cpp in Sources */,
+				C0DE20260922000000000B02 /* snow.cpp in Sources */,
+				C0DE20260922000000000C02 /* spawn.cpp in Sources */,
+				C0DE20260922000000000D02 /* surface.cpp in Sources */,
+				C0DE20260922000000000E02 /* terrain.cpp in Sources */,
+				C0DE20260922000000000F02 /* trees.cpp in Sources */,
 				A1B2C3D4E5F60718293A4B5D /* world.cpp in Sources */,
 				B70D000000000000000000F1 /* weather.cpp in Sources */,
 				F00000000000000000000001 /* generation.cpp in Sources */,

@@ -262,24 +262,18 @@
 		<Unit filename="../game/recipes.cpp" />
 		<Unit filename="../game/render.cpp" />
 		<Unit filename="../game/server.cpp" />
-		<Unit filename="../game/world/climate.h" />
 		<Unit filename="../game/world/content.cpp">
 			<Option compile="0" />
 			<Option link="0" />
 		</Unit>
 		<Unit filename="../game/world/environment.cpp" />
-		<Unit filename="../game/world/environment.h" />
 		<Unit filename="../game/world/generation.cpp" />
-		<Unit filename="../game/world/generation.h" />
-		<Unit filename="../game/world/hydrology.h" />
 		<Unit filename="../game/world/render.cpp">
 			<Option compile="0" />
 			<Option link="0" />
 		</Unit>
 		<Unit filename="../game/world/weather.cpp" />
-		<Unit filename="../game/world/weather.h" />
 		<Unit filename="../game/world/world.cpp" />
-		<Unit filename="../game/world/world.h" />
 		<Unit filename="../include/tracy/public/TracyClient.cpp">
 			<Option target="profile64" />
 		</Unit>
@@ -306,5 +300,22 @@
 			<Option compiler="gcc" use="1" buildCommand="$rescomp -F $WINDRES_TARGET -i $file -J rc -o $resource_output -O coff $res_includes" />
 		</Unit>
 		<Extensions />
+		<Unit filename="../game/world.h" />
+		<Unit filename="../game/world/biomes.cpp" />
+		<Unit filename="../game/world/caves.cpp" />
+		<Unit filename="../game/world/climate.cpp" />
+		<Unit filename="../game/world/geology.cpp" />
+		<Unit filename="../game/world/hydrology.cpp" />
+		<Unit filename="../game/world/ice.cpp" />
+		<Unit filename="../game/world/lava.cpp" />
+		<Unit filename="../game/world/npcs.cpp" />
+		<Unit filename="../game/world/octree.cpp" />
+		<Unit filename="../game/world/ores.cpp" />
+		<Unit filename="../game/world/scatter.cpp" />
+		<Unit filename="../game/world/snow.cpp" />
+		<Unit filename="../game/world/spawn.cpp" />
+		<Unit filename="../game/world/surface.cpp" />
+		<Unit filename="../game/world/terrain.cpp" />
+		<Unit filename="../game/world/trees.cpp" />
 	</Project>
 </CodeBlocks_project_file>

@@ -1,5 +1,5 @@
 #include "engine.h"
-#include "world/grasscolor.h"
+#include "../game/world.h"
 
 VARP(grass, 0, 1, 1);
 VAR(dbggrass, 0, 0, 1);

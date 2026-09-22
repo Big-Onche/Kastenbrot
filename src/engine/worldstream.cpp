@@ -4,7 +4,7 @@
 
 #include "acoustics.h"
 #include "localambientgeometry.h"
-#include "world/world.h"
+#include "../game/world.h"
 
 static_assert(int(game::worldclimate::BLOCK_UNITS) == int(WORLD_BLOCK_SIZE) &&
               int(game::worldclimate::GROUND_UNITS) == int(WORLD_GROUND_HEIGHT), "Climate coordinates must match the world grid");

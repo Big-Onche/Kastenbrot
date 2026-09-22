@@ -6,7 +6,7 @@
 #include "game.h"
 
 #ifndef STANDALONE
-#include "world/weather.h"
+#include "../game/world.h"
 #include "ambient.h"
 #include "worlddef.h"
 extern int mainmenu;

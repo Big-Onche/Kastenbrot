@@ -1,7 +1,7 @@
 // octarender.cpp: fill vertex arrays with different cube surfaces.
 
 #include "engine.h"
-#include "world/grasscolor.h"
+#include "../game/world.h"
 #include "worldruntime.h"
 
 #define OCTARENDER_MODULE_IMPLEMENTATION

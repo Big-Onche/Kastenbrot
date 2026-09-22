@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="..\include\tracy\public\TracyClient.cpp">
@@ -228,15 +228,6 @@
     <ClInclude Include="..\game\mining.h">
       <Filter>game</Filter>
     </ClInclude>
-    <ClInclude Include="..\game\world\weather.h">
-      <Filter>game\world</Filter>
-    </ClInclude>
-    <ClInclude Include="..\game\world\climate.h"><Filter>game\world</Filter></ClInclude>
-    <ClInclude Include="..\game\world\hydrology.h"><Filter>game\world</Filter></ClInclude>
-    <ClInclude Include="..\game\world\environment.h"><Filter>game\world</Filter></ClInclude>
-    <ClInclude Include="..\game\world\world.h">
-      <Filter>game\world</Filter>
-    </ClInclude>
     <ClInclude Include="..\shared\geom.h">
       <Filter>shared</Filter>
     </ClInclude>
@@ -312,9 +303,6 @@
     <ClInclude Include="..\engine\world.h">
       <Filter>engine</Filter>
     </ClInclude>
-    <ClInclude Include="..\game\world\generation.h">
-      <Filter>game\world</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\engine\worldcache.cpp"><Filter>engine</Filter></None>
@@ -344,5 +332,24 @@
     <Filter Include="third party">
       <UniqueIdentifier>{2cbbd7de-b16e-4367-9fd8-64fb729b9023}</UniqueIdentifier>
     </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\game\world\biomes.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\caves.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\climate.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\geology.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\hydrology.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\ice.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\lava.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\npcs.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\octree.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\ores.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\scatter.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\snow.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\spawn.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\surface.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\terrain.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClCompile Include="..\game\world\trees.cpp"><Filter>game\world</Filter></ClCompile>
+    <ClInclude Include="..\game\world.h"><Filter>game</Filter></ClInclude>
   </ItemGroup>
 </Project>

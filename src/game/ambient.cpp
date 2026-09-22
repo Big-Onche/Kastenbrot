@@ -1,8 +1,7 @@
 #include "game.h"
 #ifndef STANDALONE
 #include "ambient.h"
-#include "world/weather.h"
-#include "world/generation.h"
+#include "../game/world.h"
 
 extern int mainmenu;
 extern float volumetriccloudwindspeed;

@@ -1,7 +1,7 @@
 // renderparticles.cpp
 
 #include "engine.h"
-#include "world/grasscolor.h"
+#include "../game/world.h"
 
 Shader *particleshader = NULL, *particlenotextureshader = NULL, *particlesoftshader = NULL, *particletextshader = NULL,
        *blockchipshader = NULL;
