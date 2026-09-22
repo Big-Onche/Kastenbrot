@@ -238,6 +238,12 @@ void worldpositiontolocal(vec &position)
     position.y -= float(double(worldfirstchunky) * WORLD_CHUNK_SIZE);
 }
 
+void worldpositiontochunk(const vec &position, int &chunkx, int &chunky)
+{
+    chunkx = int(floor(double(position.x) / WORLD_CHUNK_SIZE));
+    chunky = int(floor(double(position.y) / WORLD_CHUNK_SIZE));
+}
+
 float worldpositionheight(float z)
 {
     return z / float(WORLD_BLOCK_SIZE) + WORLD_MIN_HEIGHT;

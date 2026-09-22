@@ -673,7 +673,7 @@ static void loadworldcommand(const char *requested)
 
 ICOMMAND(loadworld, "s", (char *name), loadworldcommand(name));
 
-void startnetworkworld(int seed)
+void startnetworkworld(int seed, const vec *initialposition)
 {
     game::resetfurnaces();
     game::resetchests();
@@ -696,6 +696,23 @@ void startnetworkworld(int seed)
         game::generateworldscatter(chunk.root, 0, 0, chunk.scatter);
     }
     loadinitialworldchunks(0, 0);
+
+    // A returning multiplayer player can be restored many chunks away from
+    // the world spawn. Prepare that chunk synchronously before physics resumes;
+    // otherwise the restored player falls through the empty runtime octree
+    // while streaming catches up.
+    if(initialposition)
+    {
+        const int chunkx = int(floor(double(initialposition->x) / WORLD_CHUNK_SIZE)),
+                  chunky = int(floor(double(initialposition->y) / WORLD_CHUNK_SIZE));
+        if(chunkx || chunky)
+        {
+            int generated = 0;
+            const int destination = acquireworldchunkblocking(chunkx, chunky, generated);
+            if(!worldchunks.inrange(destination) || !worldchunks[destination].root)
+                conoutf(CON_ERROR, "could not prepare restored player chunk %d_%d", chunkx, chunky);
+        }
+    }
 
     setvar("mapscale", WORLD_RUNTIME_SCALE, true, false);
     setvar("mapsize", WORLD_RUNTIME_SIZE, true, false);

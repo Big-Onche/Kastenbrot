@@ -976,7 +976,7 @@ namespace game
             // startmap() sees pendingnetworkworld and preserves this authoritative
             // time instead of briefly installing the local default lighting.
             environment::synctime(timemillis, frozen);
-            startnetworkworld(seed);
+            startnetworkworld(seed, restoreposition ? &savedposition : NULL);
             if(restoreposition && player1)
             {
                 vec restored = savedposition;
@@ -996,6 +996,12 @@ namespace game
                 addmsg(N_WORLDREADY, "ri5", int(worldspawn.x * DMF), int(worldspawn.y * DMF), int(worldspawn.z * DMF), int(worldspawnyaw), int(worldspawnpitch));
             else addmsg(N_WORLDREADY, "ri5", 0, 0, 0, 0, 0);
             requestworldchunk(0, 0);
+            if(restoreposition)
+            {
+                int chunkx = 0, chunky = 0;
+                worldpositiontochunk(savedposition, chunkx, chunky);
+                if(chunkx || chunky) requestworldchunk(chunkx, chunky);
+            }
         }
         {
             ZoneScopedN("World/Environment");

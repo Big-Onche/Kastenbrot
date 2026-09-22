@@ -834,10 +834,11 @@ extern bool requestmasterf(const char *fmt, ...) PRINTFARGS(1, 2);
 extern bool isdedicatedserver();
 
 #ifndef STANDALONE
-extern void startnetworkworld(int seed);
+extern void startnetworkworld(int seed, const vec *initialposition);
 extern bool getpreparedworldspawn(vec &position, float &yaw, float &pitch);
 extern void worldpositiontoabsolute(vec &position);
 extern void worldpositiontolocal(vec &position);
+extern void worldpositiontochunk(const vec &position, int &chunkx, int &chunky);
 extern float worldpositionheight(float z);
 extern void worldselectiontoabsolute(selinfo &selection);
 extern void worldselectiontolocal(selinfo &selection);
